@@ -11,6 +11,7 @@ import {
   snapshotServiceRequirements,
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
+import { uploadDocument } from "@/lib/storage/driveAdapter";
 
 export async function createCollectionRequest(
   clientId: string,
@@ -107,13 +108,20 @@ export async function addManualDocument(
     .limit(1);
   if (!current) redirect("/collections");
 
-  await db.insert(documents).values({
-    organizationId: session.organizationId,
-    collectionRequestId,
-    requirementId,
-    fileName,
-    status: status as "approved" | "rejected" | "needs_review",
-  });
+  const [document] = await db
+    .insert(documents)
+    .values({
+      organizationId: session.organizationId,
+      collectionRequestId,
+      requirementId,
+      fileName,
+      status: status as "approved" | "rejected" | "needs_review",
+    })
+    .returning();
+
+  if (status === "approved") {
+    await uploadDocument(current.clientId, document.id);
+  }
 
   await recordAuditEvent({
     organizationId: session.organizationId,
@@ -142,6 +150,13 @@ export async function reviewDocument(
   }
 
   const db = await getDb();
+  const [current] = await db
+    .select({ clientId: collectionRequests.clientId })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .limit(1);
+  if (!current) redirect("/collections");
+
   const [document] = await db
     .update(documents)
     .set({ status: decision as "approved" | "rejected" | "needs_review", updatedAt: new Date() })
@@ -149,12 +164,50 @@ export async function reviewDocument(
     .returning();
   if (!document) redirect(`/collections/${collectionRequestId}`);
 
+  if (decision === "approved") {
+    await uploadDocument(current.clientId, document.id);
+  }
+
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "document.reviewed",
     description: `מסמך "${document.fileName}" סומן כ${DOCUMENT_STATUS_LABELS[decision] ?? decision} על ידי עובד`,
     actorType: "employee",
     actorUserId: session.userId,
+    clientId: current.clientId,
+  });
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
+// Ch.14: if a document is manually deleted from Google Drive, Centro
+// keeps the database record and flips its status rather than removing
+// it — the UI shows when it happened. This simulates that external event
+// (there's no real Drive webhook yet) so the reconciliation behavior
+// itself — the part that's actually specified — is real and testable.
+export async function simulateDriveDeletion(
+  collectionRequestId: string,
+  documentId: string
+) {
+  const session = await requireSession();
+  const db = await getDb();
+
+  const [document] = await db
+    .update(documents)
+    .set({
+      status: "deleted_from_drive",
+      driveDeletedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(documents.id, documentId))
+    .returning();
+  if (!document) redirect(`/collections/${collectionRequestId}`);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "document.deleted_from_drive",
+    description: `מסמך "${document.fileName}" נמחק ידנית מ-Google Drive`,
+    actorType: "system",
   });
 
   redirect(`/collections/${collectionRequestId}`);

@@ -13,8 +13,14 @@ import {
   nextStatusOptions,
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
+import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { StatusBadge } from "../StatusBadge";
-import { addManualDocument, reviewDocument, transitionStatus } from "../actions";
+import {
+  addManualDocument,
+  reviewDocument,
+  simulateDriveDeletion,
+  transitionStatus,
+} from "../actions";
 import {
   evaluateNow,
   initiateConversation,
@@ -148,36 +154,65 @@ export default async function CollectionRequestDetailPage({
                 {requirement.documents.length > 0 && (
                   <ul className="mt-2 space-y-2">
                     {requirement.documents.map((doc) => (
-                      <li
-                        key={doc.id}
-                        className="flex items-center justify-between gap-2 text-xs text-text-secondary"
-                      >
-                        <span>{doc.fileName}</span>
-                        <div className="flex items-center gap-2">
-                          <span>{DOCUMENT_STATUS_LABELS[doc.status]}</span>
-                          {doc.status !== "approved" && doc.status !== "rejected" && (
-                            <div className="flex gap-1">
-                              <form action={reviewDocument.bind(null, id, doc.id)}>
-                                <input type="hidden" name="decision" value="approved" />
-                                <button
-                                  type="submit"
-                                  className="rounded-full border border-border px-2 py-0.5 text-[11px] text-brand-emerald hover:border-brand-emerald"
-                                >
-                                  אישור
-                                </button>
-                              </form>
-                              <form action={reviewDocument.bind(null, id, doc.id)}>
-                                <input type="hidden" name="decision" value="rejected" />
-                                <button
-                                  type="submit"
-                                  className="rounded-full border border-border px-2 py-0.5 text-[11px] text-danger hover:border-danger"
-                                >
-                                  דחייה
-                                </button>
-                              </form>
-                            </div>
-                          )}
+                      <li key={doc.id} className="text-xs text-text-secondary">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>{doc.fileName}</span>
+                          <div className="flex items-center gap-2">
+                            <span>{DOCUMENT_STATUS_LABELS[doc.status]}</span>
+                            {doc.status !== "approved" && doc.status !== "rejected" && (
+                              <div className="flex gap-1">
+                                <form action={reviewDocument.bind(null, id, doc.id)}>
+                                  <input type="hidden" name="decision" value="approved" />
+                                  <button
+                                    type="submit"
+                                    className="rounded-full border border-border px-2 py-0.5 text-[11px] text-brand-emerald hover:border-brand-emerald"
+                                  >
+                                    אישור
+                                  </button>
+                                </form>
+                                <form action={reviewDocument.bind(null, id, doc.id)}>
+                                  <input type="hidden" name="decision" value="rejected" />
+                                  <button
+                                    type="submit"
+                                    className="rounded-full border border-border px-2 py-0.5 text-[11px] text-danger hover:border-danger"
+                                  >
+                                    דחייה
+                                  </button>
+                                </form>
+                              </div>
+                            )}
+                          </div>
                         </div>
+                        {doc.status === "approved" && doc.googleDriveFileId && (
+                          <div className="mt-1 flex items-center justify-between text-[11px] text-text-muted">
+                            <a
+                              href={driveFileLink(doc.googleDriveFileId)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand-blue hover:underline"
+                            >
+                              פתיחה ב-Google Drive
+                            </a>
+                            <form action={simulateDriveDeletion.bind(null, id, doc.id)}>
+                              <button
+                                type="submit"
+                                className="text-text-muted hover:text-danger hover:underline"
+                              >
+                                הדמיית מחיקה מ-Drive
+                              </button>
+                            </form>
+                          </div>
+                        )}
+                        {doc.status === "deleted_from_drive" && doc.driveDeletedAt && (
+                          <p className="mt-1 text-[11px] text-danger">
+                            נמחק ידנית ב-
+                            {new Date(doc.driveDeletedAt).toLocaleDateString("he-IL")}{" "}
+                            {new Date(doc.driveDeletedAt).toLocaleTimeString("he-IL", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </p>
+                        )}
                       </li>
                     ))}
                   </ul>

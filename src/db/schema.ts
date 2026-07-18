@@ -134,6 +134,10 @@ export const clients = pgTable(
     phone: text("phone").notNull(),
     email: text("email"),
     notes: text("notes"),
+    // BR-3.003: store the Drive folder ID, not its name. Created lazily
+    // (see src/lib/storage/driveAdapter.ts) the first time a document for
+    // this client is approved, rather than during client creation.
+    driveFolderId: text("drive_folder_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -297,6 +301,10 @@ export const documents = pgTable("documents", {
   status: documentStatus("status").notNull().default("received"),
   fileName: text("file_name").notNull(),
   googleDriveFileId: text("google_drive_file_id"),
+  // Ch.14: when a document is manually deleted from Drive, Centro keeps
+  // the database record, flips status to deleted_from_drive, and the UI
+  // shows "Deleted manually on DD/MM/YYYY HH:MM" using this timestamp.
+  driveDeletedAt: timestamp("drive_deleted_at", { withTimezone: true }),
   receivedAt: timestamp("received_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
