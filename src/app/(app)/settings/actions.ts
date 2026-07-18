@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import { runScheduledTasks } from "@/lib/scheduler";
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 
@@ -41,4 +42,21 @@ export async function updateBusinessHours(formData: FormData) {
   });
 
   redirect("/settings");
+}
+
+export interface RunSchedulerState {
+  result?: { evaluated: number; reminded: number };
+}
+
+// Manual stand-in for an external cron hitting POST /api/cron/tick, for
+// the pilot until one is actually configured — runs the exact same
+// runScheduledTasks() the real endpoint calls. useActionState always
+// calls actions as (state, formData); this one just doesn't need either.
+export async function runSchedulerNow(
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _prevState: RunSchedulerState
+): Promise<RunSchedulerState> {
+  await requireSession();
+  const result = await runScheduledTasks();
+  return { result };
 }

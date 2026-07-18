@@ -1,6 +1,7 @@
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
 import { updateBusinessHours } from "./actions";
+import { RunSchedulerButton } from "./RunSchedulerButton";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
 
@@ -120,6 +121,10 @@ export default async function SettingsPage() {
           שמירת הגדרות
         </button>
       </form>
+
+      <div className="mt-6">
+        <RunSchedulerButton />
+      </div>
     </div>
   );
 }

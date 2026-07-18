@@ -9,7 +9,11 @@ import {
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { isWithinBusinessHours } from "@/lib/businessHours";
-import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
+import {
+  applyTransition,
+  canTransition,
+  checkCompletionGate,
+} from "@/lib/collectionRequestStateMachine";
 
 /**
  * WhatsApp transport is mocked throughout this module (M6 swaps in the
@@ -183,6 +187,24 @@ export async function evaluateAndPrompt(
     .update(conversations)
     .set({ status: "waiting_for_client" })
     .where(eq(conversations.id, conversationId));
+
+  // Keep the Collection Request's own status (also part of the Ch.6
+  // state machine) in sync with the conversation, so the scheduler and
+  // dashboard can query one source of truth instead of joining both.
+  const [current] = await db
+    .select({ status: collectionRequests.status })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .limit(1);
+  if (current && canTransition(current.status, "waiting_for_client")) {
+    await applyTransition(
+      organizationId,
+      undefined,
+      "ai",
+      collectionRequestId,
+      "waiting_for_client"
+    );
+  }
 
   return { prompted: true, reason: null };
 }
