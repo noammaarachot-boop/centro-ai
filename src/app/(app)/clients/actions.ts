@@ -1,6 +1,6 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { clientServices, clients } from "@/db/schema";
@@ -41,6 +41,21 @@ export async function createClient(
   if (fieldErrors) return { fieldErrors };
 
   const db = await getDb();
+
+  const [duplicate] = await db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(
+      and(
+        eq(clients.organizationId, session.organizationId),
+        eq(clients.phone, input.phone)
+      )
+    )
+    .limit(1);
+  if (duplicate) {
+    return { fieldErrors: { phone: "מספר טלפון זה כבר משויך ללקוח אחר." } };
+  }
+
   const [client] = await db
     .insert(clients)
     .values({
@@ -75,6 +90,22 @@ export async function updateClient(
   if (fieldErrors) return { fieldErrors };
 
   const db = await getDb();
+
+  const [duplicate] = await db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(
+      and(
+        eq(clients.organizationId, session.organizationId),
+        eq(clients.phone, input.phone),
+        ne(clients.id, clientId)
+      )
+    )
+    .limit(1);
+  if (duplicate) {
+    return { fieldErrors: { phone: "מספר טלפון זה כבר משויך ללקוח אחר." } };
+  }
+
   const [client] = await db
     .update(clients)
     .set({

@@ -11,6 +11,7 @@ export const metadata: Metadata = {
 
 const NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה" },
+  { href: "/onboarding", label: "הקמת המערכת" },
   { href: "/clients", label: "לקוחות" },
   { href: "/services", label: "שירותים" },
 ];

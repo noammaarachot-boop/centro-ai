@@ -10,9 +10,23 @@ import {
 
 // Owns all configuration, users and (starting M3) clients/services/collection
 // data. EPS Ch.2 PR-005 / Ch.8: every other table is scoped to one of these.
+//
+// The three *ConnectedAt / *ActivatedAt columns track the Ch.3 onboarding
+// gate (BR-001: "Automation cannot be activated until all mandatory
+// integrations are connected"). Google/WhatsApp connection is mocked for
+// now (M5/M6 wire real OAuth) — a timestamp is set directly by the
+// onboarding UI instead of a real callback, but the gating logic against
+// these columns is the real, permanent logic.
 export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
+  googleConnectedAt: timestamp("google_connected_at", { withTimezone: true }),
+  whatsappConnectedAt: timestamp("whatsapp_connected_at", {
+    withTimezone: true,
+  }),
+  automationActivatedAt: timestamp("automation_activated_at", {
+    withTimezone: true,
+  }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -94,23 +108,33 @@ export const auditLogs = pgTable("audit_logs", {
 });
 
 // Business record only — a Client never authenticates into Centro (EPS
-// Ch.2, Ch.4 BR-002). `phone` is the WhatsApp address used from M6 onward.
-export const clients = pgTable("clients", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  organizationId: uuid("organization_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  phone: text("phone").notNull(),
-  email: text("email"),
-  notes: text("notes"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+// Ch.2, Ch.4 BR-002). `phone` is the WhatsApp address used from M6 onward,
+// so it must be unique per organization — one client per WhatsApp number.
+export const clients = pgTable(
+  "clients",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    phone: text("phone").notNull(),
+    email: text("email"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("clients_organization_id_phone_idx").on(
+      table.organizationId,
+      table.phone
+    ),
+  ]
+);
 
 // Defines recurring document requirements (EPS Ch.4 BR-001: "Services
 // define requirements; clients do not"). Scheduling config (frequency,
