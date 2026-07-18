@@ -1,10 +1,12 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   collectionRequestRequirements,
+  collectionRequests,
   documents,
   serviceDocumentRequirements,
 } from "@/db/schema";
+import { recordAuditEvent } from "@/lib/audit";
 
 export type CollectionRequestStatus =
   | "draft"
@@ -87,6 +89,108 @@ export async function checkCompletionGate(
   }
 
   return null;
+}
+
+export interface TransitionResult {
+  ok: boolean;
+  error?: string;
+}
+
+// Non-redirecting core of a status change: validates the transition
+// (FR-6.2), runs the completion gate when moving to `completed`, applies
+// the update, and records the audit event (FR-6.3). Server actions that
+// need a single transition wrap this and redirect on the result; the
+// conversation orchestration (M8) composes multiple calls in sequence
+// (e.g. waiting_for_client -> processing -> completed) without any
+// redirect happening mid-sequence.
+export async function applyTransition(
+  organizationId: string,
+  actorUserId: string | undefined,
+  actorType: "employee" | "ai" | "system" | "client",
+  collectionRequestId: string,
+  nextStatus: CollectionRequestStatus
+): Promise<TransitionResult> {
+  const db = await getDb();
+  const [current] = await db
+    .select()
+    .from(collectionRequests)
+    .where(
+      and(
+        eq(collectionRequests.id, collectionRequestId),
+        eq(collectionRequests.organizationId, organizationId)
+      )
+    )
+    .limit(1);
+  if (!current) return { ok: false, error: "בקשת האיסוף לא נמצאה." };
+
+  if (!canTransition(current.status, nextStatus)) {
+    return { ok: false, error: "מעבר סטטוס לא חוקי." };
+  }
+
+  if (nextStatus === "completed") {
+    const gateError = await checkCompletionGate(collectionRequestId);
+    if (gateError) return { ok: false, error: gateError };
+  }
+
+  await db
+    .update(collectionRequests)
+    .set({
+      status: nextStatus,
+      updatedAt: new Date(),
+      completedAt: nextStatus === "completed" ? new Date() : current.completedAt,
+    })
+    .where(eq(collectionRequests.id, collectionRequestId));
+
+  await recordAuditEvent({
+    organizationId,
+    eventType: "collection_request.status_changed",
+    description: `סטטוס בקשת האיסוף עודכן מ-${current.status} ל-${nextStatus}`,
+    actorType,
+    actorUserId,
+    clientId: current.clientId,
+    metadata: { from: current.status, to: nextStatus },
+  });
+
+  return { ok: true };
+}
+
+// Steps through whichever valid intermediate transitions are needed to
+// reach `completed` from the current status (e.g. waiting_for_client ->
+// processing -> completed), stopping at the first failure.
+export async function completeCollectionRequest(
+  organizationId: string,
+  actorUserId: string | undefined,
+  actorType: "employee" | "ai" | "system" | "client",
+  collectionRequestId: string
+): Promise<TransitionResult> {
+  const db = await getDb();
+  const [current] = await db
+    .select({ status: collectionRequests.status })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .limit(1);
+  if (!current) return { ok: false, error: "בקשת האיסוף לא נמצאה." };
+
+  if (current.status !== "processing" && current.status !== "completed") {
+    const toProcessing = await applyTransition(
+      organizationId,
+      actorUserId,
+      actorType,
+      collectionRequestId,
+      "processing"
+    );
+    if (!toProcessing.ok) return toProcessing;
+  }
+
+  if (current.status === "completed") return { ok: true };
+
+  return applyTransition(
+    organizationId,
+    actorUserId,
+    actorType,
+    collectionRequestId,
+    "completed"
+  );
 }
 
 export async function snapshotServiceRequirements(

@@ -15,6 +15,7 @@ const NAV_LINKS = [
   { href: "/clients", label: "לקוחות" },
   { href: "/services", label: "שירותים" },
   { href: "/collections", label: "בקשות איסוף" },
+  { href: "/settings", label: "הגדרות" },
 ];
 
 export default async function AppLayout({

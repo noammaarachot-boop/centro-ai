@@ -1,4 +1,5 @@
 import {
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -27,6 +28,18 @@ export const organizations = pgTable("organizations", {
   automationActivatedAt: timestamp("automation_activated_at", {
     withTimezone: true,
   }),
+  // Ch.18 configuration. businessDays is stored as comma-separated weekday
+  // numbers (0=Sunday..6=Saturday) rather than a Postgres array type —
+  // simpler to read/write from plain form inputs, and there's no query
+  // that needs to filter by individual day. Defaults match a Sun-Thu week
+  // and the Ch.16 FR-16.4 "10-15 minutes" example.
+  businessHoursStart: text("business_hours_start").notNull().default("09:00"),
+  businessHoursEnd: text("business_hours_end").notNull().default("18:00"),
+  businessDays: text("business_days").notNull().default("0,1,2,3,4"),
+  reminderIntervalDays: integer("reminder_interval_days").notNull().default(2),
+  inactivityTimeoutMinutes: integer("inactivity_timeout_minutes")
+    .notNull()
+    .default(15),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

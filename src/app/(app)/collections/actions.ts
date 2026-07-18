@@ -7,8 +7,7 @@ import { clientServices, collectionRequests, documents } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import {
-  canTransition,
-  checkCompletionGate,
+  applyTransition,
   snapshotServiceRequirements,
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
@@ -66,51 +65,19 @@ export async function transitionStatus(
   nextStatus: CollectionRequestStatus
 ) {
   const session = await requireSession();
-  const db = await getDb();
+  const result = await applyTransition(
+    session.organizationId,
+    session.userId,
+    "employee",
+    collectionRequestId,
+    nextStatus
+  );
 
-  const [current] = await db
-    .select()
-    .from(collectionRequests)
-    .where(
-      and(
-        eq(collectionRequests.id, collectionRequestId),
-        eq(collectionRequests.organizationId, session.organizationId)
-      )
-    )
-    .limit(1);
-  if (!current) redirect("/collections");
-
-  if (!canTransition(current.status, nextStatus)) {
-    redirect(`/collections/${collectionRequestId}?error=invalid-transition`);
+  if (!result.ok) {
+    redirect(
+      `/collections/${collectionRequestId}?error=${encodeURIComponent(result.error ?? "שגיאה")}`
+    );
   }
-
-  if (nextStatus === "completed") {
-    const gateError = await checkCompletionGate(collectionRequestId);
-    if (gateError) {
-      redirect(
-        `/collections/${collectionRequestId}?error=${encodeURIComponent(gateError)}`
-      );
-    }
-  }
-
-  await db
-    .update(collectionRequests)
-    .set({
-      status: nextStatus,
-      updatedAt: new Date(),
-      completedAt: nextStatus === "completed" ? new Date() : current.completedAt,
-    })
-    .where(eq(collectionRequests.id, collectionRequestId));
-
-  await recordAuditEvent({
-    organizationId: session.organizationId,
-    eventType: "collection_request.status_changed",
-    description: `סטטוס בקשת האיסוף עודכן מ-${current.status} ל-${nextStatus}`,
-    actorType: "employee",
-    actorUserId: session.userId,
-    clientId: current.clientId,
-    metadata: { from: current.status, to: nextStatus },
-  });
 
   redirect(`/collections/${collectionRequestId}`);
 }
@@ -155,6 +122,39 @@ export async function addManualDocument(
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,
+  });
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
+// BR-11.3: employees may manually review and correct document
+// classification/status — the human half of the pipeline that exists
+// alongside the AI pipeline (M9), not just a placeholder for it.
+export async function reviewDocument(
+  collectionRequestId: string,
+  documentId: string,
+  formData: FormData
+) {
+  const session = await requireSession();
+  const decision = String(formData.get("decision") ?? "");
+  if (!["approved", "rejected", "needs_review"].includes(decision)) {
+    redirect(`/collections/${collectionRequestId}`);
+  }
+
+  const db = await getDb();
+  const [document] = await db
+    .update(documents)
+    .set({ status: decision as "approved" | "rejected" | "needs_review", updatedAt: new Date() })
+    .where(eq(documents.id, documentId))
+    .returning();
+  if (!document) redirect(`/collections/${collectionRequestId}`);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "document.reviewed",
+    description: `מסמך "${document.fileName}" סומן כ${DOCUMENT_STATUS_LABELS[decision] ?? decision} על ידי עובד`,
+    actorType: "employee",
+    actorUserId: session.userId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
