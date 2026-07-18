@@ -3,7 +3,6 @@ import { getDb } from "@/db";
 import {
   collectionRequests,
   conversations,
-  documents,
   messages,
   organizations,
 } from "@/db/schema";
@@ -131,21 +130,6 @@ export async function startConversation(
     "ai"
   );
   return conversation;
-}
-
-// Simple identical-filename duplicate check (Ch.10 step 8). Smarter
-// AI-based detection — renamed PDFs, re-scans — is Ch.9's job (M9); this
-// is the deterministic floor that doesn't need a classifier.
-export async function isDuplicateFileName(
-  collectionRequestId: string,
-  fileName: string
-) {
-  const db = await getDb();
-  const existing = await db
-    .select({ fileName: documents.fileName })
-    .from(documents)
-    .where(eq(documents.collectionRequestId, collectionRequestId));
-  return existing.some((doc) => doc.fileName === fileName);
 }
 
 export async function sendDuplicateAcknowledgement(

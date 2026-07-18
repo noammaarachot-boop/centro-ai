@@ -3,20 +3,32 @@
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
-import { collectionRequests, conversations, documents } from "@/db/schema";
+import {
+  collectionRequestRequirements,
+  collectionRequests,
+  conversations,
+  documents,
+} from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
+import {
+  AUTO_APPROVE_CONFIDENCE,
+  classifyDocument,
+  isFuzzyDuplicate,
+  SUPPORTED_EXTENSIONS,
+} from "@/lib/ai/documentClassifier";
+import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
 import {
   ensureConversation,
   evaluateAndPrompt,
-  isDuplicateFileName,
   recordInboundMessage,
   reopenIfCompleted,
   sendDuplicateAcknowledgement,
   sendOutboundMessage,
   startConversation,
 } from "@/lib/conversationOrchestration";
+import { uploadDocument } from "@/lib/storage/driveAdapter";
 
 async function getCollectionRequestOrRedirect(
   organizationId: string,
@@ -80,7 +92,7 @@ export async function simulateInboundMessage(
     collectionRequestId
   );
   const body = String(formData.get("body") ?? "").trim();
-  const requirementId = String(formData.get("requirementId") ?? "");
+  const manualRequirementId = String(formData.get("requirementId") ?? "");
   const fileName = String(formData.get("fileName") ?? "").trim();
 
   if (!body && !fileName) redirect(`/collections/${collectionRequestId}`);
@@ -97,46 +109,167 @@ export async function simulateInboundMessage(
     body || `[מסמך: ${fileName}]`
   );
 
-  if (fileName && requirementId) {
-    const isDuplicate = await isDuplicateFileName(collectionRequestId, fileName);
-    if (isDuplicate) {
-      await sendDuplicateAcknowledgement(session.organizationId, conversation.id);
-      await recordAuditEvent({
-        organizationId: session.organizationId,
-        eventType: "document.duplicate_detected",
-        description: `מסמך "${fileName}" זוהה ככפילות`,
-        actorType: "system",
-        clientId: current.clientId,
-      });
-    } else {
-      const db = await getDb();
-      await db.insert(documents).values({
-        organizationId: session.organizationId,
-        collectionRequestId,
-        requirementId,
-        fileName,
-        status: "received",
-      });
+  // Ch.9 Intent Detection: logged for visibility on every inbound text;
+  // only ever informational here — it never blocks receiving an
+  // attachment, and workflow automation is gated by the presence of a
+  // file, not by this classification.
+  if (body) {
+    const intent = await classifyIntent(body);
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "message.intent_classified",
+      description: `הודעת הלקוח סווגה כ-${intent}`,
+      actorType: "ai",
+      clientId: current.clientId,
+      metadata: { intent },
+    });
+  }
 
-      await recordAuditEvent({
-        organizationId: session.organizationId,
-        eventType: "document.received",
-        description: `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ, הדמיה)`,
-        actorType: "client",
-        clientId: current.clientId,
-      });
-
-      const reopened = await reopenIfCompleted(session.organizationId, collectionRequestId);
-      if (reopened) {
-        await db
-          .update(conversations)
-          .set({ status: "open", updatedAt: new Date() })
-          .where(eq(conversations.id, conversation.id));
-      }
-    }
+  if (fileName) {
+    await processInboundAttachment(
+      session.organizationId,
+      collectionRequestId,
+      conversation.id,
+      current.clientId,
+      fileName,
+      manualRequirementId || null
+    );
   }
 
   redirect(`/collections/${collectionRequestId}`);
+}
+
+// Ch.11 pipeline (Validation -> OCR -> Classification -> Matching ->
+// Storage -> Status Update), OCR/Classification mocked per
+// src/lib/ai/documentClassifier.ts. `manualRequirementId`, when provided,
+// is a human hint that bypasses classification entirely — modeling a
+// case where an employee already knows the answer.
+async function processInboundAttachment(
+  organizationId: string,
+  collectionRequestId: string,
+  conversationId: string,
+  clientId: string,
+  fileName: string,
+  manualRequirementId: string | null
+) {
+  const db = await getDb();
+
+  // FR-11.2: unsupported file types are rejected automatically.
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+  if (!manualRequirementId && !SUPPORTED_EXTENSIONS.includes(extension)) {
+    await sendOutboundMessage(
+      organizationId,
+      conversationId,
+      "מצטערים, סוג הקובץ אינו נתמך. נא לשלוח PDF או תמונה (JPG/PNG).",
+      "ai"
+    );
+    await recordAuditEvent({
+      organizationId,
+      eventType: "document.rejected_unsupported_type",
+      description: `הקובץ "${fileName}" נדחה אוטומטית - סוג קובץ לא נתמך`,
+      actorType: "ai",
+      clientId,
+    });
+    return;
+  }
+
+  const existingDocuments = await db
+    .select({ fileName: documents.fileName })
+    .from(documents)
+    .where(eq(documents.collectionRequestId, collectionRequestId));
+
+  // Ch.9 duplicate detection: fuzzy match on filename tokens (renamed
+  // copies), not just an exact string match.
+  if (existingDocuments.some((doc) => isFuzzyDuplicate(doc.fileName, fileName))) {
+    await sendDuplicateAcknowledgement(organizationId, conversationId);
+    await recordAuditEvent({
+      organizationId,
+      eventType: "document.duplicate_detected",
+      description: `מסמך "${fileName}" זוהה ככפילות`,
+      actorType: "ai",
+      clientId,
+    });
+    return;
+  }
+
+  const requirements = await db
+    .select({
+      id: collectionRequestRequirements.id,
+      name: collectionRequestRequirements.name,
+    })
+    .from(collectionRequestRequirements)
+    .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
+
+  let requirementId: string | null = manualRequirementId;
+  let status: "approved" | "needs_review" = "needs_review";
+
+  if (!manualRequirementId) {
+    const classification = await classifyDocument(fileName, requirements);
+
+    // FR-11.3: unreadable documents get an automatic request for a
+    // clearer copy instead of being filed at all.
+    if (!classification.readable) {
+      await sendOutboundMessage(
+        organizationId,
+        conversationId,
+        "לא הצלחנו לקרוא את הקובץ שנשלח. נא לשלוח עותק ברור יותר.",
+        "ai"
+      );
+      await recordAuditEvent({
+        organizationId,
+        eventType: "document.unreadable",
+        description: `הקובץ "${fileName}" זוהה כלא קריא, נשלחה בקשה לעותק ברור`,
+        actorType: "ai",
+        clientId,
+      });
+      return;
+    }
+
+    requirementId = classification.matchedRequirementId;
+    status = classification.confidence >= AUTO_APPROVE_CONFIDENCE ? "approved" : "needs_review";
+
+    await recordAuditEvent({
+      organizationId,
+      eventType: "document.classified",
+      description: requirementId
+        ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(classification.confidence * 100).toFixed(0)}%)`
+        : `מסמך "${fileName}" לא ניתן היה לשייך אוטומטית לדרישה - דורש בדיקה ידנית`,
+      actorType: "ai",
+      clientId,
+      metadata: { confidence: classification.confidence, requirementId },
+    });
+  }
+
+  const [document] = await db
+    .insert(documents)
+    .values({
+      organizationId,
+      collectionRequestId,
+      requirementId,
+      fileName,
+      status,
+    })
+    .returning();
+
+  await recordAuditEvent({
+    organizationId,
+    eventType: "document.received",
+    description: `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ, הדמיה)`,
+    actorType: "client",
+    clientId,
+  });
+
+  if (status === "approved") {
+    await uploadDocument(clientId, document.id);
+  }
+
+  const reopened = await reopenIfCompleted(organizationId, collectionRequestId);
+  if (reopened) {
+    await db
+      .update(conversations)
+      .set({ status: "open", updatedAt: new Date() })
+      .where(eq(conversations.id, conversationId));
+  }
 }
 
 // The manual stand-in for "N minutes of inactivity" firing (Ch.16 FR-16.4)

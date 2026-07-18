@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   clients,
@@ -78,4 +78,22 @@ export async function listRequirementsWithDocuments(
       (doc) => doc.requirementId === requirement.id
     ),
   }));
+}
+
+// Documents AI classification couldn't confidently match to any
+// requirement (src/lib/ai/documentClassifier.ts) land here with
+// requirementId null — still real, received documents that need a human
+// to either assign them to a requirement or reject them, not documents
+// that got silently dropped.
+export async function listUnmatchedDocuments(collectionRequestId: string) {
+  const db = await getDb();
+  return db
+    .select()
+    .from(documents)
+    .where(
+      and(
+        eq(documents.collectionRequestId, collectionRequestId),
+        isNull(documents.requirementId)
+      )
+    );
 }

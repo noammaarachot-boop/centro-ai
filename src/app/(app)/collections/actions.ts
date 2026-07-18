@@ -180,6 +180,37 @@ export async function reviewDocument(
   redirect(`/collections/${collectionRequestId}`);
 }
 
+// For documents AI classification couldn't confidently match (BR-11.3:
+// manual review/correction) — an employee assigns it to the correct
+// requirement by hand.
+export async function assignDocumentRequirement(
+  collectionRequestId: string,
+  documentId: string,
+  formData: FormData
+) {
+  const session = await requireSession();
+  const requirementId = String(formData.get("requirementId") ?? "");
+  if (!requirementId) redirect(`/collections/${collectionRequestId}`);
+
+  const db = await getDb();
+  const [document] = await db
+    .update(documents)
+    .set({ requirementId, updatedAt: new Date() })
+    .where(eq(documents.id, documentId))
+    .returning();
+  if (!document) redirect(`/collections/${collectionRequestId}`);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "document.requirement_assigned",
+    description: `מסמך "${document.fileName}" שויך ידנית לדרישה`,
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
 // Ch.14: if a document is manually deleted from Google Drive, Centro
 // keeps the database record and flips its status rather than removing
 // it — the UI shows when it happened. This simulates that external event

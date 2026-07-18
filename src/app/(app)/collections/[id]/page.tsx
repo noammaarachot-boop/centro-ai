@@ -4,6 +4,7 @@ import { requireSession } from "@/lib/auth/session";
 import {
   getCollectionRequest,
   listRequirementsWithDocuments,
+  listUnmatchedDocuments,
 } from "@/lib/data/collectionRequests";
 import {
   getConversationByCollectionRequest,
@@ -17,6 +18,7 @@ import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { StatusBadge } from "../StatusBadge";
 import {
   addManualDocument,
+  assignDocumentRequirement,
   reviewDocument,
   simulateDriveDeletion,
   transitionStatus,
@@ -73,6 +75,7 @@ export default async function CollectionRequestDetailPage({
   if (!collectionRequest) notFound();
 
   const requirements = await listRequirementsWithDocuments(id);
+  const unmatchedDocuments = await listUnmatchedDocuments(id);
   const options = nextStatusOptions(collectionRequest.status);
   const boundTransition = transitionStatus.bind(null, id);
 
@@ -250,6 +253,50 @@ export default async function CollectionRequestDetailPage({
         )}
       </section>
 
+      {unmatchedDocuments.length > 0 && (
+        <section className="rounded-2xl border border-warning/30 bg-warning/5 p-6 shadow-card">
+          <h2 className="mb-1 text-lg font-semibold text-text-primary">
+            מסמכים ללא שיוך
+          </h2>
+          <p className="mb-4 text-sm text-text-muted">
+            הסיווג האוטומטי לא הצליח לשייך מסמכים אלו לדרישה בביטחון מספק
+            (BR-11.3) — נדרש שיוך ידני.
+          </p>
+          <ul className="space-y-3">
+            {unmatchedDocuments.map((doc) => (
+              <li key={doc.id} className="rounded-xl border border-border bg-surface p-3">
+                <p className="mb-2 text-sm font-medium text-text-primary">
+                  {doc.fileName}
+                </p>
+                <form
+                  action={assignDocumentRequirement.bind(null, id, doc.id)}
+                  className="flex items-center gap-2"
+                >
+                  <select
+                    name="requirementId"
+                    required
+                    className="flex-1 rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                  >
+                    <option value="">— בחירת דרישה —</option>
+                    {requirements.map((requirement) => (
+                      <option key={requirement.id} value={requirement.id}>
+                        {requirement.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="submit"
+                    className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
+                  >
+                    שיוך
+                  </button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-text-primary">שיחת וואטסאפ</h2>
@@ -359,7 +406,9 @@ export default async function CollectionRequestDetailPage({
               className="mt-3 space-y-2 rounded-xl border border-dashed border-border p-3"
             >
               <p className="text-[11px] text-text-muted">
-                הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי)
+                הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי). קובץ
+                מצורף עובר סיווג אוטומטי (AI מדומה) שמשייך אותו לדרישה
+                המתאימה — בחירה ידנית להלן עוקפת את הסיווג.
               </p>
               <input
                 name="body"
@@ -378,10 +427,10 @@ export default async function CollectionRequestDetailPage({
                   name="requirementId"
                   className="rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
                 >
-                  <option value="">— דרישה —</option>
+                  <option value="">— סיווג אוטומטי —</option>
                   {requirements.map((requirement) => (
                     <option key={requirement.id} value={requirement.id}>
-                      {requirement.name}
+                      {requirement.name} (ידני)
                     </option>
                   ))}
                 </select>
