@@ -9,6 +9,7 @@ import {
 } from "@/lib/data/clients";
 import { assignService, deleteClient, unassignService, updateClient } from "../actions";
 import { ClientForm } from "../ClientForm";
+import { createCollectionRequest } from "../../collections/actions";
 
 export default async function ClientDetailPage({
   params,
@@ -55,6 +56,14 @@ export default async function ClientDetailPage({
           לא ניתן למחוק לקוח שיש לו היסטוריית בקשות איסוף.
         </p>
       )}
+      {error === "period-required" && (
+        <p
+          role="alert"
+          className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
+        >
+          נא להזין תקופה לפני פתיחת בקשת איסוף.
+        </p>
+      )}
 
       <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
         <h2 className="mb-4 text-lg font-semibold text-text-primary">
@@ -85,23 +94,47 @@ export default async function ClientDetailPage({
             {assignedServices.map((assignment) => (
               <li
                 key={assignment.assignmentId}
-                className="flex items-center justify-between rounded-xl border border-border px-4 py-2.5"
+                className="rounded-xl border border-border px-4 py-2.5"
               >
-                <span className="text-sm text-text-primary">
-                  {assignment.serviceName}
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-text-primary">
+                    {assignment.serviceName}
+                  </span>
+                  <form
+                    action={unassignService.bind(
+                      null,
+                      client.id,
+                      assignment.assignmentId
+                    )}
+                  >
+                    <button
+                      type="submit"
+                      className="text-xs font-medium text-danger hover:underline"
+                    >
+                      הסרת שיוך
+                    </button>
+                  </form>
+                </div>
                 <form
-                  action={unassignService.bind(
+                  action={createCollectionRequest.bind(
                     null,
                     client.id,
-                    assignment.assignmentId
+                    assignment.serviceId
                   )}
+                  className="mt-2 flex items-center gap-2"
                 >
+                  <input
+                    name="periodLabel"
+                    type="text"
+                    required
+                    placeholder="תקופה, למשל 2026-07"
+                    className="flex-1 rounded-lg border border-border bg-white px-3 py-1.5 text-xs text-text-primary outline-none focus:border-brand-purple"
+                  />
                   <button
                     type="submit"
-                    className="text-xs font-medium text-danger hover:underline"
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
                   >
-                    הסרת שיוך
+                    פתיחת בקשת איסוף
                   </button>
                 </form>
               </li>

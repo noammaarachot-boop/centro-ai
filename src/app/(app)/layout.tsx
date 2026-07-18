@@ -14,6 +14,7 @@ const NAV_LINKS = [
   { href: "/onboarding", label: "הקמת המערכת" },
   { href: "/clients", label: "לקוחות" },
   { href: "/services", label: "שירותים" },
+  { href: "/collections", label: "בקשות איסוף" },
 ];
 
 export default async function AppLayout({
