@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { LogOut } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { logout } from "./actions";
@@ -7,6 +8,12 @@ export const metadata: Metadata = {
   title: "Centro",
   description: "Centro operational console.",
 };
+
+const NAV_LINKS = [
+  { href: "/dashboard", label: "לוח בקרה" },
+  { href: "/clients", label: "לקוחות" },
+  { href: "/services", label: "שירותים" },
+];
 
 export default async function AppLayout({
   children,
@@ -18,13 +25,26 @@ export default async function AppLayout({
   return (
     <div className="min-h-screen bg-background">
       <header className="flex items-center justify-between border-b border-border bg-surface px-6 py-4">
-        <div>
-          <p className="text-sm font-semibold text-text-primary">
-            {session.organizationName}
-          </p>
-          <p className="text-xs text-text-muted" dir="ltr">
-            {session.email}
-          </p>
+        <div className="flex items-center gap-6">
+          <div>
+            <p className="text-sm font-semibold text-text-primary">
+              {session.organizationName}
+            </p>
+            <p className="text-xs text-text-muted" dir="ltr">
+              {session.email}
+            </p>
+          </div>
+          <nav className="flex items-center gap-4">
+            {NAV_LINKS.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className="text-sm font-medium text-text-secondary transition-colors hover:text-brand-purple"
+              >
+                {link.label}
+              </Link>
+            ))}
+          </nav>
         </div>
         <form action={logout}>
           <button

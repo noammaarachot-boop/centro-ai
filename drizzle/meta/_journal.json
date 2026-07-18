@@ -8,6 +8,20 @@
       "when": 1784413558254,
       "tag": "0000_lowly_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784414306827,
+      "tag": "0001_cool_punisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784415261466,
+      "tag": "0002_nervous_the_santerians",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ interface RecordAuditEventInput {
   description: string;
   actorType: AuditActorType;
   actorUserId?: string;
+  clientId?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -23,6 +24,7 @@ export async function recordAuditEvent(input: RecordAuditEventInput) {
     description: input.description,
     actorType: input.actorType,
     actorUserId: input.actorUserId,
+    clientId: input.clientId,
     metadata: input.metadata,
   });
 }
