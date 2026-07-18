@@ -32,9 +32,13 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
+
+# local embedded database (PGlite dev fallback, see src/db/index.ts)
+/.centro-data/
 
 # typescript
 *.tsbuildinfo
