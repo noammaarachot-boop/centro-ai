@@ -1,6 +1,22 @@
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "./schema";
 
-async function createPostgresDb(connectionString: string) {
+// Both drivers implement the same PgDatabase query-builder surface; pinning
+// the exported type to this common base (instead of letting TypeScript
+// infer a union of the two concrete driver types) keeps chained builder
+// calls like `.insert(...).returning(...)` fully typed for every caller.
+export type Database = PgDatabase<PgQueryResultHKT, typeof schema>;
+
+interface Connection {
+  db: Database;
+  migrate: () => Promise<void>;
+}
+
+// `db` keeps its precise driver-specific inferred type internally (needed
+// so the driver-specific `migrate()` accepts it as-is); only the returned
+// `Connection.db` is upcast to the shared `Database` type, which is a safe
+// widening in that direction.
+async function createPostgresDb(connectionString: string): Promise<Connection> {
   const { drizzle } = await import("drizzle-orm/postgres-js");
   const { migrate } = await import("drizzle-orm/postgres-js/migrator");
   const { default: postgres } = await import("postgres");
@@ -9,7 +25,7 @@ async function createPostgresDb(connectionString: string) {
   return { db, migrate: () => migrate(db, { migrationsFolder: "./drizzle" }) };
 }
 
-async function createPgliteDb() {
+async function createPgliteDb(): Promise<Connection> {
   const { drizzle } = await import("drizzle-orm/pglite");
   const { migrate } = await import("drizzle-orm/pglite/migrator");
   const { PGlite } = await import("@electric-sql/pglite");
@@ -20,8 +36,6 @@ async function createPgliteDb() {
   const db = drizzle(client, { schema });
   return { db, migrate: () => migrate(db, { migrationsFolder: "./drizzle" }) };
 }
-
-type Connection = Awaited<ReturnType<typeof createPostgresDb | typeof createPgliteDb>>;
 
 declare global {
   var __centroDb: Promise<Connection> | undefined;
@@ -60,7 +74,7 @@ function getConnection(): Promise<Connection> {
   return global.__centroDb;
 }
 
-export async function getDb() {
+export async function getDb(): Promise<Database> {
   const { db } = await getConnection();
   return db;
 }
