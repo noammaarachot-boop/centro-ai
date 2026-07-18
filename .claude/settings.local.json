@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm -v)",
+      "PowerShell(node -v)",
+      "PowerShell(npm -v)",
+      "PowerShell(Get-ChildItem \"C:\\\\Program Files\\\\nodejs\" -ErrorAction SilentlyContinue; Get-ChildItem \"$env:APPDATA\\\\npm\" -ErrorAction SilentlyContinue; where.exe node 2>$null; where.exe npm 2>$null; Get-Command node -ErrorAction SilentlyContinue)",
+      "PowerShell($env:Path = \"C:\\\\Program Files\\\\nodejs;\" + $env:Path; node -v; npm -v)",
+      "WebFetch(domain:chatgpt.com)",
+      "Bash(curl -s -o /dev/null -w \"port3001: %{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /dev/null -w \"port3000: %{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(curl -s http://localhost:3001/)",
+      "Read(//tmp/**)",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/page.html -w \"HTTP %{http_code}, size %{size_download} bytes\\\\n\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} time %{time_total}s\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/page2.html -w \"HTTP %{http_code}\\\\n\")",
+      "Bash(curl -s -o /dev/null -w \"root: %{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /dev/null -w \"icon: %{http_code}\\\\n\" http://localhost:3001/icon)",
+      "Bash(curl -s -o /dev/null -w \"apple-icon: %{http_code}\\\\n\" http://localhost:3001/apple-icon)",
+      "Bash(curl -sD - http://localhost:3001/icon -o /tmp/icon.png)",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/page3.html -w \"HTTP %{http_code}\\\\n\")",
+      "Bash(curl -s http://localhost:3001/icon -o \"/c/Users/User/AppData/Local/Temp/claude/c--Users-User-Centro-Ai/20d1ed80-ffb4-4c57-8db4-8897264d001f/scratchpad/icon-preview.png\")",
+      "Bash(curl -s http://localhost:3001/apple-icon -o \"/c/Users/User/AppData/Local/Temp/claude/c--Users-User-Centro-Ai/20d1ed80-ffb4-4c57-8db4-8897264d001f/scratchpad/apple-icon-preview.png\")",
+      "Read(//c/Users/User/AppData/Local/Temp/claude/c--Users-User-Centro-Ai/20d1ed80-ffb4-4c57-8db4-8897264d001f/scratchpad//**)",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/pagefinal.html -w \"HTTP %{http_code}, size %{size_download}\\\\n\")",
+      "Bash(node -e ' *)",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/pagecheck.html -w \"HTTP %{http_code}, size %{size_download}\\\\n\")",
+      "Bash(cygpath -w /tmp/testicheck.html)",
+      "Bash(rm -f _tmp-check.mjs)",
+      "Bash(rm -f /tmp/testicheck.html /tmp/testi_section.html /tmp/pagecheck.html)",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/marquee_check.html -w \"size %{size_download}\\\\n\")",
+      "Bash(tail -40 /tmp/nextdev.log 2>/dev/null | grep -i \"error\" | grep -v \"fdprocessedid\" || echo \"no non-extension errors logged\" *)",
+      "Bash(curl -s -o /dev/null -w \"final check: %{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/marquee_check2.html -w \"size %{size_download}\\\\n\")",
+      "Bash(curl -s http://localhost:3001/ -o /tmp/marquee_check3.html -w \"size %{size_download}\\\\n\")"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}

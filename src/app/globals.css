@@ -1,0 +1,223 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------
+   Centro Design Tokens
+   Single source of truth for color, type, motion, radius & shadow.
+   Edit values here to restyle the entire landing page.
+---------------------------------------------------------------- */
+@theme inline {
+  /* Fonts */
+  --font-sans: var(--font-rubik);
+
+  /* Base surfaces */
+  --color-background: #fbfaff;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f4f2fb;
+  --color-border: #e9e5f6;
+
+  /* Text */
+  --color-text-primary: #16132a;
+  --color-text-secondary: #524d6b;
+  --color-text-muted: #6d688a;
+  --color-text-inverse: #ffffff;
+
+  /* Brand */
+  --color-brand-purple: #7c3aed;
+  --color-brand-purple-deep: #5b21b6;
+  --color-brand-blue: #3b6dff;
+  --color-brand-cyan: #17c3d6;
+  --color-brand-pink: #ec4899;
+  --color-brand-coral: #ff6b6b;
+  --color-brand-emerald: #12b886;
+
+  /* Semantic */
+  --color-success: #12b886;
+  --color-warning: #f5a524;
+  --color-danger: #f0466f;
+
+  /* Channel brand colors (visual reference only, not literal logos) */
+  --color-whatsapp: #25d366;
+  --color-gmail: #ea4335;
+  --color-drive: #34a853;
+  --color-pdf: #ef5350;
+  --color-excel: #21a366;
+
+  /* Gradients */
+  --gradient-hero: linear-gradient(
+    135deg,
+    #7c3aed 0%,
+    #3b6dff 45%,
+    #17c3d6 100%
+  );
+  --gradient-warm: linear-gradient(135deg, #ec4899 0%, #ff6b6b 100%);
+  --gradient-mesh: radial-gradient(
+      42% 38% at 12% 8%,
+      color-mix(in oklab, var(--color-brand-purple) 22%, transparent) 0%,
+      transparent 100%
+    ),
+    radial-gradient(
+      38% 34% at 92% 12%,
+      color-mix(in oklab, var(--color-brand-cyan) 20%, transparent) 0%,
+      transparent 100%
+    ),
+    radial-gradient(
+      46% 40% at 50% 100%,
+      color-mix(in oklab, var(--color-brand-pink) 14%, transparent) 0%,
+      transparent 100%
+    );
+
+  /* Radius */
+  --radius-card: 1.5rem;
+  --radius-card-lg: 2rem;
+  --radius-pill: 999px;
+  --radius-chip: 0.75rem;
+
+  /* Shadows */
+  --shadow-card: 0 1px 2px rgba(22, 19, 42, 0.04),
+    0 12px 32px -12px rgba(22, 19, 42, 0.14);
+  --shadow-card-lg: 0 4px 8px rgba(22, 19, 42, 0.04),
+    0 32px 64px -20px rgba(22, 19, 42, 0.2);
+  --shadow-glow-purple: 0 0 60px -12px color-mix(in oklab, var(--color-brand-purple) 55%, transparent);
+  --shadow-glow-cyan: 0 0 60px -12px color-mix(in oklab, var(--color-brand-cyan) 55%, transparent);
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-soft: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-medium: 400ms;
+  --duration-slow: 800ms;
+}
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-text-primary);
+  /* Clip decorative full-bleed elements without turning body into a
+     sticky-breaking scroll container (unlike overflow: hidden). */
+  overflow-x: clip;
+}
+
+/* Ambient background: slow, subtle drift for the aurora glows in
+   PageBackground.tsx. Purely decorative motion — already neutralised
+   by the prefers-reduced-motion rule below. */
+@keyframes centro-drift-a {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(3%, -4%) scale(1.08);
+  }
+}
+@keyframes centro-drift-b {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(-4%, 4%) scale(1.06);
+  }
+}
+
+/* Very light futuristic grid, used behind the upper part of the page
+   and faded out with a mask so it never competes with content. */
+.centro-grid {
+  background-image: linear-gradient(
+      color-mix(in oklab, var(--color-brand-purple) 16%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--color-brand-purple) 16%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 56px 56px;
+  mask-image: linear-gradient(to bottom, black, transparent 85%);
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 85%);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-brand-purple) 25%, transparent);
+  color: var(--color-text-primary);
+}
+
+/* Focus visibility — never remove, only restyle */
+:focus-visible {
+  outline: 2px solid var(--color-brand-purple);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* -----------------------------------------------------------------
+   Accessibility panel overrides (src/components/landing/Accessibility*)
+   Purely additive: each rule only activates when the corresponding
+   data-attribute is set on <html> by AccessibilityProvider, so the
+   default (no attributes) rendering is completely unaffected.
+----------------------------------------------------------------- */
+
+/* Manual "reduce motion" toggle — mirrors the prefers-reduced-motion
+   block above, but driven by user choice instead of the OS setting. */
+html[data-a11y-motion="reduced"] {
+  scroll-behavior: auto;
+}
+html[data-a11y-motion="reduced"] *,
+html[data-a11y-motion="reduced"] *::before,
+html[data-a11y-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+html[data-a11y-contrast="high"] {
+  --color-text-secondary: #2b2740;
+  --color-text-muted: #3d3856;
+  --color-border: #a79fd6;
+  --color-surface-muted: #ebe7f7;
+}
+html[data-a11y-contrast="high"] :focus-visible {
+  outline-width: 3px;
+  outline-color: #000;
+}
+
+html[data-a11y-grayscale="true"] {
+  filter: grayscale(1);
+}
+
+html[data-a11y-underline="true"] a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
