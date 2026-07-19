@@ -5,9 +5,10 @@ import {
   conversations,
   messages,
   organizations,
+  services,
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
-import { isWithinBusinessHours } from "@/lib/businessHours";
+import { isWithinBusinessHours, resolveScheduleConfig } from "@/lib/businessHours";
 import {
   applyTransition,
   canTransition,
@@ -36,6 +37,22 @@ async function getOrganizationConfig(organizationId: string) {
     .limit(1);
   if (!organization) throw new Error("Organization not found");
   return organization;
+}
+
+// Epic 3: a Business Type's backing Service may override the org's default
+// reminder/business-hours config — resolve the specific service a given
+// conversation belongs to (via its Collection Request) so gating uses the
+// effective config, not just the org-wide default.
+async function getServiceForConversation(conversationId: string) {
+  const db = await getDb();
+  const [row] = await db
+    .select({ service: services })
+    .from(conversations)
+    .innerJoin(collectionRequests, eq(conversations.collectionRequestId, collectionRequests.id))
+    .innerJoin(services, eq(collectionRequests.serviceId, services.id))
+    .where(eq(conversations.id, conversationId))
+    .limit(1);
+  return row?.service ?? null;
 }
 
 // BR-003: one conversation per active Collection Request.
@@ -73,7 +90,9 @@ export async function sendOutboundMessage(
 
   if (senderType === "ai") {
     const organization = await getOrganizationConfig(organizationId);
-    if (!isWithinBusinessHours(organization)) {
+    const service = await getServiceForConversation(conversationId);
+    const effectiveConfig = resolveScheduleConfig(organization, service);
+    if (!isWithinBusinessHours(effectiveConfig)) {
       return { sent: false };
     }
   }

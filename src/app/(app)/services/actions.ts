@@ -2,6 +2,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
+import { refresh } from "next/cache";
 import { getDb } from "@/db";
 import { serviceDocumentRequirements, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -117,12 +118,23 @@ export async function deleteService(serviceId: string) {
   redirect("/services");
 }
 
+// `returnTo` (an optional hidden form field) lets a caller other than the
+// service's own page — the onboarding wizard's Step 6 — reuse this action
+// unchanged. Both branches of this action always land back on the exact
+// page the form was submitted from, so on success it calls refresh()
+// (Next.js 16 — see node_modules/next/dist/docs/.../functions/refresh.md)
+// and simply returns instead of calling redirect(): redirect() to a URL
+// identical to the current one does not reliably force the client router
+// to drop its cached RSC payload, so the new requirement wouldn't appear
+// until a manual reload. redirect() is only used below for the genuine
+// same-page-but-different-query error case, which is a real navigation.
 export async function addRequirement(serviceId: string, formData: FormData) {
   const session = await requireSession();
   const name = String(formData.get("name") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim();
+  const returnTo = formData.get("returnTo")?.toString();
 
-  if (!name) redirect(`/services/${serviceId}?error=requirement-name`);
+  if (!name) redirect(returnTo || `/services/${serviceId}?error=requirement-name`);
 
   await getOrgScopedService(session.organizationId, serviceId);
 
@@ -141,13 +153,10 @@ export async function addRequirement(serviceId: string, formData: FormData) {
     actorUserId: session.userId,
   });
 
-  redirect(`/services/${serviceId}`);
+  refresh();
 }
 
-export async function removeRequirement(
-  serviceId: string,
-  requirementId: string
-) {
+export async function removeRequirement(serviceId: string, requirementId: string) {
   const session = await requireSession();
   await getOrgScopedService(session.organizationId, serviceId);
 
@@ -169,5 +178,5 @@ export async function removeRequirement(
     actorUserId: session.userId,
   });
 
-  redirect(`/services/${serviceId}`);
+  refresh();
 }

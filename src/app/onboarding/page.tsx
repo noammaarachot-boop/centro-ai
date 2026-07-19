@@ -1,193 +1,198 @@
-import Link from "next/link";
-import { sql } from "drizzle-orm";
-import { ArrowRight, CheckCircle2, Circle, Rocket } from "lucide-react";
-import { getDb } from "@/db";
-import { clientServices } from "@/db/schema";
+import type { Metadata } from "next";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
 import { listClients } from "@/lib/data/clients";
-import { listServices } from "@/lib/data/services";
+import { listServiceRequirements, getService } from "@/lib/data/services";
 import {
-  activateAutomation,
-  connectGoogle,
-  connectWhatsapp,
-  deactivateAutomation,
-  disconnectGoogle,
-  disconnectWhatsapp,
-  finishOnboarding,
-} from "./actions";
-import { ImportClientsForm } from "./ImportClientsForm";
-import { PageHeader } from "@/components/app/PageHeader";
-import { Card } from "@/components/app/Card";
-import { buttonVariants } from "@/components/app/Button";
+  getSuggestedRequirements,
+  listBusinessTypes,
+  listClientsByBusinessType,
+  listUnclassifiedClients,
+} from "@/lib/businessTypes";
+import { WizardShell, TOTAL_STEPS } from "./WizardShell";
+import { Step1Welcome } from "./steps/Step1Welcome";
+import { Step2OfficeInfo } from "./steps/Step2OfficeInfo";
+import { Step3Connect } from "./steps/Step3Connect";
+import { Step4Import } from "./steps/Step4Import";
+import { Step5Analysis } from "./steps/Step5Analysis";
+import { Step6Documents } from "./steps/Step6Documents";
+import { Step7Reminders } from "./steps/Step7Reminders";
+import { Step8Summary } from "./steps/Step8Summary";
+import { Step9Completion } from "./steps/Step9Completion";
 
-function StatusRow({
-  label,
-  connectedAt,
-  connectAction,
-  disconnectAction,
-}: {
-  label: string;
-  connectedAt: Date | null;
-  connectAction: () => Promise<void>;
-  disconnectAction: () => Promise<void>;
-}) {
-  const isConnected = !!connectedAt;
-  return (
-    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-muted/40 px-4 py-3.5 transition-colors hover:border-brand-purple/20">
-      <div className="flex items-center gap-2.5">
-        {isConnected ? (
-          <CheckCircle2 className="h-5 w-5 shrink-0 text-brand-emerald" />
-        ) : (
-          <Circle className="h-5 w-5 shrink-0 text-text-muted" />
-        )}
-        <div>
-          <p className="text-sm font-medium text-text-primary">{label}</p>
-          {isConnected && (
-            <p className="text-xs text-text-muted">
-              חובר ב-{connectedAt!.toLocaleDateString("he-IL")}
-            </p>
-          )}
-        </div>
-      </div>
-      <form action={isConnected ? disconnectAction : connectAction}>
-        <button
-          type="submit"
-          className={buttonVariants({ variant: "secondary", size: "sm" })}
-        >
-          {isConnected ? "ניתוק" : "חיבור"}
-        </button>
-      </form>
-    </div>
-  );
+export const metadata: Metadata = {
+  title: "הקמת המערכת — Centro",
+};
+
+const STEP_META: Record<
+  number,
+  { title: string; description?: string; help?: string }
+> = {
+  1: { title: "ברוכים הבאים ל-Centro" },
+  2: {
+    title: "פרטי המשרד",
+    description: "כמה פרטים בסיסיים כדי להתאים את Centro למשרד שלכם.",
+    help: "המידע הזה משמש להתאמה אישית של סביבת העבודה שלכם. תמיד ניתן לשנות זאת מאוחר יותר מתוך ההגדרות.",
+  },
+  3: {
+    title: "חיבור שירותים",
+    description: "חברו את Google Drive ואת WhatsApp Business כדי שהאוטומציה תוכל לפעול במלואה.",
+    help: "אפשר לחבר את השירותים גם מאוחר יותר, אך האוטומציה המלאה תתחיל לפעול רק לאחר ששניהם מחוברים.",
+  },
+  4: {
+    title: "ייבוא לקוחות",
+    description: "העלו את רשימת הלקוחות שלכם. Centro יארגן ויסווג אותם אוטומטית.",
+    help: "הייבוא מתבצע פעם אחת באשף ההקמה, אך תמיד תוכלו להוסיף, לערוך או לייבא עוד לקוחות מאוחר יותר מעמוד הלקוחות.",
+  },
+  5: {
+    title: "ניתוח AI של הלקוחות",
+    description: "Centro ניתח את הקובץ שהעליתם וסיווג את הלקוחות לפי סוג עסק.",
+    help: "הסיווג מתבצע אוטומטית על ידי Centro על סמך שם העסק. תמיד ניתן לתקן ידנית — בלי לגעת בקובץ המקורי.",
+  },
+  6: {
+    title: "מסמכים נדרשים",
+    description: "עבור כל סוג עסק, בחרו אילו מסמכים Centro צריך לאסוף מהלקוחות.",
+    help: "Centro משתמש ברשימות האלו כדי לדעת בדיוק אילו מסמכים לבקש מכל לקוח, לפי סוג העסק שלו.",
+  },
+  7: {
+    title: "כללי תזכורות",
+    description: "קבעו מתי ובאיזו תדירות Centro יפנה ללקוחות עבור כל סוג עסק.",
+    help: "Centro פונה ללקוחות רק בשעות הפעילות שהגדרתם, ולעולם לא מחוץ להן.",
+  },
+  8: {
+    title: "סיכום",
+    description: "בדקו שהכול מוגדר נכון לפני שמתחילים.",
+  },
+  9: { title: "Centro מוכן!" },
+};
+
+function clampStep(value: number): number {
+  if (Number.isNaN(value)) return 1;
+  return Math.min(Math.max(value, 1), TOTAL_STEPS);
 }
 
 export default async function OnboardingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ step?: string; error?: string }>;
 }) {
   const session = await requireSession();
-  const { error } = await searchParams;
+  const { step: stepParam, error } = await searchParams;
 
   const organization = await getOrganization(session.organizationId);
-  const clients = await listClients(session.organizationId);
-  const services = await listServices(session.organizationId);
-
-  const db = await getDb();
-  const [{ count: assignmentCount }] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(clientServices);
-
   if (!organization) return null;
 
-  const integrationsReady =
-    !!organization.googleConnectedAt && !!organization.whatsappConnectedAt;
-  const isAutomationActive = !!organization.automationActivatedAt;
+  const step = clampStep(Number(stepParam ?? organization.onboardingStep ?? 1) || 1);
+  const meta = STEP_META[step];
+
+  let body: React.ReactNode;
+
+  switch (step) {
+    case 1: {
+      body = <Step1Welcome displayName={session.fullName || organization.name} />;
+      break;
+    }
+    case 2: {
+      body = <Step2OfficeInfo name={organization.name} logoUrl={organization.logoUrl} />;
+      break;
+    }
+    case 3: {
+      body = (
+        <Step3Connect
+          googleConnectedAt={organization.googleConnectedAt}
+          whatsappConnectedAt={organization.whatsappConnectedAt}
+        />
+      );
+      break;
+    }
+    case 4: {
+      body = <Step4Import />;
+      break;
+    }
+    case 5: {
+      const businessTypeList = await listBusinessTypes(session.organizationId);
+      const unclassified = await listUnclassifiedClients(session.organizationId);
+      const clientsByType = await Promise.all(
+        businessTypeList.map((type) =>
+          listClientsByBusinessType(session.organizationId, type.id)
+        )
+      );
+      body = (
+        <Step5Analysis
+          businessTypes={businessTypeList}
+          clientsByType={clientsByType}
+          unclassifiedClients={unclassified}
+        />
+      );
+      break;
+    }
+    case 6: {
+      const businessTypeList = await listBusinessTypes(session.organizationId);
+      const withRequirements = await Promise.all(
+        businessTypeList.map(async (type) => ({
+          businessType: type,
+          requirements: await listServiceRequirements(type.serviceId),
+          suggested: getSuggestedRequirements(type.name),
+        }))
+      );
+      body = <Step6Documents entries={withRequirements} />;
+      break;
+    }
+    case 7: {
+      const businessTypeList = await listBusinessTypes(session.organizationId);
+      const withService = await Promise.all(
+        businessTypeList.map(async (type) => ({
+          businessType: type,
+          service: await getService(session.organizationId, type.serviceId),
+        }))
+      );
+      body = <Step7Reminders entries={withService} organization={organization} />;
+      break;
+    }
+    case 8: {
+      const businessTypeList = await listBusinessTypes(session.organizationId);
+      const clientList = await listClients(session.organizationId);
+      const classifiedCount = clientList.filter((c) => c.businessTypeId).length;
+      const requirementCounts = await Promise.all(
+        businessTypeList.map((t) => listServiceRequirements(t.serviceId))
+      );
+      body = (
+        <Step8Summary
+          organization={organization}
+          totalClients={clientList.length}
+          classifiedCount={classifiedCount}
+          businessTypeCount={businessTypeList.length}
+          requirementsConfigured={requirementCounts.reduce((sum, r) => sum + r.length, 0)}
+        />
+      );
+      break;
+    }
+    case 9: {
+      body = <Step9Completion />;
+      break;
+    }
+    default: {
+      body = null;
+    }
+  }
 
   return (
-    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
-      <PageHeader
-        eyebrow="הקמת המערכת"
-        title={
-          <span className="inline-flex items-center gap-2.5">
-            <Rocket className="h-6 w-6 text-brand-purple" />
-            {organization.name}
-          </span>
-        }
-        description="שלבי ההקמה עבור המשרד, לפי הסדר המומלץ."
-      />
-
-      {error === "integrations-required" && (
+    <WizardShell
+      step={step}
+      title={meta.title}
+      description={meta.description}
+      help={meta.help}
+      hidePrevious={step === 1}
+    >
+      {error === "integrations-required" && step === 3 && (
         <p
           role="alert"
-          className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
+          className="mb-4 animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
           לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.
         </p>
       )}
-
-      <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">חיבורי מערכת</h2>
-        <div className="space-y-3">
-          <StatusRow
-            label="חשבון Google (Drive)"
-            connectedAt={organization.googleConnectedAt}
-            connectAction={connectGoogle}
-            disconnectAction={disconnectGoogle}
-          />
-          <StatusRow
-            label="WhatsApp Business"
-            connectedAt={organization.whatsappConnectedAt}
-            connectAction={connectWhatsapp}
-            disconnectAction={disconnectWhatsapp}
-          />
-        </div>
-      </Card>
-
-      <Card>
-        <h2 className="mb-1 text-lg font-semibold text-text-primary">ייבוא לקוחות</h2>
-        <p className="mb-4 text-sm text-text-muted">
-          קובץ CSV עם עמודות שם וטלפון (ואופציונלית אימייל והערות). ניתן גם להוסיף
-          לקוחות אחד-אחד בעמוד{" "}
-          <Link href="/clients" className="text-brand-purple hover:underline">
-            הלקוחות
-          </Link>
-          .
-        </p>
-        <ImportClientsForm />
-      </Card>
-
-      <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">סיכום לפני הפעלה</h2>
-        <dl className="grid grid-cols-3 gap-4 text-center">
-          <div className="rounded-xl border border-border bg-surface-muted/40 py-4">
-            <dt className="text-xs text-text-muted">לקוחות</dt>
-            <dd className="mt-1 text-2xl font-bold text-text-primary">{clients.length}</dd>
-          </div>
-          <div className="rounded-xl border border-border bg-surface-muted/40 py-4">
-            <dt className="text-xs text-text-muted">שירותים</dt>
-            <dd className="mt-1 text-2xl font-bold text-text-primary">{services.length}</dd>
-          </div>
-          <div className="rounded-xl border border-border bg-surface-muted/40 py-4">
-            <dt className="text-xs text-text-muted">שיוכים</dt>
-            <dd className="mt-1 text-2xl font-bold text-text-primary">{assignmentCount}</dd>
-          </div>
-        </dl>
-      </Card>
-
-      <Card glow="purple">
-        <h2 className="mb-1 text-lg font-semibold text-text-primary">הפעלת אוטומציה</h2>
-        <p className="mb-4 text-sm text-text-muted">
-          {integrationsReady
-            ? "כל החיבורים ההכרחיים מוכנים. ניתן להפעיל את האוטומציה."
-            : "יש לחבר Google ו-WhatsApp Business לפני הפעלת האוטומציה."}
-        </p>
-        <form action={isAutomationActive ? deactivateAutomation : activateAutomation}>
-          <button
-            type="submit"
-            disabled={!integrationsReady && !isAutomationActive}
-            className={buttonVariants({ variant: "primary", size: "lg" })}
-          >
-            {isAutomationActive ? "השבתת אוטומציה" : "הפעלת אוטומציה"}
-          </button>
-        </form>
-      </Card>
-
-      <div className="flex flex-col items-center gap-2 pt-2 text-center">
-        <p className="text-sm text-text-muted">
-          אפשר להמשיך להגדיר את המערכת מאוחר יותר.
-        </p>
-        <form action={finishOnboarding}>
-          <button
-            type="submit"
-            className={buttonVariants({ variant: "ghost" })}
-          >
-            המשך ללוח הבקרה
-            <ArrowRight className="h-4 w-4" />
-          </button>
-        </form>
-      </div>
-    </div>
+      {body}
+    </WizardShell>
   );
 }

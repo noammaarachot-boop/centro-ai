@@ -1,4 +1,5 @@
 import {
+  boolean,
   integer,
   jsonb,
   pgEnum,
@@ -47,6 +48,14 @@ export const organizations = pgTable("organizations", {
   onboardingCompletedAt: timestamp("onboarding_completed_at", {
     withTimezone: true,
   }),
+  // Epic 3: which wizard step (0-indexed) a first-time user last completed,
+  // so closing the tab mid-wizard resumes there instead of restarting.
+  onboardingStep: integer("onboarding_step").notNull().default(0),
+  // Small logo image, stored directly as a data: URL (no blob storage
+  // exists in this project; a data URL is a real, working solution at this
+  // size, not a mock). Set in the onboarding wizard's Office Information
+  // step, editable later from Settings.
+  logoUrl: text("logo_url"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -158,6 +167,12 @@ export const clients = pgTable(
     // (see src/lib/storage/driveAdapter.ts) the first time a document for
     // this client is approved, rather than during client creation.
     driveFolderId: text("drive_folder_id"),
+    // Epic 3: the onboarding wizard's AI-assisted classification (mocked —
+    // see src/lib/ai/businessTypeClassifier.ts). Null = "Unclassified".
+    // Business Type is a product concept only — see business_types below.
+    businessTypeId: uuid("business_type_id").references(() => businessTypes.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -184,6 +199,20 @@ export const services = pgTable("services", {
     .references(() => organizations.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   description: text("description"),
+  // Epic 3: per-business-type reminder/business-hours overrides, set from
+  // the onboarding wizard's Reminder Rules step (or later from this
+  // service's own page). Null = "use the organization's default" — see
+  // resolveScheduleConfig() in src/lib/businessHours.ts, the single place
+  // that resolves these against organizations' equivalent columns. Every
+  // service created before Epic 3 has all five null, so scheduler.ts and
+  // conversationOrchestration.ts behave exactly as before for it.
+  reminderIntervalDaysOverride: integer("reminder_interval_days_override"),
+  inactivityTimeoutMinutesOverride: integer(
+    "inactivity_timeout_minutes_override"
+  ),
+  businessHoursStartOverride: text("business_hours_start_override"),
+  businessHoursEndOverride: text("business_hours_end_override"),
+  businessDaysOverride: text("business_days_override"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -211,6 +240,32 @@ export const serviceDocumentRequirements = pgTable(
       .defaultNow(),
   }
 );
+
+// Epic 3 — the onboarding wizard's "Business Type" is a product/UI concept
+// only; under the hood each row here is backed by exactly one auto-managed
+// Service (serviceId) of the same name, reusing the entire existing
+// Service -> serviceDocumentRequirements -> Collection Request engine
+// untouched. Org-scoped (not a shared global catalog) so each firm can
+// freely rename/add/remove its own types. isCustom distinguishes the five
+// wizard-seeded starter types from ones an office added itself, for
+// display purposes only — both behave identically.
+export const businessTypes = pgTable("business_types", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  serviceId: uuid("service_id")
+    .notNull()
+    .references(() => services.id, { onDelete: "cascade" }),
+  isCustom: boolean("is_custom").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 // A Client may have multiple Services and a Service may be assigned to
 // multiple Clients (Ch.4 FR-001/FR-002) — many-to-many join.

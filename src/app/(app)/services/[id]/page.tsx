@@ -18,6 +18,9 @@ import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
+import { ServiceScheduleOverrideCard } from "@/components/app/ServiceScheduleOverrideCard";
+import { resolveScheduleConfig } from "@/lib/businessHours";
+import { getOrganization } from "@/lib/data/organizations";
 
 export default async function ServiceDetailPage({
   params,
@@ -33,10 +36,21 @@ export default async function ServiceDetailPage({
   const service = await getService(session.organizationId, id);
   if (!service) notFound();
 
-  const [requirements, assignedClients] = await Promise.all([
+  const [requirements, assignedClients, organization] = await Promise.all([
     listServiceRequirements(id),
     listServiceClients(session.organizationId, id),
+    getOrganization(session.organizationId),
   ]);
+  if (!organization) notFound();
+
+  const hasScheduleOverrides = !!(
+    service.businessHoursStartOverride ||
+    service.businessHoursEndOverride ||
+    service.businessDaysOverride ||
+    service.reminderIntervalDaysOverride ||
+    service.inactivityTimeoutMinutesOverride
+  );
+  const effectiveSchedule = resolveScheduleConfig(organization, service);
 
   const boundUpdate = updateService.bind(null, service.id);
   const boundDelete = deleteService.bind(null, service.id);
@@ -132,6 +146,18 @@ export default async function ServiceDetailPage({
           </button>
         </form>
       </Card>
+
+      <ServiceScheduleOverrideCard
+        serviceId={service.id}
+        name="כללי תזכורות"
+        hasOverrides={hasScheduleOverrides}
+        businessHoursStart={effectiveSchedule.businessHoursStart}
+        businessHoursEnd={effectiveSchedule.businessHoursEnd}
+        businessDays={effectiveSchedule.businessDays}
+        reminderIntervalDays={effectiveSchedule.reminderIntervalDays}
+        inactivityTimeoutMinutes={effectiveSchedule.inactivityTimeoutMinutes}
+        returnTo={`/services/${service.id}`}
+      />
 
       <Card>
         <h2 className="mb-4 text-lg font-semibold text-text-primary">לקוחות משויכים</h2>

@@ -12,6 +12,7 @@ export interface Session {
   sessionId: string;
   userId: string;
   email: string;
+  fullName: string | null;
   organizationId: string;
   organizationName: string;
 }
@@ -48,6 +49,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
       expiresAt: sessions.expiresAt,
       userId: users.id,
       email: users.email,
+      fullName: users.fullName,
       organizationId: organizations.id,
       organizationName: organizations.name,
     })
@@ -68,6 +70,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
     sessionId: row.sessionId,
     userId: row.userId,
     email: row.email,
+    fullName: row.fullName,
     organizationId: row.organizationId,
     organizationName: row.organizationName,
   };

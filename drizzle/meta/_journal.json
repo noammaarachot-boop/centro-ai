@@ -57,6 +57,13 @@
       "when": 1784450890308,
       "tag": "0007_gray_mentallo",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784455793654,
+      "tag": "0008_cold_bucky",
+      "breakpoints": true
     }
   ]
 }

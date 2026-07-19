@@ -1,7 +1,7 @@
 "use server";
 
 import { eq } from "drizzle-orm";
-import { redirect } from "next/navigation";
+import { refresh } from "next/cache";
 import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -41,7 +41,11 @@ export async function updateBusinessHours(formData: FormData) {
     actorUserId: session.userId,
   });
 
-  redirect("/settings");
+  // This form is always submitted from /settings itself. redirect() to
+  // that identical URL doesn't reliably force the client router to drop
+  // its cached RSC payload (Next.js 16) — refresh() does, and since we're
+  // not navigating anywhere, no redirect() is needed at all.
+  refresh();
 }
 
 export interface RunSchedulerState {

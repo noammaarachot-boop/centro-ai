@@ -28,7 +28,13 @@ export function parseCsv(input: string): string[][] {
       continue;
     }
 
-    if (char === '"') {
+    // RFC 4180: a field is either fully quoted or not — only treat `"` as
+    // the start of a quoted field when it's the field's first character.
+    // A `"` appearing mid-field (e.g. Hebrew legal suffix בע"מ, extremely
+    // common in real client lists) is a literal character, not a mode
+    // toggle — otherwise it swallows the rest of the file as "inside a
+    // quote" looking for a closing mark that was never meant to exist.
+    if (char === '"' && field.length === 0) {
       inQuotes = true;
     } else if (char === ",") {
       row.push(field);
@@ -57,6 +63,11 @@ export interface CsvClientRow {
   phone: string;
   email: string;
   notes: string;
+  // Epic 3: optional explicit business-type column. When an office already
+  // knows/tracks this, it's real data and takes priority over the wizard's
+  // mocked classifier (src/lib/ai/businessTypeClassifier.ts) — empty string
+  // when the column is absent or blank for a row.
+  businessType: string;
 }
 
 const HEADER_ALIASES: Record<keyof CsvClientRow, string[]> = {
@@ -64,6 +75,14 @@ const HEADER_ALIASES: Record<keyof CsvClientRow, string[]> = {
   phone: ["phone", "טלפון", "וואטסאפ", "מספר טלפון"],
   email: ["email", "אימייל", "מייל", "דוא\"ל"],
   notes: ["notes", "הערות"],
+  businessType: [
+    "business type",
+    "businesstype",
+    "type",
+    "סוג עסק",
+    "סוג",
+    "ישות משפטית",
+  ],
 };
 
 function normalizeHeader(value: string) {
@@ -97,5 +116,9 @@ export function parseClientCsv(input: string): CsvClientRow[] {
     phone: cells[columnIndex.phone!]?.trim() ?? "",
     email: columnIndex.email !== undefined ? cells[columnIndex.email]?.trim() ?? "" : "",
     notes: columnIndex.notes !== undefined ? cells[columnIndex.notes]?.trim() ?? "" : "",
+    businessType:
+      columnIndex.businessType !== undefined
+        ? cells[columnIndex.businessType]?.trim() ?? ""
+        : "",
   }));
 }

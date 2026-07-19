@@ -1,19 +1,29 @@
+import { CheckCircle2, Circle } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
 import { updateBusinessHours } from "./actions";
+import { activateAutomation, deactivateAutomation } from "../../onboarding/actions";
 import { RunSchedulerButton } from "./RunSchedulerButton";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
+import { OfficeInfoForm } from "@/components/app/OfficeInfoForm";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
 
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
   const session = await requireSession();
+  const { error } = await searchParams;
   const organization = await getOrganization(session.organizationId);
   if (!organization) return null;
 
   const activeDays = new Set(organization.businessDays.split(",").map(Number));
+  const isAutomationActive = !!organization.automationActivatedAt;
+  const integrationsReady = !!organization.googleConnectedAt && !!organization.whatsappConnectedAt;
 
   return (
     <div className="mx-auto max-w-lg animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -21,6 +31,54 @@ export default async function SettingsPage() {
         title="הגדרות"
         description="שעות פעילות וימי עבודה קובעים מתי Centro שולח הודעות אוטומטיות (BR-18.1)."
       />
+
+      {error === "integrations-required" && (
+        <p
+          role="alert"
+          className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
+        >
+          לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business (עמוד הקמת המערכת).
+        </p>
+      )}
+
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי המשרד</h2>
+        <OfficeInfoForm
+          name={organization.name}
+          logoUrl={organization.logoUrl}
+          returnTo="/settings"
+          submitLabel="שמירת פרטי המשרד"
+        />
+      </Card>
+
+      <Card>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            {isAutomationActive ? (
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-brand-emerald" />
+            ) : (
+              <Circle className="h-5 w-5 shrink-0 text-text-muted" />
+            )}
+            <div>
+              <p className="text-sm font-semibold text-text-primary">אוטומציה</p>
+              <p className="text-xs text-text-muted">
+                {isAutomationActive
+                  ? "האוטומציה פעילה — Centro פונה ללקוחות ומעבד מסמכים אוטומטית."
+                  : "האוטומציה כבויה. יש לחבר Google ו-WhatsApp Business כדי להפעיל."}
+              </p>
+            </div>
+          </div>
+          <form action={isAutomationActive ? deactivateAutomation : activateAutomation}>
+            <button
+              type="submit"
+              disabled={!integrationsReady && !isAutomationActive}
+              className={buttonVariants({ variant: "secondary", size: "sm" })}
+            >
+              {isAutomationActive ? "השבתה" : "הפעלה"}
+            </button>
+          </form>
+        </div>
+      </Card>
 
       <form action={updateBusinessHours}>
         <Card className="space-y-5">

@@ -1,7 +1,8 @@
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequests, conversations, organizations } from "@/db/schema";
+import { collectionRequests, conversations, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
+import { resolveScheduleConfig } from "@/lib/businessHours";
 import {
   evaluateAndPrompt,
   sendOutboundMessage,
@@ -25,6 +26,15 @@ const REMINDER_MESSAGE =
  * own org's scheduled tasks, never every org's). Omitted only by the
  * cron endpoint, which legitimately processes every organization in one
  * tick.
+ *
+ * Epic 3: cutoffs are no longer one shared value per organization — each
+ * conversation's Collection Request may belong to a Business Type (i.e. a
+ * Service) with its own reminder/inactivity overrides
+ * (resolveScheduleConfig, src/lib/businessHours.ts), so both queries below
+ * fetch candidates without a SQL cutoff and resolve+filter per row in JS
+ * instead. A conversation whose service has no overrides resolves to
+ * exactly the organization's default, so this is behaviorally identical
+ * to before for every pre-Epic-3 service.
  */
 export async function runScheduledTasks(organizationId?: string): Promise<{
   evaluated: number;
@@ -39,13 +49,6 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   let reminded = 0;
 
   for (const organization of allOrganizations) {
-    const inactivityCutoff = new Date(
-      Date.now() - organization.inactivityTimeoutMinutes * 60 * 1000
-    );
-    const reminderCutoff = new Date(
-      Date.now() - organization.reminderIntervalDays * 24 * 60 * 60 * 1000
-    );
-
     // Ch.16 FR-16.4: after inactivity, evaluate whether known requirements
     // are satisfied. Only conversations still "open" on an active request
     // (BR-6.3: cancelled/completed requests never get automated messages).
@@ -53,22 +56,33 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       .select({
         id: conversations.id,
         collectionRequestId: conversations.collectionRequestId,
+        updatedAt: conversations.updatedAt,
+        service: services,
       })
       .from(conversations)
       .innerJoin(
         collectionRequests,
         eq(conversations.collectionRequestId, collectionRequests.id)
       )
+      .innerJoin(services, eq(collectionRequests.serviceId, services.id))
       .where(
         and(
           eq(conversations.organizationId, organization.id),
           eq(conversations.status, "open"),
-          eq(collectionRequests.status, "active"),
-          lt(conversations.updatedAt, inactivityCutoff)
+          eq(collectionRequests.status, "active")
         )
       );
 
     for (const conversation of idleOpenConversations) {
+      const { inactivityTimeoutMinutes } = resolveScheduleConfig(
+        organization,
+        conversation.service
+      );
+      const inactivityCutoff = new Date(
+        Date.now() - inactivityTimeoutMinutes * 60 * 1000
+      );
+      if (conversation.updatedAt >= inactivityCutoff) continue;
+
       const { prompted } = await evaluateAndPrompt(
         organization.id,
         conversation.collectionRequestId,
@@ -92,22 +106,33 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       .select({
         id: conversations.id,
         collectionRequestId: conversations.collectionRequestId,
+        updatedAt: conversations.updatedAt,
+        service: services,
       })
       .from(conversations)
       .innerJoin(
         collectionRequests,
         eq(conversations.collectionRequestId, collectionRequests.id)
       )
+      .innerJoin(services, eq(collectionRequests.serviceId, services.id))
       .where(
         and(
           eq(conversations.organizationId, organization.id),
           eq(conversations.status, "waiting_for_client"),
-          eq(collectionRequests.status, "waiting_for_client"),
-          lt(conversations.updatedAt, reminderCutoff)
+          eq(collectionRequests.status, "waiting_for_client")
         )
       );
 
     for (const conversation of staleWaitingConversations) {
+      const { reminderIntervalDays } = resolveScheduleConfig(
+        organization,
+        conversation.service
+      );
+      const reminderCutoff = new Date(
+        Date.now() - reminderIntervalDays * 24 * 60 * 60 * 1000
+      );
+      if (conversation.updatedAt >= reminderCutoff) continue;
+
       const { sent } = await sendOutboundMessage(
         organization.id,
         conversation.id,

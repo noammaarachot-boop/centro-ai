@@ -1,13 +1,164 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
+import { refresh } from "next/cache";
 import { getDb } from "@/db";
-import { clients, organizations } from "@/db/schema";
-import { parseClientCsv } from "@/lib/csv";
+import { clients, organizations, services } from "@/db/schema";
+import { parseClientImportFile, UnsupportedImportFormatError } from "@/lib/import/clientImportAdapter";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { markOnboardingComplete } from "@/lib/onboarding";
+import {
+  assignClientsToBusinessType,
+  createBusinessType,
+  getSuggestedRequirements,
+  seedStarterBusinessTypes,
+} from "@/lib/businessTypes";
+import { classifyClientBusinessType } from "@/lib/ai/businessTypeClassifier";
+
+async function setOnboardingStep(organizationId: string, step: number) {
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({ onboardingStep: step, updatedAt: new Date() })
+    .where(eq(organizations.id, organizationId));
+}
+
+const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
+
+export interface OfficeInfoState {
+  fieldErrors?: { name?: string };
+}
+
+// Step 2 — this is where the placeholder organization name set at
+// registration (src/app/login/actions.ts's register(), Epic 2) becomes the
+// real one. Logo is optional and only overwritten when a new one was
+// actually picked (see Step2OfficeInfo.tsx's client-side resize-to-data-URL
+// handling) — revisiting this step without re-picking a logo never clears
+// an existing one.
+export async function updateOfficeInfo(
+  _prevState: OfficeInfoState,
+  formData: FormData
+): Promise<OfficeInfoState> {
+  const session = await requireSession();
+  const name = String(formData.get("name") ?? "").trim();
+  const logoDataUrl = String(formData.get("logoDataUrl") ?? "").trim();
+  const returnTo = formData.get("returnTo")?.toString();
+
+  if (!name) {
+    return { fieldErrors: { name: "נא להזין שם משרד." } };
+  }
+
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({
+      name,
+      ...(logoDataUrl ? { logoUrl: logoDataUrl } : {}),
+      ...(returnTo ? {} : { onboardingStep: 3 }),
+      updatedAt: new Date(),
+    })
+    .where(eq(organizations.id, session.organizationId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "organization.updated",
+    description: returnTo ? "פרטי המשרד עודכנו מההגדרות" : "פרטי המשרד עודכנו באשף ההקמה",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  // `returnTo` (Settings) means this form was submitted from the exact
+  // page we'd redirect back to — refresh() (Next.js 16) instead, since
+  // redirect() to an identical URL doesn't reliably force a fresh client
+  // render. No `returnTo` means the wizard's real step2 -> step3
+  // navigation, a genuinely different page, where redirect() is correct.
+  if (returnTo) {
+    refresh();
+    return {};
+  }
+  redirect("/onboarding?step=3");
+}
+
+// Step 7 — per-Business-Type (i.e. per-Service) reminder/business-hours
+// overrides. `useOverrides` is a single "customize for this business type"
+// toggle: off clears all five columns back to null (use the organization's
+// default, from Settings), on writes the submitted values. Also reachable
+// post-wizard from that service's own /services/[id] page — see
+// src/app/(app)/services/[id]/page.tsx.
+export async function updateServiceScheduleOverrides(
+  serviceId: string,
+  formData: FormData
+) {
+  const session = await requireSession();
+  const db = await getDb();
+
+  const [service] = await db
+    .select({ id: services.id })
+    .from(services)
+    .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
+    .limit(1);
+  if (!service) redirect("/onboarding?step=7");
+
+  const useOverrides = formData.get("useOverrides") === "on";
+
+  if (!useOverrides) {
+    await db
+      .update(services)
+      .set({
+        businessHoursStartOverride: null,
+        businessHoursEndOverride: null,
+        businessDaysOverride: null,
+        reminderIntervalDaysOverride: null,
+        inactivityTimeoutMinutesOverride: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(services.id, serviceId));
+  } else {
+    const businessDaysOverride = WEEKDAYS.filter(
+      (day) => formData.get(`day-${day}`) === "on"
+    ).join(",");
+
+    await db
+      .update(services)
+      .set({
+        businessHoursStartOverride: String(formData.get("businessHoursStart") ?? "09:00"),
+        businessHoursEndOverride: String(formData.get("businessHoursEnd") ?? "18:00"),
+        businessDaysOverride: businessDaysOverride || "0,1,2,3,4",
+        reminderIntervalDaysOverride: Number(formData.get("reminderIntervalDays") ?? 2),
+        inactivityTimeoutMinutesOverride: Number(
+          formData.get("inactivityTimeoutMinutes") ?? 15
+        ),
+        updatedAt: new Date(),
+      })
+      .where(eq(services.id, serviceId));
+  }
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "service.schedule_overrides_updated",
+    description: "כללי תזכורות עודכנו עבור סוג עסק",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  // Always a same-page submission (Step 7 or the service's own page) —
+  // refresh() alone, no redirect(); see addRequirement's comment in
+  // src/app/(app)/services/actions.ts for why.
+  refresh();
+}
+
+// Generic "move forward" action for steps whose Next button has nothing
+// else to persist (e.g. after reviewing connection status, or once
+// satisfied with a checklist) — bound to the target step via
+// `.bind(null, nextStep)`, matching this codebase's existing pattern for
+// parameterized actions (see e.g. src/app/(app)/clients/actions.ts).
+export async function advanceOnboardingStep(nextStep: number) {
+  const session = await requireSession();
+  await setOnboardingStep(session.organizationId, nextStep);
+  redirect(`/onboarding?step=${nextStep}`);
+}
 
 async function setIntegrationTimestamp(
   column: "googleConnectedAt" | "whatsappConnectedAt",
@@ -30,7 +181,8 @@ async function setIntegrationTimestamp(
     actorUserId: session.userId,
   });
 
-  redirect("/onboarding");
+  // Always submitted from Step 3 itself — refresh() alone, no redirect().
+  refresh();
 }
 
 // Google/WhatsApp connection is mocked here per the "build against mocks
@@ -73,8 +225,15 @@ export async function disconnectWhatsapp() {
   );
 }
 
-export async function activateAutomation() {
-  const session = await requireSession();
+// BR-001 (Ch.3): automation cannot be activated until all mandatory
+// integrations are connected. Shared by the explicit Settings toggle below
+// and finishOnboarding()'s best-effort activation — the gate itself never
+// redirects, so it's safe to call from a context (wizard completion) that
+// shouldn't fail loudly just because an office skipped connecting.
+async function tryActivateAutomation(session: {
+  organizationId: string;
+  userId: string;
+}): Promise<boolean> {
   const db = await getDb();
   const [organization] = await db
     .select()
@@ -82,12 +241,10 @@ export async function activateAutomation() {
     .where(eq(organizations.id, session.organizationId))
     .limit(1);
 
-  // BR-001 (Ch.3): automation cannot be activated until all mandatory
-  // integrations are connected. Enforced here server-side, not just by
-  // disabling the button, since this is a real business rule.
   if (!organization?.googleConnectedAt || !organization?.whatsappConnectedAt) {
-    redirect("/onboarding?error=integrations-required");
+    return false;
   }
+  if (organization.automationActivatedAt) return true;
 
   await db
     .update(organizations)
@@ -102,12 +259,21 @@ export async function activateAutomation() {
     actorUserId: session.userId,
   });
 
-  // Activating automation is a clear, unambiguous "setup is done" signal —
-  // also mark onboarding complete so this org's next login goes straight to
-  // the Dashboard instead of back through this page.
-  await markOnboardingComplete(session.organizationId);
+  return true;
+}
 
-  redirect("/dashboard");
+// Manual toggle, reachable from Settings post-onboarding (the wizard itself
+// never shows this button — see finishOnboarding below).
+export async function activateAutomation() {
+  const session = await requireSession();
+  const activated = await tryActivateAutomation(session);
+  if (!activated) {
+    // Genuine URL change (adds the error query param) — redirect() is
+    // correct here, no staleness risk.
+    redirect("/settings?error=integrations-required");
+  }
+  // Always submitted from /settings itself — refresh() alone, no redirect().
+  refresh();
 }
 
 export async function deactivateAutomation() {
@@ -126,21 +292,23 @@ export async function deactivateAutomation() {
     actorUserId: session.userId,
   });
 
-  redirect("/onboarding");
+  refresh();
 }
 
-// Explicit exit from this placeholder onboarding flow, independent of
-// activateAutomation() above — an org shouldn't be permanently stuck here
-// just because it isn't ready to turn automation on yet. This is the seam
-// the real onboarding wizard (next epic) will call from its own final step.
+// Step 9's "Go to Dashboard" — the wizard's real completion action.
+// Best-effort activates automation (silently skipped if the office never
+// connected both integrations in Step 3; nothing here blocks finishing),
+// then marks onboarding complete so every subsequent login goes straight
+// to the Dashboard instead of back through this wizard.
 export async function finishOnboarding() {
   const session = await requireSession();
+  await tryActivateAutomation(session);
   await markOnboardingComplete(session.organizationId);
 
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "onboarding.completed",
-    description: "הקמת המערכת סומנה כהושלמה",
+    description: "אשף ההקמה הושלם",
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -162,7 +330,14 @@ export interface ImportClientsState {
   };
 }
 
-export async function importClients(
+// Step 4 ("Import Excel / CSV") + Step 5 ("AI Client Analysis") in one
+// action: parses through the format-agnostic adapter (clientImportAdapter),
+// inserts new clients exactly as the pre-wizard importer did (same
+// duplicate-phone handling), then immediately runs the mocked classifier
+// against every newly imported client, seeding the five starter Business
+// Types on first use. Redirects straight to Step 5 on success so the
+// analysis results are already there by the time it renders.
+export async function importAndClassifyClients(
   _prevState: ImportClientsState,
   formData: FormData
 ): Promise<ImportClientsState> {
@@ -170,14 +345,16 @@ export async function importClients(
   const file = formData.get("file");
 
   if (!(file instanceof File) || file.size === 0) {
-    return { error: "נא לבחור קובץ CSV." };
+    return { error: "נא לבחור קובץ להעלאה." };
   }
 
-  const text = await file.text();
   let parsedRows;
   try {
-    parsedRows = parseClientCsv(text);
+    parsedRows = await parseClientImportFile(file);
   } catch (error) {
+    if (error instanceof UnsupportedImportFormatError) {
+      return { error: error.message };
+    }
     return { error: error instanceof Error ? error.message : "שגיאה בקריאת הקובץ." };
   }
 
@@ -189,7 +366,7 @@ export async function importClients(
   const existingPhones = new Set(existing.map((c) => c.phone));
 
   const skipped: SkippedImportRow[] = [];
-  let imported = 0;
+  const importedRows: Array<{ id: string; name: string; businessType: string }> = [];
 
   for (let i = 0; i < parsedRows.length; i += 1) {
     const row = parsedRows[i];
@@ -204,25 +381,101 @@ export async function importClients(
       continue;
     }
 
-    await db.insert(clients).values({
-      organizationId: session.organizationId,
-      name: row.name,
-      phone: row.phone,
-      email: row.email || null,
-      notes: row.notes || null,
-    });
+    const [inserted] = await db
+      .insert(clients)
+      .values({
+        organizationId: session.organizationId,
+        name: row.name,
+        phone: row.phone,
+        email: row.email || null,
+        notes: row.notes || null,
+      })
+      .returning({ id: clients.id, name: clients.name });
+
     existingPhones.add(row.phone);
-    imported += 1;
+    importedRows.push({ id: inserted.id, name: inserted.name, businessType: row.businessType });
   }
 
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "clients.imported",
-    description: `${imported} לקוחות יובאו מקובץ CSV (${skipped.length} דולגו)`,
+    description: `${importedRows.length} לקוחות יובאו (${skipped.length} דולגו)`,
     actorType: "employee",
     actorUserId: session.userId,
-    metadata: { imported, skippedCount: skipped.length },
+    metadata: { imported: importedRows.length, skippedCount: skipped.length },
   });
 
-  return { result: { imported, skipped } };
+  if (importedRows.length > 0) {
+    const businessTypeList = await seedStarterBusinessTypes(session.organizationId);
+    const candidates = businessTypeList.map((t) => ({ id: t.id, name: t.name }));
+
+    const groupedByType = new Map<string, string[]>();
+    for (const row of importedRows) {
+      const { businessTypeId } = classifyClientBusinessType(
+        row.name,
+        candidates,
+        row.businessType
+      );
+      if (!businessTypeId) continue;
+      const clientIds = groupedByType.get(businessTypeId) ?? [];
+      clientIds.push(row.id);
+      groupedByType.set(businessTypeId, clientIds);
+    }
+
+    for (const [businessTypeId, clientIds] of groupedByType) {
+      await assignClientsToBusinessType(session.organizationId, clientIds, businessTypeId);
+    }
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "clients.classified",
+      description: "הלקוחות שיובאו נותחו וסווגו אוטומטית (AI מדומה)",
+      actorType: "ai",
+    });
+  }
+
+  await setOnboardingStep(session.organizationId, 5);
+  redirect("/onboarding?step=5");
+}
+
+// Step 5's "Assign Business Type" bulk action — covers both picking an
+// existing type and (via `newTypeName`) creating one inline, so the user
+// never has to leave the wizard or edit a spreadsheet to finish
+// classifying.
+export async function assignBusinessTypeAction(formData: FormData) {
+  const session = await requireSession();
+  const clientIds = formData.getAll("clientId").map(String).filter(Boolean);
+  const newTypeName = String(formData.get("newTypeName") ?? "").trim();
+  let businessTypeId = String(formData.get("businessTypeId") ?? "");
+
+  if (newTypeName) {
+    const created = await createBusinessType(session.organizationId, newTypeName, {
+      isCustom: true,
+      seedRequirements: getSuggestedRequirements(newTypeName),
+    });
+    businessTypeId = created.id;
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "business_type.created",
+      description: `סוג עסק "${newTypeName}" נוצר`,
+      actorType: "employee",
+      actorUserId: session.userId,
+    });
+  }
+
+  if (businessTypeId && clientIds.length > 0) {
+    await assignClientsToBusinessType(session.organizationId, clientIds, businessTypeId);
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "clients.business_type_assigned",
+      description: `${clientIds.length} לקוחות שויכו לסוג עסק`,
+      actorType: "employee",
+      actorUserId: session.userId,
+    });
+  }
+
+  // Always submitted from Step 5 itself — refresh() alone, no redirect().
+  refresh();
 }
