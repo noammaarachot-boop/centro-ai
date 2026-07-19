@@ -25,6 +25,17 @@ async function createPostgresDb(connectionString: string): Promise<Connection> {
   return { db, migrate: () => migrate(db, { migrationsFolder: "./drizzle" }) };
 }
 
+// ⚠️ PGlite does not support two separate OS processes holding the same
+// data directory open at once (documented limitation, confirmed the hard
+// way: running a standalone `tsx` script against this same directory while
+// `npm run dev` was also running corrupted the on-disk files — every
+// subsequent query, including trivial system-catalog lookups, then failed
+// with a WASM `RuntimeError: Aborted()`, not a helpful SQL error). If you
+// need to run a one-off script (org:create, a debug query, etc.), stop the
+// dev server first. If corruption happens again, there is no in-place
+// repair — move `.centro-data/pglite` aside and re-run `npm run db:migrate`
+// to get a fresh, empty database (this directory is gitignored/local-only,
+// so nothing tracked is ever at risk).
 async function createPgliteDb(): Promise<Connection> {
   const { drizzle } = await import("drizzle-orm/pglite");
   const { migrate } = await import("drizzle-orm/pglite/migrator");
