@@ -15,6 +15,7 @@ import {
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
 import { driveFileLink } from "@/lib/storage/driveAdapter";
+import { listAuditLog } from "@/lib/data/auditLog";
 import { StatusBadge } from "../StatusBadge";
 import {
   addManualDocument,
@@ -81,6 +82,7 @@ export default async function CollectionRequestDetailPage({
 
   const conversation = await getConversationByCollectionRequest(id);
   const messages = conversation ? await listMessages(conversation.id) : [];
+  const auditHistory = await listAuditLog(session.organizationId, { collectionRequestId: id });
 
   return (
     <div className="mx-auto max-w-2xl space-y-8 px-6 py-12">
@@ -443,6 +445,26 @@ export default async function CollectionRequestDetailPage({
               </div>
             </form>
           </>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">
+          היסטוריית ביקורת
+        </h2>
+        {auditHistory.length === 0 ? (
+          <p className="text-sm text-text-muted">אין עדיין רשומות עבור בקשה זו.</p>
+        ) : (
+          <ul className="space-y-2">
+            {auditHistory.map((event) => (
+              <li key={event.id} className="text-xs text-text-secondary">
+                <span className="text-text-muted">
+                  {new Date(event.occurredAt).toLocaleString("he-IL")} ·{" "}
+                </span>
+                {event.description}
+              </li>
+            ))}
+          </ul>
         )}
       </section>
     </div>

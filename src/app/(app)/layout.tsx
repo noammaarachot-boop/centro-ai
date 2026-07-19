@@ -15,6 +15,7 @@ const NAV_LINKS = [
   { href: "/clients", label: "לקוחות" },
   { href: "/services", label: "שירותים" },
   { href: "/collections", label: "בקשות איסוף" },
+  { href: "/audit", label: "יומן ביקורת" },
   { href: "/settings", label: "הגדרות" },
 ];
 

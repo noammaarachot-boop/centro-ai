@@ -116,6 +116,13 @@ export const auditLogs = pgTable("audit_logs", {
   clientId: uuid("client_id").references(() => clients.id, {
     onDelete: "set null",
   }),
+  // FR-17.3: "employees shall be able to view the chronological history of
+  // a Collection Request" — a client can have many Collection Requests
+  // over time, so clientId alone isn't precise enough for that view.
+  collectionRequestId: uuid("collection_request_id").references(
+    () => collectionRequests.id,
+    { onDelete: "set null" }
+  ),
   description: text("description").notNull(),
   metadata: jsonb("metadata"),
 });

@@ -148,6 +148,7 @@ export async function applyTransition(
     actorType,
     actorUserId,
     clientId: current.clientId,
+    collectionRequestId,
     metadata: { from: current.status, to: nextStatus },
   });
 

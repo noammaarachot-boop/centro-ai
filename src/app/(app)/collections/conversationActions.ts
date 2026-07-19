@@ -73,6 +73,7 @@ export async function initiateConversation(collectionRequestId: string) {
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
@@ -121,6 +122,7 @@ export async function simulateInboundMessage(
       description: `הודעת הלקוח סווגה כ-${intent}`,
       actorType: "ai",
       clientId: current.clientId,
+      collectionRequestId,
       metadata: { intent },
     });
   }
@@ -169,6 +171,7 @@ async function processInboundAttachment(
       description: `הקובץ "${fileName}" נדחה אוטומטית - סוג קובץ לא נתמך`,
       actorType: "ai",
       clientId,
+      collectionRequestId,
     });
     return;
   }
@@ -188,6 +191,7 @@ async function processInboundAttachment(
       description: `מסמך "${fileName}" זוהה ככפילות`,
       actorType: "ai",
       clientId,
+      collectionRequestId,
     });
     return;
   }
@@ -221,6 +225,7 @@ async function processInboundAttachment(
         description: `הקובץ "${fileName}" זוהה כלא קריא, נשלחה בקשה לעותק ברור`,
         actorType: "ai",
         clientId,
+        collectionRequestId,
       });
       return;
     }
@@ -236,6 +241,7 @@ async function processInboundAttachment(
         : `מסמך "${fileName}" לא ניתן היה לשייך אוטומטית לדרישה - דורש בדיקה ידנית`,
       actorType: "ai",
       clientId,
+      collectionRequestId,
       metadata: { confidence: classification.confidence, requirementId },
     });
   }
@@ -257,6 +263,7 @@ async function processInboundAttachment(
     description: `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ, הדמיה)`,
     actorType: "client",
     clientId,
+    collectionRequestId,
   });
 
   if (status === "approved") {
@@ -300,6 +307,7 @@ export async function evaluateNow(collectionRequestId: string) {
       : `הערכה בוצעה, אין פנייה ללקוח (${reason})`,
     actorType: "system",
     clientId: current.clientId,
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
@@ -404,6 +412,7 @@ export async function takeOverConversation(collectionRequestId: string) {
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
@@ -434,6 +443,7 @@ export async function releaseConversation(collectionRequestId: string) {
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);

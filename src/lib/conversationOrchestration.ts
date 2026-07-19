@@ -219,6 +219,7 @@ export async function reopenIfCompleted(
     description: "בקשת האיסוף נפתחה מחדש עקב מסמך חדש שהתקבל",
     actorType: "system",
     clientId: current.clientId,
+    collectionRequestId,
     metadata: { from: "completed", to: "active" },
   });
 

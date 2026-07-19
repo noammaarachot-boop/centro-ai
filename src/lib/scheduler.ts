@@ -73,6 +73,7 @@ export async function runScheduledTasks(): Promise<{
           eventType: "scheduler.evaluation_prompted",
           description: "המתזמן זיהה חוסר פעילות והפעיל הערכה אוטומטית",
           actorType: "system",
+          collectionRequestId: conversation.collectionRequestId,
         });
       }
     }
@@ -112,6 +113,7 @@ export async function runScheduledTasks(): Promise<{
           eventType: "scheduler.reminder_sent",
           description: "תזכורת אוטומטית נשלחה עקב חוסר תגובה",
           actorType: "system",
+          collectionRequestId: conversation.collectionRequestId,
         });
       }
     }

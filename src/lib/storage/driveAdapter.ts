@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, documents } from "@/db/schema";
+import { withRetry } from "@/lib/resilience";
 
 /**
  * Google Drive is mocked throughout this module — no real OAuth/API calls
@@ -63,19 +64,26 @@ export async function ensureClientFolder(clientId: string): Promise<DriveFolder>
 
 // BR-11.5: only validated (approved) documents are stored in Drive.
 // Callers are expected to have already set the document's status to
-// "approved" before calling this.
+// "approved" before calling this. The actual upload call is wrapped in
+// withRetry (FR-15.2) — this mock never fails on its own, but a real API
+// call can, and this is the correct place for that resilience to live.
+// Callers must catch OperationFailedError and degrade gracefully
+// (BR-15.1: a storage failure must never corrupt or close a Collection
+// Request) rather than letting it crash the action.
 export async function uploadDocument(
   clientId: string,
   documentId: string
 ): Promise<DriveFile> {
   await ensureClientFolder(clientId);
-  const fileId = mockFileId();
 
-  const db = await getDb();
-  await db
-    .update(documents)
-    .set({ googleDriveFileId: fileId, updatedAt: new Date() })
-    .where(eq(documents.id, documentId));
+  return withRetry(async () => {
+    const fileId = mockFileId();
+    const db = await getDb();
+    await db
+      .update(documents)
+      .set({ googleDriveFileId: fileId, updatedAt: new Date() })
+      .where(eq(documents.id, documentId));
 
-  return { fileId, webViewLink: driveFileLink(fileId) };
+    return { fileId, webViewLink: driveFileLink(fileId) };
+  });
 }

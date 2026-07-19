@@ -1,0 +1,2 @@
+ALTER TABLE "audit_logs" ADD COLUMN "collection_request_id" uuid;--> statement-breakpoint
+ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_collection_request_id_collection_requests_id_fk" FOREIGN KEY ("collection_request_id") REFERENCES "public"."collection_requests"("id") ON DELETE set null ON UPDATE no action;

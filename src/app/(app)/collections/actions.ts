@@ -11,7 +11,35 @@ import {
   snapshotServiceRequirements,
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
+import { OperationFailedError } from "@/lib/resilience";
 import { uploadDocument } from "@/lib/storage/driveAdapter";
+
+// FR-15.3: employees are notified only when automation genuinely can't
+// recover — withRetry (src/lib/resilience.ts) already exhausted retries
+// before this is ever reached. BR-15.1: the failure is logged and the
+// document stays approved-but-unfiled; it must never crash the action or
+// leave the Collection Request in a broken state.
+async function uploadDocumentResiliently(
+  organizationId: string,
+  clientId: string,
+  documentId: string,
+  fileName: string,
+  collectionRequestId: string
+) {
+  try {
+    await uploadDocument(clientId, documentId);
+  } catch (error) {
+    if (!(error instanceof OperationFailedError)) throw error;
+    await recordAuditEvent({
+      organizationId,
+      eventType: "document.drive_upload_failed",
+      description: `העלאת "${fileName}" ל-Drive נכשלה לאחר ניסיונות חוזרים - דורש בדיקת עובד`,
+      actorType: "system",
+      clientId,
+      collectionRequestId,
+    });
+  }
+}
 
 export async function createCollectionRequest(
   clientId: string,
@@ -56,6 +84,7 @@ export async function createCollectionRequest(
     actorType: "employee",
     actorUserId: session.userId,
     clientId,
+    collectionRequestId: collectionRequest.id,
   });
 
   redirect(`/collections/${collectionRequest.id}`);
@@ -120,7 +149,13 @@ export async function addManualDocument(
     .returning();
 
   if (status === "approved") {
-    await uploadDocument(current.clientId, document.id);
+    await uploadDocumentResiliently(
+      session.organizationId,
+      current.clientId,
+      document.id,
+      document.fileName,
+      collectionRequestId
+    );
   }
 
   await recordAuditEvent({
@@ -130,6 +165,7 @@ export async function addManualDocument(
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
@@ -165,7 +201,13 @@ export async function reviewDocument(
   if (!document) redirect(`/collections/${collectionRequestId}`);
 
   if (decision === "approved") {
-    await uploadDocument(current.clientId, document.id);
+    await uploadDocumentResiliently(
+      session.organizationId,
+      current.clientId,
+      document.id,
+      document.fileName,
+      collectionRequestId
+    );
   }
 
   await recordAuditEvent({
@@ -175,6 +217,7 @@ export async function reviewDocument(
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
@@ -206,6 +249,7 @@ export async function assignDocumentRequirement(
     description: `מסמך "${document.fileName}" שויך ידנית לדרישה`,
     actorType: "employee",
     actorUserId: session.userId,
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
@@ -239,6 +283,7 @@ export async function simulateDriveDeletion(
     eventType: "document.deleted_from_drive",
     description: `מסמך "${document.fileName}" נמחק ידנית מ-Google Drive`,
     actorType: "system",
+    collectionRequestId,
   });
 
   redirect(`/collections/${collectionRequestId}`);
