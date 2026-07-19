@@ -70,13 +70,29 @@ export function Step5Analysis({
 
   return (
     <div className="space-y-6">
-      <div className="animate-fade-in-up flex items-center gap-3 rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
-        <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />
-        <div>
-          <p className="text-2xl font-bold tabular-nums text-text-primary">
-            {total} לקוחות נמצאו
-          </p>
-          <p className="text-xs text-text-secondary">Centro ניתח וסיווג אותם אוטומטית</p>
+      <div className="animate-fade-in-up rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
+        <div className="flex items-center gap-3">
+          <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />
+          <div>
+            <p className="text-base font-bold text-text-primary">הייבוא הושלם בהצלחה!</p>
+            <p className="text-xs text-text-secondary">Centro ניתח וסיווג את הלקוחות אוטומטית</p>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+          <div>
+            <p className="text-2xl font-bold tabular-nums text-text-primary">{total}</p>
+            <p className="text-[11px] text-text-muted">לקוחות יובאו</p>
+          </div>
+          <div>
+            <p className="text-2xl font-bold tabular-nums text-brand-emerald">{totalClassified}</p>
+            <p className="text-[11px] text-text-muted">סווגו אוטומטית</p>
+          </div>
+          <div>
+            <p className="text-2xl font-bold tabular-nums text-warning">
+              {unclassifiedClients.length}
+            </p>
+            <p className="text-[11px] text-text-muted">דורשים סיווג ידני</p>
+          </div>
         </div>
       </div>
 

@@ -65,23 +65,33 @@ export interface CsvClientRow {
   notes: string;
   // Epic 3: optional explicit business-type column. When an office already
   // knows/tracks this, it's real data and takes priority over the wizard's
-  // mocked classifier (src/lib/ai/businessTypeClassifier.ts) — empty string
-  // when the column is absent or blank for a row.
+  // classifier (src/lib/ai/businessTypeClassifier.ts) — empty string when
+  // the column is absent or blank for a row.
   businessType: string;
 }
 
 const HEADER_ALIASES: Record<keyof CsvClientRow, string[]> = {
-  name: ["name", "שם", "שם לקוח", "שם הלקוח"],
-  phone: ["phone", "טלפון", "וואטסאפ", "מספר טלפון"],
+  name: ["name", "שם", "שם לקוח", "שם הלקוח", "שם העסק"],
+  phone: ["phone", "טלפון", "וואטסאפ", "מספר טלפון", "נייד"],
   email: ["email", "אימייל", "מייל", "דוא\"ל"],
   notes: ["notes", "הערות"],
+  // Broadened per real-world Israeli accounting-file header variants —
+  // offices label this column many different ways.
   businessType: [
     "business type",
     "businesstype",
     "type",
+    "entity type",
+    "classification",
     "סוג עסק",
     "סוג",
+    "סיווג",
+    "סוג ישות",
     "ישות משפטית",
+    "מעמד",
+    "מעמד משפטי",
+    "סוג התאגדות",
+    "סטטוס עסק",
   ],
 };
 
@@ -89,11 +99,13 @@ function normalizeHeader(value: string) {
   return value.trim().toLowerCase();
 }
 
-// Maps whichever columns are present (by Hebrew or English header name) to
-// { name, phone, email, notes }. Throws if `name`/`phone` columns are
-// missing entirely — everything else is best-effort.
-export function parseClientCsv(input: string): CsvClientRow[] {
-  const rows = parseCsv(input);
+// Shared by both import formats (CSV today, XLSX via
+// src/lib/import/xlsxParser.ts) — takes the raw grid a format-specific
+// parser produces (header row + data rows, as plain strings) and maps
+// whichever columns are present, by Hebrew or English header name, to
+// { name, phone, email, notes, businessType }. Throws if `name`/`phone`
+// columns are missing entirely — everything else is best-effort.
+export function mapRowsToClientRows(rows: string[][]): CsvClientRow[] {
   if (rows.length === 0) return [];
 
   const header = rows[0].map(normalizeHeader);
@@ -121,4 +133,8 @@ export function parseClientCsv(input: string): CsvClientRow[] {
         ? cells[columnIndex.businessType]?.trim() ?? ""
         : "",
   }));
+}
+
+export function parseClientCsv(input: string): CsvClientRow[] {
+  return mapRowsToClientRows(parseCsv(input));
 }

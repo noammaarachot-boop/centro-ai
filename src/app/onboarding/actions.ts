@@ -409,14 +409,16 @@ export async function importAndClassifyClients(
     const businessTypeList = await seedStarterBusinessTypes(session.organizationId);
     const candidates = businessTypeList.map((t) => ({ id: t.id, name: t.name }));
 
+    let classifiedCount = 0;
     const groupedByType = new Map<string, string[]>();
     for (const row of importedRows) {
-      const { businessTypeId } = classifyClientBusinessType(
+      const { businessTypeId } = await classifyClientBusinessType(
         row.name,
         candidates,
         row.businessType
       );
       if (!businessTypeId) continue;
+      classifiedCount += 1;
       const clientIds = groupedByType.get(businessTypeId) ?? [];
       clientIds.push(row.id);
       groupedByType.set(businessTypeId, clientIds);
@@ -429,8 +431,12 @@ export async function importAndClassifyClients(
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "clients.classified",
-      description: "הלקוחות שיובאו נותחו וסווגו אוטומטית (AI מדומה)",
+      description: `${classifiedCount} מתוך ${importedRows.length} לקוחות שיובאו סווגו אוטומטית לפי סוג עסק`,
       actorType: "ai",
+      metadata: {
+        classified: classifiedCount,
+        unclassified: importedRows.length - classifiedCount,
+      },
     });
   }
 

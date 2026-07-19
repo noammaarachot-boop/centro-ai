@@ -35,59 +35,65 @@ interface StarterBusinessType {
 // it's seeded; nothing at runtime re-reads this list. Reasonable defaults
 // for an Israeli accounting-firm pilot; fully editable per office from
 // Step 6 (or later, /services/[id]).
+//
+// Names are Hebrew — the canonical, stored value (business_types.name and
+// its backing services.name), not just a display label — because every
+// wizard step and /services render this field directly, so there is no
+// separate translation layer to keep in sync. These exact strings must
+// match src/lib/ai/businessTypeClassifier.ts's BUSINESS_TYPE_SYNONYMS keys.
 export const STARTER_BUSINESS_TYPES: StarterBusinessType[] = [
   {
-    name: "Limited Company",
+    name: 'חברה בע"מ',
     suggestedRequirements: [
-      { name: "Expense Invoices", defaultChecked: true },
-      { name: "Income Invoices", defaultChecked: true },
-      { name: "Bank Statements", defaultChecked: true },
-      { name: "Credit Card Statements", defaultChecked: true },
-      { name: "Payroll Reports", defaultChecked: true },
-      { name: "Employee Forms", defaultChecked: true },
-      { name: "VAT Reports", defaultChecked: true },
-      { name: "Vehicle Expenses", defaultChecked: false },
-      { name: "Petty Cash", defaultChecked: false },
+      { name: "חשבוניות הוצאה", defaultChecked: true },
+      { name: "חשבוניות הכנסה", defaultChecked: true },
+      { name: "דפי חשבון בנק", defaultChecked: true },
+      { name: "דפי כרטיס אשראי", defaultChecked: true },
+      { name: "דוחות שכר", defaultChecked: true },
+      { name: "טפסי עובדים", defaultChecked: true },
+      { name: 'דוחות מע"מ', defaultChecked: true },
+      { name: "הוצאות רכב", defaultChecked: false },
+      { name: "קופה קטנה", defaultChecked: false },
     ],
   },
   {
-    name: "Sole Proprietor",
+    name: "עוסק מורשה",
     suggestedRequirements: [
-      { name: "Expense Invoices", defaultChecked: true },
-      { name: "Income Invoices", defaultChecked: true },
-      { name: "Bank Statements", defaultChecked: true },
-      { name: "VAT Reports", defaultChecked: true },
-      { name: "Credit Card Statements", defaultChecked: false },
-      { name: "Vehicle Expenses", defaultChecked: false },
-      { name: "Petty Cash", defaultChecked: false },
+      { name: "חשבוניות הוצאה", defaultChecked: true },
+      { name: "חשבוניות הכנסה", defaultChecked: true },
+      { name: "דפי חשבון בנק", defaultChecked: true },
+      { name: 'דוחות מע"מ', defaultChecked: true },
+      { name: "דפי כרטיס אשראי", defaultChecked: false },
+      { name: "הוצאות רכב", defaultChecked: false },
+      { name: "קופה קטנה", defaultChecked: false },
     ],
   },
   {
-    name: "Exempt Business",
+    name: "עוסק פטור",
     suggestedRequirements: [
-      { name: "Income Invoices", defaultChecked: true },
-      { name: "Bank Statements", defaultChecked: true },
-      { name: "Expense Invoices", defaultChecked: false },
-      { name: "Petty Cash", defaultChecked: false },
+      { name: "חשבוניות הכנסה", defaultChecked: true },
+      { name: "דפי חשבון בנק", defaultChecked: true },
+      { name: "חשבוניות הוצאה", defaultChecked: false },
+      { name: "קופה קטנה", defaultChecked: false },
     ],
   },
   {
-    name: "Nonprofit",
+    name: "עמותה",
     suggestedRequirements: [
-      { name: "Bank Statements", defaultChecked: true },
-      { name: "Income Invoices", defaultChecked: true },
-      { name: "Expense Invoices", defaultChecked: true },
-      { name: "Annual Report", defaultChecked: true },
-      { name: "Payroll Reports", defaultChecked: false },
-      { name: "Employee Forms", defaultChecked: false },
+      { name: "דפי חשבון בנק", defaultChecked: true },
+      { name: "חשבוניות הכנסה", defaultChecked: true },
+      { name: "חשבוניות הוצאה", defaultChecked: true },
+      { name: "דוח שנתי", defaultChecked: true },
+      { name: "דוחות שכר", defaultChecked: false },
+      { name: "טפסי עובדים", defaultChecked: false },
     ],
   },
   {
-    name: "Payroll Only",
+    name: "שכר בלבד",
     suggestedRequirements: [
-      { name: "Payroll Reports", defaultChecked: true },
-      { name: "Employee Forms", defaultChecked: true },
-      { name: "Bank Statements", defaultChecked: false },
+      { name: "דוחות שכר", defaultChecked: true },
+      { name: "טפסי עובדים", defaultChecked: true },
+      { name: "דפי חשבון בנק", defaultChecked: false },
     ],
   },
 ];
