@@ -40,6 +40,13 @@ export const organizations = pgTable("organizations", {
   inactivityTimeoutMinutes: integer("inactivity_timeout_minutes")
     .notNull()
     .default(15),
+  // Epic 2: set once the org has been through (today: the relocated
+  // "Office Setup" flow at /onboarding; later: the real onboarding wizard).
+  // Gates whether a login/registration lands on /onboarding or /dashboard —
+  // see src/lib/onboarding.ts. Nullable/unset means "not yet onboarded".
+  onboardingCompletedAt: timestamp("onboarding_completed_at", {
+    withTimezone: true,
+  }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -50,7 +57,8 @@ export const organizations = pgTable("organizations", {
 
 // The Pilot MVP uses a single shared employee account per firm (EPS Ch.13
 // BR-13.1) rather than individual employee identities — one row per
-// Organization, created alongside it (see scripts/create-organization.ts).
+// Organization, created alongside it (see scripts/create-organization.ts,
+// or self-service via the Epic 2 registration flow in src/app/login/actions.ts).
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: uuid("organization_id")
@@ -58,6 +66,11 @@ export const users = pgTable("users", {
     .references(() => organizations.id, { onDelete: "cascade" }),
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  // Nullable: accounts provisioned via scripts/create-organization.ts don't
+  // collect one. Self-service registration always sets it.
+  fullName: text("full_name"),
+  termsAcceptedAt: timestamp("terms_accepted_at", { withTimezone: true }),
+  privacyAcceptedAt: timestamp("privacy_accepted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

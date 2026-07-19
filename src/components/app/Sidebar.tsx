@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
 import {
   LayoutDashboard,
-  Rocket,
   Users,
   Layers,
   FolderKanban,
@@ -20,7 +19,6 @@ import { CentroMark } from "@/components/landing/icons/CentroMark";
 
 const NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
-  { href: "/onboarding", label: "הקמת המערכת", icon: Rocket },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/services", label: "שירותים", icon: Layers },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },

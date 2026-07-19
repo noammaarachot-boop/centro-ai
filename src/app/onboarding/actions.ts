@@ -7,6 +7,7 @@ import { clients, organizations } from "@/db/schema";
 import { parseClientCsv } from "@/lib/csv";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import { markOnboardingComplete } from "@/lib/onboarding";
 
 async function setIntegrationTimestamp(
   column: "googleConnectedAt" | "whatsappConnectedAt",
@@ -101,7 +102,12 @@ export async function activateAutomation() {
     actorUserId: session.userId,
   });
 
-  redirect("/onboarding");
+  // Activating automation is a clear, unambiguous "setup is done" signal —
+  // also mark onboarding complete so this org's next login goes straight to
+  // the Dashboard instead of back through this page.
+  await markOnboardingComplete(session.organizationId);
+
+  redirect("/dashboard");
 }
 
 export async function deactivateAutomation() {
@@ -121,6 +127,25 @@ export async function deactivateAutomation() {
   });
 
   redirect("/onboarding");
+}
+
+// Explicit exit from this placeholder onboarding flow, independent of
+// activateAutomation() above — an org shouldn't be permanently stuck here
+// just because it isn't ready to turn automation on yet. This is the seam
+// the real onboarding wizard (next epic) will call from its own final step.
+export async function finishOnboarding() {
+  const session = await requireSession();
+  await markOnboardingComplete(session.organizationId);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "onboarding.completed",
+    description: "הקמת המערכת סומנה כהושלמה",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  redirect("/dashboard");
 }
 
 export interface SkippedImportRow {

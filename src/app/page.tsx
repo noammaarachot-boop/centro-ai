@@ -14,6 +14,7 @@ import FAQSection from "@/components/landing/FAQSection";
 import FinalCTASection from "@/components/landing/FinalCTASection";
 import ContactSection from "@/components/landing/ContactSection";
 import Footer from "@/components/landing/Footer";
+import DemoRequestModal from "@/components/landing/DemoRequestModal";
 
 export default function Home() {
   return (
@@ -42,6 +43,7 @@ export default function Home() {
         <ContactSection />
       </main>
       <Footer />
+      <DemoRequestModal />
     </div>
   );
 }

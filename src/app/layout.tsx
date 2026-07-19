@@ -3,7 +3,6 @@ import { Rubik } from "next/font/google";
 import MotionProvider from "@/components/landing/MotionProvider";
 import { AccessibilityProvider } from "@/components/landing/AccessibilityProvider";
 import AccessibilityWidget from "@/components/landing/AccessibilityWidget";
-import DemoRequestModal from "@/components/landing/DemoRequestModal";
 import "./globals.css";
 
 const rubik = Rubik({
@@ -39,7 +38,6 @@ export default function RootLayout({
           <MotionProvider>
             {children}
             <AccessibilityWidget />
-            <DemoRequestModal />
           </MotionProvider>
         </AccessibilityProvider>
       </body>

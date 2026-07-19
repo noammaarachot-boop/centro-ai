@@ -1,13 +1,13 @@
 "use server";
 
 import { eq } from "drizzle-orm";
-import { redirect } from "next/navigation";
 import { getDb } from "@/db";
-import { users } from "@/db/schema";
+import { organizations, users } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
-import { verifyPassword } from "@/lib/auth/password";
+import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { isRateLimited, clearAttempts, recordFailedAttempt } from "@/lib/auth/rateLimiter";
 import { createSession } from "@/lib/auth/session";
+import { redirectAfterAuth } from "@/lib/onboarding";
 
 export interface LoginState {
   error?: string;
@@ -15,6 +15,8 @@ export interface LoginState {
 
 const INVALID_CREDENTIALS_MESSAGE = "פרטי ההתחברות שגויים.";
 const RATE_LIMITED_MESSAGE = "יותר מדי ניסיונות התחברות כושלים. נא לנסות שוב בעוד כמה דקות.";
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 8;
 
 export async function login(
   _prevState: LoginState,
@@ -76,5 +78,107 @@ export async function login(
     actorUserId: user.id,
   });
 
-  redirect("/dashboard");
+  return redirectAfterAuth(user.organizationId);
+}
+
+export interface RegisterState {
+  error?: string;
+  fieldErrors?: {
+    fullName?: string;
+    email?: string;
+    password?: string;
+    confirmPassword?: string;
+    terms?: string;
+  };
+}
+
+const EMAIL_TAKEN_MESSAGE = "כתובת אימייל זו כבר רשומה במערכת.";
+
+export async function register(
+  _prevState: RegisterState,
+  formData: FormData
+): Promise<RegisterState> {
+  const fullName = String(formData.get("fullName") ?? "").trim();
+  const email = String(formData.get("email") ?? "")
+    .trim()
+    .toLowerCase();
+  const password = String(formData.get("password") ?? "");
+  const confirmPassword = String(formData.get("confirmPassword") ?? "");
+  const termsAccepted = formData.get("termsAccepted") === "on";
+  const privacyAccepted = formData.get("privacyAccepted") === "on";
+
+  const fieldErrors: RegisterState["fieldErrors"] = {};
+  if (!fullName) fieldErrors.fullName = "נא להזין שם מלא.";
+  if (!email) {
+    fieldErrors.email = "נא להזין כתובת אימייל.";
+  } else if (!EMAIL_PATTERN.test(email)) {
+    fieldErrors.email = "נא להזין כתובת אימייל תקינה.";
+  }
+  if (!password) {
+    fieldErrors.password = "נא להזין סיסמה.";
+  } else if (password.length < MIN_PASSWORD_LENGTH) {
+    fieldErrors.password = `הסיסמה חייבת להכיל לפחות ${MIN_PASSWORD_LENGTH} תווים.`;
+  }
+  if (!confirmPassword) {
+    fieldErrors.confirmPassword = "נא לאמת את הסיסמה.";
+  } else if (password !== confirmPassword) {
+    fieldErrors.confirmPassword = "הסיסמאות אינן תואמות.";
+  }
+  if (!termsAccepted || !privacyAccepted) {
+    fieldErrors.terms = "יש לאשר את תנאי השימוש ואת מדיניות הפרטיות.";
+  }
+  if (Object.keys(fieldErrors).length > 0) return { fieldErrors };
+
+  const db = await getDb();
+
+  const [existing] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+  if (existing) {
+    return { fieldErrors: { email: EMAIL_TAKEN_MESSAGE } };
+  }
+
+  // `name` here is a temporary placeholder, not a real product decision —
+  // self-service registration deliberately doesn't ask for an office/company
+  // name (see src/lib/onboarding.ts). Collecting the real name is planned as
+  // onboarding wizard step 1 in the next epic; nothing downstream treats
+  // this value as final.
+  const [organization] = await db
+    .insert(organizations)
+    .values({ name: fullName })
+    .returning({ id: organizations.id });
+
+  const passwordHash = await hashPassword(password);
+  const now = new Date();
+  const [user] = await db
+    .insert(users)
+    .values({
+      organizationId: organization.id,
+      email,
+      passwordHash,
+      fullName,
+      termsAcceptedAt: now,
+      privacyAcceptedAt: now,
+    })
+    .returning({ id: users.id, email: users.email });
+
+  await recordAuditEvent({
+    organizationId: organization.id,
+    eventType: "organization.created",
+    description: `הארגון נוצר באמצעות הרשמה עצמאית (${user.email})`,
+    actorType: "system",
+  });
+  await recordAuditEvent({
+    organizationId: organization.id,
+    eventType: "employee.registered",
+    description: `${user.email} נרשם/ה למערכת`,
+    actorType: "employee",
+    actorUserId: user.id,
+  });
+
+  await createSession(user.id, organization.id);
+
+  return redirectAfterAuth(organization.id);
 }

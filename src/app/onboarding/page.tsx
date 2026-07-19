@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { sql } from "drizzle-orm";
-import { CheckCircle2, Circle, Rocket } from "lucide-react";
+import { ArrowRight, CheckCircle2, Circle, Rocket } from "lucide-react";
 import { getDb } from "@/db";
 import { clientServices } from "@/db/schema";
 import { requireSession } from "@/lib/auth/session";
@@ -14,6 +14,7 @@ import {
   deactivateAutomation,
   disconnectGoogle,
   disconnectWhatsapp,
+  finishOnboarding,
 } from "./actions";
 import { ImportClientsForm } from "./ImportClientsForm";
 import { PageHeader } from "@/components/app/PageHeader";
@@ -172,6 +173,21 @@ export default async function OnboardingPage({
           </button>
         </form>
       </Card>
+
+      <div className="flex flex-col items-center gap-2 pt-2 text-center">
+        <p className="text-sm text-text-muted">
+          אפשר להמשיך להגדיר את המערכת מאוחר יותר.
+        </p>
+        <form action={finishOnboarding}>
+          <button
+            type="submit"
+            className={buttonVariants({ variant: "ghost" })}
+          >
+            המשך ללוח הבקרה
+            <ArrowRight className="h-4 w-4" />
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
