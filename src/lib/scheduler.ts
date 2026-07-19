@@ -19,13 +19,21 @@ const REMINDER_MESSAGE =
  * POST /api/cron/tick (see that route for the auth check) since there's
  * no in-process cron in a serverless-style deployment; a "run now" button
  * on /settings covers the pilot until one is wired up.
+ *
+ * `organizationId` scopes the run to one organization — required for the
+ * /settings button (an employee must only ever be able to trigger their
+ * own org's scheduled tasks, never every org's). Omitted only by the
+ * cron endpoint, which legitimately processes every organization in one
+ * tick.
  */
-export async function runScheduledTasks(): Promise<{
+export async function runScheduledTasks(organizationId?: string): Promise<{
   evaluated: number;
   reminded: number;
 }> {
   const db = await getDb();
-  const allOrganizations = await db.select().from(organizations);
+  const allOrganizations = organizationId
+    ? await db.select().from(organizations).where(eq(organizations.id, organizationId))
+    : await db.select().from(organizations);
 
   let evaluated = 0;
   let reminded = 0;

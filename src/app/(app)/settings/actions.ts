@@ -56,7 +56,7 @@ export async function runSchedulerNow(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _prevState: RunSchedulerState
 ): Promise<RunSchedulerState> {
-  await requireSession();
-  const result = await runScheduledTasks();
+  const session = await requireSession();
+  const result = await runScheduledTasks(session.organizationId);
   return { result };
 }

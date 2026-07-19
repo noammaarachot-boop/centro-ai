@@ -3,7 +3,7 @@
 import { and, eq, ne } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
-import { clientServices, clients } from "@/db/schema";
+import { clientServices, clients, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 
@@ -115,7 +115,7 @@ export async function updateClient(
       notes: input.notes || null,
       updatedAt: new Date(),
     })
-    .where(eq(clients.id, clientId))
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
     .returning();
 
   if (!client) return { error: "הלקוח לא נמצא." };
@@ -139,7 +139,7 @@ export async function deleteClient(clientId: string) {
   try {
     const [client] = await db
       .delete(clients)
-      .where(eq(clients.id, clientId))
+      .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
       .returning();
 
     if (client) {
@@ -165,6 +165,24 @@ export async function assignService(clientId: string, formData: FormData) {
 
   const db = await getDb();
 
+  // Both sides of the assignment must belong to this org — otherwise an
+  // employee could link their own client to another organization's
+  // service (and, from there, snapshot that foreign service's
+  // requirement templates into a new Collection Request).
+  const [client] = await db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
+    .limit(1);
+  if (!client) redirect("/clients");
+
+  const [service] = await db
+    .select({ id: services.id })
+    .from(services)
+    .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
+    .limit(1);
+  if (!service) redirect(`/clients/${clientId}`);
+
   await db
     .insert(clientServices)
     .values({ clientId, serviceId })
@@ -185,6 +203,23 @@ export async function assignService(clientId: string, formData: FormData) {
 export async function unassignService(clientId: string, assignmentId: string) {
   const session = await requireSession();
   const db = await getDb();
+
+  // Join through clients to confirm the assignment's client belongs to
+  // this org before deleting — clientServices itself has no
+  // organizationId column of its own.
+  const [assignment] = await db
+    .select({ id: clientServices.id })
+    .from(clientServices)
+    .innerJoin(clients, eq(clientServices.clientId, clients.id))
+    .where(
+      and(
+        eq(clientServices.id, assignmentId),
+        eq(clientServices.clientId, clientId),
+        eq(clients.organizationId, session.organizationId)
+      )
+    )
+    .limit(1);
+  if (!assignment) redirect(`/clients/${clientId}`);
 
   await db.delete(clientServices).where(eq(clientServices.id, assignmentId));
 

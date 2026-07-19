@@ -1,6 +1,6 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { serviceDocumentRequirements, services } from "@/db/schema";
@@ -12,6 +12,17 @@ export interface ServiceFormState {
   fieldErrors?: {
     name?: string;
   };
+}
+
+async function getOrgScopedService(organizationId: string, serviceId: string) {
+  const db = await getDb();
+  const [service] = await db
+    .select({ id: services.id })
+    .from(services)
+    .where(and(eq(services.id, serviceId), eq(services.organizationId, organizationId)))
+    .limit(1);
+  if (!service) redirect("/services");
+  return service;
 }
 
 export async function createService(
@@ -64,7 +75,7 @@ export async function updateService(
   const [service] = await db
     .update(services)
     .set({ name, description: description || null, updatedAt: new Date() })
-    .where(eq(services.id, serviceId))
+    .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
     .returning();
 
   if (!service) return { error: "השירות לא נמצא." };
@@ -87,7 +98,7 @@ export async function deleteService(serviceId: string) {
   try {
     const [service] = await db
       .delete(services)
-      .where(eq(services.id, serviceId))
+      .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
       .returning();
 
     if (service) {
@@ -113,6 +124,8 @@ export async function addRequirement(serviceId: string, formData: FormData) {
 
   if (!name) redirect(`/services/${serviceId}?error=requirement-name`);
 
+  await getOrgScopedService(session.organizationId, serviceId);
+
   const db = await getDb();
   await db.insert(serviceDocumentRequirements).values({
     serviceId,
@@ -136,11 +149,17 @@ export async function removeRequirement(
   requirementId: string
 ) {
   const session = await requireSession();
-  const db = await getDb();
+  await getOrgScopedService(session.organizationId, serviceId);
 
+  const db = await getDb();
   await db
     .delete(serviceDocumentRequirements)
-    .where(eq(serviceDocumentRequirements.id, requirementId));
+    .where(
+      and(
+        eq(serviceDocumentRequirements.id, requirementId),
+        eq(serviceDocumentRequirements.serviceId, serviceId)
+      )
+    );
 
   await recordAuditEvent({
     organizationId: session.organizationId,

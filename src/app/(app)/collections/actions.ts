@@ -3,7 +3,13 @@
 import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
-import { clientServices, collectionRequests, documents } from "@/db/schema";
+import {
+  clientServices,
+  clients,
+  collectionRequests,
+  documents,
+  services,
+} from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import {
@@ -13,6 +19,54 @@ import {
 } from "@/lib/collectionRequestStateMachine";
 import { OperationFailedError } from "@/lib/resilience";
 import { uploadDocument } from "@/lib/storage/driveAdapter";
+
+// The one place every mutation in this file gets the Collection Request
+// from — every lookup by ID (client, service, document) must be proven to
+// belong to the caller's organization before anything is read or written,
+// never trusted from a bound argument alone (NFR-24.4: firms are fully
+// isolated from each other).
+async function getOrgScopedCollectionRequest(
+  organizationId: string,
+  collectionRequestId: string
+) {
+  const db = await getDb();
+  const [current] = await db
+    .select()
+    .from(collectionRequests)
+    .where(
+      and(
+        eq(collectionRequests.id, collectionRequestId),
+        eq(collectionRequests.organizationId, organizationId)
+      )
+    )
+    .limit(1);
+  if (!current) redirect("/collections");
+  return current;
+}
+
+// A document is only ever addressed together with the Collection Request
+// it belongs to, so this also checks documents.collectionRequestId
+// matches — not just that the document exists somewhere in the org.
+async function getScopedDocument(
+  organizationId: string,
+  collectionRequestId: string,
+  documentId: string
+) {
+  const db = await getDb();
+  const [document] = await db
+    .select()
+    .from(documents)
+    .where(
+      and(
+        eq(documents.id, documentId),
+        eq(documents.collectionRequestId, collectionRequestId),
+        eq(documents.organizationId, organizationId)
+      )
+    )
+    .limit(1);
+  if (!document) redirect(`/collections/${collectionRequestId}`);
+  return document;
+}
 
 // FR-15.3: employees are notified only when automation genuinely can't
 // recover — withRetry (src/lib/resilience.ts) already exhausted retries
@@ -51,6 +105,25 @@ export async function createCollectionRequest(
   if (!periodLabel) redirect(`/clients/${clientId}?error=period-required`);
 
   const db = await getDb();
+
+  // Both the client and the service must themselves belong to this org —
+  // otherwise an org-scoped clientServices row could be forged by pairing
+  // one's own client with another organization's serviceId, then have
+  // snapshotServiceRequirements copy that foreign service's requirement
+  // templates into this org's new collection request.
+  const [client] = await db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
+    .limit(1);
+  if (!client) redirect("/clients");
+
+  const [service] = await db
+    .select({ id: services.id })
+    .from(services)
+    .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
+    .limit(1);
+  if (!service) redirect(`/clients/${clientId}`);
 
   const [assignment] = await db
     .select({ id: clientServices.id })
@@ -129,14 +202,9 @@ export async function addManualDocument(
 
   if (!fileName) redirect(`/collections/${collectionRequestId}?error=filename-required`);
 
-  const db = await getDb();
-  const [current] = await db
-    .select()
-    .from(collectionRequests)
-    .where(eq(collectionRequests.id, collectionRequestId))
-    .limit(1);
-  if (!current) redirect("/collections");
+  const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
 
+  const db = await getDb();
   const [document] = await db
     .insert(documents)
     .values({
@@ -185,14 +253,10 @@ export async function reviewDocument(
     redirect(`/collections/${collectionRequestId}`);
   }
 
-  const db = await getDb();
-  const [current] = await db
-    .select({ clientId: collectionRequests.clientId })
-    .from(collectionRequests)
-    .where(eq(collectionRequests.id, collectionRequestId))
-    .limit(1);
-  if (!current) redirect("/collections");
+  const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
+  await getScopedDocument(session.organizationId, collectionRequestId, documentId);
 
+  const db = await getDb();
   const [document] = await db
     .update(documents)
     .set({ status: decision as "approved" | "rejected" | "needs_review", updatedAt: new Date() })
@@ -235,6 +299,9 @@ export async function assignDocumentRequirement(
   const requirementId = String(formData.get("requirementId") ?? "");
   if (!requirementId) redirect(`/collections/${collectionRequestId}`);
 
+  await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
+  await getScopedDocument(session.organizationId, collectionRequestId, documentId);
+
   const db = await getDb();
   const [document] = await db
     .update(documents)
@@ -265,8 +332,10 @@ export async function simulateDriveDeletion(
   documentId: string
 ) {
   const session = await requireSession();
-  const db = await getDb();
+  await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
+  await getScopedDocument(session.organizationId, collectionRequestId, documentId);
 
+  const db = await getDb();
   const [document] = await db
     .update(documents)
     .set({
