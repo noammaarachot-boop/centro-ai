@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Trash2 } from "lucide-react";
+import { ArrowLeft, Layers, Trash2, X } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import {
   getClient,
@@ -10,6 +10,11 @@ import {
 import { assignService, deleteClient, unassignService, updateClient } from "../actions";
 import { ClientForm } from "../ClientForm";
 import { createCollectionRequest } from "../../collections/actions";
+import { PageHeader } from "@/components/app/PageHeader";
+import { Card } from "@/components/app/Card";
+import { Button, buttonVariants } from "@/components/app/Button";
+import { SelectField } from "@/components/app/FormField";
+import { EmptyState } from "@/components/app/EmptyState";
 
 export default async function ClientDetailPage({
   params,
@@ -35,23 +40,22 @@ export default async function ClientDetailPage({
   const boundAssign = assignService.bind(null, client.id);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-8 px-6 py-12">
+    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
       <div>
         <Link
           href="/clients"
-          className="text-sm text-text-muted hover:text-brand-purple"
+          className="mb-3 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
         >
-          ← חזרה ללקוחות
+          <ArrowLeft className="h-3.5 w-3.5" />
+          חזרה ללקוחות
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold text-text-primary">
-          {client.name}
-        </h1>
+        <PageHeader title={client.name} />
       </div>
 
       {error === "has-history" && (
         <p
           role="alert"
-          className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
+          className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
           לא ניתן למחוק לקוח שיש לו היסטוריית בקשות איסוף.
         </p>
@@ -59,16 +63,14 @@ export default async function ClientDetailPage({
       {error === "period-required" && (
         <p
           role="alert"
-          className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
+          className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
           נא להזין תקופה לפני פתיחת בקשת איסוף.
         </p>
       )}
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">
-          פרטי לקוח
-        </h2>
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי לקוח</h2>
         <ClientForm
           action={boundUpdate}
           submitLabel="שמירת שינויים"
@@ -79,25 +81,25 @@ export default async function ClientDetailPage({
             notes: client.notes,
           }}
         />
-      </section>
+      </Card>
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">
-          שירותים משויכים
-        </h2>
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">שירותים משויכים</h2>
         {assignedServices.length === 0 ? (
-          <p className="mb-4 text-sm text-text-muted">
-            אין שירותים משויכים ללקוח זה.
-          </p>
+          <EmptyState
+            icon={Layers}
+            title="אין שירותים משויכים"
+            description="שייכו שירות ללקוח כדי לפתוח עבורו בקשות איסוף מסמכים."
+          />
         ) : (
-          <ul className="mb-4 space-y-2">
+          <ul className="mb-5 space-y-3">
             {assignedServices.map((assignment) => (
               <li
                 key={assignment.assignmentId}
-                className="rounded-xl border border-border px-4 py-2.5"
+                className="rounded-xl border border-border bg-surface-muted/40 px-4 py-3 transition-colors hover:border-brand-purple/20"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-text-primary">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-medium text-text-primary">
                     {assignment.serviceName}
                   </span>
                   <form
@@ -109,8 +111,9 @@ export default async function ClientDetailPage({
                   >
                     <button
                       type="submit"
-                      className="text-xs font-medium text-danger hover:underline"
+                      className="inline-flex items-center gap-1 text-xs font-medium text-danger transition-colors hover:underline"
                     >
+                      <X className="h-3 w-3" />
                       הסרת שיוך
                     </button>
                   </form>
@@ -121,18 +124,18 @@ export default async function ClientDetailPage({
                     client.id,
                     assignment.serviceId
                   )}
-                  className="mt-2 flex items-center gap-2"
+                  className="mt-2.5 flex items-center gap-2"
                 >
                   <input
                     name="periodLabel"
                     type="text"
                     required
                     placeholder="תקופה, למשל 2026-07"
-                    className="flex-1 rounded-lg border border-border bg-white px-3 py-1.5 text-xs text-text-primary outline-none focus:border-brand-purple"
+                    className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
                   />
                   <button
                     type="submit"
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
+                    className={buttonVariants({ variant: "secondary", size: "sm" })}
                   >
                     פתיחת בקשת איסוף
                   </button>
@@ -143,32 +146,27 @@ export default async function ClientDetailPage({
         )}
 
         {unassignedServices.length > 0 && (
-          <form action={boundAssign} className="flex items-center gap-2">
-            <select
-              name="serviceId"
-              required
-              className="flex-1 rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none focus:border-brand-purple"
-            >
-              {unassignedServices.map((service) => (
-                <option key={service.id} value={service.id}>
-                  {service.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              className="rounded-full border border-border px-4 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple"
-            >
-              שיוך שירות
-            </button>
+          <form action={boundAssign} className="flex items-end gap-2">
+            <div className="flex-1">
+              <SelectField id="serviceId" name="serviceId" label="שיוך שירות נוסף" required>
+                {unassignedServices.map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name}
+                  </option>
+                ))}
+              </SelectField>
+            </div>
+            <Button type="submit" variant="secondary">
+              שיוך
+            </Button>
           </form>
         )}
-      </section>
+      </Card>
 
       <form action={boundDelete}>
         <button
           type="submit"
-          className="flex items-center gap-1.5 text-sm font-medium text-danger hover:underline"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
         >
           <Trash2 className="h-4 w-4" />
           מחיקת לקוח

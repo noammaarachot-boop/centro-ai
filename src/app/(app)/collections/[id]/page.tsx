@@ -1,5 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import {
+  ArrowLeft,
+  Check,
+  ExternalLink,
+  FileWarning,
+  MessageCircle,
+  ScrollText,
+  Send,
+  ShieldQuestion,
+  Trash2,
+  X,
+} from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import {
   getCollectionRequest,
@@ -34,6 +46,10 @@ import {
   simulateInboundMessage,
   takeOverConversation,
 } from "../conversationActions";
+import { Card } from "@/components/app/Card";
+import { Badge, type BadgeTone } from "@/components/app/Badge";
+import { buttonVariants } from "@/components/app/Button";
+import { EmptyState } from "@/components/app/EmptyState";
 
 const TRANSITION_LABELS: Record<CollectionRequestStatus, string> = {
   draft: "חזרה לטיוטה",
@@ -45,21 +61,30 @@ const TRANSITION_LABELS: Record<CollectionRequestStatus, string> = {
   cancelled: "ביטול",
 };
 
-const DOCUMENT_STATUS_LABELS: Record<string, string> = {
-  received: "התקבל",
-  processing: "בעיבוד",
-  approved: "אושר",
-  rejected: "נדחה",
-  needs_review: "דורש בדיקה",
-  deleted_from_drive: "נמחק מ-Drive",
+const DOCUMENT_STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {
+  received: { label: "התקבל", tone: "blue" },
+  processing: { label: "בעיבוד", tone: "purple" },
+  approved: { label: "אושר", tone: "success" },
+  rejected: { label: "נדחה", tone: "danger" },
+  needs_review: { label: "דורש בדיקה", tone: "warning" },
+  deleted_from_drive: { label: "נמחק מ-Drive", tone: "neutral" },
 };
 
-const CONVERSATION_STATUS_LABELS: Record<string, string> = {
-  open: "פתוחה",
-  waiting_for_client: "ממתינה לתשובת לקוח",
-  human_control: "בשליטת עובד",
-  closed: "סגורה",
+const CONVERSATION_STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {
+  open: { label: "פתוחה", tone: "blue" },
+  waiting_for_client: { label: "ממתינה לתשובת לקוח", tone: "warning" },
+  human_control: { label: "בשליטת עובד", tone: "purple" },
+  closed: { label: "סגורה", tone: "neutral" },
 };
+
+const compactInputClass =
+  "flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10";
+const compactSelectClass =
+  "rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10";
+const compactButtonClass =
+  "rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple";
+const pillButtonClass =
+  "rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple";
 
 export default async function CollectionRequestDetailPage({
   params,
@@ -85,21 +110,22 @@ export default async function CollectionRequestDetailPage({
   const auditHistory = await listAuditLog(session.organizationId, { collectionRequestId: id });
 
   return (
-    <div className="mx-auto max-w-2xl space-y-8 px-6 py-12">
+    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
       <div>
         <Link
           href="/collections"
-          className="text-sm text-text-muted hover:text-brand-purple"
+          className="mb-3 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
         >
-          ← חזרה לבקשות איסוף
+          <ArrowLeft className="h-3.5 w-3.5" />
+          חזרה לבקשות איסוף
         </Link>
-        <div className="mt-2 flex items-center gap-3">
-          <h1 className="text-2xl font-semibold text-text-primary">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-[26px] font-bold tracking-tight text-text-primary">
             {collectionRequest.clientName} — {collectionRequest.serviceName}
           </h1>
           <StatusBadge status={collectionRequest.status} />
         </div>
-        <p className="mt-1 text-sm text-text-muted">
+        <p className="mt-1.5 text-sm text-text-secondary">
           תקופה: {collectionRequest.periodLabel}
         </p>
       </div>
@@ -107,26 +133,21 @@ export default async function CollectionRequestDetailPage({
       {error && (
         <p
           role="alert"
-          className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
+          className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
           {decodeURIComponent(error)}
         </p>
       )}
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">
-          שינוי סטטוס
-        </h2>
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">שינוי סטטוס</h2>
         {options.length === 0 ? (
           <p className="text-sm text-text-muted">אין פעולות זמינות (סטטוס סופי).</p>
         ) : (
           <div className="flex flex-wrap gap-2">
             {options.map((status) => (
               <form key={status} action={boundTransition.bind(null, status)}>
-                <button
-                  type="submit"
-                  className="rounded-full border border-border px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple"
-                >
+                <button type="submit" className={pillButtonClass}>
                   {collectionRequest.status === "completed" && status === "active"
                     ? "פתיחה מחדש"
                     : TRANSITION_LABELS[status]}
@@ -135,91 +156,94 @@ export default async function CollectionRequestDetailPage({
             ))}
           </div>
         )}
-      </section>
+      </Card>
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">
-          דרישות מסמכים
-        </h2>
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">דרישות מסמכים</h2>
         {requirements.length === 0 ? (
-          <p className="text-sm text-text-muted">
-            אין דרישות מסמכים מוגדרות לשירות זה.
-          </p>
+          <p className="text-sm text-text-muted">אין דרישות מסמכים מוגדרות לשירות זה.</p>
         ) : (
           <ul className="space-y-4">
             {requirements.map((requirement) => (
               <li
                 key={requirement.id}
-                className="rounded-xl border border-border p-4"
+                className="rounded-xl border border-border bg-surface-muted/30 p-4"
               >
-                <p className="text-sm font-medium text-text-primary">
-                  {requirement.name}
-                </p>
+                <p className="text-sm font-medium text-text-primary">{requirement.name}</p>
 
                 {requirement.documents.length > 0 && (
-                  <ul className="mt-2 space-y-2">
-                    {requirement.documents.map((doc) => (
-                      <li key={doc.id} className="text-xs text-text-secondary">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>{doc.fileName}</span>
-                          <div className="flex items-center gap-2">
-                            <span>{DOCUMENT_STATUS_LABELS[doc.status]}</span>
-                            {doc.status !== "approved" && doc.status !== "rejected" && (
-                              <div className="flex gap-1">
-                                <form action={reviewDocument.bind(null, id, doc.id)}>
-                                  <input type="hidden" name="decision" value="approved" />
-                                  <button
-                                    type="submit"
-                                    className="rounded-full border border-border px-2 py-0.5 text-[11px] text-brand-emerald hover:border-brand-emerald"
-                                  >
-                                    אישור
-                                  </button>
-                                </form>
-                                <form action={reviewDocument.bind(null, id, doc.id)}>
-                                  <input type="hidden" name="decision" value="rejected" />
-                                  <button
-                                    type="submit"
-                                    className="rounded-full border border-border px-2 py-0.5 text-[11px] text-danger hover:border-danger"
-                                  >
-                                    דחייה
-                                  </button>
-                                </form>
-                              </div>
-                            )}
+                  <ul className="mt-3 space-y-2.5">
+                    {requirement.documents.map((doc) => {
+                      const meta = DOCUMENT_STATUS_META[doc.status];
+                      return (
+                        <li key={doc.id} className="text-xs text-text-secondary">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-text-primary">
+                              {doc.fileName}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <Badge tone={meta.tone}>{meta.label}</Badge>
+                              {doc.status !== "approved" && doc.status !== "rejected" && (
+                                <div className="flex gap-1">
+                                  <form action={reviewDocument.bind(null, id, doc.id)}>
+                                    <input type="hidden" name="decision" value="approved" />
+                                    <button
+                                      type="submit"
+                                      className="inline-flex items-center gap-0.5 rounded-full border border-border px-2 py-0.5 text-[11px] text-success transition-colors hover:border-success"
+                                    >
+                                      <Check className="h-3 w-3" />
+                                      אישור
+                                    </button>
+                                  </form>
+                                  <form action={reviewDocument.bind(null, id, doc.id)}>
+                                    <input type="hidden" name="decision" value="rejected" />
+                                    <button
+                                      type="submit"
+                                      className="inline-flex items-center gap-0.5 rounded-full border border-border px-2 py-0.5 text-[11px] text-danger transition-colors hover:border-danger"
+                                    >
+                                      <X className="h-3 w-3" />
+                                      דחייה
+                                    </button>
+                                  </form>
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                        {doc.status === "approved" && doc.googleDriveFileId && (
-                          <div className="mt-1 flex items-center justify-between text-[11px] text-text-muted">
-                            <a
-                              href={driveFileLink(doc.googleDriveFileId)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-brand-blue hover:underline"
-                            >
-                              פתיחה ב-Google Drive
-                            </a>
-                            <form action={simulateDriveDeletion.bind(null, id, doc.id)}>
-                              <button
-                                type="submit"
-                                className="text-text-muted hover:text-danger hover:underline"
+                          {doc.status === "approved" && doc.googleDriveFileId && (
+                            <div className="mt-1.5 flex items-center justify-between text-[11px] text-text-muted">
+                              <a
+                                href={driveFileLink(doc.googleDriveFileId)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-brand-blue transition-colors hover:underline"
                               >
-                                הדמיית מחיקה מ-Drive
-                              </button>
-                            </form>
-                          </div>
-                        )}
-                        {doc.status === "deleted_from_drive" && doc.driveDeletedAt && (
-                          <p className="mt-1 text-[11px] text-danger">
-                            נמחק ידנית ב-
-                            {new Date(doc.driveDeletedAt).toLocaleDateString("he-IL")}{" "}
-                            {new Date(doc.driveDeletedAt).toLocaleTimeString("he-IL", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </p>
-                        )}
-                      </li>
-                    ))}
+                                <ExternalLink className="h-3 w-3" />
+                                פתיחה ב-Google Drive
+                              </a>
+                              <form action={simulateDriveDeletion.bind(null, id, doc.id)}>
+                                <button
+                                  type="submit"
+                                  className="inline-flex items-center gap-1 text-text-muted transition-colors hover:text-danger hover:underline"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                  הדמיית מחיקה מ-Drive
+                                </button>
+                              </form>
+                            </div>
+                          )}
+                          {doc.status === "deleted_from_drive" && doc.driveDeletedAt && (
+                            <p className="mt-1.5 text-[11px] text-danger">
+                              נמחק ידנית ב-
+                              {new Date(doc.driveDeletedAt).toLocaleDateString("he-IL")}{" "}
+                              {new Date(doc.driveDeletedAt).toLocaleTimeString("he-IL", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </p>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
 
@@ -232,20 +256,14 @@ export default async function CollectionRequestDetailPage({
                     type="text"
                     required
                     placeholder="שם קובץ (הוספה ידנית)"
-                    className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                    className={compactInputClass}
                   />
-                  <select
-                    name="status"
-                    className="rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
-                  >
+                  <select name="status" className={compactSelectClass}>
                     <option value="approved">אישור</option>
                     <option value="needs_review">דורש בדיקה</option>
                     <option value="rejected">דחייה</option>
                   </select>
-                  <button
-                    type="submit"
-                    className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                  >
+                  <button type="submit" className={compactButtonClass}>
                     הוספה
                   </button>
                 </form>
@@ -253,32 +271,27 @@ export default async function CollectionRequestDetailPage({
             ))}
           </ul>
         )}
-      </section>
+      </Card>
 
       {unmatchedDocuments.length > 0 && (
-        <section className="rounded-2xl border border-warning/30 bg-warning/5 p-6 shadow-card">
-          <h2 className="mb-1 text-lg font-semibold text-text-primary">
-            מסמכים ללא שיוך
-          </h2>
+        <Card className="border-warning/30 bg-warning/5">
+          <div className="mb-4 flex items-center gap-2">
+            <FileWarning className="h-5 w-5 shrink-0 text-warning" />
+            <h2 className="text-lg font-semibold text-text-primary">מסמכים ללא שיוך</h2>
+          </div>
           <p className="mb-4 text-sm text-text-muted">
-            הסיווג האוטומטי לא הצליח לשייך מסמכים אלו לדרישה בביטחון מספק
-            (BR-11.3) — נדרש שיוך ידני.
+            הסיווג האוטומטי לא הצליח לשייך מסמכים אלו לדרישה בביטחון מספק (BR-11.3) — נדרש
+            שיוך ידני.
           </p>
           <ul className="space-y-3">
             {unmatchedDocuments.map((doc) => (
               <li key={doc.id} className="rounded-xl border border-border bg-surface p-3">
-                <p className="mb-2 text-sm font-medium text-text-primary">
-                  {doc.fileName}
-                </p>
+                <p className="mb-2 text-sm font-medium text-text-primary">{doc.fileName}</p>
                 <form
                   action={assignDocumentRequirement.bind(null, id, doc.id)}
                   className="flex items-center gap-2"
                 >
-                  <select
-                    name="requirementId"
-                    required
-                    className="flex-1 rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
-                  >
+                  <select name="requirementId" required className={`flex-1 ${compactSelectClass}`}>
                     <option value="">— בחירת דרישה —</option>
                     {requirements.map((requirement) => (
                       <option key={requirement.id} value={requirement.id}>
@@ -286,99 +299,90 @@ export default async function CollectionRequestDetailPage({
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="submit"
-                    className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                  >
+                  <button type="submit" className={compactButtonClass}>
                     שיוך
                   </button>
                 </form>
               </li>
             ))}
           </ul>
-        </section>
+        </Card>
       )}
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text-primary">שיחת וואטסאפ</h2>
+      <Card>
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <MessageCircle className="h-5 w-5 shrink-0 text-brand-purple" />
+            <h2 className="text-lg font-semibold text-text-primary">שיחת וואטסאפ</h2>
+          </div>
           {conversation && (
-            <span className="text-xs text-text-muted">
-              {CONVERSATION_STATUS_LABELS[conversation.status]}
-            </span>
+            <Badge tone={CONVERSATION_STATUS_META[conversation.status].tone}>
+              {CONVERSATION_STATUS_META[conversation.status].label}
+            </Badge>
           )}
         </div>
 
         {!conversation ? (
           <form action={initiateConversation.bind(null, id)}>
-            <button
-              type="submit"
-              className="rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-4 py-2.5 text-sm font-semibold text-white shadow-card-lg"
-            >
+            <button type="submit" className={buttonVariants({ variant: "primary" })}>
+              <Send className="h-4 w-4" />
               שליחת פנייה ראשונית
             </button>
           </form>
         ) : (
           <>
-            <ul className="mb-4 max-h-80 space-y-2 overflow-y-auto">
-              {messages.map((message) => (
-                <li
-                  key={message.id}
-                  className={
-                    message.direction === "outbound"
-                      ? "ms-auto max-w-[80%] rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
-                      : "me-auto max-w-[80%] rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
-                  }
-                >
-                  <p>{message.body}</p>
-                  <p className="mt-0.5 text-[10px] text-text-muted">
-                    {message.senderType} ·{" "}
-                    {new Date(message.createdAt).toLocaleTimeString("he-IL")}
-                  </p>
-                </li>
-              ))}
-            </ul>
+            {messages.length === 0 ? (
+              <EmptyState
+                icon={ShieldQuestion}
+                title="אין הודעות עדיין"
+                description="השיחה נפתחה אך טרם נשלחו או התקבלו הודעות."
+              />
+            ) : (
+              <ul className="mb-4 max-h-80 space-y-2 overflow-y-auto">
+                {messages.map((message) => (
+                  <li
+                    key={message.id}
+                    className={
+                      message.direction === "outbound"
+                        ? "ms-auto max-w-[80%] rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
+                        : "me-auto max-w-[80%] rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
+                    }
+                  >
+                    <p>{message.body}</p>
+                    <p className="mt-0.5 text-[10px] text-text-muted">
+                      {message.senderType} ·{" "}
+                      {new Date(message.createdAt).toLocaleTimeString("he-IL")}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
 
             <div className="flex flex-wrap gap-2 border-t border-border pt-4">
               <form action={evaluateNow.bind(null, id)}>
-                <button
-                  type="submit"
-                  className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                >
+                <button type="submit" className={pillButtonClass}>
                   הרצת הערכה (סימולציית חוסר פעילות)
                 </button>
               </form>
               <form action={markFinished.bind(null, id)}>
-                <button
-                  type="submit"
-                  className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                >
+                <button type="submit" className={pillButtonClass}>
                   הלקוח השיב: סיימתי
                 </button>
               </form>
               <form action={markMoreDocuments.bind(null, id)}>
-                <button
-                  type="submit"
-                  className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                >
+                <button type="submit" className={pillButtonClass}>
                   הלקוח השיב: יש עוד מסמכים
                 </button>
               </form>
               {conversation.status === "human_control" ? (
                 <form action={releaseConversation.bind(null, id)}>
-                  <button
-                    type="submit"
-                    className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                  >
+                  <button type="submit" className={pillButtonClass}>
                     שחרור שליטה אוטומטית
                   </button>
                 </form>
               ) : (
                 <form action={takeOverConversation.bind(null, id)}>
-                  <button
-                    type="submit"
-                    className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                  >
+                  <button type="submit" className={pillButtonClass}>
                     השתלטות עובד
                   </button>
                 </form>
@@ -393,12 +397,9 @@ export default async function CollectionRequestDetailPage({
                 name="body"
                 type="text"
                 placeholder="הודעת עובד ידנית..."
-                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={compactInputClass}
               />
-              <button
-                type="submit"
-                className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-              >
+              <button type="submit" className={compactButtonClass}>
                 שליחה
               </button>
             </form>
@@ -408,27 +409,24 @@ export default async function CollectionRequestDetailPage({
               className="mt-3 space-y-2 rounded-xl border border-dashed border-border p-3"
             >
               <p className="text-[11px] text-text-muted">
-                הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי). קובץ
-                מצורף עובר סיווג אוטומטי (AI מדומה) שמשייך אותו לדרישה
-                המתאימה — בחירה ידנית להלן עוקפת את הסיווג.
+                הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי). קובץ מצורף עובר סיווג
+                אוטומטי (AI מדומה) שמשייך אותו לדרישה המתאימה — בחירה ידנית להלן עוקפת את
+                הסיווג.
               </p>
               <input
                 name="body"
                 type="text"
                 placeholder="טקסט ההודעה"
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={`w-full ${compactInputClass}`}
               />
               <div className="flex items-center gap-2">
                 <input
                   name="fileName"
                   type="text"
                   placeholder="שם קובץ מצורף (לא חובה)"
-                  className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                  className={compactInputClass}
                 />
-                <select
-                  name="requirementId"
-                  className="rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
-                >
+                <select name="requirementId" className={compactSelectClass}>
                   <option value="">— סיווג אוטומטי —</option>
                   {requirements.map((requirement) => (
                     <option key={requirement.id} value={requirement.id}>
@@ -436,22 +434,20 @@ export default async function CollectionRequestDetailPage({
                     </option>
                   ))}
                 </select>
-                <button
-                  type="submit"
-                  className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
-                >
+                <button type="submit" className={compactButtonClass}>
                   הדמיה
                 </button>
               </div>
             </form>
           </>
         )}
-      </section>
+      </Card>
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">
-          היסטוריית ביקורת
-        </h2>
+      <Card>
+        <div className="mb-4 flex items-center gap-2">
+          <ScrollText className="h-5 w-5 shrink-0 text-text-muted" />
+          <h2 className="text-lg font-semibold text-text-primary">היסטוריית ביקורת</h2>
+        </div>
         {auditHistory.length === 0 ? (
           <p className="text-sm text-text-muted">אין עדיין רשומות עבור בקשה זו.</p>
         ) : (
@@ -466,7 +462,7 @@ export default async function CollectionRequestDetailPage({
             ))}
           </ul>
         )}
-      </section>
+      </Card>
     </div>
   );
 }

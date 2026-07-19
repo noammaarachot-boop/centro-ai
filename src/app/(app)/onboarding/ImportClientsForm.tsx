@@ -1,8 +1,9 @@
 "use client";
 
 import { useActionState } from "react";
-import { Loader2, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 import { importClients, type ImportClientsState } from "./actions";
+import { Button } from "@/components/app/Button";
 
 const initialState: ImportClientsState = {};
 
@@ -20,30 +21,22 @@ export function ImportClientsForm() {
           name="file"
           accept=".csv,text/csv"
           required
-          className="flex-1 rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none file:me-3 file:rounded-full file:border-0 file:bg-surface-muted file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-text-secondary"
+          className="flex-1 rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 file:me-3 file:rounded-full file:border-0 file:bg-surface-muted file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-text-secondary focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
         />
-        <button
-          type="submit"
-          disabled={isPending}
-          className="flex items-center gap-1.5 rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-4 py-2.5 text-sm font-semibold text-white shadow-card-lg transition-transform hover:scale-[1.01] active:scale-[0.98] disabled:opacity-70"
-        >
-          {isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Upload className="h-4 w-4" />
-          )}
+        <Button type="submit" variant="primary" loading={isPending}>
+          <Upload className="h-4 w-4" />
           ייבוא
-        </button>
+        </Button>
       </form>
 
       {state.error && (
-        <p role="alert" className="mt-3 text-xs font-medium text-danger">
+        <p role="alert" className="mt-3 animate-fade-in-up text-xs font-medium text-danger">
           {state.error}
         </p>
       )}
 
       {state.result && (
-        <div className="mt-4 rounded-xl border border-border bg-surface-muted p-4 text-sm">
+        <div className="mt-4 animate-fade-in-up rounded-xl border border-border bg-surface-muted p-4 text-sm">
           <p className="font-medium text-text-primary">
             יובאו {state.result.imported} לקוחות בהצלחה.
           </p>

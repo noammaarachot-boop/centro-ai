@@ -1,64 +1,78 @@
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Plus, Users } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { listClients } from "@/lib/data/clients";
+import { PageHeader } from "@/components/app/PageHeader";
+import { Card } from "@/components/app/Card";
+import { EmptyState } from "@/components/app/EmptyState";
+import { buttonVariants } from "@/components/app/Button";
 
 export default async function ClientsPage() {
   const session = await requireSession();
   const clients = await listClients(session.organizationId);
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-12">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-text-primary">לקוחות</h1>
-        <Link
-          href="/clients/new"
-          className="flex items-center gap-1.5 rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-4 py-2.5 text-sm font-semibold text-white shadow-card-lg transition-transform hover:scale-[1.01] active:scale-[0.98]"
-        >
-          <Plus className="h-4 w-4" />
-          לקוח חדש
-        </Link>
-      </div>
+    <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+      <PageHeader
+        title="לקוחות"
+        description="ניהול הלקוחות של המשרד וההיסטוריה שלהם."
+        actions={
+          <Link href="/clients/new" className={buttonVariants({ variant: "primary" })}>
+            <Plus className="h-4 w-4" />
+            לקוח חדש
+          </Link>
+        }
+      />
 
       {clients.length === 0 ? (
-        <p className="rounded-2xl border border-dashed border-border bg-surface-muted px-6 py-10 text-center text-sm text-text-muted">
-          עדיין אין לקוחות. הוסיפו את הלקוח הראשון כדי להתחיל.
-        </p>
+        <EmptyState
+          icon={Users}
+          title="עדיין אין לקוחות"
+          description="הוסיפו את הלקוח הראשון כדי להתחיל לאסוף מסמכים, או ייבאו רשימה שלמה דרך הקמת המערכת."
+          action={
+            <Link href="/clients/new" className={buttonVariants({ variant: "primary" })}>
+              <Plus className="h-4 w-4" />
+              הוספת לקוח ראשון
+            </Link>
+          }
+        />
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
-          <table className="w-full text-end text-sm">
-            <thead className="bg-surface-muted text-text-muted">
-              <tr>
-                <th className="px-4 py-3 font-medium">שם</th>
-                <th className="px-4 py-3 font-medium">טלפון</th>
-                <th className="px-4 py-3 font-medium">אימייל</th>
-              </tr>
-            </thead>
-            <tbody>
-              {clients.map((client) => (
-                <tr
-                  key={client.id}
-                  className="border-t border-border last:rounded-b-2xl hover:bg-surface-muted"
-                >
-                  <td className="px-4 py-3">
-                    <Link
-                      href={`/clients/${client.id}`}
-                      className="font-medium text-text-primary hover:text-brand-purple"
-                    >
-                      {client.name}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-text-secondary" dir="ltr">
-                    {client.phone}
-                  </td>
-                  <td className="px-4 py-3 text-text-secondary" dir="ltr">
-                    {client.email ?? "—"}
-                  </td>
+        <Card padding="none" className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[480px] text-end text-sm">
+              <thead className="sticky top-0 bg-surface-muted text-text-muted">
+                <tr>
+                  <th className="px-5 py-3.5 font-medium">שם</th>
+                  <th className="px-5 py-3.5 font-medium">טלפון</th>
+                  <th className="px-5 py-3.5 font-medium">אימייל</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {clients.map((client) => (
+                  <tr
+                    key={client.id}
+                    className="border-t border-border transition-colors hover:bg-surface-muted/60"
+                  >
+                    <td className="px-5 py-4">
+                      <Link
+                        href={`/clients/${client.id}`}
+                        className="font-medium text-text-primary transition-colors hover:text-brand-purple"
+                      >
+                        {client.name}
+                      </Link>
+                    </td>
+                    <td className="px-5 py-4 text-text-secondary" dir="ltr">
+                      {client.phone}
+                    </td>
+                    <td className="px-5 py-4 text-text-secondary" dir="ltr">
+                      {client.email ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
     </div>
   );

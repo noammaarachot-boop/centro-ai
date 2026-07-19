@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { sql } from "drizzle-orm";
-import { CheckCircle2, Circle } from "lucide-react";
+import { CheckCircle2, Circle, Rocket } from "lucide-react";
 import { getDb } from "@/db";
 import { clientServices } from "@/db/schema";
 import { requireSession } from "@/lib/auth/session";
@@ -16,6 +16,9 @@ import {
   disconnectWhatsapp,
 } from "./actions";
 import { ImportClientsForm } from "./ImportClientsForm";
+import { PageHeader } from "@/components/app/PageHeader";
+import { Card } from "@/components/app/Card";
+import { buttonVariants } from "@/components/app/Button";
 
 function StatusRow({
   label,
@@ -30,12 +33,12 @@ function StatusRow({
 }) {
   const isConnected = !!connectedAt;
   return (
-    <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3">
-      <div className="flex items-center gap-2">
+    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-muted/40 px-4 py-3.5 transition-colors hover:border-brand-purple/20">
+      <div className="flex items-center gap-2.5">
         {isConnected ? (
-          <CheckCircle2 className="h-5 w-5 text-brand-emerald" />
+          <CheckCircle2 className="h-5 w-5 shrink-0 text-brand-emerald" />
         ) : (
-          <Circle className="h-5 w-5 text-text-muted" />
+          <Circle className="h-5 w-5 shrink-0 text-text-muted" />
         )}
         <div>
           <p className="text-sm font-medium text-text-primary">{label}</p>
@@ -49,7 +52,7 @@ function StatusRow({
       <form action={isConnected ? disconnectAction : connectAction}>
         <button
           type="submit"
-          className="rounded-full border border-border px-4 py-2 text-xs font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple"
+          className={buttonVariants({ variant: "secondary", size: "sm" })}
         >
           {isConnected ? "ניתוק" : "חיבור"}
         </button>
@@ -82,29 +85,29 @@ export default async function OnboardingPage({
   const isAutomationActive = !!organization.automationActivatedAt;
 
   return (
-    <div className="mx-auto max-w-2xl space-y-8 px-6 py-12">
-      <div>
-        <h1 className="text-2xl font-semibold text-text-primary">
-          הקמת המערכת
-        </h1>
-        <p className="mt-1 text-sm text-text-secondary">
-          שלבי ההקמה עבור {organization.name}, לפי הסדר המומלץ.
-        </p>
-      </div>
+    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
+      <PageHeader
+        eyebrow="הקמת המערכת"
+        title={
+          <span className="inline-flex items-center gap-2.5">
+            <Rocket className="h-6 w-6 text-brand-purple" />
+            {organization.name}
+          </span>
+        }
+        description="שלבי ההקמה עבור המשרד, לפי הסדר המומלץ."
+      />
 
       {error === "integrations-required" && (
         <p
           role="alert"
-          className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
+          className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
           לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.
         </p>
       )}
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">
-          חיבורי מערכת
-        </h2>
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">חיבורי מערכת</h2>
         <div className="space-y-3">
           <StatusRow
             label="חשבון Google (Drive)"
@@ -119,53 +122,41 @@ export default async function OnboardingPage({
             disconnectAction={disconnectWhatsapp}
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-1 text-lg font-semibold text-text-primary">
-          ייבוא לקוחות
-        </h2>
+      <Card>
+        <h2 className="mb-1 text-lg font-semibold text-text-primary">ייבוא לקוחות</h2>
         <p className="mb-4 text-sm text-text-muted">
-          קובץ CSV עם עמודות שם וטלפון (ואופציונלית אימייל והערות). ניתן גם
-          להוסיף לקוחות אחד-אחד בעמוד{" "}
+          קובץ CSV עם עמודות שם וטלפון (ואופציונלית אימייל והערות). ניתן גם להוסיף
+          לקוחות אחד-אחד בעמוד{" "}
           <Link href="/clients" className="text-brand-purple hover:underline">
             הלקוחות
           </Link>
           .
         </p>
         <ImportClientsForm />
-      </section>
+      </Card>
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">
-          סיכום לפני הפעלה
-        </h2>
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">סיכום לפני הפעלה</h2>
         <dl className="grid grid-cols-3 gap-4 text-center">
-          <div>
+          <div className="rounded-xl border border-border bg-surface-muted/40 py-4">
             <dt className="text-xs text-text-muted">לקוחות</dt>
-            <dd className="text-xl font-semibold text-text-primary">
-              {clients.length}
-            </dd>
+            <dd className="mt-1 text-2xl font-bold text-text-primary">{clients.length}</dd>
           </div>
-          <div>
+          <div className="rounded-xl border border-border bg-surface-muted/40 py-4">
             <dt className="text-xs text-text-muted">שירותים</dt>
-            <dd className="text-xl font-semibold text-text-primary">
-              {services.length}
-            </dd>
+            <dd className="mt-1 text-2xl font-bold text-text-primary">{services.length}</dd>
           </div>
-          <div>
+          <div className="rounded-xl border border-border bg-surface-muted/40 py-4">
             <dt className="text-xs text-text-muted">שיוכים</dt>
-            <dd className="text-xl font-semibold text-text-primary">
-              {assignmentCount}
-            </dd>
+            <dd className="mt-1 text-2xl font-bold text-text-primary">{assignmentCount}</dd>
           </div>
         </dl>
-      </section>
+      </Card>
 
-      <section className="rounded-2xl border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-1 text-lg font-semibold text-text-primary">
-          הפעלת אוטומציה
-        </h2>
+      <Card glow="purple">
+        <h2 className="mb-1 text-lg font-semibold text-text-primary">הפעלת אוטומציה</h2>
         <p className="mb-4 text-sm text-text-muted">
           {integrationsReady
             ? "כל החיבורים ההכרחיים מוכנים. ניתן להפעיל את האוטומציה."
@@ -175,12 +166,12 @@ export default async function OnboardingPage({
           <button
             type="submit"
             disabled={!integrationsReady && !isAutomationActive}
-            className="flex items-center justify-center gap-2 rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-6 py-3 text-sm font-semibold text-white shadow-card-lg transition-transform hover:scale-[1.01] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+            className={buttonVariants({ variant: "primary", size: "lg" })}
           >
             {isAutomationActive ? "השבתת אוטומציה" : "הפעלת אוטומציה"}
           </button>
         </form>
-      </section>
+      </Card>
     </div>
   );
 }

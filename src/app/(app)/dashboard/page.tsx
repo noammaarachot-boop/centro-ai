@@ -1,5 +1,12 @@
 import Link from "next/link";
-import { Search } from "lucide-react";
+import {
+  Activity,
+  CheckCircle2,
+  Clock,
+  FileSearch,
+  Search,
+  ShieldAlert,
+} from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import {
   getDashboardCounts,
@@ -9,13 +16,22 @@ import {
 } from "@/lib/data/dashboard";
 import { StatusBadge } from "../collections/StatusBadge";
 import type { CollectionRequestStatus } from "@/lib/collectionRequestStateMachine";
+import { PageHeader } from "@/components/app/PageHeader";
+import { KpiCard } from "@/components/app/KpiCard";
+import { Card } from "@/components/app/Card";
+import { EmptyState } from "@/components/app/EmptyState";
 
-const QUEUE_CARDS: Array<{ queue: DashboardQueue; label: string }> = [
-  { queue: "active", label: "בקשות איסוף פעילות" },
-  { queue: "waiting_for_client", label: "ממתין ללקוח" },
-  { queue: "needs_review", label: "דורש בדיקת עובד" },
-  { queue: "processing_documents", label: "מסמכים בעיבוד" },
-  { queue: "completed_today", label: "הושלמו היום" },
+const QUEUE_CARDS: Array<{
+  queue: DashboardQueue;
+  label: string;
+  icon: typeof Activity;
+  accent: "purple" | "blue" | "cyan" | "emerald" | "warning";
+}> = [
+  { queue: "active", label: "בקשות איסוף פעילות", icon: Activity, accent: "purple" },
+  { queue: "waiting_for_client", label: "ממתין ללקוח", icon: Clock, accent: "warning" },
+  { queue: "needs_review", label: "דורש בדיקת עובד", icon: ShieldAlert, accent: "blue" },
+  { queue: "processing_documents", label: "מסמכים בעיבוד", icon: FileSearch, accent: "cyan" },
+  { queue: "completed_today", label: "הושלמו היום", icon: CheckCircle2, accent: "emerald" },
 ];
 
 const QUEUE_TITLES: Record<DashboardQueue, string> = {
@@ -51,59 +67,77 @@ export default async function DashboardPage({
     const rows = await listQueue(session.organizationId, queue as DashboardQueue);
 
     return (
-      <div className="mx-auto max-w-4xl px-6 py-12">
-        <Link href="/dashboard" className="text-sm text-text-muted hover:text-brand-purple">
+      <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+        <Link
+          href="/dashboard"
+          className="mb-3 inline-flex items-center text-sm text-text-muted transition-colors hover:text-brand-purple"
+        >
           ← חזרה ללוח הבקרה
         </Link>
-        <h1 className="mt-2 mb-6 text-2xl font-semibold text-text-primary">
-          {QUEUE_TITLES[queue as DashboardQueue]}
-        </h1>
+        <PageHeader title={QUEUE_TITLES[queue as DashboardQueue]} />
 
         {rows.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-border bg-surface-muted px-6 py-10 text-center text-sm text-text-muted">
-            אין בקשות איסוף בתור זה כרגע.
-          </p>
+          <EmptyState
+            icon={CheckCircle2}
+            title="אין בקשות איסוף בתור זה כרגע"
+            description="כל העבודה בתור הזה טופלה. תוכלו לחזור ללוח הבקרה ולבדוק תורים אחרים."
+          />
         ) : (
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
-            <table className="w-full text-end text-sm">
-              <thead className="bg-surface-muted text-text-muted">
-                <tr>
-                  <th className="px-4 py-3 font-medium">לקוח</th>
-                  <th className="px-4 py-3 font-medium">התקדמות</th>
-                  <th className="px-4 py-3 font-medium">מסמכים חסרים</th>
-                  <th className="px-4 py-3 font-medium">פעילות אחרונה</th>
-                  <th className="px-4 py-3 font-medium">סטטוס</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={row.id} className="border-t border-border hover:bg-surface-muted">
-                    <td className="px-4 py-3">
-                      <Link
-                        href={`/collections/${row.id}`}
-                        className="font-medium text-text-primary hover:text-brand-purple"
-                      >
-                        {row.clientName}
-                      </Link>
-                      <p className="text-xs text-text-muted">
-                        {row.serviceName} · {row.periodLabel}
-                      </p>
-                    </td>
-                    <td className="px-4 py-3 text-text-secondary">{row.progressPercent}%</td>
-                    <td className="px-4 py-3 text-text-secondary">
-                      {row.missingDocuments.length > 0 ? row.missingDocuments.join(", ") : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-text-secondary">
-                      {relativeTime(row.lastActivity)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={row.status as CollectionRequestStatus} />
-                    </td>
+          <Card padding="none" className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-end text-sm">
+                <thead className="sticky top-0 bg-surface-muted text-text-muted">
+                  <tr>
+                    <th className="px-5 py-3.5 font-medium">לקוח</th>
+                    <th className="px-5 py-3.5 font-medium">התקדמות</th>
+                    <th className="px-5 py-3.5 font-medium">מסמכים חסרים</th>
+                    <th className="px-5 py-3.5 font-medium">פעילות אחרונה</th>
+                    <th className="px-5 py-3.5 font-medium">סטטוס</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr
+                      key={row.id}
+                      className="border-t border-border transition-colors hover:bg-surface-muted/60"
+                    >
+                      <td className="px-5 py-4">
+                        <Link
+                          href={`/collections/${row.id}`}
+                          className="font-medium text-text-primary transition-colors hover:text-brand-purple"
+                        >
+                          {row.clientName}
+                        </Link>
+                        <p className="text-xs text-text-muted">
+                          {row.serviceName} · {row.periodLabel}
+                        </p>
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-muted">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-l from-brand-emerald to-brand-cyan transition-all duration-500"
+                              style={{ width: `${row.progressPercent}%` }}
+                            />
+                          </div>
+                          <span className="text-text-secondary">{row.progressPercent}%</span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 text-text-secondary">
+                        {row.missingDocuments.length > 0 ? row.missingDocuments.join(", ") : "—"}
+                      </td>
+                      <td className="px-5 py-4 text-text-secondary">
+                        {relativeTime(row.lastActivity)}
+                      </td>
+                      <td className="px-5 py-4">
+                        <StatusBadge status={row.status as CollectionRequestStatus} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         )}
       </div>
     );
@@ -119,44 +153,43 @@ export default async function DashboardPage({
   };
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-12">
-      <h1 className="mb-1 text-2xl font-semibold text-text-primary">
-        ברוכים הבאים, {session.organizationName}
-      </h1>
-      <p className="mb-6 text-sm text-text-secondary">
-        תמונת מצב של העבודה הפעילה, לא רשימת כל הלקוחות.
-      </p>
+    <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+      <PageHeader
+        eyebrow={`שלום, ${session.organizationName}`}
+        title="לוח הבקרה"
+        description="תמונת מצב של העבודה הפעילה כרגע — לא רשימת כל הלקוחות."
+      />
 
-      <form action="/dashboard" method="GET" className="mb-6 flex items-center gap-2">
+      <form action="/dashboard" method="GET" className="mb-8 flex items-center gap-2">
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
+          <Search className="pointer-events-none absolute start-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
           <input
             name="q"
             type="text"
             defaultValue={q ?? ""}
             placeholder="חיפוש לקוח לפי שם או טלפון..."
-            className="w-full rounded-xl border border-border bg-white ps-9 pe-4 py-2.5 text-sm text-text-primary outline-none focus:border-brand-purple"
+            className="w-full rounded-xl border border-border bg-surface ps-10 pe-4 py-3 text-sm text-text-primary shadow-card outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
           />
         </div>
         <button
           type="submit"
-          className="rounded-full border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:border-brand-purple hover:text-brand-purple"
+          className="rounded-xl border border-border bg-surface px-5 py-3 text-sm font-medium text-text-secondary shadow-card transition-all hover:border-brand-purple hover:text-brand-purple"
         >
           חיפוש
         </button>
       </form>
 
       {searchResults && (
-        <div className="mb-8 rounded-2xl border border-border bg-surface p-4 shadow-card">
+        <Card className="mb-8 animate-fade-in-up" padding="sm">
           {searchResults.length === 0 ? (
-            <p className="text-sm text-text-muted">לא נמצאו לקוחות תואמים.</p>
+            <p className="px-2 py-2 text-sm text-text-muted">לא נמצאו לקוחות תואמים.</p>
           ) : (
-            <ul className="space-y-1">
+            <ul className="divide-y divide-border">
               {searchResults.map((client) => (
                 <li key={client.id}>
                   <Link
                     href={`/clients/${client.id}`}
-                    className="block rounded-lg px-3 py-2 text-sm text-text-primary hover:bg-surface-muted"
+                    className="block rounded-lg px-3 py-2.5 text-sm text-text-primary transition-colors hover:bg-surface-muted hover:text-brand-purple"
                   >
                     {client.name} <span className="text-text-muted" dir="ltr">({client.phone})</span>
                   </Link>
@@ -164,22 +197,22 @@ export default async function DashboardPage({
               ))}
             </ul>
           )}
-        </div>
+        </Card>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {QUEUE_CARDS.map(({ queue: cardQueue, label }) => {
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        {QUEUE_CARDS.map(({ queue: cardQueue, label, icon: Icon, accent }) => {
           const { count, percentage } = countsByQueue[cardQueue];
           return (
-            <Link
+            <KpiCard
               key={cardQueue}
               href={`/dashboard?queue=${cardQueue}`}
-              className="rounded-2xl border border-border bg-surface p-5 shadow-card transition-colors hover:border-brand-purple"
-            >
-              <p className="text-sm text-text-muted">{label}</p>
-              <p className="mt-2 text-3xl font-semibold text-text-primary">{count}</p>
-              <p className="mt-1 text-xs text-text-muted">{percentage}% מהפעילות</p>
-            </Link>
+              label={label}
+              value={count}
+              percentage={percentage}
+              icon={<Icon className="h-4.5 w-4.5" aria-hidden="true" />}
+              accent={accent}
+            />
           );
         })}
       </div>

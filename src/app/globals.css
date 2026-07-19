@@ -79,6 +79,10 @@
     0 32px 64px -20px rgba(22, 19, 42, 0.2);
   --shadow-glow-purple: 0 0 60px -12px color-mix(in oklab, var(--color-brand-purple) 55%, transparent);
   --shadow-glow-cyan: 0 0 60px -12px color-mix(in oklab, var(--color-brand-cyan) 55%, transparent);
+  --shadow-glow-emerald: 0 0 60px -12px color-mix(in oklab, var(--color-brand-emerald) 55%, transparent);
+  --shadow-glow-blue: 0 0 60px -12px color-mix(in oklab, var(--color-brand-blue) 55%, transparent);
+  --shadow-glow-warning: 0 0 60px -12px color-mix(in oklab, var(--color-warning) 55%, transparent);
+  --shadow-glow-danger: 0 0 60px -12px color-mix(in oklab, var(--color-danger) 55%, transparent);
 
   /* Motion */
   --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
@@ -179,6 +183,43 @@ body {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* -----------------------------------------------------------------
+   Authenticated application (src/app/(app)/**, src/components/app/**)
+   Purely additive utilities — the landing page never references these.
+----------------------------------------------------------------- */
+@keyframes centro-fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in-up {
+  animation: centro-fade-in-up var(--duration-medium) var(--ease-standard) both;
+}
+
+@keyframes centro-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+.centro-skeleton {
+  background: linear-gradient(
+    100deg,
+    var(--color-surface-muted) 40%,
+    #ffffff 50%,
+    var(--color-surface-muted) 60%
+  );
+  background-size: 250% 100%;
+  animation: centro-shimmer 1.6s ease-in-out infinite;
 }
 
 /* -----------------------------------------------------------------
