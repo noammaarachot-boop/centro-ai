@@ -187,6 +187,17 @@ export const clients = pgTable(
     // Business Type, so it can remember "this exact text means this type"
     // for this organization's future imports — never touched afterward.
     importedBusinessTypeText: text("imported_business_type_text"),
+    // Milestone 2 (Architecture Ch.1/Ch.2): every client starts in Learning
+    // Mode. The only thing this flag gates is Milestone 6's "document
+    // appears to no longer be needed" detection — a client with zero
+    // completed cycles has no pattern to compare against yet, so that
+    // check must never fire for them. Flipped once, the first time this
+    // client's first Collection Request reaches `completed`
+    // (collectionRequestStateMachine.ts), and never touched again.
+    learningMode: boolean("learning_mode").notNull().default(true),
+    firstCycleCompletedAt: timestamp("first_cycle_completed_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

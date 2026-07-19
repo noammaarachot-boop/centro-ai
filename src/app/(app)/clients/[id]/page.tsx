@@ -61,7 +61,14 @@ export default async function ClientDetailPage({
           <ArrowLeft className="h-3.5 w-3.5" />
           חזרה ללקוחות
         </Link>
-        <PageHeader title={client.name} />
+        <PageHeader
+          title={client.name}
+          actions={
+            client.learningMode ? (
+              <Badge tone="purple">מצב למידה — Centro עדיין לומד את הלקוח</Badge>
+            ) : undefined
+          }
+        />
       </div>
 
       {error === "has-history" && (

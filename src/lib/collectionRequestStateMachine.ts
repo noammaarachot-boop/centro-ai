@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
+  clients,
   collectionRequestRequirements,
   collectionRequests,
   documents,
@@ -152,7 +153,30 @@ export async function applyTransition(
     metadata: { from: current.status, to: nextStatus },
   });
 
+  if (nextStatus === "completed") {
+    await exitLearningModeIfFirstCycle(organizationId, current.clientId);
+  }
+
   return { ok: true };
+}
+
+// Milestone 2 (Architecture Ch.1/Ch.2) — every client begins in Learning
+// Mode; it ends, once, the first time any of their Collection Requests
+// reaches `completed`. Idempotent by construction: the WHERE clause only
+// ever matches a client still in Learning Mode, so a client's second and
+// every later completed cycle is a silent no-op here.
+async function exitLearningModeIfFirstCycle(organizationId: string, clientId: string) {
+  const db = await getDb();
+  await db
+    .update(clients)
+    .set({ learningMode: false, firstCycleCompletedAt: new Date() })
+    .where(
+      and(
+        eq(clients.id, clientId),
+        eq(clients.organizationId, organizationId),
+        eq(clients.learningMode, true)
+      )
+    );
 }
 
 // Steps through whichever valid intermediate transitions are needed to
