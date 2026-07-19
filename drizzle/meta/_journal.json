@@ -64,6 +64,13 @@
       "when": 1784455793654,
       "tag": "0008_cold_bucky",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784473348768,
+      "tag": "0009_hebrew_business_type_names",
+      "breakpoints": true
     }
   ]
 }
