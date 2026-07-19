@@ -39,3 +39,19 @@ export async function listAuditLog(
     .orderBy(desc(auditLogs.occurredAt))
     .limit(limit);
 }
+
+// Used by the onboarding wizard's Step 5 (src/app/onboarding/page.tsx) to
+// re-display the most recent import's column-analysis summary — which
+// columns Centro detected as name/phone/email/business-type, and at what
+// confidence — after the redirect from Step 4 has already discarded that
+// action's in-memory return value.
+export async function getLatestAuditEventByType(organizationId: string, eventType: string) {
+  const db = await getDb();
+  const [row] = await db
+    .select({ metadata: auditLogs.metadata, occurredAt: auditLogs.occurredAt })
+    .from(auditLogs)
+    .where(and(eq(auditLogs.organizationId, organizationId), eq(auditLogs.eventType, eventType)))
+    .orderBy(desc(auditLogs.occurredAt))
+    .limit(1);
+  return row ?? null;
+}

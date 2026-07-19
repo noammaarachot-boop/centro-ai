@@ -1,13 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, ChevronDown, Sparkles, UserRoundX } from "lucide-react";
+import { CheckCircle2, ChevronDown, ScanSearch, Sparkles, UserRoundX } from "lucide-react";
 import { clsx } from "clsx";
 import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
 import { buttonVariants, Button } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
-import { advanceOnboardingStep, assignBusinessTypeAction } from "../actions";
+import {
+  advanceOnboardingStep,
+  assignBusinessTypeAction,
+  type ImportAnalysisSummary,
+} from "../actions";
 
 interface ClientRow {
   id: string;
@@ -21,14 +25,23 @@ interface BusinessTypeRow {
   clientCount: number;
 }
 
+const ROLE_LABELS: Record<keyof ImportAnalysisSummary["detectedColumns"], string> = {
+  name: "שם לקוח",
+  phone: "טלפון",
+  email: "אימייל",
+  businessType: "סוג עסק",
+};
+
 export function Step5Analysis({
   businessTypes,
   clientsByType,
   unclassifiedClients,
+  importSummary,
 }: {
   businessTypes: BusinessTypeRow[];
   clientsByType: ClientRow[][];
   unclassifiedClients: ClientRow[];
+  importSummary?: ImportAnalysisSummary;
 }) {
   const [expandedTypeId, setExpandedTypeId] = useState<string | null>(null);
   const [showAssignPanel, setShowAssignPanel] = useState(false);
@@ -68,8 +81,37 @@ export function Step5Analysis({
     );
   }
 
+  const detectedEntries = importSummary
+    ? (Object.entries(importSummary.detectedColumns) as Array<
+        [keyof ImportAnalysisSummary["detectedColumns"], string | undefined]
+      >).filter(([, header]) => header !== undefined)
+    : [];
+
   return (
     <div className="space-y-6">
+      {importSummary && detectedEntries.length > 0 && (
+        <div className="animate-fade-in-up rounded-2xl border border-border bg-surface-muted/40 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <ScanSearch className="mt-0.5 h-5 w-5 shrink-0 text-brand-purple" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-text-primary">
+                כך Centro זיהה את מבנה הקובץ
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {detectedEntries.map(([role, header]) => (
+                  <Badge key={role} tone="purple">
+                    {ROLE_LABELS[role]}: {header}
+                  </Badge>
+                ))}
+                <Badge tone={importSummary.confidence === "high" ? "success" : "warning"}>
+                  {importSummary.confidence === "high" ? "זיהוי ודאי" : "זיהוי לאחר אישור ידני"}
+                </Badge>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="animate-fade-in-up rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
         <div className="flex items-center gap-3">
           <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />

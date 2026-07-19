@@ -93,7 +93,11 @@ function normalize(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function matchSynonym(text: string): string | null {
+// Exported for src/lib/import/columnAnalyzer.ts — the column-inference layer
+// scores a candidate "business type" column by how many of its cell values
+// this same dictionary recognizes, so a column is identified by what its
+// values actually mean, not by trusting its header.
+export function matchSynonym(text: string): string | null {
   const normalized = normalize(text);
   if (!normalized) return null;
   for (const { canonicalName, synonym } of FLAT_SYNONYMS) {

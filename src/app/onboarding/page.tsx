@@ -9,6 +9,8 @@ import {
   listClientsByBusinessType,
   listUnclassifiedClients,
 } from "@/lib/businessTypes";
+import { getLatestAuditEventByType } from "@/lib/data/auditLog";
+import type { ImportAnalysisSummary } from "./actions";
 import { WizardShell, TOTAL_STEPS } from "./WizardShell";
 import { Step1Welcome } from "./steps/Step1Welcome";
 import { Step2OfficeInfo } from "./steps/Step2OfficeInfo";
@@ -117,11 +119,16 @@ export default async function OnboardingPage({
           listClientsByBusinessType(session.organizationId, type.id)
         )
       );
+      const latestAnalysis = await getLatestAuditEventByType(
+        session.organizationId,
+        "clients.import_analyzed"
+      );
       body = (
         <Step5Analysis
           businessTypes={businessTypeList}
           clientsByType={clientsByType}
           unclassifiedClients={unclassified}
+          importSummary={latestAnalysis?.metadata as ImportAnalysisSummary | undefined}
         />
       );
       break;

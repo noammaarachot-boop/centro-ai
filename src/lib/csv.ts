@@ -58,6 +58,8 @@ export function parseCsv(input: string): string[][] {
   return rows.filter((r) => r.some((cell) => cell.trim().length > 0));
 }
 
+import { analyzeColumns, type ColumnMapping } from "@/lib/import/columnAnalyzer";
+
 export interface CsvClientRow {
   name: string;
   phone: string;
@@ -70,69 +72,41 @@ export interface CsvClientRow {
   businessType: string;
 }
 
-const HEADER_ALIASES: Record<keyof CsvClientRow, string[]> = {
-  name: ["name", "שם", "שם לקוח", "שם הלקוח", "שם העסק"],
-  phone: ["phone", "טלפון", "וואטסאפ", "מספר טלפון", "נייד"],
-  email: ["email", "אימייל", "מייל", "דוא\"ל"],
-  notes: ["notes", "הערות"],
-  // Broadened per real-world Israeli accounting-file header variants —
-  // offices label this column many different ways.
-  businessType: [
-    "business type",
-    "businesstype",
-    "type",
-    "entity type",
-    "classification",
-    "סוג עסק",
-    "סוג",
-    "סיווג",
-    "סוג ישות",
-    "ישות משפטית",
-    "מעמד",
-    "מעמד משפטי",
-    "סוג התאגדות",
-    "סטטוס עסק",
-  ],
-};
-
-function normalizeHeader(value: string) {
-  return value.trim().toLowerCase();
+// Pure "plucking" step — given an already-resolved column mapping (from
+// src/lib/import/columnAnalyzer.ts's content-based inference, or from a
+// user's manual correction on the wizard's mapping-confirmation screen),
+// reads the mapped indices out of each data row. No inference happens
+// here; every unmapped role becomes "" rather than undefined.
+export function buildClientRowsFromMapping(
+  dataRows: string[][],
+  mapping: ColumnMapping
+): CsvClientRow[] {
+  return dataRows.map((cells) => ({
+    name: mapping.name !== undefined ? cells[mapping.name]?.trim() ?? "" : "",
+    phone: mapping.phone !== undefined ? cells[mapping.phone]?.trim() ?? "" : "",
+    email: mapping.email !== undefined ? cells[mapping.email]?.trim() ?? "" : "",
+    notes: mapping.notes !== undefined ? cells[mapping.notes]?.trim() ?? "" : "",
+    businessType: mapping.businessType !== undefined ? cells[mapping.businessType]?.trim() ?? "" : "",
+  }));
 }
 
-// Shared by both import formats (CSV today, XLSX via
-// src/lib/import/xlsxParser.ts) — takes the raw grid a format-specific
-// parser produces (header row + data rows, as plain strings) and maps
-// whichever columns are present, by Hebrew or English header name, to
-// { name, phone, email, notes, businessType }. Throws if `name`/`phone`
-// columns are missing entirely — everything else is best-effort.
+// Convenience wrapper over the content-based analyzer for callers that just
+// want a best-effort mapping with no confirmation step (existing tests,
+// and any caller that doesn't need the wizard's low-confidence UI path).
+// Still throws if the analyzer can't confidently locate name/phone at all —
+// see src/app/onboarding/actions.ts's importAndClassifyClients for the
+// real wizard flow, which instead surfaces a mapping-confirmation screen
+// rather than failing outright.
 export function mapRowsToClientRows(rows: string[][]): CsvClientRow[] {
   if (rows.length === 0) return [];
 
-  const header = rows[0].map(normalizeHeader);
-  const columnIndex: Partial<Record<keyof CsvClientRow, number>> = {};
-
-  for (const key of Object.keys(HEADER_ALIASES) as (keyof CsvClientRow)[]) {
-    const aliases = HEADER_ALIASES[key].map(normalizeHeader);
-    const index = header.findIndex((h) => aliases.includes(h));
-    if (index >= 0) columnIndex[key] = index;
+  const { hasHeaderRow, mapping } = analyzeColumns(rows);
+  if (mapping.name === undefined || mapping.phone === undefined) {
+    throw new Error('הקובץ חייב לכלול עמודות "שם" ו"טלפון" (או name / phone).');
   }
 
-  if (columnIndex.name === undefined || columnIndex.phone === undefined) {
-    throw new Error(
-      'הקובץ חייב לכלול עמודות "שם" ו"טלפון" (או name / phone).'
-    );
-  }
-
-  return rows.slice(1).map((cells) => ({
-    name: cells[columnIndex.name!]?.trim() ?? "",
-    phone: cells[columnIndex.phone!]?.trim() ?? "",
-    email: columnIndex.email !== undefined ? cells[columnIndex.email]?.trim() ?? "" : "",
-    notes: columnIndex.notes !== undefined ? cells[columnIndex.notes]?.trim() ?? "" : "",
-    businessType:
-      columnIndex.businessType !== undefined
-        ? cells[columnIndex.businessType]?.trim() ?? ""
-        : "",
-  }));
+  const dataRows = hasHeaderRow ? rows.slice(1) : rows;
+  return buildClientRowsFromMapping(dataRows, mapping);
 }
 
 export function parseClientCsv(input: string): CsvClientRow[] {
