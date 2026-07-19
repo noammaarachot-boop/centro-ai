@@ -28,13 +28,17 @@ import {
   getSuggestedRequirements,
   seedStarterBusinessTypes,
 } from "@/lib/businessTypes";
-import { classifyClientBusinessType } from "@/lib/ai/businessTypeClassifier";
+import {
+  AUTO_CLASSIFY_CONFIDENCE as AUTO_CLASSIFY_THRESHOLD,
+  classifyClientBusinessType,
+  SUGGESTED_CONFIDENCE as SUGGESTED_THRESHOLD,
+} from "@/lib/ai/businessTypeClassifier";
 
 // >=95: silently auto-classified. 70-94: auto-classified but flagged
 // "suggested" in the UI. Below 70: never applied — left Unclassified and
 // routed to Step 5's manual bulk-assignment flow. Centro never guesses.
-const AUTO_CLASSIFY_THRESHOLD = 95;
-const SUGGESTED_THRESHOLD = 70;
+// (Bands defined once in businessTypeClassifier.ts — Milestone 1 reuses
+// the exact same thresholds for manually-created clients.)
 
 async function setOnboardingStep(organizationId: string, step: number) {
   const db = await getDb();

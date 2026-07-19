@@ -45,6 +45,13 @@ export interface BusinessTypeCandidate {
   canonicalKey: string | null;
 }
 
+// The wizard's confidence bands (Epic 4 STEP 4), defined once here since
+// Milestone 1 (src/app/(app)/clients/actions.ts) reuses this exact
+// classifier — and the exact same bands — for manually-created clients,
+// not only bulk import.
+export const AUTO_CLASSIFY_CONFIDENCE = 95;
+export const SUGGESTED_CONFIDENCE = 70;
+
 // Everything else in the imported row besides the name/explicit-type
 // columns already consumed elsewhere — src/lib/csv.ts's
 // buildClientRowsFromMapping populates this from whatever columns weren't

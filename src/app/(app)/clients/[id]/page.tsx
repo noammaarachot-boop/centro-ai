@@ -7,11 +7,20 @@ import {
   listClientServices,
   listUnassignedServicesForClient,
 } from "@/lib/data/clients";
-import { assignService, deleteClient, unassignService, updateClient } from "../actions";
+import { listBusinessTypes } from "@/lib/businessTypes";
+import { AUTO_CLASSIFY_CONFIDENCE } from "@/lib/ai/businessTypeClassifier";
+import {
+  assignService,
+  deleteClient,
+  setClientBusinessType,
+  unassignService,
+  updateClient,
+} from "../actions";
 import { ClientForm } from "../ClientForm";
 import { createCollectionRequest } from "../../collections/actions";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
+import { Badge } from "@/components/app/Badge";
 import { Button, buttonVariants } from "@/components/app/Button";
 import { SelectField } from "@/components/app/FormField";
 import { EmptyState } from "@/components/app/EmptyState";
@@ -30,14 +39,17 @@ export default async function ClientDetailPage({
   const client = await getClient(session.organizationId, id);
   if (!client) notFound();
 
-  const [assignedServices, unassignedServices] = await Promise.all([
+  const [assignedServices, unassignedServices, businessTypes] = await Promise.all([
     listClientServices(session.organizationId, id),
     listUnassignedServicesForClient(session.organizationId, id),
+    listBusinessTypes(session.organizationId),
   ]);
+  const currentBusinessType = businessTypes.find((t) => t.id === client.businessTypeId) ?? null;
 
   const boundUpdate = updateClient.bind(null, client.id);
   const boundDelete = deleteClient.bind(null, client.id);
   const boundAssign = assignService.bind(null, client.id);
+  const boundSetBusinessType = setClientBusinessType.bind(null, client.id);
 
   return (
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -81,6 +93,55 @@ export default async function ClientDetailPage({
             notes: client.notes,
           }}
         />
+      </Card>
+
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">סוג עסק</h2>
+        {currentBusinessType ? (
+          <div className="mb-4 flex items-center gap-2">
+            <span className="text-sm font-medium text-text-primary">{currentBusinessType.name}</span>
+            {client.businessTypeConfidence !== null && (
+              <Badge tone={client.businessTypeConfidence >= AUTO_CLASSIFY_CONFIDENCE ? "success" : "warning"}>
+                {client.businessTypeConfidence >= AUTO_CLASSIFY_CONFIDENCE
+                  ? "סיווג ודאי"
+                  : "הצעה — כדאי לוודא"}
+              </Badge>
+            )}
+          </div>
+        ) : (
+          <p className="mb-4 text-sm text-text-muted">
+            Centro לא הצליח לזהות סוג עסק אוטומטית עבור לקוח זה.
+          </p>
+        )}
+
+        <details className="group">
+          <summary className="cursor-pointer text-xs font-medium text-brand-purple hover:underline">
+            {currentBusinessType ? "שינוי סוג עסק" : "שיוך סוג עסק"}
+          </summary>
+          <form action={boundSetBusinessType} className="mt-3 flex flex-wrap items-end gap-2">
+            <div className="min-w-[200px] flex-1">
+              <SelectField id="businessTypeId" name="businessTypeId" label="סוג עסק קיים" optional>
+                <option value="">— בחירה —</option>
+                {businessTypes.map((type) => (
+                  <option key={type.id} value={type.id}>
+                    {type.name}
+                  </option>
+                ))}
+              </SelectField>
+            </div>
+            <div className="min-w-[200px] flex-1">
+              <input
+                name="newTypeName"
+                type="text"
+                placeholder="או: שם סוג עסק חדש"
+                className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
+              />
+            </div>
+            <Button type="submit" variant="secondary">
+              שיוך סוג עסק
+            </Button>
+          </form>
+        </details>
       </Card>
 
       <Card>

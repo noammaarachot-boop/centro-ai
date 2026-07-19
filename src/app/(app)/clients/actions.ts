@@ -6,6 +6,56 @@ import { getDb } from "@/db";
 import { clientServices, clients, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import {
+  AUTO_CLASSIFY_CONFIDENCE,
+  classifyClientBusinessType,
+  SUGGESTED_CONFIDENCE,
+  type BusinessTypeCandidate,
+} from "@/lib/ai/businessTypeClassifier";
+import {
+  assignClientsToBusinessType,
+  createBusinessType,
+  getLearnedSynonyms,
+  getSuggestedRequirements,
+  seedStarterBusinessTypes,
+} from "@/lib/businessTypes";
+
+// Milestone 1 ("Manual-Entry Classification Parity"): a client created
+// outside the onboarding wizard's bulk import gets the exact same
+// classification the wizard already gives imported clients — same
+// classifier, same organization-scoped learned synonyms, same confidence
+// bands (src/lib/ai/businessTypeClassifier.ts). There is no explicit
+// business-type field on this form, so this only ever reaches the
+// classifier's context-inference layer (the client's name alone) — never
+// silently applied below SUGGESTED_CONFIDENCE, exactly like import.
+async function classifyAndAssignBusinessType(
+  organizationId: string,
+  clientId: string,
+  clientName: string
+) {
+  const businessTypeList = await seedStarterBusinessTypes(organizationId);
+  const candidates: BusinessTypeCandidate[] = businessTypeList.map((t) => ({
+    id: t.id,
+    name: t.name,
+    canonicalKey: t.canonicalKey,
+  }));
+  const learnedSynonyms = await getLearnedSynonyms(organizationId);
+
+  const classification = await classifyClientBusinessType(
+    { clientName },
+    candidates,
+    learnedSynonyms
+  );
+
+  if (!classification.businessTypeId || classification.confidence < SUGGESTED_CONFIDENCE) {
+    return classification;
+  }
+
+  await assignClientsToBusinessType(organizationId, [clientId], classification.businessTypeId, {
+    confidence: classification.confidence,
+  });
+  return classification;
+}
 
 export interface ClientFormState {
   error?: string;
@@ -75,6 +125,29 @@ export async function createClient(
     actorUserId: session.userId,
     clientId: client.id,
   });
+
+  const classification = await classifyAndAssignBusinessType(
+    session.organizationId,
+    client.id,
+    client.name
+  );
+  if (classification.businessTypeId) {
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "client.business_type_classified",
+      description:
+        classification.confidence >= AUTO_CLASSIFY_CONFIDENCE
+          ? `סוג העסק של "${client.name}" זוהה אוטומטית (ביטחון ${classification.confidence}%)`
+          : `סוג העסק של "${client.name}" זוהה כהצעה (ביטחון ${classification.confidence}%) — כדאי לוודא`,
+      actorType: "ai",
+      clientId: client.id,
+      metadata: {
+        confidence: classification.confidence,
+        method: classification.method,
+        reason: classification.reason,
+      },
+    });
+  }
 
   redirect(`/clients/${client.id}`);
 }
@@ -227,6 +300,63 @@ export async function unassignService(clientId: string, assignmentId: string) {
     organizationId: session.organizationId,
     eventType: "client.service_unassigned",
     description: "שיוך שירות הוסר מהלקוח",
+    actorType: "employee",
+    actorUserId: session.userId,
+    clientId,
+  });
+
+  redirect(`/clients/${clientId}`);
+}
+
+// The client detail page's manual business-type control — covers both
+// picking an existing type and (via `newTypeName`) creating one inline,
+// mirroring src/app/onboarding/actions.ts's assignBusinessTypeAction, but
+// scoped to exactly one client rather than the wizard's bulk-select flow.
+// Kept separate rather than shared: the two forms serve genuinely
+// different UIs (a multi-select wizard step vs. a single-client detail
+// page control) — assignClientsToBusinessType itself, the one function
+// that actually changes clients.businessTypeId, is the real shared seam.
+export async function setClientBusinessType(clientId: string, formData: FormData) {
+  const session = await requireSession();
+  const db = await getDb();
+
+  const [client] = await db
+    .select({ id: clients.id, name: clients.name })
+    .from(clients)
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
+    .limit(1);
+  if (!client) redirect("/clients");
+
+  const newTypeName = String(formData.get("newTypeName") ?? "").trim();
+  let businessTypeId = String(formData.get("businessTypeId") ?? "");
+
+  if (newTypeName) {
+    const created = await createBusinessType(session.organizationId, newTypeName, {
+      isCustom: true,
+      seedRequirements: getSuggestedRequirements(newTypeName),
+    });
+    businessTypeId = created.id;
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "business_type.created",
+      description: `סוג עסק "${newTypeName}" נוצר`,
+      actorType: "employee",
+      actorUserId: session.userId,
+    });
+  }
+
+  if (!businessTypeId) redirect(`/clients/${clientId}`);
+
+  // A human explicitly choosing this — unlike the classifier — is
+  // definitionally certain, not a guess (assignClientsToBusinessType
+  // defaults `confidence` to 100 when not given).
+  await assignClientsToBusinessType(session.organizationId, [clientId], businessTypeId);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "clients.business_type_assigned",
+    description: `סוג העסק של "${client.name}" עודכן ידנית`,
     actorType: "employee",
     actorUserId: session.userId,
     clientId,
