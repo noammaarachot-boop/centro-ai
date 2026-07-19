@@ -173,6 +173,20 @@ export const clients = pgTable(
     businessTypeId: uuid("business_type_id").references(() => businessTypes.id, {
       onDelete: "set null",
     }),
+    // Epic 4: confidence (0-100) of the classification above, whichever
+    // layer produced it — null when never classified (Unclassified) or
+    // when set by a human directly (a manual assignment is definitionally
+    // 100% confident, not a guess). Lets Step 5 distinguish "auto-classified
+    // with certainty" (>=95) from "suggested, worth a glance" (70-94) rather
+    // than treating every classified client identically.
+    businessTypeConfidence: integer("business_type_confidence"),
+    // Epic 4: the raw business-type-column (or row-context) text an import
+    // produced for this client, kept even when classification failed or
+    // was only a low-confidence guess. src/lib/businessTypes.ts's learning
+    // mechanism reads this back when a human later manually assigns a
+    // Business Type, so it can remember "this exact text means this type"
+    // for this organization's future imports — never touched afterward.
+    importedBusinessTypeText: text("imported_business_type_text"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -254,7 +268,20 @@ export const businessTypes = pgTable("business_types", {
   organizationId: uuid("organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
+  // Display label, Hebrew, fully user-editable — never matched against
+  // directly by the classifier (see canonicalKey below). This is what
+  // broke across the English->Hebrew rename two epics ago: matching logic
+  // depended on this exact string. It never will again.
   name: text("name").notNull(),
+  // Epic 4: a stable, renaming-proof identity for the five standard
+  // starter types (STARTER_BUSINESS_TYPES in src/lib/businessTypes.ts) —
+  // 'limited_company' | 'authorized_dealer' | 'exempt_dealer' | 'nonprofit'
+  // | 'payroll_only'. Null for org-created custom types, which have no
+  // global canonical concept and are matched by name like before. The
+  // classifier (src/lib/ai/businessTypeClassifier.ts) matches synonyms to
+  // a canonical key, then looks up the org's row by that key — renaming a
+  // type's display label can never again break classification.
+  canonicalKey: text("canonical_key"),
   serviceId: uuid("service_id")
     .notNull()
     .references(() => services.id, { onDelete: "cascade" }),
@@ -266,6 +293,38 @@ export const businessTypes = pgTable("business_types", {
     .notNull()
     .defaultNow(),
 });
+
+// Epic 4 STEP 7 ("Learn From Corrections") — when a human manually assigns
+// a Business Type to a client whose import row had raw, unrecognized text
+// (clients.importedBusinessTypeText), that text is remembered here as a
+// synonym scoped to this one organization. Future imports for the same
+// org check this table first (src/lib/businessTypes.ts's
+// getLearnedSynonyms), so the same office's own shorthand is recognized
+// immediately next time — no global retraining, no effect on any other
+// organization.
+export const businessTypeLearnedSynonyms = pgTable(
+  "business_type_learned_synonyms",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    businessTypeId: uuid("business_type_id")
+      .notNull()
+      .references(() => businessTypes.id, { onDelete: "cascade" }),
+    // Normalized (trimmed/lowercased) source text, e.g. "מורשה".
+    sourceText: text("source_text").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("business_type_learned_synonyms_org_text_idx").on(
+      table.organizationId,
+      table.sourceText
+    ),
+  ]
+);
 
 // A Client may have multiple Services and a Service may be assigned to
 // multiple Clients (Ch.4 FR-001/FR-002) — many-to-many join.

@@ -40,7 +40,14 @@ describe("mapRowsToClientRows / parseClientCsv", () => {
   it("maps Hebrew headers to the client row shape", () => {
     const rows = parseClientCsv('שם,טלפון,אימייל\nדנה,0501111111,d@x.com');
     expect(rows).toEqual([
-      { name: "דנה", phone: "0501111111", email: "d@x.com", notes: "", businessType: "" },
+      {
+        name: "דנה",
+        phone: "0501111111",
+        email: "d@x.com",
+        notes: "",
+        businessType: "",
+        otherValues: [],
+      },
     ]);
   });
 

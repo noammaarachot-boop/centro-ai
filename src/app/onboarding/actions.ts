@@ -6,14 +6,17 @@ import { refresh } from "next/cache";
 import { getDb } from "@/db";
 import { clients, organizations, services } from "@/db/schema";
 import {
-  parseClientImportFileToGrid,
+  analyzeImportFileStructure,
   UnsupportedImportFormatError,
+  type ImportFileStructure,
 } from "@/lib/import/clientImportAdapter";
 import {
   analyzeColumnsWithAIFallback,
   type AnalyzeColumnsResult,
   type ColumnMapping,
 } from "@/lib/import/columnAnalyzer";
+import type { TableBounds } from "@/lib/import/spreadsheetStructure";
+import type { XlsxStructureMeta } from "@/lib/import/xlsxParser";
 import { buildClientRowsFromMapping } from "@/lib/csv";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
@@ -21,10 +24,17 @@ import { markOnboardingComplete } from "@/lib/onboarding";
 import {
   assignClientsToBusinessType,
   createBusinessType,
+  getLearnedSynonyms,
   getSuggestedRequirements,
   seedStarterBusinessTypes,
 } from "@/lib/businessTypes";
 import { classifyClientBusinessType } from "@/lib/ai/businessTypeClassifier";
+
+// >=95: silently auto-classified. 70-94: auto-classified but flagged
+// "suggested" in the UI. Below 70: never applied — left Unclassified and
+// routed to Step 5's manual bulk-assignment flow. Centro never guesses.
+const AUTO_CLASSIFY_THRESHOLD = 95;
+const SUGGESTED_THRESHOLD = 70;
 
 async function setOnboardingStep(organizationId: string, step: number) {
   const db = await getDb();
@@ -338,9 +348,25 @@ export interface ImportAnalysisSummary {
     phone?: string;
     email?: string;
     businessType?: string;
+    notes?: string;
+    city?: string;
+    companyId?: string;
+    taxId?: string;
   };
-  classified: number;
+  imported: number;
+  /** Confidence >= 95 — applied silently. */
+  autoClassified: number;
+  /** Confidence 70-94 — applied, but flagged as a suggestion in the UI. */
+  suggested: number;
+  /** Confidence < 70, or no signal at all — left Unclassified. */
   needsReview: number;
+  // STEP 1 structural findings, XLSX only.
+  sheetsFound?: string[];
+  sheetUsed?: string;
+  hadMergedCells?: boolean;
+  hiddenColumnsDetected?: number;
+  skippedLeadingRows?: number;
+  skippedTrailingRows?: number;
 }
 
 export interface ImportClientsState {
@@ -361,22 +387,28 @@ export interface ImportClientsState {
     headers: string[];
     sampleRows: string[][];
     suggestion: ColumnMapping;
+    tableBounds: TableBounds;
+    xlsxMeta?: XlsxStructureMeta;
   };
 }
 
-// Shared by both the confident-auto-import path and the
-// confirm-mapping path below: inserts new clients (same duplicate-phone
-// handling the pre-wizard importer always had), then runs the deterministic
-// per-row classifier (src/lib/ai/businessTypeClassifier.ts) against every
-// newly imported client, seeding the five starter Business Types on first
-// use. Records one audit event carrying the column-analysis summary
+type ParsedClientRow = ReturnType<typeof buildClientRowsFromMapping>[number];
+
+// Shared by both the confident-auto-import path and the confirm-mapping
+// path below: inserts new clients (same duplicate-phone handling the
+// pre-wizard importer always had, plus the raw business-type text kept on
+// the row for STEP 7's learning mechanism), then runs the multi-layer
+// classifier (src/lib/ai/businessTypeClassifier.ts) against every newly
+// imported client, seeding the five starter Business Types on first use.
+// Records one audit event carrying the full understanding summary
 // (src/app/onboarding/page.tsx's Step 5 case reads the latest one back to
-// render "which column did Centro use for X" — requirement 14) plus the
+// render "here's what Centro understood" — requirement 14) plus the
 // existing imported/classified events.
 async function importParsedRows(
   session: { organizationId: string; userId: string },
-  parsedRows: Array<{ name: string; phone: string; email: string; notes: string; businessType: string }>,
-  analysis: AnalyzeColumnsResult
+  parsedRows: ParsedClientRow[],
+  analysis: AnalyzeColumnsResult,
+  structure: { tableBounds: TableBounds; xlsxMeta?: XlsxStructureMeta }
 ): Promise<ImportClientsState> {
   const db = await getDb();
   const existing = await db
@@ -386,7 +418,12 @@ async function importParsedRows(
   const existingPhones = new Set(existing.map((c) => c.phone));
 
   const skipped: SkippedImportRow[] = [];
-  const importedRows: Array<{ id: string; name: string; businessType: string }> = [];
+  const importedRows: Array<{
+    id: string;
+    name: string;
+    businessType: string;
+    otherValues: string[];
+  }> = [];
 
   for (let i = 0; i < parsedRows.length; i += 1) {
     const row = parsedRows[i];
@@ -409,11 +446,17 @@ async function importParsedRows(
         phone: row.phone,
         email: row.email || null,
         notes: row.notes || null,
+        importedBusinessTypeText: row.businessType || null,
       })
       .returning({ id: clients.id, name: clients.name });
 
     existingPhones.add(row.phone);
-    importedRows.push({ id: inserted.id, name: inserted.name, businessType: row.businessType });
+    importedRows.push({
+      id: inserted.id,
+      name: inserted.name,
+      businessType: row.businessType,
+      otherValues: row.otherValues,
+    });
   }
 
   const detectedColumns: ImportAnalysisSummary["detectedColumns"] = {
@@ -424,6 +467,11 @@ async function importParsedRows(
       analysis.mapping.businessType !== undefined
         ? analysis.headers[analysis.mapping.businessType]
         : undefined,
+    notes: analysis.mapping.notes !== undefined ? analysis.headers[analysis.mapping.notes] : undefined,
+    city: analysis.mapping.city !== undefined ? analysis.headers[analysis.mapping.city] : undefined,
+    companyId:
+      analysis.mapping.companyId !== undefined ? analysis.headers[analysis.mapping.companyId] : undefined,
+    taxId: analysis.mapping.taxId !== undefined ? analysis.headers[analysis.mapping.taxId] : undefined,
   };
 
   await recordAuditEvent({
@@ -435,40 +483,63 @@ async function importParsedRows(
     metadata: { imported: importedRows.length, skippedCount: skipped.length },
   });
 
-  let classifiedCount = 0;
+  let autoClassified = 0;
+  let suggested = 0;
   if (importedRows.length > 0) {
+    const learnedSynonyms = await getLearnedSynonyms(session.organizationId);
     const businessTypeList = await seedStarterBusinessTypes(session.organizationId);
-    const candidates = businessTypeList.map((t) => ({ id: t.id, name: t.name }));
+    const candidates = businessTypeList.map((t) => ({
+      id: t.id,
+      name: t.name,
+      canonicalKey: t.canonicalKey,
+    }));
 
-    const groupedByType = new Map<string, string[]>();
+    // Grouped by (businessTypeId, confidence) so every client that shares
+    // both gets one batched assignClientsToBusinessType call, instead of
+    // one DB round-trip per client.
+    const groups = new Map<string, { businessTypeId: string; confidence: number; clientIds: string[] }>();
+
     for (const row of importedRows) {
-      const { businessTypeId } = await classifyClientBusinessType(
-        row.name,
+      const classification = await classifyClientBusinessType(
+        { clientName: row.name, explicitBusinessType: row.businessType, otherValues: row.otherValues },
         candidates,
-        row.businessType
+        learnedSynonyms
       );
-      if (!businessTypeId) continue;
-      classifiedCount += 1;
-      const clientIds = groupedByType.get(businessTypeId) ?? [];
-      clientIds.push(row.id);
-      groupedByType.set(businessTypeId, clientIds);
+      if (!classification.businessTypeId || classification.confidence < SUGGESTED_THRESHOLD) continue;
+
+      if (classification.confidence >= AUTO_CLASSIFY_THRESHOLD) autoClassified += 1;
+      else suggested += 1;
+
+      const key = `${classification.businessTypeId}:${classification.confidence}`;
+      const group = groups.get(key) ?? {
+        businessTypeId: classification.businessTypeId,
+        confidence: classification.confidence,
+        clientIds: [],
+      };
+      group.clientIds.push(row.id);
+      groups.set(key, group);
     }
 
-    for (const [businessTypeId, clientIds] of groupedByType) {
-      await assignClientsToBusinessType(session.organizationId, clientIds, businessTypeId);
+    for (const group of groups.values()) {
+      await assignClientsToBusinessType(session.organizationId, group.clientIds, group.businessTypeId, {
+        confidence: group.confidence,
+      });
     }
 
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "clients.classified",
-      description: `${classifiedCount} מתוך ${importedRows.length} לקוחות שיובאו סווגו אוטומטית לפי סוג עסק`,
+      description: `${autoClassified + suggested} מתוך ${importedRows.length} לקוחות שיובאו סווגו אוטומטית לפי סוג עסק`,
       actorType: "ai",
       metadata: {
-        classified: classifiedCount,
-        unclassified: importedRows.length - classifiedCount,
+        autoClassified,
+        suggested,
+        unclassified: importedRows.length - autoClassified - suggested,
       },
     });
   }
+
+  const needsReview = importedRows.length - autoClassified - suggested;
 
   await recordAuditEvent({
     organizationId: session.organizationId,
@@ -478,9 +549,17 @@ async function importParsedRows(
     metadata: {
       confidence: analysis.confidence,
       detectedColumns,
-      classified: classifiedCount,
-      needsReview: importedRows.length - classifiedCount,
-    },
+      imported: importedRows.length,
+      autoClassified,
+      suggested,
+      needsReview,
+      sheetsFound: structure.xlsxMeta?.sheetNames,
+      sheetUsed: structure.xlsxMeta?.sheetUsed,
+      hadMergedCells: structure.xlsxMeta?.hadMergedCells,
+      hiddenColumnsDetected: structure.xlsxMeta?.hiddenColumnIndexes.length,
+      skippedLeadingRows: structure.tableBounds.skippedLeadingRows,
+      skippedTrailingRows: structure.tableBounds.skippedTrailingRows,
+    } satisfies ImportAnalysisSummary,
   });
 
   await setOnboardingStep(session.organizationId, 5);
@@ -488,13 +567,14 @@ async function importParsedRows(
 }
 
 // Step 4 ("Import Excel / CSV") + Step 5 ("AI Client Analysis") in one
-// action. Parses the file into a raw grid (format-agnostic — CSV and XLSX
-// share this exact path) and runs it through the content-based column
-// analyzer (src/lib/import/columnAnalyzer.ts), which infers the
-// client-name/phone/email/business-type columns from the *values*, not
-// just the header text — real office files rename, reorder, or omit
-// headers entirely. When the analyzer is confident, the import proceeds
-// automatically exactly like before; when it isn't, this returns
+// action. STEP 1: parses the file and resolves its real structure — which
+// worksheet holds the data, where the table actually starts/ends
+// (src/lib/import/clientImportAdapter.ts's analyzeImportFileStructure).
+// STEP 2: runs the trimmed grid through the content-based column analyzer
+// (src/lib/import/columnAnalyzer.ts), which infers every column's role
+// from the *values*, not just header text — real office files rename,
+// reorder, or omit headers entirely. When the analyzer is confident, the
+// import proceeds automatically; when it isn't, this returns
 // `needsMapping` instead of importing anything, and confirmImportMapping
 // below finishes the job once the user confirms or corrects the mapping.
 export async function importAndClassifyClients(
@@ -508,9 +588,9 @@ export async function importAndClassifyClients(
     return { error: "נא לבחור קובץ להעלאה." };
   }
 
-  let rawRows: string[][];
+  let structure: ImportFileStructure;
   try {
-    rawRows = await parseClientImportFileToGrid(file);
+    structure = await analyzeImportFileStructure(file);
   } catch (error) {
     if (error instanceof UnsupportedImportFormatError) {
       return { error: error.message };
@@ -518,6 +598,7 @@ export async function importAndClassifyClients(
     return { error: error instanceof Error ? error.message : "שגיאה בקריאת הקובץ." };
   }
 
+  const rawRows = structure.rows;
   const analysis = await analyzeColumnsWithAIFallback(rawRows);
 
   if (analysis.confidence !== "high") {
@@ -529,13 +610,18 @@ export async function importAndClassifyClients(
         headers: analysis.headers,
         sampleRows: dataRows.slice(0, 5),
         suggestion: analysis.mapping,
+        tableBounds: structure.tableBounds,
+        xlsxMeta: structure.xlsxMeta,
       },
     };
   }
 
   const dataRows = analysis.hasHeaderRow ? rawRows.slice(1) : rawRows;
   const parsedRows = buildClientRowsFromMapping(dataRows, analysis.mapping);
-  return importParsedRows(session, parsedRows, analysis);
+  return importParsedRows(session, parsedRows, analysis, {
+    tableBounds: structure.tableBounds,
+    xlsxMeta: structure.xlsxMeta,
+  });
 }
 
 // The mapping-confirmation screen's submit action — same shared import
@@ -556,6 +642,15 @@ export async function confirmImportMapping(
     return { error: "אירעה שגיאה בטעינת הקובץ מחדש. נא להעלות אותו שוב." };
   }
   const hasHeaderRow = formData.get("hasHeaderRow") === "1";
+  let xlsxMeta: XlsxStructureMeta | undefined;
+  try {
+    const raw = formData.get("xlsxMeta");
+    xlsxMeta = raw ? JSON.parse(String(raw)) : undefined;
+  } catch {
+    xlsxMeta = undefined;
+  }
+  const skippedLeadingRows = Number(formData.get("skippedLeadingRows") ?? 0);
+  const skippedTrailingRows = Number(formData.get("skippedTrailingRows") ?? 0);
 
   function selectedColumn(field: string): number | undefined {
     const value = formData.get(field);
@@ -582,13 +677,20 @@ export async function confirmImportMapping(
       : [];
   const parsedRows = buildClientRowsFromMapping(dataRows, mapping);
 
-  return importParsedRows(session, parsedRows, {
-    hasHeaderRow,
-    headers,
-    columns: [],
-    mapping,
-    confidence: "high",
-  });
+  return importParsedRows(
+    session,
+    parsedRows,
+    { hasHeaderRow, headers, columns: [], mapping, confidence: "high" },
+    {
+      tableBounds: {
+        startIndex: 0,
+        endIndex: rows.length - 1,
+        skippedLeadingRows,
+        skippedTrailingRows,
+      },
+      xlsxMeta,
+    }
+  );
 }
 
 // Step 5's "Assign Business Type" bulk action — covers both picking an

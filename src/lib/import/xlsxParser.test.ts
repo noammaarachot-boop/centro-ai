@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import { parseXlsxToRows } from "./xlsxParser";
+import { parseXlsxToRows, parseXlsxWorkbook } from "./xlsxParser";
 import { mapRowsToClientRows } from "@/lib/csv";
 
 async function buildWorkbookBuffer(rows: (string | number)[][]) {
@@ -65,7 +65,22 @@ describe("parseXlsxToRows", () => {
         email: "",
         notes: "",
         businessType: "עוסק מורשה",
+        otherValues: [],
       },
     ]);
+  });
+});
+
+describe("parseXlsxWorkbook — structure metadata", () => {
+  it("reports a single sheet with no merges/hidden columns for a plain file", async () => {
+    const buffer = await buildWorkbookBuffer([
+      ["name", "phone"],
+      ["דנה", "0501111111"],
+    ]);
+    const { meta } = await parseXlsxWorkbook(buffer);
+    expect(meta.sheetNames).toEqual(["Clients"]);
+    expect(meta.sheetUsed).toBe("Clients");
+    expect(meta.hadMergedCells).toBe(false);
+    expect(meta.hiddenColumnIndexes).toEqual([]);
   });
 });

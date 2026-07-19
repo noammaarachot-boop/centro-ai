@@ -58,7 +58,7 @@ export function parseCsv(input: string): string[][] {
   return rows.filter((r) => r.some((cell) => cell.trim().length > 0));
 }
 
-import { analyzeColumns, type ColumnMapping } from "@/lib/import/columnAnalyzer";
+import { analyzeColumns, extractRowContextValues, type ColumnMapping } from "@/lib/import/columnAnalyzer";
 
 export interface CsvClientRow {
   name: string;
@@ -70,6 +70,12 @@ export interface CsvClientRow {
   // classifier (src/lib/ai/businessTypeClassifier.ts) — empty string when
   // the column is absent or blank for a row.
   businessType: string;
+  // Epic 4 STEP 3 ("context inference") — every other non-empty cell in
+  // this row (city, IDs, an unmapped extra column, ...), for the
+  // classifier's layer 2 to search when the business-type column is empty
+  // or unrecognized. Never includes name/phone/email/businessType
+  // themselves, since those are already passed separately.
+  otherValues: string[];
 }
 
 // Pure "plucking" step — given an already-resolved column mapping (from
@@ -87,6 +93,7 @@ export function buildClientRowsFromMapping(
     email: mapping.email !== undefined ? cells[mapping.email]?.trim() ?? "" : "",
     notes: mapping.notes !== undefined ? cells[mapping.notes]?.trim() ?? "" : "",
     businessType: mapping.businessType !== undefined ? cells[mapping.businessType]?.trim() ?? "" : "",
+    otherValues: extractRowContextValues(cells, mapping),
   }));
 }
 

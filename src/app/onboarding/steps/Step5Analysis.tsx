@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, ChevronDown, ScanSearch, Sparkles, UserRoundX } from "lucide-react";
+import { CheckCircle2, ChevronDown, Layers, Sparkles, UserRoundX } from "lucide-react";
 import { clsx } from "clsx";
 import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
@@ -30,6 +30,10 @@ const ROLE_LABELS: Record<keyof ImportAnalysisSummary["detectedColumns"], string
   phone: "טלפון",
   email: "אימייל",
   businessType: "סוג עסק",
+  notes: "הערות",
+  city: "עיר",
+  companyId: 'ח"פ',
+  taxId: "מספר עוסק",
 };
 
 export function Step5Analysis({
@@ -89,54 +93,95 @@ export function Step5Analysis({
 
   return (
     <div className="space-y-6">
-      {importSummary && detectedEntries.length > 0 && (
-        <div className="animate-fade-in-up rounded-2xl border border-border bg-surface-muted/40 px-5 py-4">
-          <div className="flex items-start gap-3">
-            <ScanSearch className="mt-0.5 h-5 w-5 shrink-0 text-brand-purple" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-text-primary">
-                כך Centro זיהה את מבנה הקובץ
+      {importSummary ? (
+        <div className="animate-fade-in-up rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />
+            <div>
+              <p className="text-base font-bold text-text-primary">Centro הבין את הקובץ שלכם</p>
+              <p className="text-xs text-text-secondary">
+                {importSummary.confidence === "high"
+                  ? "הזיהוי בוצע אוטומטית, בביטחון גבוה"
+                  : "הזיהוי אושר על ידכם לפני הייבוא"}
               </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {detectedEntries.map(([role, header]) => (
-                  <Badge key={role} tone="purple">
-                    {ROLE_LABELS[role]}: {header}
-                  </Badge>
-                ))}
-                <Badge tone={importSummary.confidence === "high" ? "success" : "warning"}>
-                  {importSummary.confidence === "high" ? "זיהוי ודאי" : "זיהוי לאחר אישור ידני"}
-                </Badge>
-              </div>
+            </div>
+          </div>
+
+          <ul className="mt-4 space-y-1.5 text-sm text-text-secondary">
+            <li>✅ {importSummary.imported} לקוחות זוהו בקובץ</li>
+            {detectedEntries.map(([role, header]) => (
+              <li key={role}>
+                ✅ עמודת {ROLE_LABELS[role]} זוהתה ({header})
+              </li>
+            ))}
+            {importSummary.autoClassified > 0 && (
+              <li>✅ {importSummary.autoClassified} סוגי עסק סווגו אוטומטית (ביטחון גבוה)</li>
+            )}
+            {importSummary.suggested > 0 && (
+              <li>💡 {importSummary.suggested} סוגי עסק סווגו כהצעה — כדאי לוודא</li>
+            )}
+            {importSummary.needsReview > 0 && (
+              <li>⚠️ {importSummary.needsReview} לקוחות דורשים סקירה ידנית</li>
+            )}
+          </ul>
+
+          {(importSummary.sheetsFound?.length ?? 0) > 1 && (
+            <p className="mt-3 flex items-center gap-1.5 text-xs text-text-muted">
+              <Layers className="h-3.5 w-3.5" />
+              נמצאו {importSummary.sheetsFound?.length} גיליונות בקובץ — נעשה שימוש בגיליון
+              &quot;{importSummary.sheetUsed}&quot;
+            </p>
+          )}
+          {(importSummary.skippedLeadingRows ?? 0) + (importSummary.skippedTrailingRows ?? 0) > 0 && (
+            <p className="mt-1 text-xs text-text-muted">
+              דילגנו על שורות שלא היו חלק מטבלת הלקוחות (כותרת/סיכום) כדי לא לפגוע בדיוק הזיהוי.
+            </p>
+          )}
+
+          <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+            <div>
+              <p className="text-2xl font-bold tabular-nums text-text-primary">{total}</p>
+              <p className="text-[11px] text-text-muted">לקוחות יובאו</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold tabular-nums text-brand-emerald">{totalClassified}</p>
+              <p className="text-[11px] text-text-muted">סווגו (ודאי + הצעה)</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold tabular-nums text-warning">
+                {unclassifiedClients.length}
+              </p>
+              <p className="text-[11px] text-text-muted">דורשים סיווג ידני</p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="animate-fade-in-up rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />
+            <div>
+              <p className="text-base font-bold text-text-primary">הייבוא הושלם בהצלחה!</p>
+              <p className="text-xs text-text-secondary">Centro ניתח וסיווג את הלקוחות אוטומטית</p>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+            <div>
+              <p className="text-2xl font-bold tabular-nums text-text-primary">{total}</p>
+              <p className="text-[11px] text-text-muted">לקוחות יובאו</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold tabular-nums text-brand-emerald">{totalClassified}</p>
+              <p className="text-[11px] text-text-muted">סווגו אוטומטית</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold tabular-nums text-warning">
+                {unclassifiedClients.length}
+              </p>
+              <p className="text-[11px] text-text-muted">דורשים סיווג ידני</p>
             </div>
           </div>
         </div>
       )}
-
-      <div className="animate-fade-in-up rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
-        <div className="flex items-center gap-3">
-          <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />
-          <div>
-            <p className="text-base font-bold text-text-primary">הייבוא הושלם בהצלחה!</p>
-            <p className="text-xs text-text-secondary">Centro ניתח וסיווג את הלקוחות אוטומטית</p>
-          </div>
-        </div>
-        <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-          <div>
-            <p className="text-2xl font-bold tabular-nums text-text-primary">{total}</p>
-            <p className="text-[11px] text-text-muted">לקוחות יובאו</p>
-          </div>
-          <div>
-            <p className="text-2xl font-bold tabular-nums text-brand-emerald">{totalClassified}</p>
-            <p className="text-[11px] text-text-muted">סווגו אוטומטית</p>
-          </div>
-          <div>
-            <p className="text-2xl font-bold tabular-nums text-warning">
-              {unclassifiedClients.length}
-            </p>
-            <p className="text-[11px] text-text-muted">דורשים סיווג ידני</p>
-          </div>
-        </div>
-      </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {businessTypes.map((type, index) => {

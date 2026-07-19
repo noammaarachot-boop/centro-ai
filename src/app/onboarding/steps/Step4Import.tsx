@@ -74,9 +74,33 @@ export function Step4Import() {
           </div>
         </div>
 
+        {(mapping.tableBounds.skippedLeadingRows > 0 || mapping.tableBounds.skippedTrailingRows > 0) && (
+          <p className="text-xs text-text-muted">
+            {mapping.tableBounds.skippedLeadingRows > 0 &&
+              `דילגנו על ${mapping.tableBounds.skippedLeadingRows} שורות בתחילת הקובץ שלא נראו כחלק מהטבלה. `}
+            {mapping.tableBounds.skippedTrailingRows > 0 &&
+              `דילגנו על ${mapping.tableBounds.skippedTrailingRows} שורות בסוף הקובץ (כנראה סיכום).`}
+          </p>
+        )}
+
         <form action={confirmFormAction} className="space-y-4">
           <input type="hidden" name="rows" value={JSON.stringify(mapping.rows)} />
           <input type="hidden" name="hasHeaderRow" value={mapping.hasHeaderRow ? "1" : "0"} />
+          <input
+            type="hidden"
+            name="xlsxMeta"
+            value={mapping.xlsxMeta ? JSON.stringify(mapping.xlsxMeta) : ""}
+          />
+          <input
+            type="hidden"
+            name="skippedLeadingRows"
+            value={mapping.tableBounds.skippedLeadingRows}
+          />
+          <input
+            type="hidden"
+            name="skippedTrailingRows"
+            value={mapping.tableBounds.skippedTrailingRows}
+          />
 
           <div className="space-y-3">
             {(["name", "phone", "email", "businessType"] as const).map((role) => {
@@ -182,7 +206,8 @@ export function Step4Import() {
             {fileName ?? "לחצו כדי לבחור קובץ Excel / CSV"}
           </span>
           <span className="text-xs text-text-muted">
-            כל מבנה עמודות מתקבל — Centro מזהה שם, טלפון, אימייל וסוג עסק אוטומטית לפי התוכן
+            כל מבנה קובץ מתקבל — עמודות בכל סדר, כותרות בעברית או באנגלית, גיליונות מרובים.
+            Centro מבין את הקובץ מהתוכן שלו, לא מהכותרות.
           </span>
           <input
             id="file"

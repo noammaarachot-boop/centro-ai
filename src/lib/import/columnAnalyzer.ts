@@ -21,14 +21,29 @@ import { matchSynonym } from "@/lib/ai/businessTypeClassifier";
  * parseXlsxToRows); column understanding is implemented exactly once.
  */
 
-export type ImportRole = "name" | "phone" | "email" | "businessType" | "notes";
+export type ImportRole =
+  | "name"
+  | "phone"
+  | "email"
+  | "businessType"
+  | "notes"
+  | "city"
+  | "companyId"
+  | "taxId";
 
+// name/phone are required; businessType/email gate their own confidence
+// bar; city/companyId/taxId/notes are pure bonus — detected and shown in
+// the wizard's understanding summary when found, never required, never
+// blocking a confident import when absent.
 export interface ColumnMapping {
   name?: number;
   phone?: number;
   email?: number;
   businessType?: number;
   notes?: number;
+  city?: number;
+  companyId?: number;
+  taxId?: number;
 }
 
 export interface ColumnAnalysis {
@@ -78,6 +93,29 @@ const HEADER_ALIASES: Record<ImportRole, string[]> = {
     "סטטוס עסק",
   ],
   notes: ["notes", "note", "comment", "comments", "הערות", "הערה"],
+  city: ["city", "town", "עיר", "ישוב", "יישוב", "עיר מגורים"],
+  companyId: [
+    "company id",
+    "company number",
+    "registration number",
+    "corporate id",
+    'ח.פ',
+    'ח"פ',
+    "חפ",
+    "מספר חברה",
+    "מספר רישום",
+  ],
+  taxId: [
+    "tax id",
+    "vat number",
+    "vat id",
+    "tax number",
+    'מס"ב',
+    "עוסק מורשה מספר",
+    "מספר עוסק",
+    'מס עוסק',
+    'ע.מ',
+  ],
 };
 
 function normalizeHeader(value: string): string {
@@ -160,11 +198,48 @@ export function isBusinessTypeLike(value: string): boolean {
   return matchSynonym(value) !== null;
 }
 
+// A curated, non-exhaustive set of common Israeli city names (Hebrew and
+// English) — a best-effort bonus signal, not a gate: a city column simply
+// won't score well if the office uses towns not on this list, and that's
+// fine, since city is never required.
+const KNOWN_CITIES = new Set(
+  [
+    "תל אביב", "תל אביב-יפו", "ירושלים", "חיפה", "ראשון לציון", "פתח תקווה",
+    "אשדוד", "נתניה", "באר שבע", "בני ברק", "רמת גן", "רחובות", "אשקלון",
+    "הרצליה", "כפר סבא", "מודיעין", "רעננה", "בת ים", "חולון", "נצרת",
+    "אילת", "לוד", "רמלה", "רמת השרון", "גבעתיים", "הוד השרון", "נהריה",
+    "קריית אתא", "קריית גת", "קריית ים", "קריית מוצקין", "קריית ביאליק",
+    "עפולה", "טבריה", "דימונה", "יבנה", "אור יהודה", "צפת",
+    "tel aviv", "jerusalem", "haifa", "beer sheva", "netanya", "herzliya",
+    "ashdod", "rishon lezion", "ramat gan", "petah tikva",
+  ].map((c) => c.trim().toLowerCase())
+);
+
+export function isCityLike(value: string): boolean {
+  return KNOWN_CITIES.has(value.trim().toLowerCase());
+}
+
+// Israeli company registration numbers (ח.פ) and tax/VAT-registered
+// dealer numbers are both plain 9-digit numbers, sometimes dash-separated
+// — structurally indistinguishable from each other, and from a landline
+// phone number missing its leading zero. Content alone cannot fully
+// disambiguate these three; header text carries proportionally more
+// weight for companyId/taxId than for any other role specifically because
+// of this (see WEIGHTS below) — an honest, documented limitation rather
+// than a false promise of certainty.
+export function isNineDigitIdLike(value: string): boolean {
+  const stripped = value.trim().replace(/[\s-]/g, "");
+  return /^\d{9}$/.test(stripped);
+}
+
 const VALUE_PREDICATES: Partial<Record<ImportRole, (value: string) => boolean>> = {
   name: isNameLike,
   phone: isPhoneLike,
   email: isEmailLike,
   businessType: isBusinessTypeLike,
+  city: isCityLike,
+  companyId: isNineDigitIdLike,
+  taxId: isNineDigitIdLike,
 };
 
 function patternScore(role: ImportRole, values: string[]): number {
@@ -190,10 +265,12 @@ function uniquenessRatio(values: string[]): number {
   return new Set(nonEmpty).size / nonEmpty.length;
 }
 
+const CATEGORICAL_ROLES = new Set<ImportRole>(["businessType", "city"]);
+
 function structureScore(role: ImportRole, values: string[]): number {
   const ratio = uniquenessRatio(values);
-  if (role === "businessType") return 1 - ratio; // favor low cardinality
-  return ratio; // name/phone/email favor high cardinality
+  if (CATEGORICAL_ROLES.has(role)) return 1 - ratio; // favor low cardinality
+  return ratio; // identity-like columns (name/phone/email/IDs) favor high cardinality
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +285,12 @@ const WEIGHTS: Record<ImportRole, { header: number; pattern: number; structure: 
   email: { header: 0.2, pattern: 0.75, structure: 0.05 },
   businessType: { header: 0.2, pattern: 0.55, structure: 0.25 },
   notes: { header: 1, pattern: 0, structure: 0 },
+  city: { header: 0.3, pattern: 0.6, structure: 0.1 },
+  // Header carries more weight here than anywhere else — see
+  // isNineDigitIdLike's comment on why content alone can't fully
+  // disambiguate a company/tax ID from a phone number.
+  companyId: { header: 0.5, pattern: 0.4, structure: 0.1 },
+  taxId: { header: 0.5, pattern: 0.4, structure: 0.1 },
 };
 
 function totalScore(role: ImportRole, header: string, values: string[]): number {
@@ -246,6 +329,7 @@ const REQUIRED_HIGH_CONFIDENCE = 0.5;
 const AMBIGUITY_MARGIN = 0.15;
 const BUSINESS_TYPE_ACCEPT = 0.45;
 const EMAIL_ACCEPT = 0.5;
+const BONUS_ROLE_ACCEPT = 0.45;
 
 // A real header row is text labels — a genuine column heading is never
 // itself a phone number or an email address. So even a single such cell
@@ -278,7 +362,16 @@ export function analyzeColumns(rows: string[][]): AnalyzeColumnsResult {
     dataRows.map((row) => (row[i] ?? "").trim())
   );
 
-  const roles: ImportRole[] = ["name", "phone", "email", "businessType", "notes"];
+  const roles: ImportRole[] = [
+    "name",
+    "phone",
+    "email",
+    "businessType",
+    "notes",
+    "city",
+    "companyId",
+    "taxId",
+  ];
   const columns: ColumnAnalysis[] = Array.from({ length: columnCount }, (_, i) => {
     const values = columnValues[i];
     const scores = Object.fromEntries(
@@ -295,12 +388,37 @@ export function analyzeColumns(rows: string[][]): AnalyzeColumnsResult {
   const used = new Set<number>();
   const mapping: ColumnMapping = {};
 
+  // How unambiguously a column suits a role: its score for that role minus
+  // its own best score among every *other* role. A column whose values
+  // happen to also look plausible for another role (e.g. a business-type
+  // column of varied synonym text can score identically to a genuine name
+  // column on "name" — see the module-level comment) is less specifically
+  // suited to this role than one with a clear lead, even at an equal raw
+  // score.
+  function specificity(col: ColumnAnalysis, role: ImportRole): number {
+    const otherScores = (Object.keys(col.scores) as ImportRole[])
+      .filter((r) => r !== role)
+      .map((r) => col.scores[r]);
+    return col.scores[role] - Math.max(0, ...otherScores);
+  }
+
   function bestRemaining(role: ImportRole): { index: number; score: number } | null {
     let best: { index: number; score: number } | null = null;
     for (const col of columns) {
       if (used.has(col.index)) continue;
       const score = col.scores[role];
-      if (!best || score > best.score) best = { index: col.index, score };
+      if (!best) {
+        best = { index: col.index, score };
+        continue;
+      }
+      if (score > best.score) {
+        best = { index: col.index, score };
+      } else if (score === best.score) {
+        const bestCol = columns[best.index];
+        if (specificity(col, role) > specificity(bestCol, role)) {
+          best = { index: col.index, score };
+        }
+      }
     }
     return best;
   }
@@ -344,6 +462,19 @@ export function analyzeColumns(rows: string[][]): AnalyzeColumnsResult {
     used.add(notesBest.index);
   }
 
+  // 6-8. Bonus roles (city, company ID, tax ID) — pure best-effort, never
+  // required, never affect confidence. Each needs a real, non-trivial
+  // score before being claimed, so an ordinary leftover column (a random
+  // extra field with no signal at all) is simply left unmapped rather than
+  // forced into one of these.
+  for (const bonusRole of ["city", "companyId", "taxId"] as const) {
+    const best = bestRemaining(bonusRole);
+    if (best && best.score >= BONUS_ROLE_ACCEPT) {
+      mapping[bonusRole] = best.index;
+      used.add(best.index);
+    }
+  }
+
   // Ambiguity margins are computed *after* every role has claimed its
   // column, against only the columns that ended up genuinely unclaimed —
   // a column that merely scored close to the name column on "name" but
@@ -373,6 +504,23 @@ export function analyzeColumns(rows: string[][]): AnalyzeColumnsResult {
     mapping,
     confidence: requiredConfident ? "high" : "low",
   };
+}
+
+// Everything in a data row that isn't name/phone/email/businessType — used
+// for row-context business-type inference (classifyClientBusinessType's
+// layer 2, src/lib/ai/businessTypeClassifier.ts): notes, city, IDs, and
+// any column the analyzer didn't confidently map to anything are all still
+// fair game for "the rest of the row might mention the legal form," per
+// the requirement that classification never looks at a single cell alone.
+export function extractRowContextValues(row: string[], mapping: ColumnMapping): string[] {
+  const excluded = new Set(
+    [mapping.name, mapping.phone, mapping.email, mapping.businessType].filter(
+      (i): i is number => i !== undefined
+    )
+  );
+  return row
+    .map((cell, index) => (excluded.has(index) ? "" : (cell ?? "").trim()))
+    .filter(Boolean);
 }
 
 // Async wrapper used by the wizard's import action (already async end to

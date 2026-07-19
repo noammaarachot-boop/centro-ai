@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeColumns,
   analyzeColumnsWithAIFallback,
+  extractRowContextValues,
   isBusinessTypeLike,
+  isCityLike,
   isEmailLike,
   isNameLike,
+  isNineDigitIdLike,
   isPhoneLike,
 } from "./columnAnalyzer";
 import { buildClientRowsFromMapping } from "@/lib/csv";
@@ -72,6 +75,20 @@ describe("value-pattern detectors", () => {
     expect(isBusinessTypeLike("תל אביב")).toBe(false);
     expect(isBusinessTypeLike("")).toBe(false);
   });
+
+  it("recognizes known Israeli city names, Hebrew and English", () => {
+    expect(isCityLike("תל אביב")).toBe(true);
+    expect(isCityLike("ירושלים")).toBe(true);
+    expect(isCityLike("Tel Aviv")).toBe(true);
+    expect(isCityLike("Some Random Place")).toBe(false);
+  });
+
+  it("recognizes plain and dash-separated 9-digit IDs (company/tax numbers)", () => {
+    expect(isNineDigitIdLike("512345678")).toBe(true);
+    expect(isNineDigitIdLike("51-234567-8")).toBe(true);
+    expect(isNineDigitIdLike("12345")).toBe(false);
+    expect(isNineDigitIdLike("abc")).toBe(false);
+  });
 });
 
 // A realistic 12-row file with entirely generic/unknown headers — nothing
@@ -119,6 +136,7 @@ describe("analyzeColumns — realistic files with unknown headers", () => {
       email: "dana@x.com",
       notes: "",
       businessType: 'חברה בע"מ',
+      otherValues: ["2020-01-01"],
     });
   });
 });
@@ -187,6 +205,27 @@ describe("analyzeColumns — company names instead of person names", () => {
     expect(result.mapping.name).toBe(0);
     expect(result.mapping.businessType).toBe(2);
     expect(result.mapping.name).not.toBe(result.mapping.businessType);
+  });
+});
+
+describe("analyzeColumns — shuffled column order", () => {
+  it("does not let a business-type column steal the name role when it appears before the real name column", () => {
+    // Regression: with no headers, a business-type column full of varied
+    // synonym forms (each string literally unique) can score identically
+    // to the real name column on "name" (same pattern/structure signals).
+    // When that column's index is lower than the real name column's, a
+    // naive first-wins tie-break picks the wrong one.
+    const rows: string[][] = [
+      ["0501111111", 'חברה בע"מ', "דנה כהן"],
+      ["0502222222", "מורשה", "משה לוי"],
+      ["0503333333", "פטור", "רותם ישראלי"],
+      ["0504444444", "עמותה", "עמותת הלב הפתוח"],
+      ["0505555555", "Payroll", "שירותי שכר"],
+    ];
+    const result = analyzeColumns(rows);
+    expect(result.mapping.phone).toBe(0);
+    expect(result.mapping.businessType).toBe(1);
+    expect(result.mapping.name).toBe(2);
   });
 });
 
@@ -268,9 +307,66 @@ describe("analyzeColumns — low confidence and manual correction", () => {
     const manualMapping = { name: 0, phone: 1 };
     const clientRows = buildClientRowsFromMapping(dataRows, manualMapping);
     expect(clientRows).toEqual([
-      { name: "דנה כהן", phone: "1", email: "", notes: "", businessType: "" },
-      { name: "משה לוי", phone: "2", email: "", notes: "", businessType: "" },
+      { name: "דנה כהן", phone: "1", email: "", notes: "", businessType: "", otherValues: [] },
+      { name: "משה לוי", phone: "2", email: "", notes: "", businessType: "", otherValues: [] },
     ]);
+  });
+});
+
+describe("analyzeColumns — bonus roles (city, company ID, tax ID)", () => {
+  it("detects a city column as a best-effort bonus, never blocking confidence", () => {
+    const rows: string[][] = [
+      ["name", "phone", "city"],
+      ["דנה כהן", "0501111111", "תל אביב"],
+      ["משה לוי", "0502222222", "ירושלים"],
+      ["רותם ישראלי", "0503333333", "תל אביב"],
+      ["עמותת הלב הפתוח", "0504444444", "חיפה"],
+    ];
+    const result = analyzeColumns(rows);
+    expect(result.mapping.city).toBe(2);
+    expect(result.confidence).toBe("high");
+  });
+
+  it("detects a company-ID column primarily via header hint (content alone is ambiguous)", () => {
+    const rows: string[][] = [
+      ["name", "phone", 'ח.פ'],
+      ["דנה כהן", "0501111111", "512345678"],
+      ["משה לוי", "0502222222", "523456789"],
+    ];
+    const result = analyzeColumns(rows);
+    expect(result.mapping.companyId).toBe(2);
+  });
+
+  it("never lets a bonus role steal the real phone column", () => {
+    const rows: string[][] = [
+      ["name", "phone", 'ח.פ'],
+      ["דנה כהן", "0501111111", "512345678"],
+      ["משה לוי", "0502222222", "523456789"],
+      ["רותם ישראלי", "0503333333", "534567890"],
+    ];
+    const result = analyzeColumns(rows);
+    expect(result.mapping.phone).toBe(1);
+    expect(result.mapping.companyId).toBe(2);
+  });
+});
+
+describe("extractRowContextValues", () => {
+  it("excludes name/phone/email/businessType and includes everything else", () => {
+    const row = ["דנה כהן", "0501111111", "dana@x.com", 'חברה בע"מ', "תל אביב", "הערה"];
+    const mapping = { name: 0, phone: 1, email: 2, businessType: 3, city: 4, notes: 5 };
+    expect(extractRowContextValues(row, mapping)).toEqual(["תל אביב", "הערה"]);
+  });
+
+  it("includes an entirely unmapped column too", () => {
+    const row = ["דנה כהן", "0501111111", "some unrecognized extra value"];
+    const mapping = { name: 0, phone: 1 };
+    expect(extractRowContextValues(row, mapping)).toEqual(["some unrecognized extra value"]);
+  });
+
+  it("skips empty cells", () => {
+    const row = ["דנה כהן", "0501111111", ""];
+    const mapping = { name: 0, phone: 1 };
+    expect(extractRowContextValues(row, mapping)).toEqual([]);
   });
 });
 
