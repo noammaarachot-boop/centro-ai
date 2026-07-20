@@ -22,6 +22,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { markOnboardingComplete } from "@/lib/onboarding";
 import { clampCollectionDay } from "@/lib/businessHours";
+import { BUSINESS_CATEGORIES, type BusinessCategory } from "@/lib/businessCategories";
 import {
   assignClientsToBusinessType,
   createBusinessType,
@@ -103,6 +104,77 @@ export async function updateOfficeInfo(
     return {};
   }
   redirect("/onboarding?step=3");
+}
+
+export interface BusinessCategoryState {
+  fieldErrors?: { businessCategory?: string; customLabel?: string };
+}
+
+// Step 3 (new).
+export async function updateBusinessCategory(
+  _prevState: BusinessCategoryState,
+  formData: FormData
+): Promise<BusinessCategoryState> {
+  const session = await requireSession();
+  const businessCategory = String(formData.get("businessCategory") ?? "");
+  const customLabel = String(formData.get("businessCategoryCustomLabel") ?? "").trim();
+
+  if (!BUSINESS_CATEGORIES.includes(businessCategory as BusinessCategory)) {
+    return { fieldErrors: { businessCategory: "נא לבחור סוג עסק." } };
+  }
+  if (businessCategory === "other" && !customLabel) {
+    return { fieldErrors: { customLabel: "נא לפרט את סוג העסק." } };
+  }
+
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({
+      businessCategory,
+      businessCategoryCustomLabel: businessCategory === "other" ? customLabel : null,
+      onboardingStep: 4,
+      updatedAt: new Date(),
+    })
+    .where(eq(organizations.id, session.organizationId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "organization.business_category_set",
+    description: "סוג העסק של המשרד נקבע באשף ההקמה",
+    actorType: "employee",
+    actorUserId: session.userId,
+    metadata: { businessCategory, customLabel: customLabel || undefined },
+  });
+
+  redirect("/onboarding?step=4");
+}
+
+// Step 4 (new). Bound to the chosen value (`.bind(null, "recurring" |
+// "one_time")`), matching this file's existing `advanceOnboardingStep`
+// pattern — the choice is a decisive action (two distinct buttons), not a
+// selection to confirm separately. Permanent for the pilot: not exposed as
+// an editable Settings toggle, since changing it later is a data-migration
+// question, not a form field.
+export async function updateWorkflowType(value: "recurring" | "one_time") {
+  const session = await requireSession();
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({ workflowType: value, onboardingStep: 5, updatedAt: new Date() })
+    .where(eq(organizations.id, session.organizationId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "organization.workflow_type_set",
+    description:
+      value === "recurring"
+        ? "המשרד בחר באיסוף מסמכים קבוע וחוזר"
+        : "המשרד בחר באיסוף מסמכים חד-פעמי",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  redirect("/onboarding?step=5");
 }
 
 // Step 7 — per-Business-Type (i.e. per-Service) reminder/business-hours

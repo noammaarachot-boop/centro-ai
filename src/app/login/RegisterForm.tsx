@@ -39,6 +39,31 @@ export function RegisterForm() {
 
       <div>
         <label
+          htmlFor="register-phone"
+          className="mb-1.5 block text-sm font-medium text-text-secondary"
+        >
+          טלפון
+        </label>
+        <input
+          id="register-phone"
+          name="phone"
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
+          dir="ltr"
+          required
+          className="w-full rounded-xl border border-border bg-white px-4 py-3 text-end text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
+          placeholder="050-1234567"
+        />
+        {state.fieldErrors?.phone && (
+          <p role="alert" className="mt-1.5 text-xs font-medium text-danger">
+            {state.fieldErrors.phone}
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label
           htmlFor="register-email"
           className="mb-1.5 block text-sm font-medium text-text-secondary"
         >

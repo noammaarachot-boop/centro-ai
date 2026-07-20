@@ -65,7 +65,7 @@ export function Step5Analysis({
 
   const totalClassified = businessTypes.reduce((sum, t) => sum + t.clientCount, 0);
   const total = totalClassified + unclassifiedClients.length;
-  const goToStep6 = advanceOnboardingStep.bind(null, 6);
+  const goToStep6 = advanceOnboardingStep.bind(null, 8);
 
   function toggleSelected(id: string) {
     setSelectedIds((prev) => {

@@ -10,6 +10,14 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+// Product Evolution M1: the permanent fork chosen once during onboarding
+// between the existing recurring/learning workflow and the new one-time/
+// template-driven workflow. Defaults to "recurring" so every pre-existing
+// organization keeps its exact current behavior with zero migration risk.
+// Not exposed as an editable Settings toggle — switching later is a data
+// migration question, out of scope unless explicitly requested.
+export const workflowTypeEnum = pgEnum("workflow_type", ["recurring", "one_time"]);
+
 // Owns all configuration, users and (starting M3) clients/services/collection
 // data. EPS Ch.2 PR-005 / Ch.8: every other table is scoped to one of these.
 //
@@ -51,6 +59,20 @@ export const organizations = pgTable("organizations", {
   // Requests (they're opened manually), so this is a stored, editable
   // policy value with no automated consumer yet, not a live cron trigger.
   collectionDayOfMonth: integer("collection_day_of_month").notNull().default(1),
+  // Product Evolution M1: what kind of business this office itself is —
+  // distinct from `business_types` below, which classifies this office's
+  // *clients* and is Workflow A (recurring) only. Used for onboarding
+  // personalization, analytics, and AI-driven starter document suggestions
+  // for business types Centro has no built-in defaults for (see
+  // src/lib/ai/businessCategorySuggestions.ts, M2). One of a fixed preset
+  // list, or "other" with the free-text label below. Defaults to
+  // "accountant" so every pre-existing organization is classified as
+  // exactly what it already is.
+  businessCategory: text("business_category").notNull().default("accountant"),
+  // Free text, only meaningful when businessCategory = "other".
+  businessCategoryCustomLabel: text("business_category_custom_label"),
+  // See the workflowTypeEnum comment above this table.
+  workflowType: workflowTypeEnum("workflow_type").notNull().default("recurring"),
   // Epic 2: set once the org has been through (today: the relocated
   // "Office Setup" flow at /onboarding; later: the real onboarding wizard).
   // Gates whether a login/registration lands on /onboarding or /dashboard —
@@ -88,6 +110,11 @@ export const users = pgTable("users", {
   // Nullable: accounts provisioned via scripts/create-organization.ts don't
   // collect one. Self-service registration always sets it.
   fullName: text("full_name"),
+  // Product Evolution M1: the office's own contact number, collected at
+  // registration. Nullable for the same reason fullName is — the
+  // script-based provisioning path doesn't collect it; self-service
+  // registration always sets it.
+  phone: text("phone"),
   termsAcceptedAt: timestamp("terms_accepted_at", { withTimezone: true }),
   privacyAcceptedAt: timestamp("privacy_accepted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })

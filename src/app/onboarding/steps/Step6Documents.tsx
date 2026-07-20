@@ -16,7 +16,7 @@ interface Entry {
 }
 
 export function Step6Documents({ entries }: { entries: Entry[] }) {
-  const goToStep7 = advanceOnboardingStep.bind(null, 7);
+  const goToStep7 = advanceOnboardingStep.bind(null, 9);
 
   if (entries.length === 0) {
     return (

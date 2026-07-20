@@ -2,11 +2,18 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { HelpTip } from "@/components/app/HelpTip";
 
-export const TOTAL_STEPS = 9;
+// Product Evolution M1: two new steps (Business Type, Collection Style)
+// inserted after Office Info, renumbering the rest. M1 keeps every
+// organization on this same sequence regardless of which workflow it
+// chooses (see the "temporary stopgap" note in page.tsx) — M3 branches this
+// for real once the one-time workflow's own steps exist.
+export const TOTAL_STEPS = 11;
 
 const STEP_TITLES = [
   "ברוכים הבאים",
   "פרטי המשרד",
+  "סוג העסק",
+  "אופן איסוף המסמכים",
   "חיבור שירותים",
   "ייבוא לקוחות",
   "ניתוח AI",

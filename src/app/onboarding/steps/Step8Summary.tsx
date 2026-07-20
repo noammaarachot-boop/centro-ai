@@ -36,7 +36,7 @@ export function Step8Summary({
   businessTypeCount: number;
   requirementsConfigured: number;
 }) {
-  const goToStep9 = advanceOnboardingStep.bind(null, 9);
+  const goToStep9 = advanceOnboardingStep.bind(null, 11);
 
   return (
     <div className="space-y-5">

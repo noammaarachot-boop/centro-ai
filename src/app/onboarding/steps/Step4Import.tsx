@@ -4,7 +4,7 @@ import { advanceOnboardingStep } from "../actions";
 import { ImportUploader } from "./ImportUploader";
 
 export function Step4Import() {
-  const skipStep = advanceOnboardingStep.bind(null, 5);
+  const skipStep = advanceOnboardingStep.bind(null, 7);
 
   return (
     <div className="space-y-5">

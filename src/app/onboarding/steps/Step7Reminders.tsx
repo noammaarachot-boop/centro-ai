@@ -31,7 +31,7 @@ export function Step7Reminders({
   entries: Array<{ businessType: { id: string; name: string }; service: ServiceRow | null }>;
   organization: OrganizationDefaults;
 }) {
-  const goToStep8 = advanceOnboardingStep.bind(null, 8);
+  const goToStep8 = advanceOnboardingStep.bind(null, 10);
 
   return (
     <div className="space-y-5">

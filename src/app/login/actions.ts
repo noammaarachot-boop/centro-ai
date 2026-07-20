@@ -85,6 +85,7 @@ export interface RegisterState {
   error?: string;
   fieldErrors?: {
     fullName?: string;
+    phone?: string;
     email?: string;
     password?: string;
     confirmPassword?: string;
@@ -99,6 +100,7 @@ export async function register(
   formData: FormData
 ): Promise<RegisterState> {
   const fullName = String(formData.get("fullName") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
   const email = String(formData.get("email") ?? "")
     .trim()
     .toLowerCase();
@@ -109,6 +111,7 @@ export async function register(
 
   const fieldErrors: RegisterState["fieldErrors"] = {};
   if (!fullName) fieldErrors.fullName = "נא להזין שם מלא.";
+  if (!phone) fieldErrors.phone = "נא להזין מספר טלפון.";
   if (!email) {
     fieldErrors.email = "נא להזין כתובת אימייל.";
   } else if (!EMAIL_PATTERN.test(email)) {
@@ -159,6 +162,7 @@ export async function register(
       email,
       passwordHash,
       fullName,
+      phone,
       termsAcceptedAt: now,
       privacyAcceptedAt: now,
     })

@@ -68,7 +68,7 @@ export function Step3Connect({
   googleConnectedAt: Date | null;
   whatsappConnectedAt: Date | null;
 }) {
-  const goToStep4 = advanceOnboardingStep.bind(null, 4);
+  const goToStep4 = advanceOnboardingStep.bind(null, 6);
 
   return (
     <div className="space-y-4">
