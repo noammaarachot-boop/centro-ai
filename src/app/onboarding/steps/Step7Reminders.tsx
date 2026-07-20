@@ -39,7 +39,7 @@ export function Step7Reminders({
         <EmptyState
           icon={AlarmClock}
           title="עדיין אין סוגי עסק"
-          description="ברירת המחדל של המשרד (מוגדרת בהגדרות) תחול על כל בקשות האיסוף עד שיוגדרו סוגי עסק."
+          description="ברירת המחדל של העסק (מוגדרת בהגדרות) תחול על כל בקשות האיסוף עד שיוגדרו סוגי עסק."
         />
       ) : (
         entries.map(({ businessType, service }) => {

@@ -45,8 +45,8 @@ type StepMeta = { title: string; description?: string; help?: string };
 const SHARED_STEP_META: Record<number, StepMeta> = {
   1: { title: "ברוכים הבאים ל-Centro" },
   2: {
-    title: "פרטי המשרד",
-    description: "כמה פרטים בסיסיים כדי להתאים את Centro למשרד שלכם.",
+    title: "פרטי העסק",
+    description: "כמה פרטים בסיסיים כדי להתאים את Centro לעסק שלכם.",
     help: "המידע הזה משמש להתאמה אישית של סביבת העבודה שלכם. תמיד ניתן לשנות זאת מאוחר יותר מתוך ההגדרות.",
   },
   3: {

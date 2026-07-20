@@ -72,7 +72,7 @@ export async function updateOfficeInfo(
   const returnTo = formData.get("returnTo")?.toString();
 
   if (!name) {
-    return { fieldErrors: { name: "נא להזין שם משרד." } };
+    return { fieldErrors: { name: "נא להזין שם עסק." } };
   }
 
   const db = await getDb();
@@ -89,7 +89,7 @@ export async function updateOfficeInfo(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "organization.updated",
-    description: returnTo ? "פרטי המשרד עודכנו מההגדרות" : "פרטי המשרד עודכנו באשף ההקמה",
+    description: returnTo ? "פרטי העסק עודכנו מההגדרות" : "פרטי העסק עודכנו באשף ההקמה",
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -140,7 +140,7 @@ export async function updateBusinessCategory(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "organization.business_category_set",
-    description: "סוג העסק של המשרד נקבע באשף ההקמה",
+    description: "סוג העסק נקבע באשף ההקמה",
     actorType: "employee",
     actorUserId: session.userId,
     metadata: { businessCategory, customLabel: customLabel || undefined },
@@ -168,8 +168,8 @@ export async function updateWorkflowType(value: "recurring" | "one_time") {
     eventType: "organization.workflow_type_set",
     description:
       value === "recurring"
-        ? "המשרד בחר באיסוף מסמכים קבוע וחוזר"
-        : "המשרד בחר באיסוף מסמכים חד-פעמי",
+        ? "העסק בחר באיסוף מסמכים קבוע וחוזר"
+        : "העסק בחר באיסוף מסמכים חד-פעמי",
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -1025,7 +1025,7 @@ export async function updateWorkingHours(formData: FormData) {
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "configuration.updated",
-    description: "שעות ופעילות המשרד הוגדרו באשף ההקמה (תהליך עבודה חד-פעמי)",
+    description: "שעות ופעילות העסק הוגדרו באשף ההקמה (תהליך עבודה חד-פעמי)",
     actorType: "employee",
     actorUserId: session.userId,
   });

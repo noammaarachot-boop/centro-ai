@@ -15,7 +15,7 @@ export function Step9OneTimeCompletion() {
       </span>
       <h2 className="text-balance text-2xl font-bold text-text-primary">Centro מוכן!</h2>
       <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-text-secondary">
-        המשרד שלכם מוכן ליצור תבניות איסוף מסמכים ולשלוח בקשות ללקוחות בכל עת — עכשיו
+        העסק שלכם מוכן ליצור תבניות איסוף מסמכים ולשלוח בקשות ללקוחות בכל עת — עכשיו
         או מתוזמן לתאריך עתידי. Centro ישלח, יעקוב, ויארגן את המסמכים שיתקבלו אוטומטית.
       </p>
 

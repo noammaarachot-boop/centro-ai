@@ -21,9 +21,9 @@ import { CentroMark } from "@/components/landing/icons/CentroMark";
 const RECURRING_NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
   { href: "/clients", label: "לקוחות", icon: Users },
-  { href: "/services", label: "שירותים", icon: Layers },
+  { href: "/services", label: "תבניות", icon: Layers },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
-  { href: "/audit", label: "יומן ביקורת", icon: ScrollText },
+  { href: "/audit", label: "פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },
 ];
 
@@ -37,7 +37,7 @@ const ONE_TIME_NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/templates", label: "תבניות", icon: LayoutTemplate },
-  { href: "/audit", label: "יומן ביקורת", icon: ScrollText },
+  { href: "/audit", label: "פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },
 ];
 

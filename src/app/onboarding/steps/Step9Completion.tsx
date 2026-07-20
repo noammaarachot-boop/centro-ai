@@ -10,7 +10,7 @@ export function Step9Completion() {
       </span>
       <h2 className="text-balance text-2xl font-bold text-text-primary">Centro מוכן!</h2>
       <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-text-secondary">
-        הכול מוגדר. המשרד שלכם יכול להתחיל לאסוף מסמכים אוטומטית — Centro יפנה ללקוחות,
+        הכול מוגדר. העסק שלכם יכול להתחיל לאסוף מסמכים אוטומטית — Centro יפנה ללקוחות,
         יסווג את מה שמתקבל, ויעדכן אתכם לאורך כל הדרך.
       </p>
       <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-text-secondary">

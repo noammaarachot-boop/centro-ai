@@ -55,7 +55,7 @@ export function ServiceScheduleOverrideCard({
               onChange={(e) => setUseOverrides(e.target.checked)}
               className="h-4 w-4 rounded border-border accent-brand-purple"
             />
-            התאמה אישית עבור שירות זה
+            התאמה אישית עבור תבנית זו
           </label>
         </div>
 
@@ -159,7 +159,7 @@ export function ServiceScheduleOverrideCard({
             defaultValue={collectionDayOfMonth}
             disabled={!useOverrides}
             size="sm"
-            helpText="היום בחודש שבו Centro מתחיל לבקש מסמכים עבור סוג עסק זה. זו מדיניות משרד — Centro לעולם לא ילמד או ישנה אותה אוטומטית."
+            helpText="היום בחודש שבו Centro מתחיל לבקש מסמכים עבור סוג עסק זה. זו מדיניות עסקית — Centro לעולם לא ילמד או ישנה אותה אוטומטית."
           />
         </div>
 

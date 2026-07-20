@@ -23,7 +23,7 @@ export function Step6Documents({ entries }: { entries: Entry[] }) {
       <div className="space-y-5">
         <p className="text-sm text-text-secondary">
           עדיין אין סוגי עסק מוגדרים — הם נוצרים אוטומטית ברגע שיש לקוחות מסווגים בשלב
-          הקודם. אפשר תמיד להגדיר מסמכים נדרשים מאוחר יותר מעמוד השירותים.
+          הקודם. אפשר תמיד להגדיר מסמכים נדרשים מאוחר יותר מעמוד התבניות.
         </p>
         <form action={goToStep7}>
           <button

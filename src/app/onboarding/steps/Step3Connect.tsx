@@ -75,7 +75,7 @@ export function Step3Connect({
       <ConnectionRow
         icon={HardDrive}
         label="Google Drive"
-        explanation="כל מסמך שמאושר עבור לקוח מאוחסן אוטומטית בתיקייה משלו בגוגל דרייב של המשרד — מסודר ונגיש בלי עבודה ידנית."
+        explanation="כל מסמך שמאושר עבור לקוח מאוחסן אוטומטית בתיקייה משלו בגוגל דרייב של העסק — מסודר ונגיש בלי עבודה ידנית."
         connectedAt={googleConnectedAt}
         connectAction={connectGoogle}
         disconnectAction={disconnectGoogle}

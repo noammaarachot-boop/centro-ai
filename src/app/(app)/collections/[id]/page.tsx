@@ -29,6 +29,7 @@ import {
 import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { listAuditLog } from "@/lib/data/auditLog";
 import { listOpenConfirmationsForCollectionRequest } from "@/lib/pendingConfirmations";
+import { getOrganization } from "@/lib/data/organizations";
 import { StatusBadge } from "../StatusBadge";
 import {
   addManualDocument,
@@ -103,6 +104,9 @@ export default async function CollectionRequestDetailPage({
   const collectionRequest = await getCollectionRequest(session.organizationId, id);
   if (!collectionRequest) notFound();
 
+  const organization = await getOrganization(session.organizationId);
+  const serviceWord = organization?.workflowType === "one_time" ? "לתבנית זו" : "לשירות זה";
+
   const requirements = await listRequirementsWithDocuments(id);
   const unmatchedDocuments = await listUnmatchedDocuments(id);
   const options = nextStatusOptions(collectionRequest.status);
@@ -165,7 +169,7 @@ export default async function CollectionRequestDetailPage({
       <Card>
         <h2 className="mb-4 text-lg font-semibold text-text-primary">דרישות מסמכים</h2>
         {requirements.length === 0 ? (
-          <p className="text-sm text-text-muted">אין דרישות מסמכים מוגדרות לשירות זה.</p>
+          <p className="text-sm text-text-muted">אין דרישות מסמכים מוגדרות {serviceWord}.</p>
         ) : (
           <ul className="space-y-4">
             {requirements.map((requirement) => (

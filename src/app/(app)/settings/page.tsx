@@ -44,12 +44,12 @@ export default async function SettingsPage({
       )}
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי המשרד</h2>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי העסק</h2>
         <OfficeInfoForm
           name={organization.name}
           logoUrl={organization.logoUrl}
           returnTo="/settings"
-          submitLabel="שמירת פרטי המשרד"
+          submitLabel="שמירת פרטי העסק"
         />
       </Card>
 

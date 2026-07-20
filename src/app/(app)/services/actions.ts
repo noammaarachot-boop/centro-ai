@@ -35,7 +35,7 @@ export async function createService(
   const description = String(formData.get("description") ?? "").trim();
 
   if (!name) {
-    return { fieldErrors: { name: "נא להזין שם שירות." } };
+    return { fieldErrors: { name: "נא להזין שם תבנית." } };
   }
 
   const db = await getDb();
@@ -51,7 +51,7 @@ export async function createService(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "service.created",
-    description: `השירות "${service.name}" נוצר`,
+    description: `התבנית "${service.name}" נוצרה`,
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -69,7 +69,7 @@ export async function updateService(
   const description = String(formData.get("description") ?? "").trim();
 
   if (!name) {
-    return { fieldErrors: { name: "נא להזין שם שירות." } };
+    return { fieldErrors: { name: "נא להזין שם תבנית." } };
   }
 
   const db = await getDb();
@@ -79,12 +79,12 @@ export async function updateService(
     .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
     .returning();
 
-  if (!service) return { error: "השירות לא נמצא." };
+  if (!service) return { error: "התבנית לא נמצאה." };
 
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "service.updated",
-    description: `פרטי השירות "${service.name}" עודכנו`,
+    description: `פרטי התבנית "${service.name}" עודכנו`,
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -106,7 +106,7 @@ export async function deleteService(serviceId: string) {
       await recordAuditEvent({
         organizationId: session.organizationId,
         eventType: "service.deleted",
-        description: `השירות "${service.name}" נמחק`,
+        description: `התבנית "${service.name}" נמחקה`,
         actorType: "employee",
         actorUserId: session.userId,
       });
@@ -148,7 +148,7 @@ export async function addRequirement(serviceId: string, formData: FormData) {
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "service.requirement_added",
-    description: `דרישת מסמך "${name}" נוספה לשירות`,
+    description: `דרישת מסמך "${name}" נוספה לתבנית`,
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -173,7 +173,7 @@ export async function removeRequirement(serviceId: string, requirementId: string
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "service.requirement_removed",
-    description: "דרישת מסמך הוסרה מהשירות",
+    description: "דרישת מסמך הוסרה מהתבנית",
     actorType: "employee",
     actorUserId: session.userId,
   });

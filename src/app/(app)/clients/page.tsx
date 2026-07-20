@@ -15,7 +15,7 @@ export default async function ClientsPage() {
     <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
       <PageHeader
         title="לקוחות"
-        description="ניהול הלקוחות של המשרד וההיסטוריה שלהם."
+        description="ניהול הלקוחות של העסק וההיסטוריה שלהם."
         actions={
           <Link href="/clients/new" className={buttonVariants({ variant: "primary" })}>
             <Plus className="h-4 w-4" />

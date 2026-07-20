@@ -10,7 +10,7 @@ type Mode = "login" | "register";
 const COPY: Record<Mode, { title: string; description: string }> = {
   login: {
     title: "התחברות ל-Centro",
-    description: "התחברו עם חשבון המשרד המשותף שהוגדר עבורכם.",
+    description: "התחברו עם חשבון העסק המשותף שהוגדר עבורכם.",
   },
   register: {
     title: "יצירת חשבון ב-Centro",

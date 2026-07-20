@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import { clientServices, clients, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import { getOrganization } from "@/lib/data/organizations";
 import {
   AUTO_CLASSIFY_CONFIDENCE,
   classifyClientBusinessType,
@@ -261,10 +262,12 @@ export async function assignService(clientId: string, formData: FormData) {
     .values({ clientId, serviceId })
     .onConflictDoNothing();
 
+  const organization = await getOrganization(session.organizationId);
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "client.service_assigned",
-    description: "שירות שויך ללקוח",
+    description:
+      organization?.workflowType === "one_time" ? "תבנית שויכה ללקוח" : "שירות שויך ללקוח",
     actorType: "employee",
     actorUserId: session.userId,
     clientId,
@@ -296,10 +299,14 @@ export async function unassignService(clientId: string, assignmentId: string) {
 
   await db.delete(clientServices).where(eq(clientServices.id, assignmentId));
 
+  const organization = await getOrganization(session.organizationId);
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "client.service_unassigned",
-    description: "שיוך שירות הוסר מהלקוח",
+    description:
+      organization?.workflowType === "one_time"
+        ? "שיוך תבנית הוסר מהלקוח"
+        : "שיוך שירות הוסר מהלקוח",
     actorType: "employee",
     actorUserId: session.userId,
     clientId,

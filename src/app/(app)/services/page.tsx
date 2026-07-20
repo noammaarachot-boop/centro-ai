@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { Layers, Plus } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { listServices } from "@/lib/data/services";
+import { getOrganization } from "@/lib/data/organizations";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
@@ -9,17 +11,20 @@ import { buttonVariants } from "@/components/app/Button";
 
 export default async function ServicesPage() {
   const session = await requireSession();
+  const organization = await getOrganization(session.organizationId);
+  if (organization?.workflowType === "one_time") notFound();
+
   const services = await listServices(session.organizationId);
 
   return (
     <div className="mx-auto max-w-4xl animate-fade-in-up px-6 py-10 lg:px-10">
       <PageHeader
-        title="שירותים"
-        description="שירותים מגדירים אילו מסמכים נדרשים מהלקוחות בכל מחזור איסוף."
+        title="תבניות"
+        description="תבניות מגדירות אילו מסמכים נדרשים מהלקוחות בכל מחזור איסוף."
         actions={
           <Link href="/services/new" className={buttonVariants({ variant: "primary" })}>
             <Plus className="h-4 w-4" />
-            שירות חדש
+            תבנית חדשה
           </Link>
         }
       />
@@ -27,12 +32,12 @@ export default async function ServicesPage() {
       {services.length === 0 ? (
         <EmptyState
           icon={Layers}
-          title="עדיין אין שירותים"
-          description="הגדירו את השירות הראשון כדי לקבוע אילו מסמכים נדרשים מהלקוחות בכל מחזור איסוף."
+          title="עדיין אין תבניות"
+          description="הגדירו את התבנית הראשונה כדי לקבוע אילו מסמכים נדרשים מהלקוחות בכל מחזור איסוף."
           action={
             <Link href="/services/new" className={buttonVariants({ variant: "primary" })}>
               <Plus className="h-4 w-4" />
-              הוספת שירות ראשון
+              הוספת תבנית ראשונה
             </Link>
           }
         />

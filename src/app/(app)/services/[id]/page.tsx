@@ -33,15 +33,17 @@ export default async function ServiceDetailPage({
   const { id } = await params;
   const { error } = await searchParams;
 
+  const organization = await getOrganization(session.organizationId);
+  if (!organization) notFound();
+  if (organization.workflowType === "one_time") notFound();
+
   const service = await getService(session.organizationId, id);
   if (!service) notFound();
 
-  const [requirements, assignedClients, organization] = await Promise.all([
+  const [requirements, assignedClients] = await Promise.all([
     listServiceRequirements(id),
     listServiceClients(session.organizationId, id),
-    getOrganization(session.organizationId),
   ]);
-  if (!organization) notFound();
 
   const hasScheduleOverrides = !!(
     service.businessHoursStartOverride ||
@@ -65,7 +67,7 @@ export default async function ServiceDetailPage({
           className="mb-3 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
-          חזרה לשירותים
+          חזרה לתבניות
         </Link>
         <PageHeader title={service.name} />
       </div>
@@ -75,12 +77,12 @@ export default async function ServiceDetailPage({
           role="alert"
           className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
-          לא ניתן למחוק שירות שיש לו היסטוריית בקשות איסוף.
+          לא ניתן למחוק תבנית שיש לה היסטוריית בקשות איסוף.
         </p>
       )}
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי שירות</h2>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי תבנית</h2>
         <ServiceForm
           action={boundUpdate}
           submitLabel="שמירת שינויים"
@@ -94,7 +96,7 @@ export default async function ServiceDetailPage({
       <Card>
         <h2 className="mb-1 text-lg font-semibold text-text-primary">דרישות מסמכים</h2>
         <p className="mb-4 text-sm text-text-muted">
-          המסמכים שיתבקשו מכל לקוח המשויך לשירות זה בכל מחזור איסוף.
+          המסמכים שיתבקשו מכל לקוח המשויך לתבנית זו בכל מחזור איסוף.
         </p>
 
         {requirements.length === 0 ? (
@@ -167,7 +169,7 @@ export default async function ServiceDetailPage({
           <EmptyState
             icon={Users}
             title="אין לקוחות משויכים"
-            description="שייכו שירות ללקוח מתוך עמוד הלקוח כדי לראות אותו כאן."
+            description="שייכו תבנית ללקוח מתוך עמוד הלקוח כדי לראות אותו כאן."
           />
         ) : (
           <ul className="space-y-2">
@@ -191,7 +193,7 @@ export default async function ServiceDetailPage({
           className="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
         >
           <Trash2 className="h-4 w-4" />
-          מחיקת שירות
+          מחיקת תבנית
         </button>
       </form>
     </div>

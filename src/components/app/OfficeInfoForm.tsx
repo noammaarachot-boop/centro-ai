@@ -93,7 +93,7 @@ export function OfficeInfoForm({
           )}
         </button>
         <div>
-          <p className="text-sm font-medium text-text-primary">לוגו המשרד</p>
+          <p className="text-sm font-medium text-text-primary">לוגו העסק</p>
           <p className="text-xs text-text-muted">אופציונלי — ניתן להוסיף גם מאוחר יותר.</p>
           <button
             type="button"
@@ -118,7 +118,7 @@ export function OfficeInfoForm({
       <TextField
         id="name"
         name="name"
-        label="שם המשרד"
+        label="שם העסק"
         type="text"
         required
         defaultValue={name}

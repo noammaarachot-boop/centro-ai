@@ -27,7 +27,7 @@ export function ServiceForm({
       <TextField
         id="name"
         name="name"
-        label="שם השירות"
+        label="שם התבנית"
         type="text"
         required
         defaultValue={defaultValues?.name}

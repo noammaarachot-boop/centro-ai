@@ -14,7 +14,7 @@ export function Step1Welcome({ displayName }: { displayName: string }) {
         ברוכים הבאים, {displayName}!
       </h2>
       <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-text-secondary">
-        אנחנו שמחים שהצטרפתם. בדקות הקרובות נכין את Centro לעבוד בדיוק כמו שהמשרד שלכם
+        אנחנו שמחים שהצטרפתם. בדקות הקרובות נכין את Centro לעבוד בדיוק כמו שהעסק שלכם
         עובד — נחבר שירותים, נייבא לקוחות, ונגדיר אילו מסמכים לאסוף ומתי לפנות ללקוחות.
       </p>
 

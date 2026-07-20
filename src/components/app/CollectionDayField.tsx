@@ -7,7 +7,7 @@ import { HelpTip } from "@/components/app/HelpTip";
 const COLLECTION_DAY_PRESETS = [1, 5, 10, 15, 20, 25];
 
 const DEFAULT_HELP_TEXT =
-  "היום בחודש שבו Centro מתחיל לבקש מסמכים. זו מדיניות משרד שנקבעת ידנית — Centro לעולם לא ילמד או ישנה אותה אוטומטית.";
+  "היום בחודש שבו Centro מתחיל לבקש מסמכים. זו מדיניות עסקית שנקבעת ידנית — Centro לעולם לא ילמד או ישנה אותה אוטומטית.";
 
 // Shared "collection day of month" field — a <select> of common presets
 // (1/5/10/15/20/25) plus a "custom" option revealing a free 1-31 input.

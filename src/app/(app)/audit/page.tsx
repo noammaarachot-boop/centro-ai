@@ -21,7 +21,7 @@ export default async function AuditLogPage() {
   return (
     <div className="mx-auto max-w-4xl animate-fade-in-up px-6 py-10 lg:px-10">
       <PageHeader
-        title="יומן ביקורת"
+        title="פעילות"
         description="רשומות בלתי ניתנות לעריכה של כל האירועים המשמעותיים במערכת (Ch.17). מוצגות 200 הרשומות האחרונות."
       />
 

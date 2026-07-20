@@ -40,7 +40,7 @@ export function Step8OneTimeSummary({
   return (
     <div className="space-y-5">
       <ul className="space-y-2">
-        <SummaryRow done label={`המשרד "${organization.name}" נוצר`} />
+        <SummaryRow done label={`העסק "${organization.name}" נוצר`} />
         <SummaryRow done={!!organization.googleConnectedAt} label="Google Drive מחובר" />
         <SummaryRow done={!!organization.whatsappConnectedAt} label="WhatsApp Business מחובר" />
         <SummaryRow

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, FileStack, Layers, Trash2, X } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
+import { getOrganization } from "@/lib/data/organizations";
 import {
   getClient,
   listClientServices,
@@ -40,12 +41,21 @@ export default async function ClientDetailPage({
   const client = await getClient(session.organizationId, id);
   if (!client) notFound();
 
-  const [assignedServices, unassignedServices, businessTypes, documentProfileChanges] = await Promise.all([
-    listClientServices(session.organizationId, id),
-    listUnassignedServicesForClient(session.organizationId, id),
-    listBusinessTypes(session.organizationId),
-    listClientDocumentProfileChanges(session.organizationId, id),
-  ]);
+  const [organization, assignedServices, unassignedServices, businessTypes, documentProfileChanges] =
+    await Promise.all([
+      getOrganization(session.organizationId),
+      listClientServices(session.organizationId, id),
+      listUnassignedServicesForClient(session.organizationId, id),
+      listBusinessTypes(session.organizationId),
+      listClientDocumentProfileChanges(session.organizationId, id),
+    ]);
+  const isOneTime = organization?.workflowType === "one_time";
+  const assignedSectionTitle = isOneTime ? "תבניות משויכות" : "שירותים משויכים";
+  const assignedEmptyTitle = isOneTime ? "אין תבניות משויכות" : "אין שירותים משויכים";
+  const assignedEmptyDescription = isOneTime
+    ? "שייכו תבנית ללקוח כדי לפתוח עבורו בקשות איסוף מסמכים."
+    : "שייכו שירות ללקוח כדי לפתוח עבורו בקשות איסוף מסמכים.";
+  const assignMoreLabel = isOneTime ? "שיוך תבנית נוספת" : "שיוך שירות נוסף";
   const currentBusinessType = businessTypes.find((t) => t.id === client.businessTypeId) ?? null;
 
   // Milestone 6 — plain-language label per (action, status) combination.
@@ -202,12 +212,12 @@ export default async function ClientDetailPage({
       )}
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">שירותים משויכים</h2>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">{assignedSectionTitle}</h2>
         {assignedServices.length === 0 ? (
           <EmptyState
             icon={Layers}
-            title="אין שירותים משויכים"
-            description="שייכו שירות ללקוח כדי לפתוח עבורו בקשות איסוף מסמכים."
+            title={assignedEmptyTitle}
+            description={assignedEmptyDescription}
           />
         ) : (
           <ul className="mb-5 space-y-3">
@@ -266,7 +276,7 @@ export default async function ClientDetailPage({
         {unassignedServices.length > 0 && (
           <form action={boundAssign} className="flex items-end gap-2">
             <div className="flex-1">
-              <SelectField id="serviceId" name="serviceId" label="שיוך שירות נוסף" required>
+              <SelectField id="serviceId" name="serviceId" label={assignMoreLabel} required>
                 {unassignedServices.map((service) => (
                   <option key={service.id} value={service.id}>
                     {service.name}
