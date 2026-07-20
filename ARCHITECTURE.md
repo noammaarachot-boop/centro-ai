@@ -161,6 +161,102 @@ and future — not only document collection. A future milestone that would cause
 to learn or adapt timing, scheduling, or any office policy is out of scope by
 definition, not a case-by-case judgment call.
 
+**Extension (Product Evolution M7):** the boundary now has a second, absolute form.
+For a `one_time`-workflow organization (Chapter 9), Centro does not learn *at all* —
+not a client's document profile, not a recurring pattern, nothing. This is stronger
+than "refined only through observed recurrence": it is "never even observed." The
+guarantee is enforced inside the three functions that ever write learned state
+(`recordAdHocDocumentObservation`, `detectMissingRequirements`,
+`recordLearnedDocumentPattern`), each checking
+`isOneTimeWorkflowOrganization(organizationId)` as their first line — not only by
+Workflow B's UI never exposing the paths that would trigger it. A future caller that
+forgets this check still cannot cause Workflow B to learn.
+
+---
+
+## Chapter 9 — The Two-Workflow Product Model
+
+Everything in Chapters 1–8 describes Centro as built for one kind of business:
+recurring, document-collecting professional services (the accounting-firm flagship).
+The Product Evolution roadmap generalized Centro into a platform for *any*
+document-collecting business, without rewriting that flagship experience. It did this
+by introducing exactly one new, permanent fork, decided once at onboarding and never
+silently changed afterward.
+
+### 9.1 Two Facts, Set Once
+
+Every organization declares two things during onboarding that no chapter before this
+one assumed varied:
+
+- **`organizations.businessCategory`** — what kind of business the office itself is
+  (accountant, tax advisor, lawyer, real estate, mortgage advisor, insurance, HR,
+  finance, or a free-text "other"). This is deliberately distinct from the pre-existing
+  `business_types` table, which classifies the office's *clients* and is a Workflow-A-only
+  concept. Category is used for onboarding personalization and AI-driven document
+  suggestions — never to change how the learning engine itself behaves.
+- **`organizations.workflowType`** — `recurring` (Chapters 1–8, exactly as written) or
+  `one_time` (this chapter). Every organization that existed before this roadmap
+  defaults to `recurring`, so nothing in Chapters 1–8 changed for a single existing
+  organization the day this shipped.
+
+Both are meant to be permanent, set-once onboarding decisions — not a Settings toggle a
+user can flip later. This is enforced structurally, not just by omission: once
+`organizations.onboardingCompletedAt` is set, the onboarding wizard itself becomes
+unreachable (Product Evolution M8) — a completed organization visiting `/onboarding`
+directly is redirected straight back to its dashboard before any onboarding action,
+including a workflow-type change, can run. Switching workflows remains possible only as
+a deliberate, out-of-band data-migration operation, never as a page a logged-in user can
+stumble back into.
+
+### 9.2 Workflow A (Recurring) — Unchanged, Now Generalized at the Edges
+
+For an `accountant` or `tax_advisor` organization, Workflow A is byte-identical to
+Chapters 1–8: the same wizard, the same Excel analysis, the same starter business types,
+the same learning engine. For every other declared category, only the onboarding
+*starting point* generalizes — a mocked-AI module
+(`src/lib/ai/businessCategorySuggestions.ts`) supplies category-appropriate starter
+client types and document checklists instead of the five hardcoded Israeli accounting
+types, falling back to keyword-matching and then a broad, never-empty "General Client"
+starter for a genuinely novel free-text category. Once seeded, a business type behaves
+identically regardless of which tier produced it — Chapter 3's lifecycle, Chapter 6's
+Decision Hierarchy, and the learning engine itself never change based on category. Only
+the starting point does.
+
+### 9.3 Workflow B (One-Time) — A Different, Smaller, Non-Learning Product
+
+A `one_time`-workflow organization gets a materially different experience from the
+moment onboarding forks (after the shared Welcome → Office Info → Business Type →
+Collection Style steps): an optional client import that stores only name and phone (no
+classification, no analysis), then Working Hours only (no reminder cadence or
+collection-day-of-month — office-policy concepts with no meaning for a one-off
+request), then its own summary and completion screen. It lands on its own dashboard and
+navigation, built around one new primary surface:
+
+**A Template** is a bare `services` row belonging to a `one_time`-workflow
+organization — no new table. A Template has a name, a list of required documents (AI-
+suggested per business category via `suggestTemplateLibrary`, fully user-editable —
+add, rename, reorder, remove), and any number of assigned clients (`client_services`,
+the same join table Workflow A's service assignment already used). Sending a Template
+creates one ordinary `collectionRequest` per assigned client — reusing
+`snapshotServiceRequirements` unchanged — and delivers it either immediately or at a
+scheduled future time via the single shared `attemptScheduledDelivery` function
+(`src/lib/scheduledSend.ts`); there is no separate "send now" code path. From the moment
+of delivery onward, Workflow B's collection requests flow through the *exact same*
+shared infrastructure as Workflow A's: WhatsApp messaging, OCR/classification
+(Chapter 6), Google Drive's one-folder-per-client organization, document tracking, and
+the reminder engine (Chapter 7) — all reused without modification.
+
+The one thing Workflow B never does, by design, is learn (see Chapter 8's extension
+above). Templates are entirely explicit and user-edited; there is no per-client
+document-profile history to observe, because a one-time office's relationship with a
+client is, definitionally, one-time.
+
+### 9.4 The Permanent Distinction, In One Sentence
+
+**Recurring Workflow:** Centro learns document requirements over time, per client.
+**One-Time Workflow:** Centro never learns; the user manages reusable Templates
+instead. Every other product decision in this chapter follows from that one line.
+
 ---
 
 ## Document History
@@ -182,3 +278,4 @@ definition, not a case-by-case judgment call.
 | Product Evolution M5 | The real Templates CRUD, replacing Milestone 4's placeholder — create/edit/delete/duplicate a Template, and add/rename/reorder/remove its document requirements, all as thin Template-branded wrappers around the exact operations `/services` already had (a Template *is* a bare `services` row). Reordering is simple move-up/move-down rather than drag-and-drop, deliberately — new `service_document_requirements.position` column, null for every pre-existing row and for the recurring workflow generally, so ordering falls back to creation order with no special-case code. The Template Library (`suggestTemplateLibrary`, extending Milestone 2's AI-suggestions module) offers one-click starter templates per business category, including a dedicated set for `accountant`/`tax_advisor` distinct from Workflow A's client-classification starters — a one-time office's request templates and a recurring office's client-type taxonomy are different concepts even for the same declared category. The first visit to `/templates` auto-seeds three Library suggestions as real, immediately editable templates, mirroring `seedStarterBusinessTypes`'s own idempotent-on-emptiness pattern. |
 | Product Evolution M6 | Client assignment for Templates — reuses `client_services` directly (the same join table the existing client-detail-page "assign service" action already writes) rather than a new table, since "clients assigned to this template" and "clients assigned to this service" are the same relationship once a Template is understood as a bare `services` row. The Template detail page gained an assignment panel mirroring the onboarding wizard's own unclassified-clients picker (a checkbox list + submit), plus an inline "create new client" shortcut for the common one-time-workflow case of assigning a template to someone not in the system yet. A client can be assigned to any number of templates simultaneously, and the assignment panel deliberately stays open after a successful assignment so several clients can be added in one sitting. |
 | Product Evolution M7 | Send Request — the step that actually delivers a Template to its assigned clients, closing the loop into the existing collection pipeline. One submit creates a `collectionRequest` per selected client (reusing `snapshotServiceRequirements`, unchanged) and either sends immediately or schedules a future delivery — deliberately one mechanism, not two: a new nullable `collection_requests.scheduledAt` is null for "send now" (delivered synchronously) and non-null for "schedule for later," and the exact same function, `attemptScheduledDelivery`, delivers both — the only difference is who calls it and when. The cron tick (`runScheduledTasks`) gained a due-scheduled-request query so a "send now" that lands outside business hours degrades gracefully into "delivered on the next tick" rather than silently failing, using infrastructure that already existed for reminders. Chapter 8's learning boundary is now enforced at the three functions that ever write learned state (`recordAdHocDocumentObservation`, `detectMissingRequirements`, `recordLearnedDocumentPattern`), not only by omission in Workflow B's UI — a new `isOneTimeWorkflowOrganization` check is the first line of each, so the guarantee holds even if a future caller forgets to check first. Verified live, including the full scheduled-delivery path (a request scheduled ~65s out was confirmed to stay `draft` until its time arrived, then flip to `active` via a real cron-tick run) and the learning guard (the exact two-occurrence condition that triggers a client-confirmation prompt for a recurring client was reproduced on a one-time client and confirmed to never surface it). |
+| Product Evolution M8 | Pilot Hardening for the whole epic — added Chapter 9 (The Two-Workflow Product Model) and extended Chapter 8 with Workflow B's absolute "never observed" form of the learning boundary; no prior chapter's content changed. A cross-tenant Playwright audit (two independent one-time organizations) confirmed every new M1–M7 surface — `/templates`, `/templates/[id]`, the one-time dashboard, `sendTemplateRequest`, and every Template CRUD/assignment action — correctly rejects or hides another organization's data, with zero new isolation gaps found; every action was already scoping by `session.organizationId`, a direct consequence of M5–M7 building each one as a thin wrapper around the pre-existing, already-audited `services`/`clients` data-access functions rather than new parallel ones. One genuine gap *was* found and fixed: nothing previously stopped a fully onboarded organization from navigating straight back to `/onboarding` and resubmitting `updateWorkflowType`, silently flipping a live organization between the recurring and one-time workflows post-onboarding — contradicting this epic's own "permanent, set-once" design (§9.1). Fixed with one guard, mirroring the `(app)` layout's existing reverse-direction check: once `onboardingCompletedAt` is set, `/onboarding` itself redirects to `/dashboard` before any onboarding action can run. A second, smaller gap — four of `sendTemplateRequest`'s rejection paths (invalid schedule, no clients selected, etc.) redirected with an `?error=` code the template page never actually displayed, leaving the user with silent, unexplained failures — was also found and fixed. Additional edge cases verified without incident: a ~1,000-character free-text business category produces sensible, non-crashing Template Library suggestions; a template with zero assigned clients simply hides the Send Request panel rather than presenting a dead-end form. |

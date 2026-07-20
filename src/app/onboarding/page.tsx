@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
+import { needsOnboarding } from "@/lib/onboarding";
 import { listClients } from "@/lib/data/clients";
 import { listServiceRequirements, getService } from "@/lib/data/services";
 import {
@@ -139,6 +141,16 @@ export default async function OnboardingPage({
 
   const organization = await getOrganization(session.organizationId);
   if (!organization) return null;
+
+  // M8 hardening — the mirror image of the (app) layout's own guard. Without
+  // this, a fully onboarded organization could navigate straight back to
+  // e.g. /onboarding?step=4 and resubmit updateWorkflowType, silently
+  // flipping a live organization between the recurring and one-time
+  // workflows post-onboarding — exactly what the product model treats as a
+  // permanent, set-once decision (see ARCHITECTURE.md).
+  if (!needsOnboarding(organization)) {
+    redirect("/dashboard");
+  }
 
   const totalSteps =
     organization.workflowType === "one_time" ? ONE_TIME_TOTAL_STEPS : RECURRING_TOTAL_STEPS;

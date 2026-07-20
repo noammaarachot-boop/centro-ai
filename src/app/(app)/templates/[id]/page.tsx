@@ -24,6 +24,18 @@ import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
 
+// M8 hardening — every redirect-with-?error= from actions.ts needs a real
+// message here; before this, only "has-history" was ever displayed, so a
+// rejected action (e.g. scheduling a send in the past) redirected the user
+// right back to the page with no visible feedback at all.
+const ERROR_MESSAGES: Record<string, string> = {
+  "has-history": "לא ניתן למחוק תבנית שיש לה היסטוריית בקשות איסוף.",
+  "invalid-schedule": "יש לבחור מועד עתידי לתזמון השליחה.",
+  "no-clients-selected": "יש לבחור לפחות לקוח אחד לשליחה.",
+  "requirement-name": "יש להזין שם מסמך.",
+  "client-fields": "יש למלא שם וטלפון עבור הלקוח החדש.",
+};
+
 export default async function TemplateDetailPage({
   params,
   searchParams,
@@ -73,12 +85,12 @@ export default async function TemplateDetailPage({
         />
       </div>
 
-      {error === "has-history" && (
+      {error && ERROR_MESSAGES[error] && (
         <p
           role="alert"
           className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
-          לא ניתן למחוק תבנית שיש לה היסטוריית בקשות איסוף.
+          {ERROR_MESSAGES[error]}
         </p>
       )}
 
