@@ -25,8 +25,22 @@ export function TemplateSendRequest({
   assignedClients: AssignedClient[];
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
-    new Set(assignedClients.map((c) => c.clientId))
+    () => new Set(assignedClients.map((c) => c.clientId))
   );
+  // UX Polish M8 — `useState`'s initializer only ever runs once, at mount,
+  // so a client assigned to the template *after* this component first
+  // rendered (the common case: assign, then send, without a full page
+  // reload in between) was silently never added to the selection, leaving
+  // "Send" permanently disabled with 0 selected until a reload. Adjusted
+  // during render rather than in an Effect, per React's own guidance for
+  // "reset state when a prop changes" — a new assignedClients array only
+  // ever arrives here after a real server refresh, never a purely-local
+  // re-render, so this can't loop.
+  const [prevAssignedClients, setPrevAssignedClients] = useState(assignedClients);
+  if (assignedClients !== prevAssignedClients) {
+    setPrevAssignedClients(assignedClients);
+    setSelectedIds(new Set(assignedClients.map((c) => c.clientId)));
+  }
   const [sendMode, setSendMode] = useState<"now" | "schedule">("now");
   // Sensible default for the datetime-local input: one hour from now.
   // Lazy useState initializer, not a plain render-time call — Date.now()

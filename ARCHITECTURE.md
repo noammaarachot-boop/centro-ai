@@ -257,6 +257,52 @@ client is, definitionally, one-time.
 **One-Time Workflow:** Centro never learns; the user manages reusable Templates
 instead. Every other product decision in this chapter follows from that one line.
 
+### 9.5 UX Polish — Terminology & Surfaces
+
+A dedicated UX-only round (no architecture, no business logic) brought the product's own
+terminology in line with the two-workflow model this chapter describes, and closed two
+onboarding-era gaps:
+
+- **"Office" → "Business."** The office's own profile (name, logo, the Settings section
+  that edits them) now reads "Business" throughout — the office/firm-specific framing
+  didn't fit a platform meant for lawyers, HR teams, and mortgage advisors as much as it
+  fit the accounting flagship. Client-facing automated copy (the WhatsApp greeting) and
+  public marketing pages were deliberately left untouched — different audience, out of
+  scope for an internal-app terminology pass.
+- **"Services" → "Templates," extended to Workflow A's own surface.** §9.3 already
+  established Templates as Workflow B's vocabulary for a bare `services` row. This round
+  extended the same word to Workflow A's own `/services` pages (route, table, and every
+  internal name unchanged — text only), plus the two pages genuinely shared by both
+  workflows (a client's assigned-services section, `/collections`), which now render
+  "Service" or "Template" based on the viewing organization's own `workflowType`. This
+  also closed a real pre-existing gap: `/services/*` had no workflow gate at all, unlike
+  `/templates/*`'s existing one, meaning a one-time organization could reach the
+  Collection Day override field this same round hides everywhere else. `/services/*` now
+  404s for `one_time` organizations, symmetric with `/templates/*`.
+- **"Audit Log" → "Activity History,"** with a real behavior change to match: the default
+  view is now today's events (not the last 200 rows, unbounded by date), with
+  Today/Last-7-Days/Last-30-Days/Custom-Range filters and day-grouped results.
+  `listAuditLog`'s new `from`/`to` bounds are opt-in — every other caller (e.g. a
+  Collection Request's own full history on `/collections/[id]`) is unaffected.
+- **Two new small state flags**, both following this document's established idiom (a
+  boolean on the owning row for a permanent fact, a nullable timestamp on `organizations`
+  for "has this one-time thing happened yet"): `services.isSampleTemplate` (true only for
+  the templates `seedExampleTemplates` auto-creates, never for a user's own library
+  addition or duplicate — see §9.3) powers a "Sample Template" badge and a short
+  explanation banner; `organizations.sampleTemplateCardShownAt` gates a one-time
+  dashboard promo card to exactly one appearance, the organization's first visit.
+- **A complete password-reset flow** (`password_reset_tokens`) was added alongside
+  login UX polish (show/hide password, a dual-duration "Remember Me," a real `/register`
+  URL). The reset-email step is mocked per this document's established pattern for
+  pilot-stage external dependencies with no live provider configured (Chapter 6's
+  classifiers are the same shape of stand-in) — the reset link is logged server-side,
+  never exposed in any HTTP response, and the flow never reveals whether a given email
+  is registered.
+
+None of this round touched Chapters 1–9's actual product logic — every change here is a
+label, a default filter, a small new flag, or closing a routing gap the two-workflow
+model itself already implied should exist.
+
 ---
 
 ## Document History
@@ -279,3 +325,4 @@ instead. Every other product decision in this chapter follows from that one line
 | Product Evolution M6 | Client assignment for Templates — reuses `client_services` directly (the same join table the existing client-detail-page "assign service" action already writes) rather than a new table, since "clients assigned to this template" and "clients assigned to this service" are the same relationship once a Template is understood as a bare `services` row. The Template detail page gained an assignment panel mirroring the onboarding wizard's own unclassified-clients picker (a checkbox list + submit), plus an inline "create new client" shortcut for the common one-time-workflow case of assigning a template to someone not in the system yet. A client can be assigned to any number of templates simultaneously, and the assignment panel deliberately stays open after a successful assignment so several clients can be added in one sitting. |
 | Product Evolution M7 | Send Request — the step that actually delivers a Template to its assigned clients, closing the loop into the existing collection pipeline. One submit creates a `collectionRequest` per selected client (reusing `snapshotServiceRequirements`, unchanged) and either sends immediately or schedules a future delivery — deliberately one mechanism, not two: a new nullable `collection_requests.scheduledAt` is null for "send now" (delivered synchronously) and non-null for "schedule for later," and the exact same function, `attemptScheduledDelivery`, delivers both — the only difference is who calls it and when. The cron tick (`runScheduledTasks`) gained a due-scheduled-request query so a "send now" that lands outside business hours degrades gracefully into "delivered on the next tick" rather than silently failing, using infrastructure that already existed for reminders. Chapter 8's learning boundary is now enforced at the three functions that ever write learned state (`recordAdHocDocumentObservation`, `detectMissingRequirements`, `recordLearnedDocumentPattern`), not only by omission in Workflow B's UI — a new `isOneTimeWorkflowOrganization` check is the first line of each, so the guarantee holds even if a future caller forgets to check first. Verified live, including the full scheduled-delivery path (a request scheduled ~65s out was confirmed to stay `draft` until its time arrived, then flip to `active` via a real cron-tick run) and the learning guard (the exact two-occurrence condition that triggers a client-confirmation prompt for a recurring client was reproduced on a one-time client and confirmed to never surface it). |
 | Product Evolution M8 | Pilot Hardening for the whole epic — added Chapter 9 (The Two-Workflow Product Model) and extended Chapter 8 with Workflow B's absolute "never observed" form of the learning boundary; no prior chapter's content changed. A cross-tenant Playwright audit (two independent one-time organizations) confirmed every new M1–M7 surface — `/templates`, `/templates/[id]`, the one-time dashboard, `sendTemplateRequest`, and every Template CRUD/assignment action — correctly rejects or hides another organization's data, with zero new isolation gaps found; every action was already scoping by `session.organizationId`, a direct consequence of M5–M7 building each one as a thin wrapper around the pre-existing, already-audited `services`/`clients` data-access functions rather than new parallel ones. One genuine gap *was* found and fixed: nothing previously stopped a fully onboarded organization from navigating straight back to `/onboarding` and resubmitting `updateWorkflowType`, silently flipping a live organization between the recurring and one-time workflows post-onboarding — contradicting this epic's own "permanent, set-once" design (§9.1). Fixed with one guard, mirroring the `(app)` layout's existing reverse-direction check: once `onboardingCompletedAt` is set, `/onboarding` itself redirects to `/dashboard` before any onboarding action can run. A second, smaller gap — four of `sendTemplateRequest`'s rejection paths (invalid schedule, no clients selected, etc.) redirected with an `?error=` code the template page never actually displayed, leaving the user with silent, unexplained failures — was also found and fixed. Additional edge cases verified without incident: a ~1,000-character free-text business category produces sensible, non-crashing Template Library suggestions; a template with zero assigned clients simply hides the Send Request panel rather than presenting a dead-end form. |
+| UX Polish M1–M8 | A dedicated UX-only pass (Chapter 9, §9.5) — no architecture or business-logic change. Terminology aligned with the two-workflow model ("Office"→"Business," "Services"→"Templates" for Workflow A's own pages, "Audit Log"→"Activity History" with a real default-to-today rewrite), plus a `/services/*` workflow gate closing a pre-existing gap symmetric with `/templates/*`'s own. New `services.isSampleTemplate`/`organizations.sampleTemplateCardShownAt` flags power a one-time "Sample Template" onboarding nudge. A complete password-reset flow (`password_reset_tokens`) shipped alongside login UX polish (show/hide password, a dual-duration "Remember Me," a real `/register` URL). One real, pre-existing bug was found and fixed during this round's own regression pass: `TemplateSendRequest`'s client-selection state was seeded once from `useState`'s initializer and never updated when a client was assigned *after* the component first rendered, leaving "Send" permanently disabled at 0 selected until a full page reload — fixed by adjusting the selection during render when the `assignedClients` prop actually changes (React's own documented pattern for this case), not via a `useEffect`. |
