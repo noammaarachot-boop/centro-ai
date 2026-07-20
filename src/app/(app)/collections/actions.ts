@@ -17,6 +17,7 @@ import {
   snapshotServiceRequirements,
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
+import { recordLearnedDocumentPattern } from "@/lib/documentLearning";
 import { OperationFailedError } from "@/lib/resilience";
 import { uploadDocument } from "@/lib/storage/driveAdapter";
 
@@ -299,7 +300,7 @@ export async function assignDocumentRequirement(
   const requirementId = String(formData.get("requirementId") ?? "");
   if (!requirementId) redirect(`/collections/${collectionRequestId}`);
 
-  await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
+  const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
   await getScopedDocument(session.organizationId, collectionRequestId, documentId);
 
   const db = await getDb();
@@ -309,6 +310,18 @@ export async function assignDocumentRequirement(
     .where(eq(documents.id, documentId))
     .returning();
   if (!document) redirect(`/collections/${collectionRequestId}`);
+
+  // Milestone 3 ("Document Classification Learning") — the one place a
+  // human manually assigns/corrects a document's requirement, so the one
+  // place this can never be missed. Silently a no-op if the requirement
+  // has no stable template identity to learn against (see
+  // src/lib/documentLearning.ts).
+  await recordLearnedDocumentPattern(
+    session.organizationId,
+    current.clientId,
+    requirementId,
+    document.fileName
+  );
 
   await recordAuditEvent({
     organizationId: session.organizationId,

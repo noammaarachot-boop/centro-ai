@@ -12,10 +12,11 @@ import {
 import { recordAuditEvent } from "@/lib/audit";
 import {
   AUTO_APPROVE_CONFIDENCE,
-  classifyDocument,
+  classifyDocumentWithLearning,
   isFuzzyDuplicate,
   SUPPORTED_EXTENSIONS,
 } from "@/lib/ai/documentClassifier";
+import { getLearnedDocumentPatterns } from "@/lib/documentLearning";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
@@ -200,6 +201,7 @@ async function processInboundAttachment(
     .select({
       id: collectionRequestRequirements.id,
       name: collectionRequestRequirements.name,
+      sourceRequirementId: collectionRequestRequirements.sourceRequirementId,
     })
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
@@ -208,7 +210,10 @@ async function processInboundAttachment(
   let status: "approved" | "needs_review" = "needs_review";
 
   if (!manualRequirementId) {
-    const classification = await classifyDocument(fileName, requirements);
+    // Ch.6 layer 1: this client's own confirmed history is checked before
+    // the generic heuristic — see src/lib/documentLearning.ts.
+    const learnedPatterns = await getLearnedDocumentPatterns(organizationId, clientId);
+    const classification = await classifyDocumentWithLearning(fileName, requirements, learnedPatterns);
 
     // FR-11.3: unreadable documents get an automatic request for a
     // clearer copy instead of being filed at all.

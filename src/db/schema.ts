@@ -337,6 +337,37 @@ export const businessTypeLearnedSynonyms = pgTable(
   ]
 );
 
+// Milestone 3 ("Document Classification Learning") — Ch.6 Decision
+// Hierarchy's Learned Knowledge layer, generalized from business-type
+// synonyms (Epic 4) to document classification. Recorded every time an
+// employee manually assigns an unmatched document to a requirement
+// (src/app/(app)/collections/actions.ts's assignDocumentRequirement) —
+// one row per correction, not deduplicated, since filenames vary too much
+// month to month for exact-text matching the way a business-type synonym
+// can be. Matching is by token-overlap similarity against a client's own
+// history (src/lib/ai/documentClassifier.ts), scoped to exactly this
+// client — never shared across clients or organizations.
+export const documentLearnedPatterns = pgTable("document_learned_patterns", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  clientId: uuid("client_id")
+    .notNull()
+    .references(() => clients.id, { onDelete: "cascade" }),
+  // The stable, cross-cycle identity of the requirement — the *template*
+  // row (serviceDocumentRequirements.id), not the frozen per-cycle
+  // snapshot (collectionRequestRequirements.id, a fresh row every cycle) —
+  // so a pattern learned this cycle is still recognizable next cycle.
+  sourceRequirementId: uuid("source_requirement_id")
+    .notNull()
+    .references(() => serviceDocumentRequirements.id, { onDelete: "cascade" }),
+  fileName: text("file_name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // A Client may have multiple Services and a Service may be assigned to
 // multiple Clients (Ch.4 FR-001/FR-002) — many-to-many join.
 export const clientServices = pgTable(
