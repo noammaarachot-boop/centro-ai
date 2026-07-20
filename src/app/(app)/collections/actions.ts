@@ -307,6 +307,31 @@ export async function assignDocumentRequirement(
   const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
   const scopedDocument = await getScopedDocument(session.organizationId, collectionRequestId, documentId);
 
+  // requirementId is a bare form value — before it's trusted for anything
+  // below (writing documents.requirementId, disclosing a requirement name
+  // in a client-facing message, or recording a learned pattern), confirm
+  // it actually names a requirement on *this* collection request. Without
+  // this, a requirementId belonging to another organization's collection
+  // request would still resolve (ids are unguessable but this is an
+  // authorization boundary, not a secrecy one) and leak that
+  // organization's requirement name into an outbound message here.
+  const db = await getDb();
+  let scopedRequirement: { id: string; name: string } | null = null;
+  if (requirementId) {
+    const [row] = await db
+      .select({ id: collectionRequestRequirements.id, name: collectionRequestRequirements.name })
+      .from(collectionRequestRequirements)
+      .where(
+        and(
+          eq(collectionRequestRequirements.id, requirementId),
+          eq(collectionRequestRequirements.collectionRequestId, collectionRequestId)
+        )
+      )
+      .limit(1);
+    if (!row) redirect(`/collections/${collectionRequestId}`);
+    scopedRequirement = row;
+  }
+
   // Milestone 6 (Observe, addition side): the document doesn't match any
   // *current* requirement at all — not a misclassification to correct
   // (that path stays below), but a genuinely new document type for this
@@ -335,7 +360,6 @@ export async function assignDocumentRequirement(
     redirect(`/collections/${collectionRequestId}`);
   }
 
-  const db = await getDb();
   const [document] = await db
     .update(documents)
     .set({ requirementId, updatedAt: new Date() })
@@ -370,20 +394,14 @@ export async function assignDocumentRequirement(
   // assignment, rather than waiting for Milestone 6's automatic
   // second-occurrence detection. Purely optional; unchecked by default.
   if (formData.get("askClient") === "on") {
-    const [requirement] = await db
-      .select({ name: collectionRequestRequirements.name })
-      .from(collectionRequestRequirements)
-      .where(eq(collectionRequestRequirements.id, requirementId))
-      .limit(1);
-
-    const question = `שלום! שמנו לב שקיבלנו מכם מסמך "${document.fileName}" ושייכנו אותו ל"${requirement?.name ?? "דרישה"}". האם נכון לבקש מסמך כזה גם באיסופים הבאים באופן קבוע? השיבו 'כן' או 'לא'.`;
+    const question = `שלום! שמנו לב שקיבלנו מכם מסמך "${document.fileName}" ושייכנו אותו ל"${scopedRequirement?.name ?? "דרישה"}". האם נכון לבקש מסמך כזה גם באיסופים הבאים באופן קבוע? השיבו 'כן' או 'לא'.`;
 
     const confirmation = await createPendingConfirmation({
       organizationId: session.organizationId,
       clientId: current.clientId,
       collectionRequestId,
       kind: "document_profile_addition",
-      payload: { requirementId, requirementName: requirement?.name, fileName: document.fileName },
+      payload: { requirementId, requirementName: scopedRequirement?.name, fileName: document.fileName },
       question,
     });
 

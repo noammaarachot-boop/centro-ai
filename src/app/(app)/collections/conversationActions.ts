@@ -516,7 +516,11 @@ export async function respondToConfirmation(
     collectionRequestId
   );
 
-  const resolved = await respondToPendingConfirmationManually(pendingConfirmationId, confirmed);
+  const resolved = await respondToPendingConfirmationManually(
+    session.organizationId,
+    pendingConfirmationId,
+    confirmed
+  );
   if (resolved) {
     await applyDocumentProfileConfirmation(resolved);
     await recordAuditEvent({

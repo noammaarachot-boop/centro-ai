@@ -113,7 +113,11 @@ export async function recordAdHocDocumentObservation(
 
   const db = await getDb();
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+  const [client] = await db
+    .select()
+    .from(clients)
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)))
+    .limit(1);
   if (!client) return;
 
   const [row] = await db
@@ -175,7 +179,11 @@ export async function detectMissingRequirements(
 ): Promise<void> {
   const db = await getDb();
 
-  const [client] = await db.select().from(clients).where(eq(clients.id, clientId)).limit(1);
+  const [client] = await db
+    .select()
+    .from(clients)
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)))
+    .limit(1);
   if (!client || client.learningMode) return;
 
   const recentCycles = await db
@@ -240,6 +248,7 @@ export async function detectMissingRequirements(
       .from(clientDocumentRequirements)
       .where(
         and(
+          eq(clientDocumentRequirements.organizationId, organizationId),
           eq(clientDocumentRequirements.clientId, clientId),
           eq(clientDocumentRequirements.name, requirement.name),
           eq(clientDocumentRequirements.action, "remove")

@@ -233,9 +233,14 @@ export async function classifyDocumentWithLearning(
 }
 
 // Ch.9 duplicate detection floor for renamed files — fuzzier than M8's
-// original exact-filename check: same normalized tokens count as the
-// same document even with a different name (e.g. "bank-statement.pdf" vs
-// "bank-statement-copy-2.pdf"). "Uncertain cases shall not be treated as
+// original exact-filename check: a new name built on top of the old one
+// still counts as the same document (e.g. "bank-statement-jan.pdf" vs
+// "bank-statement-jan-copy.pdf" — see documentClassifier.test.ts). Every
+// added token dilutes the overlap, though, so this stays deliberately
+// strict: two names sharing only their original tokens plus one unrelated
+// addition (e.g. "bank-statement.pdf" vs "bank-statement-copy-2.pdf",
+// which scores 0.5) fall below 0.7 and are correctly left undecided
+// rather than auto-flagged. "Uncertain cases shall not be treated as
 // duplicates automatically" (Ch.9) — this only flags high-overlap cases.
 export function isFuzzyDuplicate(fileNameA: string, fileNameB: string): boolean {
   const tokensA = new Set(normalize(stripExtension(fileNameA)));

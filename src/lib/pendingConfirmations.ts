@@ -86,7 +86,12 @@ export async function listOpenConfirmations(organizationId: string) {
     );
 }
 
-async function resolve(id: string, confirmed: boolean, responseText: string | null) {
+async function resolve(
+  organizationId: string,
+  id: string,
+  confirmed: boolean,
+  responseText: string | null
+) {
   const db = await getDb();
   const [row] = await db
     .update(pendingConfirmations)
@@ -95,7 +100,13 @@ async function resolve(id: string, confirmed: boolean, responseText: string | nu
       responseText,
       respondedAt: new Date(),
     })
-    .where(and(eq(pendingConfirmations.id, id), eq(pendingConfirmations.status, "pending")))
+    .where(
+      and(
+        eq(pendingConfirmations.id, id),
+        eq(pendingConfirmations.organizationId, organizationId),
+        eq(pendingConfirmations.status, "pending")
+      )
+    )
     .returning();
   return row ?? null;
 }
@@ -103,8 +114,16 @@ async function resolve(id: string, confirmed: boolean, responseText: string | nu
 // The employee-facing quick-action equivalent of markFinished/
 // markMoreDocuments — a direct override, used regardless of whether a
 // real client reply ever arrives (WhatsApp is still mocked project-wide).
-export async function respondToPendingConfirmationManually(id: string, confirmed: boolean) {
-  return resolve(id, confirmed, null);
+// Scoped by organizationId — this id is a caller-supplied form value, not
+// something the caller has already verified belongs to their org (unlike
+// collectionRequestId, which the caller resolves via a scoped lookup
+// first), so the update itself must enforce the tenant boundary.
+export async function respondToPendingConfirmationManually(
+  organizationId: string,
+  id: string,
+  confirmed: boolean
+) {
+  return resolve(organizationId, id, confirmed, null);
 }
 
 const YES_WORDS = ["כן", "אישור", "מאשר", "מאשרת", "בטח", "בסדר", "אוקיי", "yes", "ok"];
@@ -163,5 +182,5 @@ export async function resolveConfirmationFromReply(conversationId: string, reply
   const intent = parseConfirmationReply(replyText);
   if (intent === "unclear") return null;
 
-  return resolve(open.id, intent === "yes", replyText);
+  return resolve(open.organizationId, open.id, intent === "yes", replyText);
 }
