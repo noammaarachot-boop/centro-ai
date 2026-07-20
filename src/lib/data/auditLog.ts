@@ -1,10 +1,17 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { getDb } from "@/db";
 import { auditLogs, clients, users } from "@/db/schema";
 
 export interface AuditLogFilters {
   clientId?: string;
   collectionRequestId?: string;
+  // UX Polish M5 — optional occurredAt bounds for the Activity History
+  // page's date-range filter. Omitted entirely (as every pre-existing
+  // caller does — e.g. a Collection Request's own full history) means
+  // unbounded, exactly today's behavior; only /audit's own page passes
+  // these.
+  from?: Date;
+  to?: Date;
 }
 
 // FR-17.3: chronological history — org-wide (Ch.17 general audit view)
@@ -20,6 +27,8 @@ export async function listAuditLog(
   if (filters.collectionRequestId) {
     conditions.push(eq(auditLogs.collectionRequestId, filters.collectionRequestId));
   }
+  if (filters.from) conditions.push(gte(auditLogs.occurredAt, filters.from));
+  if (filters.to) conditions.push(lte(auditLogs.occurredAt, filters.to));
 
   return db
     .select({
