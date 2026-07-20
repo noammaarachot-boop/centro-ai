@@ -5,9 +5,11 @@ import {
   businessTypes,
   clientServices,
   clients,
+  organizations,
   serviceDocumentRequirements,
   services,
 } from "@/db/schema";
+import { suggestStarterBusinessTypes } from "@/lib/ai/businessCategorySuggestions";
 
 // The five standard starter types' stable identity — see business_types'
 // schema comment (src/db/schema.ts) for why this exists. Keep in sync with
@@ -31,14 +33,20 @@ export type CanonicalBusinessTypeKey =
  * touching the wizard UI.
  */
 
-interface SuggestedRequirement {
+export interface SuggestedRequirement {
   name: string;
   defaultChecked: boolean;
 }
 
-interface StarterBusinessType {
+// canonicalKey is `string | null` (not the narrower CanonicalBusinessTypeKey)
+// because Product Evolution M2's AI-suggested starter types for non-
+// accounting business categories need their own stable identities outside
+// the fixed 5-key accounting union — this type is shared by both. Null is
+// valid (an org whose starter type has nothing stable to dedupe against),
+// though every real producer today always supplies one.
+export interface StarterBusinessType {
   name: string;
-  canonicalKey: CanonicalBusinessTypeKey;
+  canonicalKey: string | null;
   suggestedRequirements: SuggestedRequirement[];
 }
 
@@ -160,7 +168,7 @@ export async function createBusinessType(
   options: {
     isCustom?: boolean;
     seedRequirements?: SuggestedRequirement[];
-    canonicalKey?: CanonicalBusinessTypeKey;
+    canonicalKey?: string | null;
   } = {}
 ) {
   const db = await getDb();
@@ -194,12 +202,48 @@ export async function createBusinessType(
 // starter types an org doesn't already have (matched by canonical key, not
 // name — an org that renamed "עוסק מורשה" to something else of its own
 // still doesn't get a duplicate recreated under it).
+//
+// Product Evolution M2: which starter types to offer is no longer always
+// the hardcoded accounting 5 — it's resolved per the organization's own
+// declared businessCategory via suggestStarterBusinessTypes
+// (src/lib/ai/businessCategorySuggestions.ts). For "accountant"/
+// "tax_advisor" that function returns this exact STARTER_BUSINESS_TYPES
+// array unchanged, so this path is byte-identical to before M2 for every
+// existing organization. Everything below this point (createBusinessType,
+// the classifier, the learning engine) is unaware this branch exists — it
+// only ever sees the resulting business_types rows.
 export async function seedStarterBusinessTypes(organizationId: string) {
   const existing = await listBusinessTypes(organizationId);
   const existingKeys = new Set(existing.map((t) => t.canonicalKey).filter(Boolean));
 
-  for (const starter of STARTER_BUSINESS_TYPES) {
-    if (existingKeys.has(starter.canonicalKey)) continue;
+  const db = await getDb();
+  const [organization] = await db
+    .select({
+      businessCategory: organizations.businessCategory,
+      businessCategoryCustomLabel: organizations.businessCategoryCustomLabel,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+
+  // "accountant"/"tax_advisor" keep the exact hardcoded list (byte-identical
+  // to pre-M2 behavior) — resolved here rather than inside
+  // suggestStarterBusinessTypes so that module never needs to import
+  // STARTER_BUSINESS_TYPES back out of this file.
+  const isAccountingCategory =
+    organization?.businessCategory === "accountant" ||
+    organization?.businessCategory === "tax_advisor";
+
+  const starters =
+    !organization || isAccountingCategory
+      ? STARTER_BUSINESS_TYPES
+      : await suggestStarterBusinessTypes(
+          organization.businessCategory,
+          organization.businessCategoryCustomLabel
+        );
+
+  for (const starter of starters) {
+    if (starter.canonicalKey && existingKeys.has(starter.canonicalKey)) continue;
     await createBusinessType(organizationId, starter.name, {
       isCustom: false,
       seedRequirements: starter.suggestedRequirements,

@@ -60,7 +60,7 @@ export function Step6Documents({ entries }: { entries: Entry[] }) {
                       {req.name}
                     </span>
                     <form action={removeRequirement.bind(null, businessType.serviceId, req.id)}>
-                      <input type="hidden" name="returnTo" value="/onboarding?step=6" />
+                      <input type="hidden" name="returnTo" value="/onboarding?step=8" />
                       <button
                         type="submit"
                         aria-label={`הסרת ${req.name}`}
@@ -79,7 +79,7 @@ export function Step6Documents({ entries }: { entries: Entry[] }) {
                 {notYetAdded.map((s) => (
                   <form key={s.name} action={addAction}>
                     <input type="hidden" name="name" value={s.name} />
-                    <input type="hidden" name="returnTo" value="/onboarding?step=6" />
+                    <input type="hidden" name="returnTo" value="/onboarding?step=8" />
                     <button
                       type="submit"
                       className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple"
@@ -93,7 +93,7 @@ export function Step6Documents({ entries }: { entries: Entry[] }) {
             )}
 
             <form action={addAction} className="flex items-center gap-2">
-              <input type="hidden" name="returnTo" value="/onboarding?step=6" />
+              <input type="hidden" name="returnTo" value="/onboarding?step=8" />
               <input
                 name="name"
                 type="text"

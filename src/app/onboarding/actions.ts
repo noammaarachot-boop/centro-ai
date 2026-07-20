@@ -195,7 +195,7 @@ export async function updateServiceScheduleOverrides(
     .from(services)
     .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
     .limit(1);
-  if (!service) redirect("/onboarding?step=7");
+  if (!service) redirect("/onboarding?step=9");
 
   const useOverrides = formData.get("useOverrides") === "on";
 
@@ -699,8 +699,8 @@ async function importParsedRows(
     } satisfies ImportAnalysisSummary,
   });
 
-  await setOnboardingStep(session.organizationId, 5);
-  redirect("/onboarding?step=5");
+  await setOnboardingStep(session.organizationId, 7);
+  redirect("/onboarding?step=7");
 }
 
 // Step 4 ("Import Excel / CSV") + Step 5 ("AI Client Analysis") in one

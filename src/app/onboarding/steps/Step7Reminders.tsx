@@ -64,7 +64,7 @@ export function Step7Reminders({
               reminderIntervalDays={effective.reminderIntervalDays}
               inactivityTimeoutMinutes={effective.inactivityTimeoutMinutes}
               collectionDayOfMonth={effective.collectionDayOfMonth}
-              returnTo="/onboarding?step=7"
+              returnTo="/onboarding?step=9"
             />
           );
         })
