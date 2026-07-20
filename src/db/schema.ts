@@ -543,3 +543,46 @@ export const messages = pgTable("messages", {
     .notNull()
     .defaultNow(),
 });
+
+export const pendingConfirmationStatus = pgEnum("pending_confirmation_status", [
+  "pending",
+  "confirmed",
+  "declined",
+]);
+
+// Milestone 5 — Architecture Ch.3's "Confirm with the client, through
+// WhatsApp" step, generalized into reusable infrastructure. Deliberately
+// domain-agnostic: `kind` + `payload` let a caller (this milestone's own
+// manual trigger; Milestone 6's automatic document-profile detection
+// later) attach whatever meaning it needs without this table knowing
+// anything about documents, business types, or any other domain. One row
+// per question actually asked — never speculative, never asked more than
+// once for the same thing (Ch.4: "asked only once").
+export const pendingConfirmations = pgTable("pending_confirmations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  clientId: uuid("client_id")
+    .notNull()
+    .references(() => clients.id, { onDelete: "cascade" }),
+  collectionRequestId: uuid("collection_request_id")
+    .notNull()
+    .references(() => collectionRequests.id, { onDelete: "cascade" }),
+  conversationId: uuid("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  // Stable machine-readable identity for whatever this confirmation is
+  // about, e.g. "document_profile_addition" — the domain-specific
+  // handler (not this table) is what actually reacts to a resolved
+  // status.
+  kind: text("kind").notNull(),
+  payload: jsonb("payload"),
+  question: text("question").notNull(),
+  status: pendingConfirmationStatus("status").notNull().default("pending"),
+  responseText: text("response_text"),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

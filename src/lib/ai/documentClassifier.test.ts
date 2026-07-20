@@ -59,6 +59,19 @@ describe("matchLearnedPattern", () => {
   it("returns null when there is no learning history at all", () => {
     expect(matchLearnedPattern("bank_statement_february.pdf", [])).toBeNull();
   });
+
+  it("does not match two otherwise-unrelated files purely because they share an extension", () => {
+    // Regression, found via a real end-to-end test: "pdf" was previously
+    // counted as a shared token like any other word, so any two PDFs got
+    // a free point of similarity — enough, on its own, to push an
+    // unrelated pair over threshold. "טופס_נוסף" ("another form") and
+    // "טופס_102" share only the word "טופס" ("form") once the extension
+    // is correctly excluded, well under the threshold.
+    const learned: LearnedDocumentPattern[] = [
+      { sourceRequirementId: "src-bank", fileName: "טופס_102.pdf" },
+    ];
+    expect(matchLearnedPattern("טופס_נוסף.pdf", learned)).toBeNull();
+  });
 });
 
 describe("classifyDocumentWithLearning — full 4-layer pipeline", () => {

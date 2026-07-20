@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Clock,
   FileSearch,
+  MessageCircleQuestion,
   Search,
   ShieldAlert,
   Sparkles,
@@ -12,6 +13,7 @@ import { requireSession } from "@/lib/auth/session";
 import {
   getDashboardCounts,
   listBusinessTypeSuggestions,
+  listPendingConfirmationsForDashboard,
   listQueue,
   searchClients,
   type DashboardQueue,
@@ -41,6 +43,12 @@ const QUEUE_CARDS: Array<{
     icon: Sparkles,
     accent: "warning",
   },
+  {
+    queue: "pending_confirmations",
+    label: "ממתין לאישור לקוח",
+    icon: MessageCircleQuestion,
+    accent: "blue",
+  },
 ];
 
 const QUEUE_TITLES: Record<DashboardQueue, string> = {
@@ -50,6 +58,7 @@ const QUEUE_TITLES: Record<DashboardQueue, string> = {
   processing_documents: "מסמכים בעיבוד",
   completed_today: "הושלמו היום",
   business_type_suggestions: "הצעות סיווג לקוחות",
+  pending_confirmations: "ממתין לאישור לקוח",
 };
 
 function relativeTime(date: Date) {
@@ -130,6 +139,66 @@ export default async function DashboardPage({
                       <td className="px-5 py-4">
                         <Badge tone="warning">{row.confidence}%</Badge>
                       </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  if (queue === "pending_confirmations") {
+    const pending = await listPendingConfirmationsForDashboard(session.organizationId);
+
+    return (
+      <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+        <Link
+          href="/dashboard"
+          className="mb-3 inline-flex items-center text-sm text-text-muted transition-colors hover:text-brand-purple"
+        >
+          ← חזרה ללוח הבקרה
+        </Link>
+        <PageHeader
+          title="ממתין לאישור לקוח"
+          description="שאלות אישור שנשלחו בוואטסאפ וטרם נענו (Ch.3: Observe → Suggest → Confirm → Learn)."
+        />
+
+        {pending.length === 0 ? (
+          <EmptyState
+            icon={CheckCircle2}
+            title="אין בקשות אישור פתוחות"
+            description="כל בקשות האישור שנשלחו ללקוחות נענו."
+          />
+        ) : (
+          <Card padding="none" className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[480px] text-end text-sm">
+                <thead className="sticky top-0 bg-surface-muted text-text-muted">
+                  <tr>
+                    <th className="px-5 py-3.5 font-medium">לקוח</th>
+                    <th className="px-5 py-3.5 font-medium">שאלה</th>
+                    <th className="px-5 py-3.5 font-medium">נשלחה</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pending.map((row) => (
+                    <tr
+                      key={row.id}
+                      className="border-t border-border transition-colors hover:bg-surface-muted/60"
+                    >
+                      <td className="px-5 py-4">
+                        <Link
+                          href={`/collections/${row.collectionRequestId}`}
+                          className="font-medium text-text-primary transition-colors hover:text-brand-purple"
+                        >
+                          {row.clientName}
+                        </Link>
+                      </td>
+                      <td className="px-5 py-4 text-text-secondary">{row.question}</td>
+                      <td className="px-5 py-4 text-text-secondary">{relativeTime(row.createdAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -229,6 +298,7 @@ export default async function DashboardPage({
     processing_documents: counts.documentsProcessing,
     completed_today: counts.completedToday,
     business_type_suggestions: counts.businessTypeSuggestions,
+    pending_confirmations: counts.pendingConfirmations,
   };
 
   return (

@@ -28,6 +28,7 @@ import {
 } from "@/lib/collectionRequestStateMachine";
 import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { listAuditLog } from "@/lib/data/auditLog";
+import { listOpenConfirmationsForCollectionRequest } from "@/lib/pendingConfirmations";
 import { StatusBadge } from "../StatusBadge";
 import {
   addManualDocument,
@@ -42,6 +43,7 @@ import {
   markFinished,
   markMoreDocuments,
   releaseConversation,
+  respondToConfirmation,
   sendEmployeeMessage,
   simulateInboundMessage,
   takeOverConversation,
@@ -108,6 +110,7 @@ export default async function CollectionRequestDetailPage({
   const conversation = await getConversationByCollectionRequest(id);
   const messages = conversation ? await listMessages(conversation.id) : [];
   const auditHistory = await listAuditLog(session.organizationId, { collectionRequestId: id });
+  const openConfirmations = await listOpenConfirmationsForCollectionRequest(id);
 
   return (
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -289,20 +292,70 @@ export default async function CollectionRequestDetailPage({
                 <p className="mb-2 text-sm font-medium text-text-primary">{doc.fileName}</p>
                 <form
                   action={assignDocumentRequirement.bind(null, id, doc.id)}
-                  className="flex items-center gap-2"
+                  className="space-y-2"
                 >
-                  <select name="requirementId" required className={`flex-1 ${compactSelectClass}`}>
-                    <option value="">— בחירת דרישה —</option>
-                    {requirements.map((requirement) => (
-                      <option key={requirement.id} value={requirement.id}>
-                        {requirement.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="submit" className={compactButtonClass}>
-                    שיוך
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <select name="requirementId" required className={`flex-1 ${compactSelectClass}`}>
+                      <option value="">— בחירת דרישה —</option>
+                      {requirements.map((requirement) => (
+                        <option key={requirement.id} value={requirement.id}>
+                          {requirement.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="submit" className={compactButtonClass}>
+                      שיוך
+                    </button>
+                  </div>
+                  <label className="flex items-center gap-1.5 text-[11px] text-text-muted">
+                    <input
+                      type="checkbox"
+                      name="askClient"
+                      className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
+                    />
+                    לשאול את הלקוח אם זה מסמך קבוע לאיסופים הבאים (וואטסאפ)
+                  </label>
                 </form>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {openConfirmations.length > 0 && (
+        <Card className="border-brand-purple/30 bg-brand-purple/5">
+          <div className="mb-4 flex items-center gap-2">
+            <ShieldQuestion className="h-5 w-5 shrink-0 text-brand-purple" />
+            <h2 className="text-lg font-semibold text-text-primary">ממתין לאישור הלקוח</h2>
+          </div>
+          <p className="mb-4 text-sm text-text-muted">
+            נשלחה שאלת אישור בוואטסאפ (Ch.3: Observe → Suggest → Confirm → Learn) — ממתינים
+            לתשובת הלקוח, או שאפשר לסמן ידנית.
+          </p>
+          <ul className="space-y-3">
+            {openConfirmations.map((confirmation) => (
+              <li key={confirmation.id} className="rounded-xl border border-border bg-surface p-3">
+                <p className="mb-2 text-sm text-text-primary">{confirmation.question}</p>
+                <div className="flex gap-2">
+                  <form action={respondToConfirmation.bind(null, id, confirmation.id, true)}>
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-success transition-colors hover:border-success"
+                    >
+                      <Check className="h-3 w-3" />
+                      הלקוח אישר
+                    </button>
+                  </form>
+                  <form action={respondToConfirmation.bind(null, id, confirmation.id, false)}>
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:border-danger"
+                    >
+                      <X className="h-3 w-3" />
+                      הלקוח סירב
+                    </button>
+                  </form>
+                </div>
               </li>
             ))}
           </ul>

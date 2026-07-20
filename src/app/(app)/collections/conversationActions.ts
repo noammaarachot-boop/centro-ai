@@ -17,6 +17,10 @@ import {
   SUPPORTED_EXTENSIONS,
 } from "@/lib/ai/documentClassifier";
 import { getLearnedDocumentPatterns } from "@/lib/documentLearning";
+import {
+  respondToPendingConfirmationManually,
+  resolveConfirmationFromReply,
+} from "@/lib/pendingConfirmations";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
@@ -126,6 +130,22 @@ export async function simulateInboundMessage(
       collectionRequestId,
       metadata: { intent },
     });
+
+    // Milestone 5 (Ch.3 "Confirm"): a no-op unless there is actually an
+    // open confirmation waiting for this exact conversation — never
+    // guesses at intent beyond a clear yes/no keyword match.
+    const resolved = await resolveConfirmationFromReply(conversation.id, body);
+    if (resolved) {
+      await recordAuditEvent({
+        organizationId: session.organizationId,
+        eventType: "pending_confirmation.resolved",
+        description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור: "${resolved.question}"`,
+        actorType: "client",
+        clientId: current.clientId,
+        collectionRequestId,
+        metadata: { kind: resolved.kind, status: resolved.status },
+      });
+    }
   }
 
   if (fileName) {
@@ -472,6 +492,39 @@ export async function sendEmployeeMessage(
     current.clientId
   );
   await sendOutboundMessage(session.organizationId, conversation.id, body, "employee");
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
+// Milestone 5 — the employee-facing quick-action equivalent of
+// markFinished/markMoreDocuments above, for a pending confirmation: a
+// direct override an employee can use regardless of whether a real
+// client reply ever arrives (WhatsApp is still mocked project-wide), same
+// as every other client-quick-reply stand-in in this file.
+export async function respondToConfirmation(
+  collectionRequestId: string,
+  pendingConfirmationId: string,
+  confirmed: boolean
+) {
+  const session = await requireSession();
+  const current = await getCollectionRequestOrRedirect(
+    session.organizationId,
+    collectionRequestId
+  );
+
+  const resolved = await respondToPendingConfirmationManually(pendingConfirmationId, confirmed);
+  if (resolved) {
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "pending_confirmation.resolved",
+      description: `עובד סימן בקשת אישור כ"${confirmed ? "אושרה" : "נדחתה"}" בשם הלקוח: "${resolved.question}"`,
+      actorType: "employee",
+      actorUserId: session.userId,
+      clientId: current.clientId,
+      collectionRequestId,
+      metadata: { kind: resolved.kind, status: resolved.status },
+    });
+  }
 
   redirect(`/collections/${collectionRequestId}`);
 }

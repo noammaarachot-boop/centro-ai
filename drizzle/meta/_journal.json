@@ -92,6 +92,13 @@
       "when": 1784525613852,
       "tag": "0012_small_titanium_man",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784526749758,
+      "tag": "0013_glorious_zodiak",
+      "breakpoints": true
     }
   ]
 }

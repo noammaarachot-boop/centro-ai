@@ -7,6 +7,7 @@ import {
   collectionRequests,
   conversations,
   documents,
+  pendingConfirmations,
   services,
 } from "@/db/schema";
 import { AUTO_CLASSIFY_CONFIDENCE } from "@/lib/ai/businessTypeClassifier";
@@ -17,7 +18,8 @@ export type DashboardQueue =
   | "needs_review"
   | "processing_documents"
   | "completed_today"
-  | "business_type_suggestions";
+  | "business_type_suggestions"
+  | "pending_confirmations";
 
 const NON_TERMINAL_STATUSES = [
   "draft",
@@ -132,6 +134,15 @@ export async function getDashboardCounts(organizationId: string) {
       )
     );
 
+  // Milestone 5 — open (still-pending) client confirmations, another
+  // "needs your input" family member alongside the two above.
+  const [{ count: pendingConfirmationCount }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(pendingConfirmations)
+    .where(
+      and(eq(pendingConfirmations.organizationId, organizationId), eq(pendingConfirmations.status, "pending"))
+    );
+
   const percentage = (count: number) =>
     activeCount === 0 ? 0 : Math.round((count / activeCount) * 100);
 
@@ -147,6 +158,10 @@ export async function getDashboardCounts(organizationId: string) {
     businessTypeSuggestions: {
       count: businessTypeSuggestionCount,
       percentage: clientCount === 0 ? 0 : Math.round((businessTypeSuggestionCount / clientCount) * 100),
+    },
+    pendingConfirmations: {
+      count: pendingConfirmationCount,
+      percentage: percentage(pendingConfirmationCount),
     },
   };
 }
@@ -330,6 +345,37 @@ export async function listBusinessTypeSuggestions(
     )
     .orderBy(clients.name);
   return rows.map((r) => ({ ...r, confidence: r.confidence ?? 0 }));
+}
+
+export interface PendingConfirmationRow {
+  id: string;
+  clientName: string;
+  question: string;
+  collectionRequestId: string;
+  createdAt: Date;
+}
+
+// Milestone 5's drill-down for the "pending_confirmations" card — like
+// business-type suggestions, its own shape and its own function rather
+// than forced through the collection-request-shaped listQueue().
+export async function listPendingConfirmationsForDashboard(
+  organizationId: string
+): Promise<PendingConfirmationRow[]> {
+  const db = await getDb();
+  return db
+    .select({
+      id: pendingConfirmations.id,
+      clientName: clients.name,
+      question: pendingConfirmations.question,
+      collectionRequestId: pendingConfirmations.collectionRequestId,
+      createdAt: pendingConfirmations.createdAt,
+    })
+    .from(pendingConfirmations)
+    .innerJoin(clients, eq(pendingConfirmations.clientId, clients.id))
+    .where(
+      and(eq(pendingConfirmations.organizationId, organizationId), eq(pendingConfirmations.status, "pending"))
+    )
+    .orderBy(pendingConfirmations.createdAt);
 }
 
 export async function searchClients(organizationId: string, query: string) {

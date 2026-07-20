@@ -68,9 +68,22 @@ function normalize(value: string): string[] {
     .filter(Boolean);
 }
 
+function stripExtension(fileName: string): string {
+  const dotIndex = fileName.lastIndexOf(".");
+  return dotIndex >= 0 ? fileName.slice(0, dotIndex) : fileName;
+}
+
+// Compares two *filenames* — always on their base name, extension
+// stripped first. Two files sharing an extension (the overwhelmingly
+// common case — most of a client's documents are PDFs) would otherwise
+// share a "pdf" token for free, artificially inflating the similarity of
+// two otherwise-unrelated files. Found via a real end-to-end test during
+// Milestone 5's verification: an unrelated second document was
+// auto-matched against a single prior correction purely because both
+// happened to be PDFs.
 function jaccardTokenSimilarity(fileNameA: string, fileNameB: string): number {
-  const tokensA = new Set(normalize(fileNameA));
-  const tokensB = new Set(normalize(fileNameB));
+  const tokensA = new Set(normalize(stripExtension(fileNameA)));
+  const tokensB = new Set(normalize(stripExtension(fileNameB)));
   if (tokensA.size === 0 || tokensB.size === 0) return 0;
   const intersection = [...tokensA].filter((t) => tokensB.has(t)).length;
   const union = new Set([...tokensA, ...tokensB]).size;
@@ -225,8 +238,8 @@ export async function classifyDocumentWithLearning(
 // "bank-statement-copy-2.pdf"). "Uncertain cases shall not be treated as
 // duplicates automatically" (Ch.9) — this only flags high-overlap cases.
 export function isFuzzyDuplicate(fileNameA: string, fileNameB: string): boolean {
-  const tokensA = new Set(normalize(fileNameA));
-  const tokensB = new Set(normalize(fileNameB));
+  const tokensA = new Set(normalize(stripExtension(fileNameA)));
+  const tokensB = new Set(normalize(stripExtension(fileNameB)));
   if (tokensA.size === 0 || tokensB.size === 0) return fileNameA === fileNameB;
   return jaccardTokenSimilarity(fileNameA, fileNameB) >= 0.7;
 }

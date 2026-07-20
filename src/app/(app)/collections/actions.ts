@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import {
   clientServices,
   clients,
+  collectionRequestRequirements,
   collectionRequests,
   documents,
   services,
@@ -18,6 +19,7 @@ import {
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
 import { recordLearnedDocumentPattern } from "@/lib/documentLearning";
+import { createPendingConfirmation } from "@/lib/pendingConfirmations";
 import { OperationFailedError } from "@/lib/resilience";
 import { uploadDocument } from "@/lib/storage/driveAdapter";
 
@@ -331,6 +333,41 @@ export async function assignDocumentRequirement(
     actorUserId: session.userId,
     collectionRequestId,
   });
+
+  // Milestone 5 (Ch.3 "Confirm... through WhatsApp") — an employee who
+  // immediately recognizes a document as a new recurring type can ask the
+  // client to confirm right here, at the exact moment of manual
+  // assignment, rather than waiting for Milestone 6's automatic
+  // second-occurrence detection. Purely optional; unchecked by default.
+  if (formData.get("askClient") === "on") {
+    const [requirement] = await db
+      .select({ name: collectionRequestRequirements.name })
+      .from(collectionRequestRequirements)
+      .where(eq(collectionRequestRequirements.id, requirementId))
+      .limit(1);
+
+    const question = `שלום! שמנו לב שקיבלנו מכם מסמך "${document.fileName}" ושייכנו אותו ל"${requirement?.name ?? "דרישה"}". האם נכון לבקש מסמך כזה גם באיסופים הבאים באופן קבוע? השיבו 'כן' או 'לא'.`;
+
+    const confirmation = await createPendingConfirmation({
+      organizationId: session.organizationId,
+      clientId: current.clientId,
+      collectionRequestId,
+      kind: "document_profile_addition",
+      payload: { requirementId, requirementName: requirement?.name, fileName: document.fileName },
+      question,
+    });
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "pending_confirmation.created",
+      description: `נשלחה בקשת אישור ללקוח: "${question}"`,
+      actorType: "employee",
+      actorUserId: session.userId,
+      clientId: current.clientId,
+      collectionRequestId,
+      metadata: { pendingConfirmationId: confirmation.id, kind: confirmation.kind },
+    });
+  }
 
   redirect(`/collections/${collectionRequestId}`);
 }
