@@ -1,6 +1,7 @@
 import { Check, Plus, X } from "lucide-react";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
+import { fieldClass } from "@/components/app/FormField";
 import { advanceOnboardingStep } from "../actions";
 import { addRequirement, removeRequirement } from "@/app/(app)/services/actions";
 
@@ -99,7 +100,7 @@ export function Step6Documents({ entries }: { entries: Entry[] }) {
                 type="text"
                 required
                 placeholder="הוספת מסמך מותאם אישית..."
-                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+                className={fieldClass("sm", "flex-1")}
               />
               <button type="submit" className={buttonVariants({ variant: "secondary", size: "sm" })}>
                 הוספה

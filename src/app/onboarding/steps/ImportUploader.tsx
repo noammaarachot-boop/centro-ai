@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import { FileSpreadsheet, Sparkles, Upload, Wand2 } from "lucide-react";
 import { buttonVariants } from "@/components/app/Button";
+import { fieldClass } from "@/components/app/FormField";
 import {
   confirmImportMapping,
   importAndClassifyClients,
@@ -135,7 +136,7 @@ export function ImportUploader({
                     name={`map-${role}`}
                     required={isRequired}
                     defaultValue={suggested !== undefined ? String(suggested) : ""}
-                    className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
+                    className={fieldClass("md")}
                   >
                     {!isRequired && <option value="">— ללא —</option>}
                     {isRequired && suggested === undefined && (

@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { buttonVariants } from "@/components/app/Button";
+import { fieldClass } from "@/components/app/FormField";
 import { updateBusinessCategory, type BusinessCategoryState } from "../actions";
 import type { BusinessCategory } from "@/lib/businessCategories";
 
@@ -85,7 +86,7 @@ export function Step3BusinessType({
             type="text"
             required
             defaultValue={businessCategoryCustomLabel ?? ""}
-            className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
+            className={fieldClass("md")}
             placeholder="לדוגמה: אדריכלות, וטרינריה, ייעוץ עסקי..."
           />
           {state.fieldErrors?.customLabel && (

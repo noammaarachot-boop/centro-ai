@@ -15,6 +15,7 @@ import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
 import { buttonVariants, Button } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
+import { fieldClass } from "@/components/app/FormField";
 import {
   advanceOnboardingStep,
   assignBusinessTypeAction,
@@ -350,7 +351,7 @@ export function Step5Analysis({
                       <select
                         name="businessTypeId"
                         required
-                        className="flex-1 rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                        className={fieldClass("sm", "flex-1")}
                       >
                         <option value="">— בחירת סוג עסק —</option>
                         {businessTypes.map((t) => (
@@ -373,7 +374,7 @@ export function Step5Analysis({
                       type="text"
                       required
                       placeholder="שם סוג העסק החדש"
-                      className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                      className={fieldClass("sm")}
                     />
                   )}
 

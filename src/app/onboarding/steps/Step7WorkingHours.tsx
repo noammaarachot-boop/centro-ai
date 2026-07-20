@@ -1,4 +1,5 @@
 import { buttonVariants } from "@/components/app/Button";
+import { fieldClass } from "@/components/app/FormField";
 import { updateWorkingHours } from "../actions";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
@@ -55,7 +56,7 @@ export function Step7WorkingHours({
             type="time"
             defaultValue={businessHoursStart}
             dir="ltr"
-            className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+            className={fieldClass("md")}
           />
         </div>
         <div>
@@ -71,7 +72,7 @@ export function Step7WorkingHours({
             type="time"
             defaultValue={businessHoursEnd}
             dir="ltr"
-            className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+            className={fieldClass("md")}
           />
         </div>
       </div>

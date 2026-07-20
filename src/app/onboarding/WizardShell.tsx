@@ -36,7 +36,7 @@ export function WizardShell({
   const progressPercent = Math.round((step / totalSteps) * 100);
 
   return (
-    <main className="flex min-h-screen justify-center bg-background px-4 py-10 sm:py-16">
+    <main className="centro-app-ambient flex min-h-screen justify-center px-4 py-10 sm:py-16">
       <div className="w-full max-w-xl">
         <div className="mb-8">
           <div className="mb-2 flex items-center justify-between text-xs font-medium text-text-muted">
@@ -47,7 +47,7 @@ export function WizardShell({
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-muted">
             <div
-              className="h-full rounded-full bg-gradient-to-l from-brand-purple to-brand-blue transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+              className="h-full rounded-full bg-gradient-to-l from-brand-purple to-brand-blue transition-all duration-500 ease-[var(--ease-standard)]"
               style={{ width: `${progressPercent}%` }}
             />
           </div>
