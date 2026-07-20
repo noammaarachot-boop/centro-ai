@@ -7,6 +7,10 @@ import { organizations, sessions, users } from "@/db/schema";
 
 const SESSION_COOKIE = "centro_session";
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// UX Polish M6 — "Remember Me" unchecked. Applies to both the cookie and
+// the DB session row's own expiresAt, so an unchecked login is genuinely
+// shorter-lived server-side too, not just a shorter browser cookie.
+const SHORT_SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 1 day
 
 export interface Session {
   sessionId: string;
@@ -17,9 +21,19 @@ export interface Session {
   organizationName: string;
 }
 
-export async function createSession(userId: string, organizationId: string) {
+// `rememberMe` defaults to true so every existing caller (register(), and
+// login() when the checkbox is unavailable/unchecked-by-omission) keeps
+// today's exact 30-day behavior unless it explicitly opts into the short
+// duration.
+export async function createSession(
+  userId: string,
+  organizationId: string,
+  rememberMe: boolean = true
+) {
   const db = await getDb();
-  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+  const expiresAt = new Date(
+    Date.now() + (rememberMe ? SESSION_DURATION_MS : SHORT_SESSION_DURATION_MS)
+  );
   const [session] = await db
     .insert(sessions)
     .values({ userId, organizationId, expiresAt })

@@ -7,16 +7,21 @@ export const metadata: Metadata = {
   title: "התחברות — Centro",
 };
 
-export default async function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ mode?: string }>;
+}) {
   const session = await getSession();
   if (session) {
     await redirectAfterAuth(session.organizationId);
   }
+  const { mode } = await searchParams;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-8 shadow-card-lg">
-        <AuthTabs />
+        <AuthTabs initialMode={mode === "register" ? "register" : "login"} />
       </div>
     </main>
   );

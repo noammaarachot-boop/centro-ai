@@ -26,6 +26,7 @@ export async function login(
     .trim()
     .toLowerCase();
   const password = String(formData.get("password") ?? "");
+  const rememberMe = formData.get("rememberMe") === "on";
 
   if (!email || !password) {
     return { error: "נא להזין אימייל וסיסמה." };
@@ -69,7 +70,7 @@ export async function login(
 
   clearAttempts(email);
 
-  await createSession(user.id, user.organizationId);
+  await createSession(user.id, user.organizationId, rememberMe);
   await recordAuditEvent({
     organizationId: user.organizationId,
     eventType: "employee.login",

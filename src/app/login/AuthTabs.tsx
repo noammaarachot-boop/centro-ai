@@ -18,8 +18,8 @@ const COPY: Record<Mode, { title: string; description: string }> = {
   },
 };
 
-export function AuthTabs() {
-  const [mode, setMode] = useState<Mode>("login");
+export function AuthTabs({ initialMode = "login" }: { initialMode?: Mode }) {
+  const [mode, setMode] = useState<Mode>(initialMode);
 
   return (
     <div>
