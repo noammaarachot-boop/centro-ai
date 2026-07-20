@@ -7,6 +7,7 @@ import { organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { runScheduledTasks } from "@/lib/scheduler";
+import { clampCollectionDay } from "@/lib/businessHours";
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 
@@ -19,6 +20,7 @@ export async function updateBusinessHours(formData: FormData) {
   const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
   const reminderIntervalDays = Number(formData.get("reminderIntervalDays") ?? 2);
   const inactivityTimeoutMinutes = Number(formData.get("inactivityTimeoutMinutes") ?? 15);
+  const collectionDayOfMonth = clampCollectionDay(formData.get("collectionDayOfMonth"));
 
   const db = await getDb();
   await db
@@ -29,6 +31,7 @@ export async function updateBusinessHours(formData: FormData) {
       businessDays: businessDays || "0,1,2,3,4",
       reminderIntervalDays,
       inactivityTimeoutMinutes,
+      collectionDayOfMonth,
       updatedAt: new Date(),
     })
     .where(eq(organizations.id, session.organizationId));

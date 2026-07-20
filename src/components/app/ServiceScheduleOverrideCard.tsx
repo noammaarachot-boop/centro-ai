@@ -4,6 +4,8 @@ import { useState } from "react";
 import { clsx } from "clsx";
 import { Card } from "@/components/app/Card";
 import { Button } from "@/components/app/Button";
+import { HelpTip } from "@/components/app/HelpTip";
+import { CollectionDayField } from "@/components/app/CollectionDayField";
 import { updateServiceScheduleOverrides } from "@/app/onboarding/actions";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
@@ -22,6 +24,7 @@ export function ServiceScheduleOverrideCard({
   businessDays,
   reminderIntervalDays,
   inactivityTimeoutMinutes,
+  collectionDayOfMonth,
   returnTo,
 }: {
   serviceId: string;
@@ -32,6 +35,7 @@ export function ServiceScheduleOverrideCard({
   businessDays: string;
   reminderIntervalDays: number;
   inactivityTimeoutMinutes: number;
+  collectionDayOfMonth: number;
   returnTo: string;
 }) {
   const [useOverrides, setUseOverrides] = useState(hasOverrides);
@@ -113,8 +117,13 @@ export function ServiceScheduleOverrideCard({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-text-secondary">
+              <label className="mb-1 flex items-center gap-1 text-xs font-medium text-text-secondary">
                 מרווח תזכורות (ימים)
+                <span className="pointer-events-auto">
+                  <HelpTip label="">
+                    אם הלקוח לא הגיב, Centro ישלח תזכורת נוספת אוטומטית כל X ימים.
+                  </HelpTip>
+                </span>
               </label>
               <input
                 name="reminderIntervalDays"
@@ -126,8 +135,14 @@ export function ServiceScheduleOverrideCard({
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-text-secondary">
+              <label className="mb-1 flex items-center gap-1 text-xs font-medium text-text-secondary">
                 זמן חוסר פעילות (דקות)
+                <span className="pointer-events-auto">
+                  <HelpTip label="">
+                    אם הלקוח מפסיק לשלוח מסמכים למשך כך הרבה דקות, Centro מניח שסיים בינתיים
+                    ושואל אם יש מסמכים נוספים.
+                  </HelpTip>
+                </span>
               </label>
               <input
                 name="inactivityTimeoutMinutes"
@@ -139,6 +154,13 @@ export function ServiceScheduleOverrideCard({
               />
             </div>
           </div>
+
+          <CollectionDayField
+            defaultValue={collectionDayOfMonth}
+            disabled={!useOverrides}
+            size="sm"
+            helpText="היום בחודש שבו Centro מתחיל לבקש מסמכים עבור סוג עסק זה. זו מדיניות משרד — Centro לעולם לא ילמד או ישנה אותה אוטומטית."
+          />
         </div>
 
         <input type="hidden" name="returnTo" value={returnTo} />

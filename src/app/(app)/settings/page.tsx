@@ -8,6 +8,8 @@ import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
 import { OfficeInfoForm } from "@/components/app/OfficeInfoForm";
+import { HelpTip } from "@/components/app/HelpTip";
+import { CollectionDayField } from "@/components/app/CollectionDayField";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
 
@@ -141,9 +143,12 @@ export default async function SettingsPage({
             <div>
               <label
                 htmlFor="reminderIntervalDays"
-                className="mb-1.5 block text-sm font-medium text-text-secondary"
+                className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
               >
                 מרווח תזכורות (ימים)
+                <HelpTip label="">
+                  אם הלקוח לא הגיב, Centro ישלח תזכורת נוספת אוטומטית כל X ימים.
+                </HelpTip>
               </label>
               <input
                 id="reminderIntervalDays"
@@ -157,9 +162,13 @@ export default async function SettingsPage({
             <div>
               <label
                 htmlFor="inactivityTimeoutMinutes"
-                className="mb-1.5 block text-sm font-medium text-text-secondary"
+                className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
               >
                 זמן חוסר פעילות (דקות)
+                <HelpTip label="">
+                  אם הלקוח מפסיק לשלוח מסמכים למשך כך הרבה דקות, Centro מניח שסיים בינתיים
+                  ושואל אם יש מסמכים נוספים.
+                </HelpTip>
               </label>
               <input
                 id="inactivityTimeoutMinutes"
@@ -171,6 +180,8 @@ export default async function SettingsPage({
               />
             </div>
           </div>
+
+          <CollectionDayField defaultValue={organization.collectionDayOfMonth} />
 
           <button type="submit" className={buttonVariants({ variant: "primary", size: "lg" })}>
             שמירת הגדרות

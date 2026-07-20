@@ -65,6 +65,10 @@ export function Step8Summary({
           }
         />
         <SummaryRow done={businessTypeCount > 0} label="כללי תזכורות הוגדרו" />
+        <SummaryRow
+          done
+          label="Centro ילמד באופן שוטף אילו מסמכים כל לקוח שולח, וישפר את איסוף המסמכים העתידי באופן אוטומטי"
+        />
       </ul>
 
       <form action={goToStep9}>

@@ -11,6 +11,11 @@ export interface BusinessHoursConfig {
 export interface ScheduleConfig extends BusinessHoursConfig {
   reminderIntervalDays: number;
   inactivityTimeoutMinutes: number;
+  // Office policy (Architecture Ch.8) — the day of the month collection
+  // begins. Stored and resolved alongside the other four fields for UI
+  // consistency; no scheduler currently reads it (Collection Requests are
+  // opened manually, not auto-created on a monthly timer).
+  collectionDayOfMonth: number;
 }
 
 interface OrganizationScheduleFields {
@@ -19,6 +24,7 @@ interface OrganizationScheduleFields {
   businessDays: string;
   reminderIntervalDays: number;
   inactivityTimeoutMinutes: number;
+  collectionDayOfMonth: number;
 }
 
 interface ServiceScheduleOverrides {
@@ -27,9 +33,10 @@ interface ServiceScheduleOverrides {
   businessDaysOverride: string | null;
   reminderIntervalDaysOverride: number | null;
   inactivityTimeoutMinutesOverride: number | null;
+  collectionDayOfMonthOverride: number | null;
 }
 
-// Epic 3: a Service (i.e. a Business Type) may override any of the five
+// Epic 3: a Service (i.e. a Business Type) may override any of the six
 // organization-wide scheduling fields; a null override falls back to the
 // organization's default. A service with no overrides at all (every
 // pre-Epic-3 service) resolves to exactly the organization's config, so
@@ -49,7 +56,21 @@ export function resolveScheduleConfig(
     inactivityTimeoutMinutes:
       service?.inactivityTimeoutMinutesOverride ??
       organization.inactivityTimeoutMinutes,
+    collectionDayOfMonth:
+      service?.collectionDayOfMonthOverride ?? organization.collectionDayOfMonth,
   };
+}
+
+// Office policy (Architecture Ch.8) — the day-of-month field's "custom"
+// option submits a free-typed number; a preset option submits its own
+// value directly. Either way, clamp to a real day of the month rather
+// than trusting the client. Shared by the onboarding wizard's per-service
+// override action and Settings' org-wide default action so both apply
+// the exact same rule.
+export function clampCollectionDay(value: FormDataEntryValue | null): number {
+  const parsed = Number(value ?? 1);
+  if (!Number.isInteger(parsed)) return 1;
+  return Math.min(Math.max(parsed, 1), 31);
 }
 
 export function isWithinBusinessHours(

@@ -13,6 +13,10 @@ export function Step9Completion() {
         הכול מוגדר. המשרד שלכם יכול להתחיל לאסוף מסמכים אוטומטית — Centro יפנה ללקוחות,
         יסווג את מה שמתקבל, ויעדכן אתכם לאורך כל הדרך.
       </p>
+      <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-text-secondary">
+        Centro לא צריך התאמה מושלמת ביום הראשון. ככל שהלקוחות ישלחו מסמכים, Centro ימשיך
+        ללמוד את פרופיל איסוף המסמכים של כל לקוח וישפר את בקשות האיסוף הבאות באופן אוטומטי.
+      </p>
 
       <form action={finishOnboarding} className="mt-8">
         <button

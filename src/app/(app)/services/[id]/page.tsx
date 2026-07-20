@@ -48,7 +48,8 @@ export default async function ServiceDetailPage({
     service.businessHoursEndOverride ||
     service.businessDaysOverride ||
     service.reminderIntervalDaysOverride ||
-    service.inactivityTimeoutMinutesOverride
+    service.inactivityTimeoutMinutesOverride ||
+    service.collectionDayOfMonthOverride
   );
   const effectiveSchedule = resolveScheduleConfig(organization, service);
 
@@ -156,6 +157,7 @@ export default async function ServiceDetailPage({
         businessDays={effectiveSchedule.businessDays}
         reminderIntervalDays={effectiveSchedule.reminderIntervalDays}
         inactivityTimeoutMinutes={effectiveSchedule.inactivityTimeoutMinutes}
+        collectionDayOfMonth={effectiveSchedule.collectionDayOfMonth}
         returnTo={`/services/${service.id}`}
       />
 

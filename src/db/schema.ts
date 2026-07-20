@@ -41,6 +41,16 @@ export const organizations = pgTable("organizations", {
   inactivityTimeoutMinutes: integer("inactivity_timeout_minutes")
     .notNull()
     .default(15),
+  // Office policy (Architecture Ch.8: Centro learns which documents to
+  // collect, never when — this is configured once by the accountant and
+  // never touched automatically). The day of the month collection begins
+  // for this organization by default; a Business Type (Service) may
+  // override it, same pattern as the five fields above. 1-31; stored as a
+  // plain integer since there's no calendar-aware "day 31 in February"
+  // logic anywhere yet — no scheduler currently auto-creates Collection
+  // Requests (they're opened manually), so this is a stored, editable
+  // policy value with no automated consumer yet, not a live cron trigger.
+  collectionDayOfMonth: integer("collection_day_of_month").notNull().default(1),
   // Epic 2: set once the org has been through (today: the relocated
   // "Office Setup" flow at /onboarding; later: the real onboarding wizard).
   // Gates whether a login/registration lands on /onboarding or /dashboard —
@@ -187,6 +197,15 @@ export const clients = pgTable(
     // Business Type, so it can remember "this exact text means this type"
     // for this organization's future imports — never touched afterward.
     importedBusinessTypeText: text("imported_business_type_text"),
+    // Onboarding UX refinement: set only on clients inserted by the
+    // wizard's own Import Excel/CSV step (src/app/onboarding/actions.ts's
+    // importParsedRows). The one thing "Replace Excel file" is allowed to
+    // delete — never a pre-existing or manually-added client — so this
+    // flag is what makes that distinction possible. Meaningless (and
+    // never consulted) once onboarding is complete.
+    importedDuringOnboarding: boolean("imported_during_onboarding")
+      .notNull()
+      .default(false),
     // Milestone 2 (Architecture Ch.1/Ch.2): every client starts in Learning
     // Mode. The only thing this flag gates is Milestone 6's "document
     // appears to no longer be needed" detection — a client with zero
@@ -238,6 +257,9 @@ export const services = pgTable("services", {
   businessHoursStartOverride: text("business_hours_start_override"),
   businessHoursEndOverride: text("business_hours_end_override"),
   businessDaysOverride: text("business_days_override"),
+  // Same override pattern, for organizations.collectionDayOfMonth — null =
+  // "use the organization's default".
+  collectionDayOfMonthOverride: integer("collection_day_of_month_override"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

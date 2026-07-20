@@ -21,6 +21,7 @@ import { buildClientRowsFromMapping } from "@/lib/csv";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { markOnboardingComplete } from "@/lib/onboarding";
+import { clampCollectionDay } from "@/lib/businessHours";
 import {
   assignClientsToBusinessType,
   createBusinessType,
@@ -135,6 +136,7 @@ export async function updateServiceScheduleOverrides(
         businessDaysOverride: null,
         reminderIntervalDaysOverride: null,
         inactivityTimeoutMinutesOverride: null,
+        collectionDayOfMonthOverride: null,
         updatedAt: new Date(),
       })
       .where(eq(services.id, serviceId));
@@ -152,6 +154,9 @@ export async function updateServiceScheduleOverrides(
         reminderIntervalDaysOverride: Number(formData.get("reminderIntervalDays") ?? 2),
         inactivityTimeoutMinutesOverride: Number(
           formData.get("inactivityTimeoutMinutes") ?? 15
+        ),
+        collectionDayOfMonthOverride: clampCollectionDay(
+          formData.get("collectionDayOfMonth")
         ),
         updatedAt: new Date(),
       })
@@ -393,7 +398,20 @@ export interface ImportClientsState {
     suggestion: ColumnMapping;
     tableBounds: TableBounds;
     xlsxMeta?: XlsxStructureMeta;
+    mode: ImportMode;
   };
+}
+
+// "add" (the default): append to whatever clients already exist, same
+// duplicate-phone skip logic as always — this is the wizard's normal Step
+// 4 upload, and Step 5's "Add another Excel file" affordance for when the
+// first file was correct but incomplete. "replace": the accountant
+// uploaded the wrong file — see importParsedRows for what this actually
+// deletes and why it's safe to.
+export type ImportMode = "add" | "replace";
+
+function readImportMode(formData: FormData): ImportMode {
+  return formData.get("mode") === "replace" ? "replace" : "add";
 }
 
 type ParsedClientRow = ReturnType<typeof buildClientRowsFromMapping>[number];
@@ -412,9 +430,51 @@ async function importParsedRows(
   session: { organizationId: string; userId: string },
   parsedRows: ParsedClientRow[],
   analysis: AnalyzeColumnsResult,
-  structure: { tableBounds: TableBounds; xlsxMeta?: XlsxStructureMeta }
+  structure: { tableBounds: TableBounds; xlsxMeta?: XlsxStructureMeta },
+  mode: ImportMode = "add"
 ): Promise<ImportClientsState> {
   const db = await getDb();
+
+  // "Replace Excel file": the accountant uploaded the wrong file. Delete
+  // exactly the clients this wizard's own import created — never a
+  // pre-existing client, never one added manually — right before
+  // inserting the new file's rows, so a cancelled/still-ambiguous mapping
+  // never loses data (see confirmImportMapping: nothing is deleted until
+  // a real import is actually about to happen). Guarded by
+  // onboardingCompletedAt as defense-in-depth: this whole flow only
+  // exists in the wizard UI, but a Server Action is reachable by anyone
+  // who can POST to it directly, not only through that UI.
+  if (mode === "replace") {
+    const [organization] = await db
+      .select({ onboardingCompletedAt: organizations.onboardingCompletedAt })
+      .from(organizations)
+      .where(eq(organizations.id, session.organizationId))
+      .limit(1);
+
+    if (!organization?.onboardingCompletedAt) {
+      const removed = await db
+        .delete(clients)
+        .where(
+          and(
+            eq(clients.organizationId, session.organizationId),
+            eq(clients.importedDuringOnboarding, true)
+          )
+        )
+        .returning({ id: clients.id });
+
+      if (removed.length > 0) {
+        await recordAuditEvent({
+          organizationId: session.organizationId,
+          eventType: "clients.import_replaced",
+          description: `קובץ הייבוא הוחלף — ${removed.length} לקוחות מהייבוא הקודם הוסרו`,
+          actorType: "employee",
+          actorUserId: session.userId,
+          metadata: { removedCount: removed.length },
+        });
+      }
+    }
+  }
+
   const existing = await db
     .select({ phone: clients.phone })
     .from(clients)
@@ -451,6 +511,7 @@ async function importParsedRows(
         email: row.email || null,
         notes: row.notes || null,
         importedBusinessTypeText: row.businessType || null,
+        importedDuringOnboarding: true,
       })
       .returning({ id: clients.id, name: clients.name });
 
@@ -587,6 +648,7 @@ export async function importAndClassifyClients(
 ): Promise<ImportClientsState> {
   const session = await requireSession();
   const file = formData.get("file");
+  const mode = readImportMode(formData);
 
   if (!(file instanceof File) || file.size === 0) {
     return { error: "נא לבחור קובץ להעלאה." };
@@ -616,16 +678,20 @@ export async function importAndClassifyClients(
         suggestion: analysis.mapping,
         tableBounds: structure.tableBounds,
         xlsxMeta: structure.xlsxMeta,
+        mode,
       },
     };
   }
 
   const dataRows = analysis.hasHeaderRow ? rawRows.slice(1) : rawRows;
   const parsedRows = buildClientRowsFromMapping(dataRows, analysis.mapping);
-  return importParsedRows(session, parsedRows, analysis, {
-    tableBounds: structure.tableBounds,
-    xlsxMeta: structure.xlsxMeta,
-  });
+  return importParsedRows(
+    session,
+    parsedRows,
+    analysis,
+    { tableBounds: structure.tableBounds, xlsxMeta: structure.xlsxMeta },
+    mode
+  );
 }
 
 // The mapping-confirmation screen's submit action — same shared import
@@ -638,6 +704,7 @@ export async function confirmImportMapping(
   formData: FormData
 ): Promise<ImportClientsState> {
   const session = await requireSession();
+  const mode = readImportMode(formData);
 
   let rows: string[][];
   try {
@@ -693,7 +760,8 @@ export async function confirmImportMapping(
         skippedTrailingRows,
       },
       xlsxMeta,
-    }
+    },
+    mode
   );
 }
 
@@ -734,6 +802,38 @@ export async function assignBusinessTypeAction(formData: FormData) {
       actorUserId: session.userId,
     });
   }
+
+  // Always submitted from Step 5 itself — refresh() alone, no redirect().
+  refresh();
+}
+
+// UX refinement: move an *already-classified* client to a different
+// Business Type — assignBusinessTypeAction above only ever targets
+// unclassified clients. A manual reassignment is exactly as certain as a
+// manual first assignment (assignClientsToBusinessType defaults
+// `confidence` to 100 either way), so this simply reuses it. Org-scoped
+// internally (assignClientsToBusinessType's update filters by
+// organizationId), so an unscoped clientId here can't touch another
+// organization's client.
+export async function reassignClientBusinessType(formData: FormData) {
+  const session = await requireSession();
+  const clientId = String(formData.get("clientId") ?? "");
+  const businessTypeId = String(formData.get("businessTypeId") ?? "");
+  if (!clientId || !businessTypeId) {
+    refresh();
+    return;
+  }
+
+  await assignClientsToBusinessType(session.organizationId, [clientId], businessTypeId);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "clients.business_type_reassigned",
+    description: "סיווג סוג העסק של לקוח שונה ידנית",
+    actorType: "employee",
+    actorUserId: session.userId,
+    clientId,
+  });
 
   // Always submitted from Step 5 itself — refresh() alone, no redirect().
   refresh();
