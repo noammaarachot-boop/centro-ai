@@ -35,17 +35,6 @@ interface BusinessTypeRow {
   clientCount: number;
 }
 
-const ROLE_LABELS: Record<keyof ImportAnalysisSummary["detectedColumns"], string> = {
-  name: "שם לקוח",
-  phone: "טלפון",
-  email: "אימייל",
-  businessType: "סוג עסק",
-  notes: "הערות",
-  city: "עיר",
-  companyId: 'ח"פ',
-  taxId: "מספר עוסק",
-};
-
 export function Step5Analysis({
   businessTypes,
   clientsByType,
@@ -97,12 +86,6 @@ export function Step5Analysis({
     );
   }
 
-  const detectedEntries = importSummary
-    ? (Object.entries(importSummary.detectedColumns) as Array<
-        [keyof ImportAnalysisSummary["detectedColumns"], string | undefined]
-      >).filter(([, header]) => header !== undefined)
-    : [];
-
   return (
     <div className="space-y-6">
       {importSummary ? (
@@ -121,11 +104,6 @@ export function Step5Analysis({
 
           <ul className="mt-4 space-y-1.5 text-sm text-text-secondary">
             <li>✅ {importSummary.imported} לקוחות זוהו בקובץ</li>
-            {detectedEntries.map(([role, header]) => (
-              <li key={role}>
-                ✅ עמודת {ROLE_LABELS[role]} זוהתה ({header})
-              </li>
-            ))}
             {importSummary.autoClassified > 0 && (
               <li>✅ {importSummary.autoClassified} סוגי עסק סווגו אוטומטית (ביטחון גבוה)</li>
             )}
