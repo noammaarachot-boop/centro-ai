@@ -54,6 +54,9 @@ import { Card } from "@/components/app/Card";
 import { Badge, type BadgeTone } from "@/components/app/Badge";
 import { buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
+import { fieldClass } from "@/components/app/FormField";
+import { ConfirmDialog } from "@/components/app/ConfirmDialog";
+import { DevToolsPanel } from "@/components/app/DevToolsPanel";
 
 const TRANSITION_LABELS: Record<CollectionRequestStatus, string> = {
   draft: "חזרה לטיוטה",
@@ -81,14 +84,8 @@ const CONVERSATION_STATUS_META: Record<string, { label: string; tone: BadgeTone 
   closed: { label: "סגורה", tone: "neutral" },
 };
 
-const compactInputClass =
-  "flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10";
-const compactSelectClass =
-  "rounded-lg border border-border bg-white px-2 py-2 text-xs text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10";
-const compactButtonClass =
-  "rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple";
-const pillButtonClass =
-  "rounded-full border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple";
+const compactButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
+const pillButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
 
 export default async function CollectionRequestDetailPage({
   params,
@@ -240,15 +237,19 @@ export default async function CollectionRequestDetailPage({
                                 <ExternalLink className="h-3 w-3" />
                                 פתיחה ב-Google Drive
                               </a>
-                              <form action={simulateDriveDeletion.bind(null, id, doc.id)}>
-                                <button
-                                  type="submit"
-                                  className="inline-flex items-center gap-1 text-text-muted transition-colors hover:text-danger hover:underline"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                  הדמיית מחיקה מ-Drive
-                                </button>
-                              </form>
+                              <ConfirmDialog
+                                title="הדמיית מחיקה מ-Drive"
+                                description={`לדמות מחיקה ידנית של "${doc.fileName}" מ-Google Drive? זו סימולציה לבדיקות בלבד.`}
+                                confirmLabel="הדמיית מחיקה"
+                                formAction={simulateDriveDeletion.bind(null, id, doc.id)}
+                                triggerClassName="inline-flex items-center gap-1 text-text-muted transition-colors hover:text-danger hover:underline"
+                                trigger={
+                                  <>
+                                    <Trash2 className="h-3 w-3" />
+                                    הדמיית מחיקה מ-Drive
+                                  </>
+                                }
+                              />
                             </div>
                           )}
                           {doc.status === "deleted_from_drive" && doc.driveDeletedAt && (
@@ -276,9 +277,9 @@ export default async function CollectionRequestDetailPage({
                     type="text"
                     required
                     placeholder="שם קובץ (הוספה ידנית)"
-                    className={compactInputClass}
+                    className={fieldClass("sm", "flex-1")}
                   />
-                  <select name="status" className={compactSelectClass}>
+                  <select name="status" className={fieldClass("sm")}>
                     <option value="approved">אישור</option>
                     <option value="needs_review">דורש בדיקה</option>
                     <option value="rejected">דחייה</option>
@@ -312,7 +313,7 @@ export default async function CollectionRequestDetailPage({
                   className="space-y-2"
                 >
                   <div className="flex items-center gap-2">
-                    <select name="requirementId" className={`flex-1 ${compactSelectClass}`}>
+                    <select name="requirementId" className={fieldClass("sm", "flex-1")}>
                       <option value="">— בחירת דרישה קיימת —</option>
                       {requirements.map((requirement) => (
                         <option key={requirement.id} value={requirement.id}>
@@ -328,7 +329,7 @@ export default async function CollectionRequestDetailPage({
                     name="newTypeName"
                     type="text"
                     placeholder="או: סוג מסמך חדש שלא ברשימה (למשל: טופס 102)"
-                    className={`w-full ${compactInputClass}`}
+                    className={fieldClass("sm")}
                   />
                   <label className="flex items-center gap-1.5 text-[11px] text-text-muted">
                     <input
@@ -473,48 +474,47 @@ export default async function CollectionRequestDetailPage({
                 name="body"
                 type="text"
                 placeholder="הודעת עובד ידנית..."
-                className={compactInputClass}
+                className={fieldClass("sm", "flex-1")}
               />
               <button type="submit" className={compactButtonClass}>
                 שליחה
               </button>
             </form>
 
-            <form
-              action={simulateInboundMessage.bind(null, id)}
-              className="mt-3 space-y-2 rounded-xl border border-dashed border-border p-3"
-            >
-              <p className="text-[11px] text-text-muted">
-                הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי). קובץ מצורף עובר סיווג
-                אוטומטי (AI מדומה) שמשייך אותו לדרישה המתאימה — בחירה ידנית להלן עוקפת את
-                הסיווג.
-              </p>
-              <input
-                name="body"
-                type="text"
-                placeholder="טקסט ההודעה"
-                className={`w-full ${compactInputClass}`}
-              />
-              <div className="flex items-center gap-2">
+            <DevToolsPanel label="סימולציית הודעה נכנסת מהלקוח">
+              <form action={simulateInboundMessage.bind(null, id)} className="space-y-2">
+                <p className="text-[11px] text-text-muted">
+                  הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי). קובץ מצורף עובר סיווג
+                  אוטומטי (AI מדומה) שמשייך אותו לדרישה המתאימה — בחירה ידנית להלן עוקפת את
+                  הסיווג.
+                </p>
                 <input
-                  name="fileName"
+                  name="body"
                   type="text"
-                  placeholder="שם קובץ מצורף (לא חובה)"
-                  className={compactInputClass}
+                  placeholder="טקסט ההודעה"
+                  className={fieldClass("sm")}
                 />
-                <select name="requirementId" className={compactSelectClass}>
-                  <option value="">— סיווג אוטומטי —</option>
-                  {requirements.map((requirement) => (
-                    <option key={requirement.id} value={requirement.id}>
-                      {requirement.name} (ידני)
-                    </option>
-                  ))}
-                </select>
-                <button type="submit" className={compactButtonClass}>
-                  הדמיה
-                </button>
-              </div>
-            </form>
+                <div className="flex items-center gap-2">
+                  <input
+                    name="fileName"
+                    type="text"
+                    placeholder="שם קובץ מצורף (לא חובה)"
+                    className={fieldClass("sm", "flex-1")}
+                  />
+                  <select name="requirementId" className={fieldClass("sm")}>
+                    <option value="">— סיווג אוטומטי —</option>
+                    {requirements.map((requirement) => (
+                      <option key={requirement.id} value={requirement.id}>
+                        {requirement.name} (ידני)
+                      </option>
+                    ))}
+                  </select>
+                  <button type="submit" className={compactButtonClass}>
+                    הדמיה
+                  </button>
+                </div>
+              </form>
+            </DevToolsPanel>
           </>
         )}
       </Card>

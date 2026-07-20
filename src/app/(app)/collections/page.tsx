@@ -5,8 +5,8 @@ import { getOrganization } from "@/lib/data/organizations";
 import { listCollectionRequests } from "@/lib/data/collectionRequests";
 import { StatusBadge } from "./StatusBadge";
 import { PageHeader } from "@/components/app/PageHeader";
-import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
+import { Table, TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 
 export default async function CollectionsPage() {
   const session = await requireSession();
@@ -32,42 +32,33 @@ export default async function CollectionsPage() {
           description={`ניתן לפתוח בקשה מעמוד הלקוח, מתוך רשימת ${isOneTime ? "התבניות המשויכות" : "השירותים המשויכים"}.`}
         />
       ) : (
-        <Card padding="none" className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-end text-sm">
-              <thead className="sticky top-0 bg-surface-muted text-text-muted">
-                <tr>
-                  <th className="px-5 py-3.5 font-medium">לקוח</th>
-                  <th className="px-5 py-3.5 font-medium">{serviceWord}</th>
-                  <th className="px-5 py-3.5 font-medium">תקופה</th>
-                  <th className="px-5 py-3.5 font-medium">סטטוס</th>
-                </tr>
-              </thead>
-              <tbody>
-                {collectionRequests.map((cr) => (
-                  <tr
-                    key={cr.id}
-                    className="border-t border-border transition-colors hover:bg-surface-muted/60"
+        <Table minWidth={560}>
+          <TableHead>
+            <TableHeadCell>לקוח</TableHeadCell>
+            <TableHeadCell>{serviceWord}</TableHeadCell>
+            <TableHeadCell>תקופה</TableHeadCell>
+            <TableHeadCell>סטטוס</TableHeadCell>
+          </TableHead>
+          <tbody>
+            {collectionRequests.map((cr) => (
+              <TableRow key={cr.id}>
+                <TableCell>
+                  <Link
+                    href={`/collections/${cr.id}`}
+                    className="font-medium text-text-primary transition-colors hover:text-brand-purple"
                   >
-                    <td className="px-5 py-4">
-                      <Link
-                        href={`/collections/${cr.id}`}
-                        className="font-medium text-text-primary transition-colors hover:text-brand-purple"
-                      >
-                        {cr.clientName}
-                      </Link>
-                    </td>
-                    <td className="px-5 py-4 text-text-secondary">{cr.serviceName}</td>
-                    <td className="px-5 py-4 text-text-secondary">{cr.periodLabel}</td>
-                    <td className="px-5 py-4">
-                      <StatusBadge status={cr.status} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+                    {cr.clientName}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-text-secondary">{cr.serviceName}</TableCell>
+                <TableCell className="text-text-secondary">{cr.periodLabel}</TableCell>
+                <TableCell>
+                  <StatusBadge status={cr.status} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </tbody>
+        </Table>
       )}
     </div>
   );
