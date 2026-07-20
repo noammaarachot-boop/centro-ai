@@ -428,3 +428,45 @@ export async function suggestStarterBusinessTypes(
 
   return fallbackForLabel(label);
 }
+
+// Product Evolution M5 — the Template Library, Workflow B's equivalent of
+// the starter suggestions above. Unlike suggestStarterBusinessTypes,
+// accountant/tax_advisor categories ARE handled here directly (not
+// bypassed by the caller): a one-time-workflow office's Template Library
+// needs real suggestions for every declared category, including
+// accounting — and "recurring client-type classification" (Ltd Company vs
+// Sole Proprietor) isn't the right shape for a one-off request template
+// anyway, so this is deliberately a different, smaller set rather than
+// reusing STARTER_BUSINESS_TYPES. Every other category reuses the exact
+// same engine as suggestStarterBusinessTypes — same presets, same keyword
+// domains, same never-generic fallback.
+const ACCOUNTANT_TEMPLATE_LIBRARY: StarterBusinessType[] = [
+  {
+    name: "פתיחת תיק ללקוח חדש",
+    canonicalKey: "pe:template:accountant:new_client",
+    suggestedRequirements: [
+      { name: "תעודת זהות / תעודת התאגדות", defaultChecked: true },
+      { name: "אישור ניהול חשבון בנק", defaultChecked: true },
+      { name: "ייפוי כוח למייצג", defaultChecked: true },
+    ],
+  },
+  {
+    name: "דוח שנתי",
+    canonicalKey: "pe:template:accountant:annual_report",
+    suggestedRequirements: [
+      { name: "דפי חשבון בנק לשנה החולפת", defaultChecked: true },
+      { name: "חשבוניות הכנסה והוצאה", defaultChecked: true },
+      { name: "דוח רווח והפסד", defaultChecked: false },
+    ],
+  },
+];
+
+export async function suggestTemplateLibrary(
+  businessCategory: string,
+  businessCategoryCustomLabel?: string | null
+): Promise<StarterBusinessType[]> {
+  if (businessCategory === "accountant" || businessCategory === "tax_advisor") {
+    return ACCOUNTANT_TEMPLATE_LIBRARY;
+  }
+  return suggestStarterBusinessTypes(businessCategory, businessCategoryCustomLabel);
+}

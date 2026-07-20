@@ -120,6 +120,13 @@
       "when": 1784545920753,
       "tag": "0016_gorgeous_otto_octavius",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784550092679,
+      "tag": "0017_sleepy_night_thrasher",
+      "breakpoints": true
     }
   ]
 }

@@ -309,6 +309,14 @@ export const serviceDocumentRequirements = pgTable(
       .references(() => services.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
+    // Product Evolution M5: user-controlled document ordering for
+    // Templates. Null for every requirement created before this milestone
+    // (and for the recurring workflow generally, which never sets it) —
+    // listServiceRequirements orders by position first, falling back to
+    // createdAt, and Postgres sorts NULLs last on ascending order by
+    // default, so an all-null service's requirements keep exactly their
+    // original creation-time order with no special-case code needed.
+    position: integer("position"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

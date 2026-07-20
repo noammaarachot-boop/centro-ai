@@ -34,7 +34,7 @@ export async function listServiceRequirements(serviceId: string) {
     .select()
     .from(serviceDocumentRequirements)
     .where(eq(serviceDocumentRequirements.serviceId, serviceId))
-    .orderBy(serviceDocumentRequirements.createdAt);
+    .orderBy(serviceDocumentRequirements.position, serviceDocumentRequirements.createdAt);
 }
 
 export async function listServiceClients(

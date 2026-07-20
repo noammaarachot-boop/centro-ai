@@ -1,0 +1,1 @@
+ALTER TABLE "service_document_requirements" ADD COLUMN "position" integer;
