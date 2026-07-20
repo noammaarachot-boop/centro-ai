@@ -3,6 +3,9 @@ import { LayoutTemplate, Users, Activity, CheckCircle2, Plus, Sparkles } from "l
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
+import { AiBriefing } from "@/components/app/AiBriefing";
+import { KpiCard } from "@/components/app/KpiCard";
+import { TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 import { buttonVariants } from "@/components/app/Button";
 import { StatusBadge } from "../collections/StatusBadge";
 import {
@@ -22,26 +25,23 @@ function relativeTime(date: Date) {
   return `לפני ${days} ימים`;
 }
 
-function StatTile({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Activity;
-  label: string;
-  value: number;
-}) {
-  return (
-    <Card className="flex items-center gap-3">
-      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-purple/10 text-brand-purple">
-        <Icon className="h-5 w-5" />
-      </span>
-      <div>
-        <p className="text-2xl font-bold tabular-nums text-text-primary">{value}</p>
-        <p className="text-xs text-text-muted">{label}</p>
-      </div>
-    </Card>
-  );
+// Rule-based headline from getOneTimeDashboardCounts' own numbers — no
+// live AI/LLM call. This workflow has no queues/classification, so the
+// briefing is deliberately simpler than the recurring dashboard's.
+function buildBriefing(counts: Awaited<ReturnType<typeof getOneTimeDashboardCounts>>) {
+  if (counts.templateCount === 0) {
+    return "עדיין אין תבניות מוגדרות — צרו תבנית ראשונה כדי להתחיל לשלוח בקשות איסוף.";
+  }
+
+  const parts: string[] = [];
+  if (counts.activeRequestCount > 0) parts.push(`${counts.activeRequestCount} בקשות פעילות`);
+  if (counts.completedThisWeekCount > 0) parts.push(`${counts.completedThisWeekCount} הושלמו השבוע`);
+
+  if (parts.length === 0) {
+    return "אין בקשות פעילות כרגע — הכול נקי ומעודכן.";
+  }
+
+  return `${parts.join(", ")}.`;
 }
 
 // Workflow B's own dashboard — a deliberately different, smaller surface
@@ -68,6 +68,8 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
         }
       />
 
+      <AiBriefing text={buildBriefing(counts)} />
+
       {showSampleTemplateCard && (
         <Link href="/templates">
           <Card
@@ -90,13 +92,29 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
       )}
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatTile icon={LayoutTemplate} label="תבניות" value={counts.templateCount} />
-        <StatTile icon={Users} label="לקוחות" value={counts.clientCount} />
-        <StatTile icon={Activity} label="בקשות פעילות" value={counts.activeRequestCount} />
-        <StatTile
-          icon={CheckCircle2}
+        <KpiCard
+          label="תבניות"
+          value={counts.templateCount}
+          icon={<LayoutTemplate className="h-4.5 w-4.5" aria-hidden="true" />}
+          accent="purple"
+        />
+        <KpiCard
+          label="לקוחות"
+          value={counts.clientCount}
+          icon={<Users className="h-4.5 w-4.5" aria-hidden="true" />}
+          accent="blue"
+        />
+        <KpiCard
+          label="בקשות פעילות"
+          value={counts.activeRequestCount}
+          icon={<Activity className="h-4.5 w-4.5" aria-hidden="true" />}
+          accent="cyan"
+        />
+        <KpiCard
           label="הושלמו השבוע"
           value={counts.completedThisWeekCount}
+          icon={<CheckCircle2 className="h-4.5 w-4.5" aria-hidden="true" />}
+          accent="emerald"
         />
       </div>
 
@@ -123,27 +141,22 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[480px] text-end text-sm">
-                <thead className="sticky top-0 bg-surface-muted text-text-muted">
-                  <tr>
-                    <th className="px-5 py-3.5 font-medium">לקוח</th>
-                    <th className="px-5 py-3.5 font-medium">תבנית</th>
-                    <th className="px-5 py-3.5 font-medium">סטטוס</th>
-                    <th className="px-5 py-3.5 font-medium">נשלח</th>
-                  </tr>
-                </thead>
+                <TableHead>
+                  <TableHeadCell>לקוח</TableHeadCell>
+                  <TableHeadCell>תבנית</TableHeadCell>
+                  <TableHeadCell>סטטוס</TableHeadCell>
+                  <TableHeadCell>נשלח</TableHeadCell>
+                </TableHead>
                 <tbody>
                   {recentRequests.map((row) => (
-                    <tr
-                      key={row.id}
-                      className="border-t border-border transition-colors hover:bg-surface-muted/60"
-                    >
-                      <td className="px-5 py-4 font-medium text-text-primary">{row.clientName}</td>
-                      <td className="px-5 py-4 text-text-secondary">{row.templateName}</td>
-                      <td className="px-5 py-4">
+                    <TableRow key={row.id}>
+                      <TableCell className="font-medium text-text-primary">{row.clientName}</TableCell>
+                      <TableCell className="text-text-secondary">{row.templateName}</TableCell>
+                      <TableCell>
                         <StatusBadge status={row.status} />
-                      </td>
-                      <td className="px-5 py-4 text-text-muted">{relativeTime(row.createdAt)}</td>
-                    </tr>
+                      </TableCell>
+                      <TableCell className="text-text-muted">{relativeTime(row.createdAt)}</TableCell>
+                    </TableRow>
                   ))}
                 </tbody>
               </table>

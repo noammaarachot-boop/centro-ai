@@ -27,6 +27,9 @@ import { KpiCard } from "@/components/app/KpiCard";
 import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
+import { AiBriefing } from "@/components/app/AiBriefing";
+import { ProgressBar } from "@/components/app/ProgressBar";
+import { Table, TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 
 const QUEUE_CARDS: Array<{
   queue: DashboardQueue;
@@ -62,6 +65,39 @@ const QUEUE_TITLES: Record<DashboardQueue, string> = {
   business_type_suggestions: "הצעות סיווג לקוחות",
   pending_confirmations: "ממתין לאישור לקוח",
 };
+
+// Rule-based headline composed from getDashboardCounts' own numbers — no
+// live AI/LLM call. Priority: needs-review > pending-confirmations >
+// classification-suggestions (things that need a human) > completed-today
+// > active-only > all-clear.
+function buildBriefing(counts: Awaited<ReturnType<typeof getDashboardCounts>>) {
+  const needsAttention: string[] = [];
+  if (counts.needsReview.count > 0) {
+    needsAttention.push(`${counts.needsReview.count} דורשות בדיקת עובד`);
+  }
+  if (counts.pendingConfirmations.count > 0) {
+    needsAttention.push(`${counts.pendingConfirmations.count} ממתינות לאישור לקוח`);
+  }
+  if (counts.businessTypeSuggestions.count > 0) {
+    needsAttention.push(`${counts.businessTypeSuggestions.count} הצעות סיווג לקוחות ממתינות`);
+  }
+
+  if (needsAttention.length > 0) {
+    const completedSuffix =
+      counts.completedToday.count > 0 ? ` ${counts.completedToday.count} הושלמו היום.` : "";
+    return `${needsAttention.join(", ")}.${completedSuffix}`;
+  }
+
+  if (counts.completedToday.count > 0) {
+    return `הכול תחת שליטה — ${counts.completedToday.count} בקשות הושלמו היום ואין דבר שדורש תשומת לב.`;
+  }
+
+  if (counts.active.count > 0) {
+    return `${counts.active.count} בקשות איסוף פעילות כרגע — אין דבר שדורש תשומת לב מיידית.`;
+  }
+
+  return "אין עבודה פעילה כרגע — הכול נקי ומעודכן.";
+}
 
 function relativeTime(date: Date) {
   const diffMs = Date.now() - new Date(date).getTime();
@@ -119,43 +155,34 @@ export default async function DashboardPage({
             description="כל הלקוחות המסווגים זוהו בביטחון גבוה, או שטרם יובאו לקוחות."
           />
         ) : (
-          <Card padding="none" className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[480px] text-end text-sm">
-                <thead className="sticky top-0 bg-surface-muted text-text-muted">
-                  <tr>
-                    <th className="px-5 py-3.5 font-medium">לקוח</th>
-                    <th className="px-5 py-3.5 font-medium">סוג עסק מוצע</th>
-                    <th className="px-5 py-3.5 font-medium">ביטחון</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {suggestions.map((row) => (
-                    <tr
-                      key={row.id}
-                      className="border-t border-border transition-colors hover:bg-surface-muted/60"
+          <Table>
+            <TableHead>
+              <TableHeadCell>לקוח</TableHeadCell>
+              <TableHeadCell>סוג עסק מוצע</TableHeadCell>
+              <TableHeadCell>ביטחון</TableHeadCell>
+            </TableHead>
+            <tbody>
+              {suggestions.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Link
+                      href={`/clients/${row.id}`}
+                      className="font-medium text-text-primary transition-colors hover:text-brand-purple"
                     >
-                      <td className="px-5 py-4">
-                        <Link
-                          href={`/clients/${row.id}`}
-                          className="font-medium text-text-primary transition-colors hover:text-brand-purple"
-                        >
-                          {row.name}
-                        </Link>
-                        <p className="text-xs text-text-muted" dir="ltr">
-                          {row.phone}
-                        </p>
-                      </td>
-                      <td className="px-5 py-4 text-text-secondary">{row.businessTypeName ?? "—"}</td>
-                      <td className="px-5 py-4">
-                        <Badge tone="warning">{row.confidence}%</Badge>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+                      {row.name}
+                    </Link>
+                    <p className="text-xs text-text-muted" dir="ltr">
+                      {row.phone}
+                    </p>
+                  </TableCell>
+                  <TableCell className="text-text-secondary">{row.businessTypeName ?? "—"}</TableCell>
+                  <TableCell>
+                    <Badge tone="warning">{row.confidence}%</Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </tbody>
+          </Table>
         )}
       </div>
     );
@@ -184,38 +211,29 @@ export default async function DashboardPage({
             description="כל בקשות האישור שנשלחו ללקוחות נענו."
           />
         ) : (
-          <Card padding="none" className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[480px] text-end text-sm">
-                <thead className="sticky top-0 bg-surface-muted text-text-muted">
-                  <tr>
-                    <th className="px-5 py-3.5 font-medium">לקוח</th>
-                    <th className="px-5 py-3.5 font-medium">שאלה</th>
-                    <th className="px-5 py-3.5 font-medium">נשלחה</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pending.map((row) => (
-                    <tr
-                      key={row.id}
-                      className="border-t border-border transition-colors hover:bg-surface-muted/60"
+          <Table>
+            <TableHead>
+              <TableHeadCell>לקוח</TableHeadCell>
+              <TableHeadCell>שאלה</TableHeadCell>
+              <TableHeadCell>נשלחה</TableHeadCell>
+            </TableHead>
+            <tbody>
+              {pending.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Link
+                      href={`/collections/${row.collectionRequestId}`}
+                      className="font-medium text-text-primary transition-colors hover:text-brand-purple"
                     >
-                      <td className="px-5 py-4">
-                        <Link
-                          href={`/collections/${row.collectionRequestId}`}
-                          className="font-medium text-text-primary transition-colors hover:text-brand-purple"
-                        >
-                          {row.clientName}
-                        </Link>
-                      </td>
-                      <td className="px-5 py-4 text-text-secondary">{row.question}</td>
-                      <td className="px-5 py-4 text-text-secondary">{relativeTime(row.createdAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+                      {row.clientName}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-text-secondary">{row.question}</TableCell>
+                  <TableCell className="text-text-secondary">{relativeTime(row.createdAt)}</TableCell>
+                </TableRow>
+              ))}
+            </tbody>
+          </Table>
         )}
       </div>
     );
@@ -241,61 +259,42 @@ export default async function DashboardPage({
             description="כל העבודה בתור הזה טופלה. תוכלו לחזור ללוח הבקרה ולבדוק תורים אחרים."
           />
         ) : (
-          <Card padding="none" className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] text-end text-sm">
-                <thead className="sticky top-0 bg-surface-muted text-text-muted">
-                  <tr>
-                    <th className="px-5 py-3.5 font-medium">לקוח</th>
-                    <th className="px-5 py-3.5 font-medium">התקדמות</th>
-                    <th className="px-5 py-3.5 font-medium">מסמכים חסרים</th>
-                    <th className="px-5 py-3.5 font-medium">פעילות אחרונה</th>
-                    <th className="px-5 py-3.5 font-medium">סטטוס</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr
-                      key={row.id}
-                      className="border-t border-border transition-colors hover:bg-surface-muted/60"
+          <Table minWidth={640}>
+            <TableHead>
+              <TableHeadCell>לקוח</TableHeadCell>
+              <TableHeadCell>התקדמות</TableHeadCell>
+              <TableHeadCell>מסמכים חסרים</TableHeadCell>
+              <TableHeadCell>פעילות אחרונה</TableHeadCell>
+              <TableHeadCell>סטטוס</TableHeadCell>
+            </TableHead>
+            <tbody>
+              {rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Link
+                      href={`/collections/${row.id}`}
+                      className="font-medium text-text-primary transition-colors hover:text-brand-purple"
                     >
-                      <td className="px-5 py-4">
-                        <Link
-                          href={`/collections/${row.id}`}
-                          className="font-medium text-text-primary transition-colors hover:text-brand-purple"
-                        >
-                          {row.clientName}
-                        </Link>
-                        <p className="text-xs text-text-muted">
-                          {row.serviceName} · {row.periodLabel}
-                        </p>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-2">
-                          <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-muted">
-                            <div
-                              className="h-full rounded-full bg-gradient-to-l from-brand-emerald to-brand-cyan transition-all duration-500"
-                              style={{ width: `${row.progressPercent}%` }}
-                            />
-                          </div>
-                          <span className="text-text-secondary">{row.progressPercent}%</span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 text-text-secondary">
-                        {row.missingDocuments.length > 0 ? row.missingDocuments.join(", ") : "—"}
-                      </td>
-                      <td className="px-5 py-4 text-text-secondary">
-                        {relativeTime(row.lastActivity)}
-                      </td>
-                      <td className="px-5 py-4">
-                        <StatusBadge status={row.status as CollectionRequestStatus} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+                      {row.clientName}
+                    </Link>
+                    <p className="text-xs text-text-muted">
+                      {row.serviceName} · {row.periodLabel}
+                    </p>
+                  </TableCell>
+                  <TableCell>
+                    <ProgressBar percent={row.progressPercent} showLabel />
+                  </TableCell>
+                  <TableCell className="text-text-secondary">
+                    {row.missingDocuments.length > 0 ? row.missingDocuments.join(", ") : "—"}
+                  </TableCell>
+                  <TableCell className="text-text-secondary">{relativeTime(row.lastActivity)}</TableCell>
+                  <TableCell>
+                    <StatusBadge status={row.status as CollectionRequestStatus} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </tbody>
+          </Table>
         )}
       </div>
     );
@@ -319,6 +318,8 @@ export default async function DashboardPage({
         title="לוח הבקרה"
         description="תמונת מצב של העבודה הפעילה כרגע — לא רשימת כל הלקוחות."
       />
+
+      <AiBriefing text={buildBriefing(counts)} />
 
       <form action="/dashboard" method="GET" className="mb-8 flex items-center gap-2">
         <div className="relative flex-1">
