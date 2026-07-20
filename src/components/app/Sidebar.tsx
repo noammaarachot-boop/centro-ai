@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Users,
   Layers,
+  LayoutTemplate,
   FolderKanban,
   ScrollText,
   Settings,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react";
 import { CentroMark } from "@/components/landing/icons/CentroMark";
 
-const NAV_LINKS = [
+const RECURRING_NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/services", label: "שירותים", icon: Layers },
@@ -26,17 +27,34 @@ const NAV_LINKS = [
   { href: "/settings", label: "הגדרות", icon: Settings },
 ];
 
+// Product Evolution M4 — Workflow B's own, smaller nav: Templates replaces
+// Services/Collections as the primary surface (a Template *is* a bare
+// Service under the hood, and sending one creates real Collection
+// Requests — see ARCHITECTURE.md — so nothing is lost by not linking those
+// routes directly, just decluttered). The underlying routes still work if
+// visited directly; only the nav itself is workflow-specific.
+const ONE_TIME_NAV_LINKS = [
+  { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
+  { href: "/clients", label: "לקוחות", icon: Users },
+  { href: "/templates", label: "תבניות", icon: LayoutTemplate },
+  { href: "/audit", label: "יומן ביקורת", icon: ScrollText },
+  { href: "/settings", label: "הגדרות", icon: Settings },
+];
+
 export function Sidebar({
   organizationName,
   email,
+  workflowType,
   logoutAction,
 }: {
   organizationName: string;
   email: string;
+  workflowType: "recurring" | "one_time";
   logoutAction: () => Promise<void>;
 }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const NAV_LINKS = workflowType === "one_time" ? ONE_TIME_NAV_LINKS : RECURRING_NAV_LINKS;
 
   return (
     <aside

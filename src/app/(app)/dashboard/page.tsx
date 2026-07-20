@@ -10,6 +10,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
+import { getOrganization } from "@/lib/data/organizations";
 import {
   getDashboardCounts,
   listBusinessTypeSuggestions,
@@ -18,6 +19,7 @@ import {
   searchClients,
   type DashboardQueue,
 } from "@/lib/data/dashboard";
+import { OneTimeDashboard } from "./OneTimeDashboard";
 import { StatusBadge } from "../collections/StatusBadge";
 import type { CollectionRequestStatus } from "@/lib/collectionRequestStateMachine";
 import { PageHeader } from "@/components/app/PageHeader";
@@ -79,6 +81,15 @@ export default async function DashboardPage({
 }) {
   const session = await requireSession();
   const { queue, q } = await searchParams;
+
+  // Product Evolution M4 — the one shared route branches into a completely
+  // different dashboard for a one-time-workflow organization. Everything
+  // below this point (queues, business-type suggestions, pending
+  // confirmations) is Workflow-A-only vocabulary that doesn't apply.
+  const organization = await getOrganization(session.organizationId);
+  if (organization?.workflowType === "one_time") {
+    return <OneTimeDashboard organizationId={session.organizationId} />;
+  }
 
   const searchResults = q?.trim() ? await searchClients(session.organizationId, q.trim()) : null;
 

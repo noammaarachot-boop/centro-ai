@@ -31,6 +31,7 @@ export default async function AppLayout({
       <Sidebar
         organizationName={session.organizationName}
         email={session.email}
+        workflowType={organization?.workflowType ?? "recurring"}
         logoutAction={logout}
       />
       <main className="min-w-0 flex-1">{children}</main>
