@@ -143,6 +143,26 @@ export const sessions = pgTable("sessions", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 
+// UX Polish M7 — the forgot-password flow. `token` stores the literal
+// random lookup value directly (matching sessions.id's existing precedent
+// of storing the secret itself, not a hash — this codebase has no
+// hashed-token pattern to deviate toward). `usedAt` null = unused; single-
+// use is enforced by setting it the moment a reset succeeds, never by
+// deleting the row (kept for audit/debugging, same spirit as auditLogs
+// being insert-only).
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // AI events use "ai", client-initiated events (e.g. WhatsApp messages) use
 // "client", unattended scheduled behavior uses "system" — matches the actor
 // vocabulary in FR-17.2 ("AI, employee, or client").
