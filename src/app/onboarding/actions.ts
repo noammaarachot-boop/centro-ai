@@ -910,3 +910,125 @@ export async function reassignClientBusinessType(formData: FormData) {
   // Always submitted from Step 5 itself — refresh() alone, no redirect().
   refresh();
 }
+
+// Product Evolution M3 — Workflow B's own Step 6 ("Optional Client
+// Import"). Deliberately not importAndClassifyClients: per spec, a
+// one-time-workflow import stores only name and phone, "nothing else" —
+// no business-type classification, no learned-synonym writes, no
+// business_types/services seeding, no "here's what Centro understood"
+// analysis summary. Reuses the same structure/column-detection engine as
+// the recurring import (so real, messy office files still work) purely to
+// locate the name/phone columns — never to classify anything.
+export interface OneTimeImportState {
+  error?: string;
+  result?: { imported: number; skipped: number };
+}
+
+export async function importClientsSimple(
+  _prevState: OneTimeImportState,
+  formData: FormData
+): Promise<OneTimeImportState> {
+  const session = await requireSession();
+  const file = formData.get("file");
+
+  if (!(file instanceof File) || file.size === 0) {
+    return { error: "נא לבחור קובץ להעלאה." };
+  }
+
+  let structure: ImportFileStructure;
+  try {
+    structure = await analyzeImportFileStructure(file);
+  } catch (error) {
+    if (error instanceof UnsupportedImportFormatError) {
+      return { error: error.message };
+    }
+    return { error: error instanceof Error ? error.message : "שגיאה בקריאת הקובץ." };
+  }
+
+  const rawRows = structure.rows;
+  const analysis = await analyzeColumnsWithAIFallback(rawRows);
+  if (analysis.mapping.name === undefined || analysis.mapping.phone === undefined) {
+    return {
+      error: "לא הצלחנו לזהות עמודות שם וטלפון בקובץ. ודאו שהקובץ כולל את הפרטים האלה ונסו שוב.",
+    };
+  }
+
+  const dataRows = analysis.hasHeaderRow ? rawRows.slice(1) : rawRows;
+  const parsedRows = buildClientRowsFromMapping(dataRows, analysis.mapping);
+
+  const db = await getDb();
+  const existing = await db
+    .select({ phone: clients.phone })
+    .from(clients)
+    .where(eq(clients.organizationId, session.organizationId));
+  const existingPhones = new Set(existing.map((c) => c.phone));
+
+  let imported = 0;
+  let skipped = 0;
+  for (const row of parsedRows) {
+    if (!row.name || !row.phone || existingPhones.has(row.phone)) {
+      skipped += 1;
+      continue;
+    }
+    // Name and phone only — no email/notes, no importedBusinessTypeText,
+    // no importedDuringOnboarding (that flag exists solely for the
+    // recurring wizard's "Replace Excel file" feature, which Workflow B
+    // doesn't have).
+    await db.insert(clients).values({
+      organizationId: session.organizationId,
+      name: row.name,
+      phone: row.phone,
+    });
+    existingPhones.add(row.phone);
+    imported += 1;
+  }
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "clients.imported",
+    description: `${imported} לקוחות יובאו (${skipped} דולגו) — ללא סיווג, בהתאם לתהליך העבודה החד-פעמי`,
+    actorType: "employee",
+    actorUserId: session.userId,
+    metadata: { imported, skipped },
+  });
+
+  await setOnboardingStep(session.organizationId, 7);
+  redirect("/onboarding?step=7");
+}
+
+// Workflow B's own Step 7 ("Working Hours"). Unlike the recurring path's
+// Reminder Rules step, this asks only business days/hours — never
+// reminder interval, inactivity timeout, or collection-day-of-month,
+// which are recurring-cadence concepts that don't apply to a one-off
+// request. These org-wide fields already have sensible defaults
+// (organizations.reminderIntervalDays etc.), so the shared scheduler
+// engine works unchanged for a one-time org even though its onboarding
+// never asks about them.
+export async function updateWorkingHours(formData: FormData) {
+  const session = await requireSession();
+  const businessHoursStart = String(formData.get("businessHoursStart") ?? "09:00");
+  const businessHoursEnd = String(formData.get("businessHoursEnd") ?? "18:00");
+  const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
+
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({
+      businessHoursStart,
+      businessHoursEnd,
+      businessDays: businessDays || "0,1,2,3,4",
+      onboardingStep: 8,
+      updatedAt: new Date(),
+    })
+    .where(eq(organizations.id, session.organizationId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "configuration.updated",
+    description: "שעות ופעילות המשרד הוגדרו באשף ההקמה (תהליך עבודה חד-פעמי)",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  redirect("/onboarding?step=8");
+}

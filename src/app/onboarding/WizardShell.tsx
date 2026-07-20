@@ -2,36 +2,22 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { HelpTip } from "@/components/app/HelpTip";
 
-// Product Evolution M1: two new steps (Business Type, Collection Style)
-// inserted after Office Info, renumbering the rest. M1 keeps every
-// organization on this same sequence regardless of which workflow it
-// chooses (see the "temporary stopgap" note in page.tsx) — M3 branches this
-// for real once the one-time workflow's own steps exist.
-export const TOTAL_STEPS = 11;
-
-const STEP_TITLES = [
-  "ברוכים הבאים",
-  "פרטי המשרד",
-  "סוג העסק",
-  "אופן איסוף המסמכים",
-  "חיבור שירותים",
-  "ייבוא לקוחות",
-  "ניתוח AI",
-  "מסמכים נדרשים",
-  "כללי תזכורות",
-  "סיכום",
-  "סיום",
-];
-
 // Shared chrome around every wizard step — progress bar, title/description,
 // an optional "why is this important?" tip, and a Previous link back to the
 // prior step. Each step renders its own body + primary action inside
 // `children` (often its own form's submit button), so this component never
-// needs to know how a given step persists its data — the seam that keeps
-// inserting a future step a one-file change (add to STEP_TITLES + the
-// switch in page.tsx), never a change here.
+// needs to know how a given step persists its data.
+//
+// Product Evolution M3: `totalSteps`/`stepTitle` are now props, not fixed
+// constants — the recurring workflow (11 steps) and the one-time workflow
+// (9 steps, diverging from step 6 onward) share this same shell but have
+// different lengths and step titles from that point on. page.tsx (the one
+// place that already knows the organization's workflowType) resolves both
+// per request and passes them in; this component stays workflow-agnostic.
 export function WizardShell({
   step,
+  totalSteps,
+  stepTitle,
   title,
   description,
   help,
@@ -39,13 +25,15 @@ export function WizardShell({
   children,
 }: {
   step: number;
+  totalSteps: number;
+  stepTitle: string;
   title: string;
   description?: string;
   help?: React.ReactNode;
   hidePrevious?: boolean;
   children: React.ReactNode;
 }) {
-  const progressPercent = Math.round((step / TOTAL_STEPS) * 100);
+  const progressPercent = Math.round((step / totalSteps) * 100);
 
   return (
     <main className="flex min-h-screen justify-center bg-background px-4 py-10 sm:py-16">
@@ -53,7 +41,7 @@ export function WizardShell({
         <div className="mb-8">
           <div className="mb-2 flex items-center justify-between text-xs font-medium text-text-muted">
             <span>
-              שלב {step} מתוך {TOTAL_STEPS} — {STEP_TITLES[step - 1]}
+              שלב {step} מתוך {totalSteps} — {stepTitle}
             </span>
             <span>{progressPercent}%</span>
           </div>

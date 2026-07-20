@@ -11,7 +11,7 @@ import {
 } from "@/lib/businessTypes";
 import { getLatestAuditEventByType } from "@/lib/data/auditLog";
 import type { ImportAnalysisSummary } from "./actions";
-import { WizardShell, TOTAL_STEPS } from "./WizardShell";
+import { WizardShell } from "./WizardShell";
 import { Step1Welcome } from "./steps/Step1Welcome";
 import { Step2OfficeInfo } from "./steps/Step2OfficeInfo";
 import { Step3BusinessType } from "./steps/Step3BusinessType";
@@ -23,21 +23,24 @@ import { Step6Documents } from "./steps/Step6Documents";
 import { Step7Reminders } from "./steps/Step7Reminders";
 import { Step8Summary } from "./steps/Step8Summary";
 import { Step9Completion } from "./steps/Step9Completion";
+import { Step6OneTimeImport } from "./steps/Step6OneTimeImport";
+import { Step7WorkingHours } from "./steps/Step7WorkingHours";
+import { Step8OneTimeSummary } from "./steps/Step8OneTimeSummary";
+import { Step9OneTimeCompletion } from "./steps/Step9OneTimeCompletion";
 
 export const metadata: Metadata = {
   title: "הקמת המערכת — Centro",
 };
 
-// Product Evolution M1: two new steps (3, 4) inserted after Office Info;
-// the wizard's original Steps 3-9 shift to 5-11. Step component filenames
-// keep their original numbers (Step3Connect, Step4Import, ...) — renaming
-// seven files for a cosmetic match to their new position is pure churn,
-// especially since M3 branches this further. STEP_META's keys are the
-// source of truth for actual wizard position.
-const STEP_META: Record<
-  number,
-  { title: string; description?: string; help?: string }
-> = {
+type StepMeta = { title: string; description?: string; help?: string };
+
+// Steps 1-5 are identical for both workflows — the fork (Collection Style,
+// Step 4) only changes what step 6 onward looks like. Step component
+// filenames keep their original (pre-M1) numbers where reused
+// (Step3Connect, Step4Import, ...) — renaming them for a cosmetic match to
+// their current wizard position is pure churn. STEP_META's keys are the
+// one source of truth for actual wizard position.
+const SHARED_STEP_META: Record<number, StepMeta> = {
   1: { title: "ברוכים הבאים ל-Centro" },
   2: {
     title: "פרטי המשרד",
@@ -59,6 +62,9 @@ const STEP_META: Record<
     description: "חברו את Google Drive ואת WhatsApp Business כדי שהאוטומציה תוכל לפעול במלואה.",
     help: "אפשר לחבר את השירותים גם מאוחר יותר, אך האוטומציה המלאה תתחיל לפעול רק לאחר ששניהם מחוברים.",
   },
+};
+
+const RECURRING_STEP_META: Record<number, StepMeta> = {
   6: {
     title: "ייבוא לקוחות",
     description: "העלו את רשימת הלקוחות שלכם. Centro יארגן ויסווג אותם אוטומטית.",
@@ -86,9 +92,41 @@ const STEP_META: Record<
   11: { title: "Centro מוכן!" },
 };
 
-function clampStep(value: number): number {
+const ONE_TIME_STEP_META: Record<number, StepMeta> = {
+  6: {
+    title: "ייבוא לקוחות (אופציונלי)",
+    description: "אפשר לייבא כבר עכשיו רשימת לקוחות, או לדלג ולהוסיף מאוחר יותר.",
+    help: "בתהליך העבודה החד-פעמי נשמרים רק שם וטלפון — ללא סיווג או ניתוח נוסף. ייבוא הוא תמיד אופציונלי.",
+  },
+  7: {
+    title: "שעות פעילות",
+    description: "באילו ימים ושעות Centro רשאי לפנות ללקוחות?",
+    help: "Centro פונה ללקוחות רק בשעות הפעילות שהגדרתם, ולעולם לא מחוץ להן — גם בתהליך עבודה חד-פעמי.",
+  },
+  8: {
+    title: "סיכום",
+    description: "בדקו שהכול מוגדר נכון לפני שמתחילים.",
+  },
+  9: { title: "Centro מוכן!" },
+};
+
+const RECURRING_TOTAL_STEPS = 11;
+const ONE_TIME_TOTAL_STEPS = 9;
+
+function stepMetaFor(workflowType: string, step: number): StepMeta {
+  if (step <= 5) return SHARED_STEP_META[step];
+  return (workflowType === "one_time" ? ONE_TIME_STEP_META : RECURRING_STEP_META)[step];
+}
+
+function stepTitleFor(workflowType: string, totalSteps: number): string[] {
+  const titles: string[] = [];
+  for (let i = 1; i <= totalSteps; i += 1) titles.push(stepMetaFor(workflowType, i).title);
+  return titles;
+}
+
+function clampStep(value: number, totalSteps: number): number {
   if (Number.isNaN(value)) return 1;
-  return Math.min(Math.max(value, 1), TOTAL_STEPS);
+  return Math.min(Math.max(value, 1), totalSteps);
 }
 
 export default async function OnboardingPage({
@@ -102,121 +140,160 @@ export default async function OnboardingPage({
   const organization = await getOrganization(session.organizationId);
   if (!organization) return null;
 
-  const step = clampStep(Number(stepParam ?? organization.onboardingStep ?? 1) || 1);
-  const meta = STEP_META[step];
+  const totalSteps =
+    organization.workflowType === "one_time" ? ONE_TIME_TOTAL_STEPS : RECURRING_TOTAL_STEPS;
+  const step = clampStep(Number(stepParam ?? organization.onboardingStep ?? 1) || 1, totalSteps);
+  const meta = stepMetaFor(organization.workflowType, step);
+  const stepTitles = stepTitleFor(organization.workflowType, totalSteps);
 
   let body: React.ReactNode;
 
-  switch (step) {
-    case 1: {
-      body = <Step1Welcome displayName={session.fullName || organization.name} />;
-      break;
+  if (step <= 5) {
+    switch (step) {
+      case 1: {
+        body = <Step1Welcome displayName={session.fullName || organization.name} />;
+        break;
+      }
+      case 2: {
+        body = <Step2OfficeInfo name={organization.name} logoUrl={organization.logoUrl} />;
+        break;
+      }
+      case 3: {
+        body = (
+          <Step3BusinessType
+            businessCategory={organization.businessCategory}
+            businessCategoryCustomLabel={organization.businessCategoryCustomLabel}
+          />
+        );
+        break;
+      }
+      case 4: {
+        body = <Step4CollectionStyle />;
+        break;
+      }
+      case 5: {
+        body = (
+          <Step3Connect
+            googleConnectedAt={organization.googleConnectedAt}
+            whatsappConnectedAt={organization.whatsappConnectedAt}
+          />
+        );
+        break;
+      }
     }
-    case 2: {
-      body = <Step2OfficeInfo name={organization.name} logoUrl={organization.logoUrl} />;
-      break;
+  } else if (organization.workflowType === "one_time") {
+    switch (step) {
+      case 6: {
+        body = <Step6OneTimeImport />;
+        break;
+      }
+      case 7: {
+        body = (
+          <Step7WorkingHours
+            businessHoursStart={organization.businessHoursStart}
+            businessHoursEnd={organization.businessHoursEnd}
+            businessDays={organization.businessDays}
+          />
+        );
+        break;
+      }
+      case 8: {
+        const clientList = await listClients(session.organizationId);
+        body = <Step8OneTimeSummary organization={organization} totalClients={clientList.length} />;
+        break;
+      }
+      case 9: {
+        body = <Step9OneTimeCompletion />;
+        break;
+      }
+      default: {
+        body = null;
+      }
     }
-    case 3: {
-      body = (
-        <Step3BusinessType
-          businessCategory={organization.businessCategory}
-          businessCategoryCustomLabel={organization.businessCategoryCustomLabel}
-        />
-      );
-      break;
-    }
-    case 4: {
-      body = <Step4CollectionStyle />;
-      break;
-    }
-    case 5: {
-      body = (
-        <Step3Connect
-          googleConnectedAt={organization.googleConnectedAt}
-          whatsappConnectedAt={organization.whatsappConnectedAt}
-        />
-      );
-      break;
-    }
-    case 6: {
-      body = <Step4Import />;
-      break;
-    }
-    case 7: {
-      const businessTypeList = await listBusinessTypes(session.organizationId);
-      const unclassified = await listUnclassifiedClients(session.organizationId);
-      const clientsByType = await Promise.all(
-        businessTypeList.map((type) =>
-          listClientsByBusinessType(session.organizationId, type.id)
-        )
-      );
-      const latestAnalysis = await getLatestAuditEventByType(
-        session.organizationId,
-        "clients.import_analyzed"
-      );
-      body = (
-        <Step5Analysis
-          businessTypes={businessTypeList}
-          clientsByType={clientsByType}
-          unclassifiedClients={unclassified}
-          importSummary={latestAnalysis?.metadata as ImportAnalysisSummary | undefined}
-        />
-      );
-      break;
-    }
-    case 8: {
-      const businessTypeList = await listBusinessTypes(session.organizationId);
-      const withRequirements = await Promise.all(
-        businessTypeList.map(async (type) => ({
-          businessType: type,
-          requirements: await listServiceRequirements(type.serviceId),
-          suggested: getSuggestedRequirements(type.name),
-        }))
-      );
-      body = <Step6Documents entries={withRequirements} />;
-      break;
-    }
-    case 9: {
-      const businessTypeList = await listBusinessTypes(session.organizationId);
-      const withService = await Promise.all(
-        businessTypeList.map(async (type) => ({
-          businessType: type,
-          service: await getService(session.organizationId, type.serviceId),
-        }))
-      );
-      body = <Step7Reminders entries={withService} organization={organization} />;
-      break;
-    }
-    case 10: {
-      const businessTypeList = await listBusinessTypes(session.organizationId);
-      const clientList = await listClients(session.organizationId);
-      const classifiedCount = clientList.filter((c) => c.businessTypeId).length;
-      const requirementCounts = await Promise.all(
-        businessTypeList.map((t) => listServiceRequirements(t.serviceId))
-      );
-      body = (
-        <Step8Summary
-          organization={organization}
-          totalClients={clientList.length}
-          classifiedCount={classifiedCount}
-          businessTypeCount={businessTypeList.length}
-          requirementsConfigured={requirementCounts.reduce((sum, r) => sum + r.length, 0)}
-        />
-      );
-      break;
-    }
-    case 11: {
-      body = <Step9Completion />;
-      break;
-    }
-    default: {
-      body = null;
+  } else {
+    switch (step) {
+      case 6: {
+        body = <Step4Import />;
+        break;
+      }
+      case 7: {
+        const businessTypeList = await listBusinessTypes(session.organizationId);
+        const unclassified = await listUnclassifiedClients(session.organizationId);
+        const clientsByType = await Promise.all(
+          businessTypeList.map((type) =>
+            listClientsByBusinessType(session.organizationId, type.id)
+          )
+        );
+        const latestAnalysis = await getLatestAuditEventByType(
+          session.organizationId,
+          "clients.import_analyzed"
+        );
+        body = (
+          <Step5Analysis
+            businessTypes={businessTypeList}
+            clientsByType={clientsByType}
+            unclassifiedClients={unclassified}
+            importSummary={latestAnalysis?.metadata as ImportAnalysisSummary | undefined}
+          />
+        );
+        break;
+      }
+      case 8: {
+        const businessTypeList = await listBusinessTypes(session.organizationId);
+        const withRequirements = await Promise.all(
+          businessTypeList.map(async (type) => ({
+            businessType: type,
+            requirements: await listServiceRequirements(type.serviceId),
+            suggested: getSuggestedRequirements(type.name),
+          }))
+        );
+        body = <Step6Documents entries={withRequirements} />;
+        break;
+      }
+      case 9: {
+        const businessTypeList = await listBusinessTypes(session.organizationId);
+        const withService = await Promise.all(
+          businessTypeList.map(async (type) => ({
+            businessType: type,
+            service: await getService(session.organizationId, type.serviceId),
+          }))
+        );
+        body = <Step7Reminders entries={withService} organization={organization} />;
+        break;
+      }
+      case 10: {
+        const businessTypeList = await listBusinessTypes(session.organizationId);
+        const clientList = await listClients(session.organizationId);
+        const classifiedCount = clientList.filter((c) => c.businessTypeId).length;
+        const requirementCounts = await Promise.all(
+          businessTypeList.map((t) => listServiceRequirements(t.serviceId))
+        );
+        body = (
+          <Step8Summary
+            organization={organization}
+            totalClients={clientList.length}
+            classifiedCount={classifiedCount}
+            businessTypeCount={businessTypeList.length}
+            requirementsConfigured={requirementCounts.reduce((sum, r) => sum + r.length, 0)}
+          />
+        );
+        break;
+      }
+      case 11: {
+        body = <Step9Completion />;
+        break;
+      }
+      default: {
+        body = null;
+      }
     }
   }
 
   return (
     <WizardShell
       step={step}
+      totalSteps={totalSteps}
+      stepTitle={stepTitles[step - 1]}
       title={meta.title}
       description={meta.description}
       help={meta.help}
