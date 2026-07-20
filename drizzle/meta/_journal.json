@@ -134,6 +134,13 @@
       "when": 1784552031910,
       "tag": "0018_bizarre_the_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784564623430,
+      "tag": "0019_lethal_exiles",
+      "breakpoints": true
     }
   ]
 }

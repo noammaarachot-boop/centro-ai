@@ -397,7 +397,7 @@ export async function seedExampleTemplates(organizationId: string) {
   for (const entry of toSeed) {
     const [template] = await db
       .insert(services)
-      .values({ organizationId, name: entry.name })
+      .values({ organizationId, name: entry.name, isSampleTemplate: true })
       .returning();
     if (entry.suggestedRequirements.length > 0) {
       await db.insert(serviceDocumentRequirements).values(

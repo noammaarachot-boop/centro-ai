@@ -8,6 +8,7 @@ import { suggestTemplateLibrary } from "@/lib/ai/businessCategorySuggestions";
 import { seedExampleTemplates, createTemplateFromLibrary } from "./actions";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
+import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { buttonVariants } from "@/components/app/Button";
 
@@ -61,7 +62,10 @@ export default async function TemplatesPage() {
           {withCounts.map(({ template, requirementCount }) => (
             <Link key={template.id} href={`/templates/${template.id}`}>
               <Card interactive glow="purple" padding="sm" className="h-full">
-                <p className="text-sm font-semibold text-text-primary">{template.name}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold text-text-primary">{template.name}</p>
+                  {template.isSampleTemplate && <Badge tone="purple">תבנית לדוגמה</Badge>}
+                </div>
                 {template.description && (
                   <p className="mt-1 text-xs text-text-muted">{template.description}</p>
                 )}

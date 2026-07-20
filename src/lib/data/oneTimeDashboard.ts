@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { clients, collectionRequests, services } from "@/db/schema";
+import { clients, collectionRequests, organizations, services } from "@/db/schema";
 
 // Product Evolution M4 — the one-time workflow's own dashboard data,
 // mirroring src/lib/data/dashboard.ts's pattern of small, independent,
@@ -68,4 +68,26 @@ export async function listRecentOneTimeRequests(organizationId: string, limit = 
     .where(eq(collectionRequests.organizationId, organizationId))
     .orderBy(desc(collectionRequests.createdAt))
     .limit(limit);
+}
+
+// UX Polish M4 — the "Sample Template" dashboard promo card shows exactly
+// once, on the organization's first dashboard visit. Mirrors
+// seedExampleTemplates's own precedent of a plain write inside an async
+// Server Component's render (these routes are already forced-dynamic via
+// requireSession()): reading and marking-as-shown happen in the same call
+// so a second render of the same request never shows it twice.
+export async function shouldShowSampleTemplateCard(organizationId: string): Promise<boolean> {
+  const db = await getDb();
+  const [organization] = await db
+    .select({ sampleTemplateCardShownAt: organizations.sampleTemplateCardShownAt })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  if (!organization || organization.sampleTemplateCardShownAt) return false;
+
+  await db
+    .update(organizations)
+    .set({ sampleTemplateCardShownAt: new Date() })
+    .where(eq(organizations.id, organizationId));
+  return true;
 }

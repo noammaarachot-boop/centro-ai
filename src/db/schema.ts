@@ -88,6 +88,13 @@ export const organizations = pgTable("organizations", {
   // size, not a mock). Set in the onboarding wizard's Office Information
   // step, editable later from Settings.
   logoUrl: text("logo_url"),
+  // UX Polish M4 — set the first time a one-time-workflow organization's
+  // dashboard renders the "Sample Template" promo card, so it shows exactly
+  // once. Null forever for a recurring-workflow organization, which never
+  // renders that card.
+  sampleTemplateCardShownAt: timestamp("sample_template_card_shown_at", {
+    withTimezone: true,
+  }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -287,6 +294,12 @@ export const services = pgTable("services", {
   // Same override pattern, for organizations.collectionDayOfMonth — null =
   // "use the organization's default".
   collectionDayOfMonthOverride: integer("collection_day_of_month_override"),
+  // UX Polish M4 — true only for the starter templates seedExampleTemplates
+  // auto-creates for a one-time-workflow organization's first /templates
+  // visit. A user explicitly adding a library entry (createTemplateFromLibrary)
+  // or duplicating a template never sets this — "sample" means system-seeded,
+  // not merely library-sourced. Always false for the recurring workflow.
+  isSampleTemplate: boolean("is_sample_template").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

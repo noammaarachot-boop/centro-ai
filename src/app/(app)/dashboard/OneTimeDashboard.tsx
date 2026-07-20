@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { LayoutTemplate, Users, Activity, CheckCircle2, Plus } from "lucide-react";
+import { LayoutTemplate, Users, Activity, CheckCircle2, Plus, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
@@ -8,6 +8,7 @@ import { StatusBadge } from "../collections/StatusBadge";
 import {
   getOneTimeDashboardCounts,
   listRecentOneTimeRequests,
+  shouldShowSampleTemplateCard,
 } from "@/lib/data/oneTimeDashboard";
 
 function relativeTime(date: Date) {
@@ -52,6 +53,7 @@ function StatTile({
 export async function OneTimeDashboard({ organizationId }: { organizationId: string }) {
   const counts = await getOneTimeDashboardCounts(organizationId);
   const recentRequests = await listRecentOneTimeRequests(organizationId);
+  const showSampleTemplateCard = await shouldShowSampleTemplateCard(organizationId);
 
   return (
     <div className="mx-auto max-w-5xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -65,6 +67,27 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
           </Link>
         }
       />
+
+      {showSampleTemplateCard && (
+        <Link href="/templates">
+          <Card
+            interactive
+            glow="purple"
+            className="flex items-center gap-3 border-brand-purple/25 bg-brand-purple/5"
+          >
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-purple/10 text-brand-purple">
+              <Sparkles className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-sm font-semibold text-text-primary">הכנו לכם תבנית לדוגמה</p>
+              <p className="text-xs text-text-muted">
+                כדי שתראו איך זה עובד — אפשר לערוך אותה או להתחיל תבנית משלכם. לחצו כדי לצפות
+                בתבניות.
+              </p>
+            </div>
+          </Card>
+        </Link>
+      )}
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatTile icon={LayoutTemplate} label="תבניות" value={counts.templateCount} />

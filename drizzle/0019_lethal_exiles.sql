@@ -1,0 +1,2 @@
+ALTER TABLE "organizations" ADD COLUMN "sample_template_card_shown_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "services" ADD COLUMN "is_sample_template" boolean DEFAULT false NOT NULL;

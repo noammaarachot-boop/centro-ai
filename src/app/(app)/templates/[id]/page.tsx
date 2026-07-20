@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Copy, FileText, Trash2 } from "lucide-react";
+import { ArrowLeft, Copy, FileText, Sparkles, Trash2 } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
 import {
@@ -99,6 +99,16 @@ export default async function TemplateDetailPage({
           {Number(sent) > 0 && `נשלח ל-${sent} לקוחות. `}
           {Number(scheduled) > 0 && `${scheduled} בקשות תוזמנו לשליחה.`}
         </p>
+      )}
+
+      {template.isSampleTemplate && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-brand-purple/25 bg-brand-purple/5 px-4 py-3 text-sm text-text-secondary">
+          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-brand-purple" />
+          <p>
+            זו תבנית לדוגמה. אפשר לערוך, להסיר, לשנות שם או להוסיף מסמכים ולהתאים אותה
+            באופן מלא בכל עת — זו רק נקודת התחלה.
+          </p>
+        </div>
       )}
 
       <Card>
