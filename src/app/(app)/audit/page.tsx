@@ -110,12 +110,16 @@ export default async function AuditLogPage({
         description={`רשומות בלתי ניתנות לעריכה של כל האירועים המשמעותיים במערכת (Ch.17). מוצגות רשומות מהטווח: ${RANGE_LABELS[range]}.`}
       />
 
+      {/* Every filter here is a real navigation (<Link> with a plain href,
+          a native GET <form>) - zero client JS, fully bookmarkable URLs.
+          Deliberately not the Tabs component (which is client-state-driven)
+          - restyled in place rather than swapped onto a different primitive. */}
       <div className="mb-6 flex flex-wrap items-center gap-2">
         {(["today", "7d", "30d"] as const).map((r) => (
           <Link
             key={r}
             href={`/audit?range=${r}`}
-            className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors ease-[var(--ease-standard)] ${
               range === r
                 ? "border-brand-purple bg-brand-purple/10 text-brand-purple"
                 : "border-border text-text-secondary hover:border-brand-purple hover:text-brand-purple"
@@ -131,7 +135,7 @@ export default async function AuditLogPage({
             name="from"
             defaultValue={range === "custom" ? toDateInputValue(from) : undefined}
             dir="ltr"
-            className={`rounded-full border px-3 py-1.5 text-xs outline-none focus:border-brand-purple ${
+            className={`rounded-full border px-3 py-1.5 text-xs outline-none transition-all duration-200 ease-[var(--ease-standard)] focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10 ${
               range === "custom" ? "border-brand-purple text-brand-purple" : "border-border text-text-secondary"
             }`}
           />
@@ -141,13 +145,13 @@ export default async function AuditLogPage({
             name="until"
             defaultValue={range === "custom" ? toDateInputValue(to) : undefined}
             dir="ltr"
-            className={`rounded-full border px-3 py-1.5 text-xs outline-none focus:border-brand-purple ${
+            className={`rounded-full border px-3 py-1.5 text-xs outline-none transition-all duration-200 ease-[var(--ease-standard)] focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10 ${
               range === "custom" ? "border-brand-purple text-brand-purple" : "border-border text-text-secondary"
             }`}
           />
           <button
             type="submit"
-            className="rounded-full border border-border px-3.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:border-brand-purple hover:text-brand-purple"
+            className="rounded-full border border-border px-3.5 py-1.5 text-xs font-medium text-text-secondary transition-colors ease-[var(--ease-standard)] hover:border-brand-purple hover:text-brand-purple"
           >
             {RANGE_LABELS.custom}
           </button>

@@ -10,6 +10,8 @@ import { buttonVariants } from "@/components/app/Button";
 import { OfficeInfoForm } from "@/components/app/OfficeInfoForm";
 import { HelpTip } from "@/components/app/HelpTip";
 import { CollectionDayField } from "@/components/app/CollectionDayField";
+import { fieldClass } from "@/components/app/FormField";
+import { DevToolsPanel } from "@/components/app/DevToolsPanel";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
 
@@ -118,7 +120,7 @@ export default async function SettingsPage({
                 type="time"
                 defaultValue={organization.businessHoursStart}
                 dir="ltr"
-                className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+                className={fieldClass("md")}
               />
             </div>
             <div>
@@ -134,7 +136,7 @@ export default async function SettingsPage({
                 type="time"
                 defaultValue={organization.businessHoursEnd}
                 dir="ltr"
-                className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+                className={fieldClass("md")}
               />
             </div>
           </div>
@@ -156,7 +158,7 @@ export default async function SettingsPage({
                 type="number"
                 min={1}
                 defaultValue={organization.reminderIntervalDays}
-                className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+                className={fieldClass("md")}
               />
             </div>
             <div>
@@ -176,7 +178,7 @@ export default async function SettingsPage({
                 type="number"
                 min={1}
                 defaultValue={organization.inactivityTimeoutMinutes}
-                className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+                className={fieldClass("md")}
               />
             </div>
           </div>
@@ -191,7 +193,9 @@ export default async function SettingsPage({
         </Card>
       </form>
 
-      <RunSchedulerButton />
+      <DevToolsPanel label="משימות מתוזמנות">
+        <RunSchedulerButton />
+      </DevToolsPanel>
     </div>
   );
 }
