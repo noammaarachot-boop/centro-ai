@@ -15,6 +15,8 @@ import {
   LogOut,
   ChevronsRight,
   ChevronsLeft,
+  Menu,
+  X,
 } from "lucide-react";
 import { CentroMark } from "@/components/landing/icons/CentroMark";
 
@@ -56,25 +58,31 @@ export function Sidebar({
 }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const NAV_LINKS = workflowType === "one_time" ? ONE_TIME_NAV_LINKS : RECURRING_NAV_LINKS;
 
-  return (
-    <aside
-      className={clsx(
-        "sticky top-0 flex h-screen shrink-0 flex-col border-e border-border bg-surface/80 backdrop-blur-xl transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-        collapsed ? "w-[76px]" : "w-64"
-      )}
-    >
-      <div className="flex items-center gap-2.5 px-5 py-5">
-        <CentroMark
-          className="h-8 w-8 shrink-0 drop-shadow-[0_2px_10px_rgba(124,58,237,0.35)]"
-          title="Centro"
-        />
-        {!collapsed && (
-          <span className="animate-fade-in-up truncate text-base font-bold text-text-primary">
-            Centro
-          </span>
-        )}
+  const navContent = (
+    <>
+      <div className="flex items-center justify-between gap-2.5 px-5 py-5">
+        <div className="flex items-center gap-2.5">
+          <CentroMark
+            className="h-8 w-8 shrink-0 drop-shadow-[0_2px_10px_rgba(124,58,237,0.35)]"
+            title="Centro"
+          />
+          {!collapsed && (
+            <span className="animate-fade-in-up truncate text-base font-bold text-text-primary">
+              Centro
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setMobileOpen(false)}
+          aria-label="סגירת תפריט"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-text-secondary hover:bg-surface-muted lg:hidden"
+        >
+          <X className="h-4.5 w-4.5" />
+        </button>
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
@@ -86,8 +94,9 @@ export function Sidebar({
             <Link
               key={link.href}
               href={link.href}
+              onClick={() => setMobileOpen(false)}
               className={clsx(
-                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200",
+                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ease-[var(--ease-standard)]",
                 active
                   ? "bg-gradient-to-l from-brand-purple/10 to-brand-blue/5 text-brand-purple"
                   : "text-text-secondary hover:bg-surface-muted hover:text-text-primary"
@@ -108,7 +117,7 @@ export function Sidebar({
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
-          className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:bg-surface-muted hover:text-text-primary"
+          className="mb-2 hidden w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:bg-surface-muted hover:text-text-primary lg:flex"
         >
           {collapsed ? (
             <ChevronsLeft className="h-4 w-4" />
@@ -152,6 +161,56 @@ export function Sidebar({
           </button>
         </form>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Mobile top bar — the sidebar itself is a hidden-by-default fixed
+          drawer below the lg breakpoint, so this is the only persistent
+          chrome/brand presence and the trigger to open it. Previously
+          there was no mobile handling at all: the sidebar was a fixed
+          w-64/w-[76px] column regardless of viewport. */}
+      <div className="sticky top-0 z-30 flex items-center justify-between border-b border-border bg-surface/80 px-4 py-3 backdrop-blur-xl lg:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileOpen(true)}
+          aria-label="פתיחת תפריט"
+          className="grid h-9 w-9 place-items-center rounded-lg text-text-secondary transition-colors hover:bg-surface-muted"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-bold text-text-primary">Centro</span>
+          <CentroMark className="h-6 w-6" title="Centro" />
+        </div>
+      </div>
+
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 animate-fade-in-up bg-text-primary/40 backdrop-blur-sm lg:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside
+        className={clsx(
+          // Physical `right-0` rather than the logical `end-0` — this
+          // sidebar visually sits on the right in this RTL app either way,
+          // and `end-0` doesn't resolve correctly for a `fixed`-positioned
+          // element the way it does for a normal-flow one (confirmed via
+          // computed-style inspection: it fell back to left-anchored
+          // positioning instead), so the physical property is the correct,
+          // unambiguous choice here specifically.
+          "fixed inset-y-0 right-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col border-s border-border bg-surface transition-transform duration-300 ease-[var(--ease-standard)]",
+          mobileOpen ? "translate-x-0" : "translate-x-full",
+          "lg:sticky lg:top-0 lg:z-auto lg:w-64 lg:translate-x-0 lg:border-s-0 lg:border-e lg:bg-surface/80 lg:backdrop-blur-xl lg:transition-[width]",
+          collapsed && "lg:w-[76px]"
+        )}
+      >
+        {navContent}
+      </aside>
+    </>
   );
 }

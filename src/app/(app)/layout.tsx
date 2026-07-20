@@ -27,7 +27,7 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex min-h-screen flex-col bg-background lg:flex-row">
       <Sidebar
         organizationName={session.organizationName}
         email={session.email}
