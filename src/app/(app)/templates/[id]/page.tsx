@@ -3,7 +3,12 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, Copy, FileText, Trash2 } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
-import { getService, listServiceRequirements } from "@/lib/data/services";
+import {
+  getService,
+  listServiceClients,
+  listServiceRequirements,
+  listUnassignedClientsForService,
+} from "@/lib/data/services";
 import {
   addTemplateRequirement,
   deleteTemplate,
@@ -12,6 +17,7 @@ import {
 } from "../actions";
 import { TemplateForm } from "../TemplateForm";
 import { TemplateRequirementRow } from "../TemplateRequirementRow";
+import { TemplateClientAssignment } from "../TemplateClientAssignment";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
@@ -35,6 +41,8 @@ export default async function TemplateDetailPage({
   if (!template) notFound();
 
   const requirements = await listServiceRequirements(id);
+  const assignedClients = await listServiceClients(session.organizationId, id);
+  const unassignedClients = await listUnassignedClientsForService(session.organizationId, id);
 
   const boundUpdate = updateTemplate.bind(null, template.id);
   const boundDelete = deleteTemplate.bind(null, template.id);
@@ -123,6 +131,12 @@ export default async function TemplateDetailPage({
           </button>
         </form>
       </Card>
+
+      <TemplateClientAssignment
+        templateId={template.id}
+        assignedClients={assignedClients}
+        unassignedClients={unassignedClients}
+      />
 
       <form action={boundDelete}>
         <button

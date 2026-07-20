@@ -4,7 +4,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { getDb } from "@/db";
-import { serviceDocumentRequirements, services } from "@/db/schema";
+import { clientServices, clients, serviceDocumentRequirements, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { suggestTemplateLibrary } from "@/lib/ai/businessCategorySuggestions";
@@ -408,4 +408,143 @@ export async function seedExampleTemplates(organizationId: string) {
     description: `${toSeed.length} תבניות לדוגמה נוצרו אוטומטית`,
     actorType: "system",
   });
+}
+
+// Product Evolution M6 — client assignment. Reuses `client_services`
+// directly (the same join table clients/actions.ts's assignService already
+// writes) rather than a new table: "clients assigned to this template" and
+// "clients assigned to this service" are the same relationship, and a
+// Template already IS a bare services row. The same template can be
+// assigned to one or many clients simultaneously; a client can belong to
+// multiple templates.
+export async function assignClientsToTemplate(templateId: string, formData: FormData) {
+  const session = await requireSession();
+  await getOrgScopedTemplate(session.organizationId, templateId);
+
+  const clientIds = formData.getAll("clientId").map(String).filter(Boolean);
+  if (clientIds.length === 0) {
+    refresh();
+    return;
+  }
+
+  const db = await getDb();
+  for (const clientId of clientIds) {
+    await db
+      .insert(clientServices)
+      .values({ clientId, serviceId: templateId })
+      .onConflictDoNothing();
+  }
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "template.clients_assigned",
+    description: `${clientIds.length} לקוחות שויכו לתבנית`,
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  refresh();
+}
+
+// The template detail page's "create a new client" shortcut — same
+// required fields (name, phone) and duplicate-phone handling as the
+// standalone /clients/new form, just one step closer to the actual task
+// (assigning them to this template) instead of a separate round trip.
+// A duplicate phone number assigns the *existing* client with that number
+// rather than erroring, since the accountant's actual intent here is
+// "make sure this person is on this template," not strict deduplication.
+export async function createAndAssignClientToTemplate(templateId: string, formData: FormData) {
+  const session = await requireSession();
+  await getOrgScopedTemplate(session.organizationId, templateId);
+
+  const name = String(formData.get("name") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
+  const notes = String(formData.get("notes") ?? "").trim();
+  if (!name || !phone) {
+    redirect(`/templates/${templateId}?error=client-fields`);
+  }
+
+  const db = await getDb();
+  const [duplicate] = await db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(and(eq(clients.organizationId, session.organizationId), eq(clients.phone, phone)))
+    .limit(1);
+
+  let clientId: string;
+  if (duplicate) {
+    clientId = duplicate.id;
+  } else {
+    const [created] = await db
+      .insert(clients)
+      .values({
+        organizationId: session.organizationId,
+        name,
+        phone,
+        notes: notes || null,
+      })
+      .returning({ id: clients.id });
+    clientId = created.id;
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "clients.created",
+      description: `הלקוח/ה "${name}" נוצר/ה מתוך תבנית`,
+      actorType: "employee",
+      actorUserId: session.userId,
+      clientId,
+    });
+  }
+
+  await db.insert(clientServices).values({ clientId, serviceId: templateId }).onConflictDoNothing();
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "template.clients_assigned",
+    description: `הלקוח/ה "${name}" שויך/ה לתבנית`,
+    actorType: "employee",
+    actorUserId: session.userId,
+    clientId,
+  });
+
+  refresh();
+}
+
+export async function removeClientFromTemplate(templateId: string, assignmentId: string) {
+  const session = await requireSession();
+  await getOrgScopedTemplate(session.organizationId, templateId);
+
+  const db = await getDb();
+  // Join through clients to confirm the assignment's client belongs to
+  // this org before deleting — client_services itself has no
+  // organizationId column of its own (same check clients/actions.ts's
+  // unassignService already does for the reverse direction).
+  const [assignment] = await db
+    .select({ id: clientServices.id })
+    .from(clientServices)
+    .innerJoin(clients, eq(clientServices.clientId, clients.id))
+    .where(
+      and(
+        eq(clientServices.id, assignmentId),
+        eq(clientServices.serviceId, templateId),
+        eq(clients.organizationId, session.organizationId)
+      )
+    )
+    .limit(1);
+  if (!assignment) {
+    refresh();
+    return;
+  }
+
+  await db.delete(clientServices).where(eq(clientServices.id, assignmentId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "template.client_removed",
+    description: "לקוח הוסר מהתבנית",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  refresh();
 }

@@ -59,3 +59,26 @@ export async function listServiceClients(
     )
     .orderBy(clients.name);
 }
+
+// Product Evolution M6 — the reverse of listUnassignedServicesForClient
+// (src/lib/data/clients.ts): clients in the org not yet assigned to this
+// service, powering the Templates page's "assign clients" picker.
+export async function listUnassignedClientsForService(
+  organizationId: string,
+  serviceId: string
+) {
+  const db = await getDb();
+  const assigned = await db
+    .select({ clientId: clientServices.clientId })
+    .from(clientServices)
+    .where(eq(clientServices.serviceId, serviceId));
+  const assignedIds = new Set(assigned.map((row) => row.clientId));
+
+  const allClients = await db
+    .select()
+    .from(clients)
+    .where(eq(clients.organizationId, organizationId))
+    .orderBy(clients.name);
+
+  return allClients.filter((client) => !assignedIds.has(client.id));
+}
