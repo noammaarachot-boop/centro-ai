@@ -1,6 +1,6 @@
 "use client";
 
-import { useId } from "react";
+import { cloneElement, useId, type ReactElement } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button, type ButtonVariant } from "@/components/app/Button";
 
@@ -11,15 +11,19 @@ import { Button, type ButtonVariant } from "@/components/app/Button";
 // new dependency: the browser handles top-layer stacking, light-dismiss,
 // and Escape-to-close entirely declaratively, with no imperative ref
 // (which this project's stricter react-hooks/refs lint rule correctly
-// steers away from for a value passed through a render-prop like this).
+// steers away from).
 //
-// `trigger` is a render-prop so each call site keeps its own exact
-// existing trigger markup (a pill Button, a plain icon+text link, etc.) —
-// it only needs to spread the given `popoverTarget`/`popoverTargetAction`
-// props onto its own trigger element. `formAction` is the same bound
-// server action every caller already has (e.g. `deleteClient.bind(null,
-// id)`); confirming submits it exactly as the un-confirmed one-click
-// version did.
+// `trigger` is a plain JSX element (not a render-prop function) — every
+// real call site is an async Server Component page (client/service/
+// template detail pages), and a function prop can't cross the Server-to-
+// Client Component boundary (React Server Components can only pass
+// serializable props to a "use client" component; an arbitrary closure
+// isn't serializable, only a Server Action reference or plain JSX is).
+// `cloneElement` injects the popover-opener attributes onto whatever
+// static trigger markup the caller passed in. `formAction` is the same
+// bound server action every caller already has (e.g.
+// `deleteClient.bind(null, id)`); confirming submits it exactly as the
+// un-confirmed one-click version did.
 export function ConfirmDialog({
   trigger,
   title,
@@ -30,10 +34,7 @@ export function ConfirmDialog({
   formAction,
   hiddenFields,
 }: {
-  trigger: (openProps: {
-    popoverTarget: string;
-    popoverTargetAction: "show";
-  }) => React.ReactNode;
+  trigger: ReactElement<{ popoverTarget?: string; popoverTargetAction?: "show" }>;
   title: string;
   description: string;
   confirmLabel?: string;
@@ -46,7 +47,7 @@ export function ConfirmDialog({
 
   return (
     <>
-      {trigger({ popoverTarget: popoverId, popoverTargetAction: "show" })}
+      {cloneElement(trigger, { popoverTarget: popoverId, popoverTargetAction: "show" })}
       <div
         popover="auto"
         id={popoverId}

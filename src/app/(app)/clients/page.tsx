@@ -3,9 +3,9 @@ import { Plus, Users } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { listClients } from "@/lib/data/clients";
 import { PageHeader } from "@/components/app/PageHeader";
-import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
 import { buttonVariants } from "@/components/app/Button";
+import { Table, TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 
 export default async function ClientsPage() {
   const session = await requireSession();
@@ -37,42 +37,33 @@ export default async function ClientsPage() {
           }
         />
       ) : (
-        <Card padding="none" className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[480px] text-end text-sm">
-              <thead className="sticky top-0 bg-surface-muted text-text-muted">
-                <tr>
-                  <th className="px-5 py-3.5 font-medium">שם</th>
-                  <th className="px-5 py-3.5 font-medium">טלפון</th>
-                  <th className="px-5 py-3.5 font-medium">אימייל</th>
-                </tr>
-              </thead>
-              <tbody>
-                {clients.map((client) => (
-                  <tr
-                    key={client.id}
-                    className="border-t border-border transition-colors hover:bg-surface-muted/60"
+        <Table>
+          <TableHead>
+            <TableHeadCell>שם</TableHeadCell>
+            <TableHeadCell>טלפון</TableHeadCell>
+            <TableHeadCell>אימייל</TableHeadCell>
+          </TableHead>
+          <tbody>
+            {clients.map((client) => (
+              <TableRow key={client.id}>
+                <TableCell>
+                  <Link
+                    href={`/clients/${client.id}`}
+                    className="font-medium text-text-primary transition-colors hover:text-brand-purple"
                   >
-                    <td className="px-5 py-4">
-                      <Link
-                        href={`/clients/${client.id}`}
-                        className="font-medium text-text-primary transition-colors hover:text-brand-purple"
-                      >
-                        {client.name}
-                      </Link>
-                    </td>
-                    <td className="px-5 py-4 text-text-secondary" dir="ltr">
-                      {client.phone}
-                    </td>
-                    <td className="px-5 py-4 text-text-secondary" dir="ltr">
-                      {client.email ?? "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+                    {client.name}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-text-secondary">
+                  <span dir="ltr">{client.phone}</span>
+                </TableCell>
+                <TableCell className="text-text-secondary">
+                  <span dir="ltr">{client.email ?? "—"}</span>
+                </TableCell>
+              </TableRow>
+            ))}
+          </tbody>
+        </Table>
       )}
     </div>
   );

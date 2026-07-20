@@ -24,8 +24,9 @@ import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
 import { Button, buttonVariants } from "@/components/app/Button";
-import { SelectField } from "@/components/app/FormField";
+import { SelectField, fieldClass } from "@/components/app/FormField";
 import { EmptyState } from "@/components/app/EmptyState";
+import { ConfirmDialog } from "@/components/app/ConfirmDialog";
 
 export default async function ClientDetailPage({
   params,
@@ -170,7 +171,7 @@ export default async function ClientDetailPage({
                 name="newTypeName"
                 type="text"
                 placeholder="או: שם סוג עסק חדש"
-                className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
+                className={fieldClass("md")}
               />
             </div>
             <Button type="submit" variant="secondary">
@@ -259,7 +260,7 @@ export default async function ClientDetailPage({
                     type="text"
                     required
                     placeholder="תקופה, למשל 2026-07"
-                    className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+                    className={fieldClass("sm", "flex-1")}
                   />
                   <button
                     type="submit"
@@ -291,15 +292,21 @@ export default async function ClientDetailPage({
         )}
       </Card>
 
-      <form action={boundDelete}>
-        <button
-          type="submit"
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
-        >
-          <Trash2 className="h-4 w-4" />
-          מחיקת לקוח
-        </button>
-      </form>
+      <ConfirmDialog
+        title="מחיקת לקוח"
+        description={`למחוק את "${client.name}"? פעולה זו אינה הפיכה. אם ללקוח יש היסטוריית בקשות איסוף, המחיקה תיחסם.`}
+        confirmLabel="מחיקת לקוח"
+        formAction={boundDelete}
+        trigger={
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
+          >
+            <Trash2 className="h-4 w-4" />
+            מחיקת לקוח
+          </button>
+        }
+      />
     </div>
   );
 }
