@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Send } from "lucide-react";
 import { Card } from "@/components/app/Card";
 import { Button } from "@/components/app/Button";
+import { fieldClass } from "@/components/app/FormField";
 import { sendTemplateRequest } from "./actions";
 
 interface AssignedClient {
@@ -120,7 +121,7 @@ export function TemplateSendRequest({
             name="scheduledFor"
             dir="ltr"
             defaultValue={defaultScheduleValue}
-            className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary outline-none focus:border-brand-purple"
+            className={fieldClass("md")}
           />
         )}
 

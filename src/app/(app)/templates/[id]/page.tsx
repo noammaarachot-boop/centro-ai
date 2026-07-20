@@ -23,6 +23,8 @@ import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
+import { ConfirmDialog } from "@/components/app/ConfirmDialog";
+import { fieldClass } from "@/components/app/FormField";
 
 // M8 hardening — every redirect-with-?error= from actions.ts needs a real
 // message here; before this, only "has-history" was ever displayed, so a
@@ -154,7 +156,7 @@ export default async function TemplateDetailPage({
             type="text"
             required
             placeholder="לדוגמה: תעודת זהות"
-            className="flex-1 rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+            className={fieldClass("md", "flex-1")}
           />
           <button type="submit" className={buttonVariants({ variant: "secondary" })}>
             הוספת מסמך
@@ -170,15 +172,19 @@ export default async function TemplateDetailPage({
 
       <TemplateSendRequest templateId={template.id} assignedClients={assignedClients} />
 
-      <form action={boundDelete}>
-        <button
-          type="submit"
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
-        >
-          <Trash2 className="h-4 w-4" />
-          מחיקת תבנית
-        </button>
-      </form>
+      <ConfirmDialog
+        title="מחיקת תבנית"
+        description={`למחוק את "${template.name}"? פעולה זו אינה הפיכה. אם לתבנית יש היסטוריית בקשות איסוף, המחיקה תיחסם.`}
+        confirmLabel="מחיקת תבנית"
+        formAction={boundDelete}
+        triggerClassName="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
+        trigger={
+          <>
+            <Trash2 className="h-4 w-4" />
+            מחיקת תבנית
+          </>
+        }
+      />
     </div>
   );
 }

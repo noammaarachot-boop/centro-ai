@@ -1,6 +1,6 @@
 "use client";
 
-import { cloneElement, useId, type ReactElement } from "react";
+import { useId, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button, type ButtonVariant } from "@/components/app/Button";
 
@@ -13,19 +13,22 @@ import { Button, type ButtonVariant } from "@/components/app/Button";
 // (which this project's stricter react-hooks/refs lint rule correctly
 // steers away from).
 //
-// `trigger` is a plain JSX element (not a render-prop function) — every
-// real call site is an async Server Component page (client/service/
-// template detail pages), and a function prop can't cross the Server-to-
-// Client Component boundary (React Server Components can only pass
-// serializable props to a "use client" component; an arbitrary closure
-// isn't serializable, only a Server Action reference or plain JSX is).
-// `cloneElement` injects the popover-opener attributes onto whatever
-// static trigger markup the caller passed in. `formAction` is the same
-// bound server action every caller already has (e.g.
-// `deleteClient.bind(null, id)`); confirming submits it exactly as the
-// un-confirmed one-click version did.
+// `trigger`/`triggerClassName` render ConfirmDialog's OWN native <button>
+// with the popover-opener attributes already on it — `trigger` is just its
+// inner content (icon + label), never a whole element to clone. An earlier
+// version accepted a full trigger *element* and used `cloneElement` to
+// inject the popover attributes; that broke intermittently (a real,
+// reproduced bug — "Element type is invalid" on server render, but only
+// for some data, never for a manually-created row) because every real call
+// site is an async Server Component page, and React Server Components only
+// support passing child/prop JSX into a Client Component to be *rendered
+// as-is* — introspecting or cloning it client-side (as `cloneElement`
+// does) is not a supported operation on a cross-boundary element.
+// Accepting plain `ReactNode` content instead of an `ReactElement` to
+// clone sidesteps that entirely.
 export function ConfirmDialog({
   trigger,
+  triggerClassName,
   title,
   description,
   confirmLabel = "אישור",
@@ -34,7 +37,8 @@ export function ConfirmDialog({
   formAction,
   hiddenFields,
 }: {
-  trigger: ReactElement<{ popoverTarget?: string; popoverTargetAction?: "show" }>;
+  trigger: ReactNode;
+  triggerClassName?: string;
   title: string;
   description: string;
   confirmLabel?: string;
@@ -47,7 +51,14 @@ export function ConfirmDialog({
 
   return (
     <>
-      {cloneElement(trigger, { popoverTarget: popoverId, popoverTargetAction: "show" })}
+      <button
+        type="button"
+        popoverTarget={popoverId}
+        popoverTargetAction="show"
+        className={triggerClassName}
+      >
+        {trigger}
+      </button>
       <div
         popover="auto"
         id={popoverId}

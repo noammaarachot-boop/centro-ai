@@ -6,6 +6,8 @@ import { UserPlus, X } from "lucide-react";
 import { Card } from "@/components/app/Card";
 import { Button, buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
+import { Tabs } from "@/components/app/Tabs";
+import { fieldClass } from "@/components/app/FormField";
 import {
   assignClientsToTemplate,
   createAndAssignClientToTemplate,
@@ -103,30 +105,15 @@ export function TemplateClientAssignment({
         </button>
       ) : (
         <div className="animate-fade-in-up space-y-3 rounded-xl border border-border bg-surface p-3">
-          <div className="flex gap-2 text-xs font-medium">
-            <button
-              type="button"
-              onClick={() => setMode("existing")}
-              className={
-                mode === "existing"
-                  ? "rounded-full bg-brand-purple/10 px-3 py-1 text-brand-purple"
-                  : "rounded-full px-3 py-1 text-text-muted hover:text-text-primary"
-              }
-            >
-              לקוח קיים
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("new")}
-              className={
-                mode === "new"
-                  ? "rounded-full bg-brand-purple/10 px-3 py-1 text-brand-purple"
-                  : "rounded-full px-3 py-1 text-text-muted hover:text-text-primary"
-              }
-            >
-              לקוח חדש
-            </button>
-          </div>
+          <Tabs
+            label="שיוך לקוח"
+            value={mode}
+            onChange={(value) => setMode(value as "existing" | "new")}
+            items={[
+              { value: "existing", label: "לקוח קיים" },
+              { value: "new", label: "לקוח חדש" },
+            ]}
+          />
 
           {mode === "existing" ? (
             unassignedClients.length === 0 ? (
@@ -165,7 +152,7 @@ export function TemplateClientAssignment({
                 type="text"
                 required
                 placeholder="שם הלקוח"
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={fieldClass("sm")}
               />
               <input
                 name="phone"
@@ -173,13 +160,13 @@ export function TemplateClientAssignment({
                 dir="ltr"
                 required
                 placeholder="טלפון"
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={fieldClass("sm")}
               />
               <input
                 name="notes"
                 type="text"
                 placeholder="הערות (לא חובה)"
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={fieldClass("sm")}
               />
               <Button type="submit" variant="primary" size="sm">
                 יצירה ושיוך

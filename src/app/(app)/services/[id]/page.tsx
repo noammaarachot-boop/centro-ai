@@ -19,6 +19,8 @@ import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ServiceScheduleOverrideCard } from "@/components/app/ServiceScheduleOverrideCard";
+import { ConfirmDialog } from "@/components/app/ConfirmDialog";
+import { fieldClass } from "@/components/app/FormField";
 import { resolveScheduleConfig } from "@/lib/businessHours";
 import { getOrganization } from "@/lib/data/organizations";
 
@@ -142,7 +144,7 @@ export default async function ServiceDetailPage({
             type="text"
             required
             placeholder="לדוגמה: דף חשבון בנק"
-            className="flex-1 rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm text-text-primary outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+            className={fieldClass("md", "flex-1")}
           />
           <button type="submit" className={buttonVariants({ variant: "secondary" })}>
             הוספת דרישה
@@ -187,15 +189,19 @@ export default async function ServiceDetailPage({
         )}
       </Card>
 
-      <form action={boundDelete}>
-        <button
-          type="submit"
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
-        >
-          <Trash2 className="h-4 w-4" />
-          מחיקת תבנית
-        </button>
-      </form>
+      <ConfirmDialog
+        title="מחיקת תבנית"
+        description={`למחוק את "${service.name}"? פעולה זו אינה הפיכה. אם לתבנית יש היסטוריית בקשות איסוף, המחיקה תיחסם.`}
+        confirmLabel="מחיקת תבנית"
+        formAction={boundDelete}
+        triggerClassName="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
+        trigger={
+          <>
+            <Trash2 className="h-4 w-4" />
+            מחיקת תבנית
+          </>
+        }
+      />
     </div>
   );
 }

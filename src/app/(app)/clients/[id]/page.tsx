@@ -297,14 +297,12 @@ export default async function ClientDetailPage({
         description={`למחוק את "${client.name}"? פעולה זו אינה הפיכה. אם ללקוח יש היסטוריית בקשות איסוף, המחיקה תיחסם.`}
         confirmLabel="מחיקת לקוח"
         formAction={boundDelete}
+        triggerClassName="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
         trigger={
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
-          >
+          <>
             <Trash2 className="h-4 w-4" />
             מחיקת לקוח
-          </button>
+          </>
         }
       />
     </div>
