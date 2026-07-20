@@ -28,7 +28,8 @@ export function RunSchedulerButton() {
         </Button>
         {state.result && (
           <p className="mt-3 animate-fade-in-up text-xs text-text-muted">
-            {state.result.evaluated} שיחות הוערכו, {state.result.reminded} תזכורות נשלחו.
+            {state.result.evaluated} שיחות הוערכו, {state.result.reminded} תזכורות נשלחו,{" "}
+            {state.result.delivered} בקשות מתוזמנות נשלחו.
           </p>
         )}
       </Card>

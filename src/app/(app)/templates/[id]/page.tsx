@@ -18,6 +18,7 @@ import {
 import { TemplateForm } from "../TemplateForm";
 import { TemplateRequirementRow } from "../TemplateRequirementRow";
 import { TemplateClientAssignment } from "../TemplateClientAssignment";
+import { TemplateSendRequest } from "../TemplateSendRequest";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
@@ -28,11 +29,11 @@ export default async function TemplateDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; sent?: string; scheduled?: string }>;
 }) {
   const session = await requireSession();
   const { id } = await params;
-  const { error } = await searchParams;
+  const { error, sent, scheduled } = await searchParams;
 
   const organization = await getOrganization(session.organizationId);
   if (organization?.workflowType !== "one_time") notFound();
@@ -78,6 +79,13 @@ export default async function TemplateDetailPage({
           className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
           לא ניתן למחוק תבנית שיש לה היסטוריית בקשות איסוף.
+        </p>
+      )}
+
+      {(sent || scheduled) && (Number(sent) > 0 || Number(scheduled) > 0) && (
+        <p className="animate-fade-in-up rounded-xl border border-brand-emerald/25 bg-brand-emerald/5 px-4 py-3 text-sm font-medium text-text-primary">
+          {Number(sent) > 0 && `נשלח ל-${sent} לקוחות. `}
+          {Number(scheduled) > 0 && `${scheduled} בקשות תוזמנו לשליחה.`}
         </p>
       )}
 
@@ -137,6 +145,8 @@ export default async function TemplateDetailPage({
         assignedClients={assignedClients}
         unassignedClients={unassignedClients}
       />
+
+      <TemplateSendRequest templateId={template.id} assignedClients={assignedClients} />
 
       <form action={boundDelete}>
         <button

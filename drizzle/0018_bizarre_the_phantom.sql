@@ -1,0 +1,1 @@
+ALTER TABLE "collection_requests" ADD COLUMN "scheduled_at" timestamp with time zone;

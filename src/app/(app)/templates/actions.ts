@@ -4,11 +4,19 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { getDb } from "@/db";
-import { clientServices, clients, serviceDocumentRequirements, services } from "@/db/schema";
+import {
+  clientServices,
+  clients,
+  collectionRequests,
+  serviceDocumentRequirements,
+  services,
+} from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { suggestTemplateLibrary } from "@/lib/ai/businessCategorySuggestions";
 import { getOrganization } from "@/lib/data/organizations";
+import { snapshotServiceRequirements } from "@/lib/collectionRequestStateMachine";
+import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 
 // Product Evolution M5 — a Template is a bare `services` row for a
 // one-time-workflow organization (see ARCHITECTURE.md); these actions are
@@ -547,4 +555,93 @@ export async function removeClientFromTemplate(templateId: string, assignmentId:
   });
 
   refresh();
+}
+
+// Product Evolution M7 — "Send Request: Now or Schedule," the action that
+// makes a Template do something. For every selected client: creates a
+// genuinely ordinary collection_requests row (reusing snapshotServiceRequirements,
+// the exact same recurring-workflow function — a one-time request is not a
+// different kind of row, just one whose service happens to be a Template)
+// with `scheduledAt` set to either now (Send Now) or the chosen future
+// moment (Schedule). "Send Now" then attempts delivery synchronously so
+// the employee sees a real result immediately; a future-dated schedule is
+// left for src/lib/scheduler.ts's cron tick to deliver when it comes due.
+// Either way, delivery itself is the one shared function
+// (attemptScheduledDelivery) — there is no separate "send immediately"
+// code path to keep in sync with the scheduled one.
+export async function sendTemplateRequest(templateId: string, formData: FormData) {
+  const session = await requireSession();
+  await getOrgScopedTemplate(session.organizationId, templateId);
+
+  const clientIds = formData.getAll("clientId").map(String).filter(Boolean);
+  const sendMode = String(formData.get("sendMode") ?? "now");
+
+  if (clientIds.length === 0) {
+    redirect(`/templates/${templateId}?error=no-clients-selected`);
+  }
+
+  let scheduledAt = new Date();
+  if (sendMode === "schedule") {
+    const raw = String(formData.get("scheduledFor") ?? "");
+    const parsed = raw ? new Date(raw) : null;
+    if (!parsed || Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+      redirect(`/templates/${templateId}?error=invalid-schedule`);
+    }
+    scheduledAt = parsed;
+  }
+
+  const db = await getDb();
+  const [template] = await db
+    .select()
+    .from(services)
+    .where(and(eq(services.id, templateId), eq(services.organizationId, session.organizationId)))
+    .limit(1);
+  if (!template) redirect("/templates");
+
+  const periodLabel = `${template.name} — ${new Date().toLocaleDateString("he-IL")}`;
+  let sentCount = 0;
+  let scheduledCount = 0;
+
+  for (const clientId of clientIds) {
+    const [client] = await db
+      .select({ id: clients.id })
+      .from(clients)
+      .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
+      .limit(1);
+    if (!client) continue;
+
+    const [collectionRequest] = await db
+      .insert(collectionRequests)
+      .values({
+        organizationId: session.organizationId,
+        clientId,
+        serviceId: templateId,
+        periodLabel,
+        status: "draft",
+        scheduledAt,
+      })
+      .returning();
+
+    await snapshotServiceRequirements(collectionRequest.id, templateId, session.organizationId, clientId);
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "collection_request.created",
+      description: `נפתחה בקשת איסוף מתבנית "${template.name}"`,
+      actorType: "employee",
+      actorUserId: session.userId,
+      clientId,
+      collectionRequestId: collectionRequest.id,
+    });
+
+    if (sendMode === "now") {
+      const delivered = await attemptScheduledDelivery(session.organizationId, collectionRequest.id, clientId);
+      if (delivered) sentCount += 1;
+      else scheduledCount += 1; // outside business hours - queued for the next tick
+    } else {
+      scheduledCount += 1;
+    }
+  }
+
+  redirect(`/templates/${templateId}?sent=${sentCount}&scheduled=${scheduledCount}`);
 }

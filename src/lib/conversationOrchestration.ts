@@ -132,23 +132,31 @@ export async function recordInboundMessage(
 }
 
 // Ch.10 flow step 1: "Send one initial request."
+//
+// Product Evolution M7 — also returns whether the message actually sent
+// (false when BR-18.1's business-hours gate held it). Existing callers
+// (e.g. collections/conversationActions.ts's initiateConversation) that
+// only awaited the old bare-conversation return value are unaffected —
+// they simply don't read the new field. M7's own callers (Template "Send
+// Now"/scheduled delivery) need it to know whether to mark the request
+// delivered or leave it queued for a later retry.
 export async function startConversation(
   organizationId: string,
   collectionRequestId: string,
   clientId: string
-) {
+): Promise<{ conversation: Awaited<ReturnType<typeof ensureConversation>>; sent: boolean }> {
   const conversation = await ensureConversation(
     organizationId,
     collectionRequestId,
     clientId
   );
-  await sendOutboundMessage(
+  const { sent } = await sendOutboundMessage(
     organizationId,
     conversation.id,
     INITIAL_REQUEST_TEMPLATE,
     "ai"
   );
-  return conversation;
+  return { conversation, sent };
 }
 
 export async function sendDuplicateAcknowledgement(

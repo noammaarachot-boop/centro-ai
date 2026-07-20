@@ -127,6 +127,13 @@
       "when": 1784550092679,
       "tag": "0017_sleepy_night_thrasher",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784552031910,
+      "tag": "0018_bizarre_the_phantom",
+      "breakpoints": true
     }
   ]
 }

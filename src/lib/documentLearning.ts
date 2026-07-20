@@ -5,6 +5,7 @@ import {
   documentLearnedPatterns,
 } from "@/db/schema";
 import type { LearnedDocumentPattern } from "@/lib/ai/documentClassifier";
+import { isOneTimeWorkflowOrganization } from "@/lib/data/organizations";
 
 /**
  * Milestone 3 ("Document Classification Learning") — the read/write seam
@@ -52,6 +53,12 @@ export async function recordLearnedDocumentPattern(
   collectionRequestRequirementId: string,
   fileName: string
 ): Promise<void> {
+  // Product Evolution M7 — same boundary as clientDocumentProfile.ts's
+  // guards. A one-time-workflow client's document naming is never learned
+  // from; the Template it came from is the single source of truth, edited
+  // explicitly by the office.
+  if (await isOneTimeWorkflowOrganization(organizationId)) return;
+
   const db = await getDb();
   const [requirement] = await db
     .select({ sourceRequirementId: collectionRequestRequirements.sourceRequirementId })

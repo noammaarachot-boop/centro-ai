@@ -52,7 +52,7 @@ export async function updateBusinessHours(formData: FormData) {
 }
 
 export interface RunSchedulerState {
-  result?: { evaluated: number; reminded: number };
+  result?: { evaluated: number; reminded: number; delivered: number };
 }
 
 // Manual stand-in for an external cron hitting POST /api/cron/tick, for

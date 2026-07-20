@@ -475,6 +475,15 @@ export const collectionRequests = pgTable("collection_requests", {
     .references(() => services.id),
   status: collectionRequestStatus("status").notNull().default("draft"),
   periodLabel: text("period_label").notNull(),
+  // Product Evolution M7 — Workflow B's "Send Request: Now or Schedule."
+  // Null for every recurring-workflow request (createCollectionRequest
+  // never sets it) and for a one-time request already sent. A non-null
+  // value on a still-`draft` request means "not yet delivered, due at
+  // this time" — src/lib/scheduledSend.ts's attemptScheduledDelivery is
+  // the only place that ever clears it (by successfully sending), and
+  // src/lib/scheduler.ts's cron tick is what retries it if the first
+  // attempt landed outside business hours.
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

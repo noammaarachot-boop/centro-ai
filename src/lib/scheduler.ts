@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, lte } from "drizzle-orm";
 import { getDb } from "@/db";
 import { collectionRequests, conversations, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -7,6 +7,7 @@ import {
   evaluateAndPrompt,
   sendOutboundMessage,
 } from "@/lib/conversationOrchestration";
+import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 
 const REMINDER_MESSAGE =
   "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";
@@ -39,6 +40,7 @@ const REMINDER_MESSAGE =
 export async function runScheduledTasks(organizationId?: string): Promise<{
   evaluated: number;
   reminded: number;
+  delivered: number;
 }> {
   const db = await getDb();
   const allOrganizations = organizationId
@@ -47,6 +49,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
 
   let evaluated = 0;
   let reminded = 0;
+  let delivered = 0;
 
   for (const organization of allOrganizations) {
     // Ch.16 FR-16.4: after inactivity, evaluate whether known requirements
@@ -150,7 +153,31 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         });
       }
     }
+
+    // Product Evolution M7 — due scheduled Template sends (Workflow B's
+    // "Send Request: Now or Schedule"). `scheduledAt` is null for every
+    // recurring-workflow request, so this never touches anything from
+    // Workflow A. attemptScheduledDelivery is the same function "Send Now"
+    // calls synchronously — this is purely its retry path for requests
+    // that come due later, or that missed business hours on an earlier
+    // attempt.
+    const dueScheduledRequests = await db
+      .select({ id: collectionRequests.id, clientId: collectionRequests.clientId })
+      .from(collectionRequests)
+      .where(
+        and(
+          eq(collectionRequests.organizationId, organization.id),
+          eq(collectionRequests.status, "draft"),
+          isNotNull(collectionRequests.scheduledAt),
+          lte(collectionRequests.scheduledAt, new Date())
+        )
+      );
+
+    for (const request of dueScheduledRequests) {
+      const sent = await attemptScheduledDelivery(organization.id, request.id, request.clientId);
+      if (sent) delivered += 1;
+    }
   }
 
-  return { evaluated, reminded };
+  return { evaluated, reminded, delivered };
 }

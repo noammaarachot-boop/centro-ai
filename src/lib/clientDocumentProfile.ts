@@ -9,6 +9,7 @@ import {
   serviceDocumentRequirements,
 } from "@/db/schema";
 import { createPendingConfirmation, type PendingConfirmationKind } from "@/lib/pendingConfirmations";
+import { isOneTimeWorkflowOrganization } from "@/lib/data/organizations";
 
 /**
  * Milestone 6 ("Adaptive Document Collection") — the one thing Architecture
@@ -108,6 +109,14 @@ export async function recordAdHocDocumentObservation(
   rawName: string,
   fileName: string
 ): Promise<void> {
+  // Product Evolution M7 — Workflow B never learns anything (Templates
+  // are entirely explicit/user-edited), checked first so a one-time
+  // organization's ad-hoc document naming never starts an occurrence
+  // count that could never be surfaced anyway (M6's confirmation flow is
+  // recurring-only UI, but this guard makes the boundary real at the
+  // data layer too, not just by omission in the UI).
+  if (await isOneTimeWorkflowOrganization(organizationId)) return;
+
   const name = normalizeName(rawName);
   if (!name) return;
 
@@ -177,6 +186,12 @@ export async function detectMissingRequirements(
   clientId: string,
   serviceId: string
 ): Promise<void> {
+  // Product Evolution M7 — same boundary as recordAdHocDocumentObservation
+  // above. A one-time-workflow "collection request" is a single Template
+  // send, not a recurring cycle — there is no "missing across two
+  // consecutive cycles" concept to observe.
+  if (await isOneTimeWorkflowOrganization(organizationId)) return;
+
   const db = await getDb();
 
   const [client] = await db
