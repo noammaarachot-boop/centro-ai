@@ -36,6 +36,7 @@ import {
   reviewDocument,
   simulateDriveDeletion,
   transitionStatus,
+  waiveRequirement,
 } from "../actions";
 import {
   evaluateNow,
@@ -172,7 +173,19 @@ export default async function CollectionRequestDetailPage({
                 key={requirement.id}
                 className="rounded-xl border border-border bg-surface-muted/30 p-4"
               >
-                <p className="text-sm font-medium text-text-primary">{requirement.name}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-text-primary">{requirement.name}</p>
+                  {requirement.documents.length === 0 && (
+                    <form action={waiveRequirement.bind(null, id, requirement.id)}>
+                      <button
+                        type="submit"
+                        className="text-[11px] text-text-muted transition-colors hover:text-warning hover:underline"
+                      >
+                        לא רלוונטי הפעם
+                      </button>
+                    </form>
+                  )}
+                </div>
 
                 {requirement.documents.length > 0 && (
                   <ul className="mt-3 space-y-2.5">
@@ -295,8 +308,8 @@ export default async function CollectionRequestDetailPage({
                   className="space-y-2"
                 >
                   <div className="flex items-center gap-2">
-                    <select name="requirementId" required className={`flex-1 ${compactSelectClass}`}>
-                      <option value="">— בחירת דרישה —</option>
+                    <select name="requirementId" className={`flex-1 ${compactSelectClass}`}>
+                      <option value="">— בחירת דרישה קיימת —</option>
                       {requirements.map((requirement) => (
                         <option key={requirement.id} value={requirement.id}>
                           {requirement.name}
@@ -307,13 +320,19 @@ export default async function CollectionRequestDetailPage({
                       שיוך
                     </button>
                   </div>
+                  <input
+                    name="newTypeName"
+                    type="text"
+                    placeholder="או: סוג מסמך חדש שלא ברשימה (למשל: טופס 102)"
+                    className={`w-full ${compactInputClass}`}
+                  />
                   <label className="flex items-center gap-1.5 text-[11px] text-text-muted">
                     <input
                       type="checkbox"
                       name="askClient"
                       className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
                     />
-                    לשאול את הלקוח אם זה מסמך קבוע לאיסופים הבאים (וואטסאפ)
+                    בשיוך לדרישה קיימת: לשאול את הלקוח אם זה מסמך קבוע (וואטסאפ)
                   </label>
                 </form>
               </li>

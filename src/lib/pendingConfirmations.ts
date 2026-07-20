@@ -141,14 +141,24 @@ export function parseConfirmationReply(text: string): "yes" | "no" | "unclear" {
 // misread as a yes or no.
 export async function resolveConfirmationFromReply(conversationId: string, replyText: string) {
   const db = await getDb();
-  const [open] = await db
+  const openRows = await db
     .select()
     .from(pendingConfirmations)
     .where(
       and(eq(pendingConfirmations.conversationId, conversationId), eq(pendingConfirmations.status, "pending"))
     )
-    .limit(1);
-  if (!open) return null;
+    .limit(2); // only need to know "one" vs "more than one"
+
+  // A free-text reply can only be auto-resolved when it's unambiguous
+  // which question it's answering — exactly one open confirmation on this
+  // conversation. Milestone 6 can legitimately open two at once (an
+  // addition suggestion mid-cycle, a removal suggestion at completion);
+  // with more than one open, guessing which the client meant would be
+  // exactly the kind of guess Ch.1 rules out — left for a human to
+  // resolve explicitly instead (respondToPendingConfirmationManually,
+  // which targets one specific confirmation by id).
+  if (openRows.length !== 1) return null;
+  const open = openRows[0];
 
   const intent = parseConfirmationReply(replyText);
   if (intent === "unclear") return null;

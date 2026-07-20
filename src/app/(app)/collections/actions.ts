@@ -18,6 +18,7 @@ import {
   snapshotServiceRequirements,
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
+import { recordAdHocDocumentObservation } from "@/lib/clientDocumentProfile";
 import { recordLearnedDocumentPattern } from "@/lib/documentLearning";
 import { createPendingConfirmation } from "@/lib/pendingConfirmations";
 import { OperationFailedError } from "@/lib/resilience";
@@ -151,7 +152,7 @@ export async function createCollectionRequest(
     })
     .returning();
 
-  await snapshotServiceRequirements(collectionRequest.id, serviceId);
+  await snapshotServiceRequirements(collectionRequest.id, serviceId, session.organizationId, clientId);
 
   await recordAuditEvent({
     organizationId: session.organizationId,
@@ -300,10 +301,39 @@ export async function assignDocumentRequirement(
 ) {
   const session = await requireSession();
   const requirementId = String(formData.get("requirementId") ?? "");
-  if (!requirementId) redirect(`/collections/${collectionRequestId}`);
+  const newTypeName = String(formData.get("newTypeName") ?? "").trim();
+  if (!requirementId && !newTypeName) redirect(`/collections/${collectionRequestId}`);
 
   const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
-  await getScopedDocument(session.organizationId, collectionRequestId, documentId);
+  const scopedDocument = await getScopedDocument(session.organizationId, collectionRequestId, documentId);
+
+  // Milestone 6 (Observe, addition side): the document doesn't match any
+  // *current* requirement at all — not a misclassification to correct
+  // (that path stays below), but a genuinely new document type for this
+  // client. Left unassigned (requirementId stays null, same as any other
+  // unmatched document) and recorded as an observation instead; only
+  // Suggested to the client once the same name recurs.
+  if (newTypeName) {
+    await recordAdHocDocumentObservation(
+      session.organizationId,
+      current.clientId,
+      collectionRequestId,
+      newTypeName,
+      scopedDocument.fileName
+    );
+
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "document.ad_hoc_type_observed",
+      description: `מסמך "${scopedDocument.fileName}" סומן כסוג מסמך חדש: "${newTypeName}"`,
+      actorType: "employee",
+      actorUserId: session.userId,
+      clientId: current.clientId,
+      collectionRequestId,
+    });
+
+    redirect(`/collections/${collectionRequestId}`);
+  }
 
   const db = await getDb();
   const [document] = await db
@@ -368,6 +398,51 @@ export async function assignDocumentRequirement(
       metadata: { pendingConfirmationId: confirmation.id, kind: confirmation.kind },
     });
   }
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
+// Lets an employee waive a specific, still-unsatisfied requirement for
+// just this one cycle (e.g. "no vehicle expenses this month") —
+// genuinely useful on its own (BR-11.2 otherwise leaves a Collection
+// Request permanently unable to reach `completed` while anything remains
+// outstanding), and also the only way Milestone 6's removal-detection
+// can ever see a "recurring absence" in real completed-cycle history: a
+// requirement can never complete a cycle while merely unsatisfied, only
+// while genuinely absent from that cycle's snapshot.
+export async function waiveRequirement(
+  collectionRequestId: string,
+  requirementId: string
+) {
+  const session = await requireSession();
+  const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
+
+  const db = await getDb();
+  const [requirement] = await db
+    .select({ id: collectionRequestRequirements.id, name: collectionRequestRequirements.name })
+    .from(collectionRequestRequirements)
+    .where(
+      and(
+        eq(collectionRequestRequirements.id, requirementId),
+        eq(collectionRequestRequirements.collectionRequestId, collectionRequestId)
+      )
+    )
+    .limit(1);
+  if (!requirement) redirect(`/collections/${collectionRequestId}`);
+
+  await db
+    .delete(collectionRequestRequirements)
+    .where(eq(collectionRequestRequirements.id, requirementId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "collection_request.requirement_waived",
+    description: `הדרישה "${requirement.name}" סומנה כלא רלוונטית עבור מחזור זה`,
+    actorType: "employee",
+    actorUserId: session.userId,
+    clientId: current.clientId,
+    collectionRequestId,
+  });
 
   redirect(`/collections/${collectionRequestId}`);
 }

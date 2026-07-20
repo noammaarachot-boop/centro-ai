@@ -5,9 +5,9 @@ import {
   collectionRequestRequirements,
   collectionRequests,
   documents,
-  serviceDocumentRequirements,
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
+import { detectMissingRequirements, resolveEffectiveRequirementNames } from "@/lib/clientDocumentProfile";
 
 export type CollectionRequestStatus =
   | "draft"
@@ -155,6 +155,12 @@ export async function applyTransition(
 
   if (nextStatus === "completed") {
     await exitLearningModeIfFirstCycle(organizationId, current.clientId);
+    // Milestone 6 (Observe, removal side) — deliberately after the
+    // Learning Mode check above, since detectMissingRequirements reads
+    // the just-updated flag: a client's very first completion must never
+    // trigger a "missing" suggestion, and by the time this runs, that
+    // flag already reflects the truth for this exact transition.
+    await detectMissingRequirements(organizationId, current.clientId, current.serviceId);
   }
 
   return { ok: true };
@@ -218,24 +224,29 @@ export async function completeCollectionRequest(
   );
 }
 
+// Milestone 6: snapshots this client's *effective* requirement list — the
+// service template, minus any of this client's confirmed removals, plus
+// any of this client's confirmed additions
+// (src/lib/clientDocumentProfile.ts) — not the raw template directly.
+// Every pre-Milestone-6 client (with no confirmed profile changes at all)
+// resolves to exactly the template, byte-for-byte identical to before.
 export async function snapshotServiceRequirements(
   collectionRequestId: string,
-  serviceId: string
+  serviceId: string,
+  organizationId: string,
+  clientId: string
 ) {
   const db = await getDb();
-  const templates = await db
-    .select()
-    .from(serviceDocumentRequirements)
-    .where(eq(serviceDocumentRequirements.serviceId, serviceId));
+  const effective = await resolveEffectiveRequirementNames(organizationId, clientId, serviceId);
 
-  if (templates.length === 0) return;
+  if (effective.length === 0) return;
 
   await db.insert(collectionRequestRequirements).values(
-    templates.map((template) => ({
+    effective.map((requirement) => ({
       collectionRequestId,
-      sourceRequirementId: template.id,
-      name: template.name,
-      description: template.description,
+      sourceRequirementId: requirement.sourceRequirementId,
+      name: requirement.name,
+      description: requirement.description,
     }))
   );
 }

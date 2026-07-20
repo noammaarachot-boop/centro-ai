@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Layers, Trash2, X } from "lucide-react";
+import { ArrowLeft, FileStack, Layers, Trash2, X } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import {
   getClient,
@@ -9,6 +9,7 @@ import {
 } from "@/lib/data/clients";
 import { listBusinessTypes } from "@/lib/businessTypes";
 import { AUTO_CLASSIFY_CONFIDENCE } from "@/lib/ai/businessTypeClassifier";
+import { listClientDocumentProfileChanges } from "@/lib/clientDocumentProfile";
 import {
   assignService,
   deleteClient,
@@ -39,12 +40,30 @@ export default async function ClientDetailPage({
   const client = await getClient(session.organizationId, id);
   if (!client) notFound();
 
-  const [assignedServices, unassignedServices, businessTypes] = await Promise.all([
+  const [assignedServices, unassignedServices, businessTypes, documentProfileChanges] = await Promise.all([
     listClientServices(session.organizationId, id),
     listUnassignedServicesForClient(session.organizationId, id),
     listBusinessTypes(session.organizationId),
+    listClientDocumentProfileChanges(session.organizationId, id),
   ]);
   const currentBusinessType = businessTypes.find((t) => t.id === client.businessTypeId) ?? null;
+
+  // Milestone 6 — plain-language label per (action, status) combination.
+  // "remove" is phrased around what happened to the *document*, not the
+  // literal confirmation reply, since Architecture Ch.3's exact removal
+  // question ("should we continue requesting it?") has an inverted
+  // yes/no meaning relative to the addition question — see
+  // src/lib/clientDocumentProfile.ts's applyDocumentProfileConfirmation.
+  function profileChangeLabel(change: (typeof documentProfileChanges)[number]): string {
+    if (change.action === "add") {
+      if (change.status === "confirmed") return `נוסף לאיסוף הקבוע: ${change.name}`;
+      if (change.status === "declined") return `לא נוסף (הלקוח סירב): ${change.name}`;
+      return `ממתין לאישור הוספה: ${change.name}`;
+    }
+    if (change.status === "confirmed") return `הוסר מהאיסוף הקבוע: ${change.name}`;
+    if (change.status === "declined") return `נשאר באיסוף (הלקוח ביקש להמשיך): ${change.name}`;
+    return `ממתין לאישור הסרה: ${change.name}`;
+  }
 
   const boundUpdate = updateClient.bind(null, client.id);
   const boundDelete = deleteClient.bind(null, client.id);
@@ -150,6 +169,37 @@ export default async function ClientDetailPage({
           </form>
         </details>
       </Card>
+
+      {documentProfileChanges.length > 0 && (
+        <Card>
+          <div className="mb-4 flex items-center gap-2">
+            <FileStack className="h-5 w-5 shrink-0 text-brand-purple" />
+            <h2 className="text-lg font-semibold text-text-primary">פרופיל איסוף המסמכים</h2>
+          </div>
+          <p className="mb-4 text-xs text-text-muted">
+            שינויים שהתגלו ואושרו מול הלקוח (Ch.3: Observe → Suggest → Confirm → Learn) — בנוסף
+            לרשימת המסמכים הקבועה של סוג העסק.
+          </p>
+          <ul className="space-y-2">
+            {documentProfileChanges.map((change) => (
+              <li key={change.id} className="flex items-center justify-between gap-2 text-sm">
+                <span className="text-text-secondary">{profileChangeLabel(change)}</span>
+                <Badge
+                  tone={
+                    change.status === "confirmed"
+                      ? "success"
+                      : change.status === "declined"
+                        ? "neutral"
+                        : "warning"
+                  }
+                >
+                  {change.status === "confirmed" ? "פעיל" : change.status === "declined" ? "נדחה" : "ממתין"}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <Card>
         <h2 className="mb-4 text-lg font-semibold text-text-primary">שירותים משויכים</h2>

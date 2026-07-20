@@ -586,3 +586,71 @@ export const pendingConfirmations = pgTable("pending_confirmations", {
     .notNull()
     .defaultNow(),
 });
+
+export const clientDocumentRequirementAction = pgEnum(
+  "client_document_requirement_action",
+  ["add", "remove"]
+);
+export const clientDocumentRequirementStatus = pgEnum(
+  "client_document_requirement_status",
+  ["pending", "confirmed", "declined"]
+);
+
+// Milestone 6 ("Adaptive Document Collection") — Architecture Ch.8's one
+// permitted kind of learning, made real: per-client deviations from the
+// service's document-requirement template. Never touches the template
+// itself (services.serviceDocumentRequirements, shared across every
+// client of that business type) — an addition or removal here only ever
+// affects the one client it was confirmed for.
+//
+// A row starts `pending` the moment a pattern is *observed* (a document
+// type recurring, or a requirement going unsatisfied for two consecutive
+// post-Learning-Mode cycles) — never `confirmed` on its own. Only the
+// client's own reply (via src/lib/pendingConfirmations.ts) moves it to
+// `confirmed` or `declined`; nothing here ever assumes.
+export const clientDocumentRequirements = pgTable(
+  "client_document_requirements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    action: clientDocumentRequirementAction("action").notNull(),
+    // Display name either way — the new document type's name for "add",
+    // or the existing requirement's name (denormalized for display) for
+    // "remove".
+    name: text("name").notNull(),
+    // "remove" only — which template requirement this client's copy is
+    // being suppressed from. Null for "add": a client-specific addition
+    // has no service-wide template row to point back to.
+    sourceRequirementId: uuid("source_requirement_id").references(
+      () => serviceDocumentRequirements.id,
+      { onDelete: "cascade" }
+    ),
+    // How many times this pattern has been observed — an addition is only
+    // ever suggested on its second occurrence (Ch.3: never from a single
+    // event).
+    occurrenceCount: integer("occurrence_count").notNull().default(1),
+    status: clientDocumentRequirementStatus("status").notNull().default("pending"),
+    pendingConfirmationId: uuid("pending_confirmation_id").references(
+      () => pendingConfirmations.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("client_document_requirements_client_name_action_idx").on(
+      table.clientId,
+      table.name,
+      table.action
+    ),
+  ]
+);

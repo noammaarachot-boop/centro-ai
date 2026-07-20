@@ -16,6 +16,7 @@ import {
   isFuzzyDuplicate,
   SUPPORTED_EXTENSIONS,
 } from "@/lib/ai/documentClassifier";
+import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
 import { getLearnedDocumentPatterns } from "@/lib/documentLearning";
 import {
   respondToPendingConfirmationManually,
@@ -136,6 +137,9 @@ export async function simulateInboundMessage(
     // guesses at intent beyond a clear yes/no keyword match.
     const resolved = await resolveConfirmationFromReply(conversation.id, body);
     if (resolved) {
+      // Milestone 6 (Learn) — the only place a client's own reply changes
+      // their document profile. A no-op for any other confirmation kind.
+      await applyDocumentProfileConfirmation(resolved);
       await recordAuditEvent({
         organizationId: session.organizationId,
         eventType: "pending_confirmation.resolved",
@@ -514,6 +518,7 @@ export async function respondToConfirmation(
 
   const resolved = await respondToPendingConfirmationManually(pendingConfirmationId, confirmed);
   if (resolved) {
+    await applyDocumentProfileConfirmation(resolved);
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "pending_confirmation.resolved",
