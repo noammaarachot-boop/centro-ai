@@ -44,11 +44,13 @@ const ONE_TIME_NAV_LINKS = [
 export function Sidebar({
   organizationName,
   email,
+  logoUrl,
   workflowType,
   logoutAction,
 }: {
   organizationName: string;
   email: string;
+  logoUrl?: string | null;
   workflowType: "recurring" | "one_time";
   logoutAction: () => Promise<void>;
 }) {
@@ -119,13 +121,23 @@ export function Sidebar({
         </button>
 
         {!collapsed && (
-          <div className="mb-2 rounded-xl bg-surface-muted px-3 py-2.5">
-            <p className="truncate text-sm font-semibold text-text-primary">
-              {organizationName}
-            </p>
-            <p className="truncate text-xs text-text-muted" dir="ltr">
-              {email}
-            </p>
+          <div className="mb-2 flex items-center gap-2.5 rounded-xl bg-surface-muted px-3 py-2.5">
+            {logoUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={logoUrl}
+                alt=""
+                className="h-8 w-8 shrink-0 rounded-lg object-cover"
+              />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-text-primary">
+                {organizationName}
+              </p>
+              <p className="truncate text-xs text-text-muted" dir="ltr">
+                {email}
+              </p>
+            </div>
           </div>
         )}
 

@@ -181,7 +181,9 @@ export default async function SettingsPage({
             </div>
           </div>
 
-          <CollectionDayField defaultValue={organization.collectionDayOfMonth} />
+          {organization.workflowType === "recurring" && (
+            <CollectionDayField defaultValue={organization.collectionDayOfMonth} />
+          )}
 
           <button type="submit" className={buttonVariants({ variant: "primary", size: "lg" })}>
             שמירת הגדרות
