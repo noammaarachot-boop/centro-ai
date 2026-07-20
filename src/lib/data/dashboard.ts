@@ -1,6 +1,7 @@
-import { and, eq, gte, inArray, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
+  businessTypes,
   clients,
   collectionRequestRequirements,
   collectionRequests,
@@ -8,13 +9,15 @@ import {
   documents,
   services,
 } from "@/db/schema";
+import { AUTO_CLASSIFY_CONFIDENCE } from "@/lib/ai/businessTypeClassifier";
 
 export type DashboardQueue =
   | "active"
   | "waiting_for_client"
   | "needs_review"
   | "processing_documents"
-  | "completed_today";
+  | "completed_today"
+  | "business_type_suggestions";
 
 const NON_TERMINAL_STATUSES = [
   "draft",
@@ -104,6 +107,31 @@ export async function getDashboardCounts(organizationId: string) {
       )
     );
 
+  // Milestone 4 ("Unified Exceptions & Review Surface", Ch.4/Ch.7): clients
+  // auto-classified in the "suggested" band (70-94% — see
+  // src/lib/ai/businessTypeClassifier.ts) are worth a glance, distinct from
+  // the certain (95%+) majority that never needs the accountant's
+  // attention at all. Counted against total clients, not active collection
+  // requests — this queue isn't collection-request-shaped.
+  const [{ count: clientCount }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(clients)
+    .where(eq(clients.organizationId, organizationId));
+  // A non-null confidence is, by construction, always >= SUGGESTED_CONFIDENCE
+  // already (src/lib/ai/businessTypeClassifier.ts never persists a lower
+  // one) — so "non-null and below the certain band" is exactly the
+  // suggested band, no separate lower-bound check needed.
+  const [{ count: businessTypeSuggestionCount }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(clients)
+    .where(
+      and(
+        eq(clients.organizationId, organizationId),
+        isNotNull(clients.businessTypeConfidence),
+        lt(clients.businessTypeConfidence, AUTO_CLASSIFY_CONFIDENCE)
+      )
+    );
+
   const percentage = (count: number) =>
     activeCount === 0 ? 0 : Math.round((count / activeCount) * 100);
 
@@ -116,6 +144,10 @@ export async function getDashboardCounts(organizationId: string) {
       percentage: percentage(processingRows.length),
     },
     completedToday: { count: completedTodayCount, percentage: percentage(completedTodayCount) },
+    businessTypeSuggestions: {
+      count: businessTypeSuggestionCount,
+      percentage: clientCount === 0 ? 0 : Math.round((businessTypeSuggestionCount / clientCount) * 100),
+    },
   };
 }
 
@@ -262,6 +294,42 @@ export async function listQueue(
   }
 
   return Promise.all(rows.map((row) => buildQueueRow(row, db)));
+}
+
+export interface BusinessTypeSuggestionRow {
+  id: string;
+  name: string;
+  phone: string;
+  businessTypeName: string | null;
+  confidence: number;
+}
+
+// Milestone 4's drill-down for the "business_type_suggestions" card — a
+// client-shaped list, not a collection-request-shaped one like every other
+// queue, so it's its own function rather than a listQueue() branch.
+export async function listBusinessTypeSuggestions(
+  organizationId: string
+): Promise<BusinessTypeSuggestionRow[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({
+      id: clients.id,
+      name: clients.name,
+      phone: clients.phone,
+      businessTypeName: businessTypes.name,
+      confidence: clients.businessTypeConfidence,
+    })
+    .from(clients)
+    .leftJoin(businessTypes, eq(clients.businessTypeId, businessTypes.id))
+    .where(
+      and(
+        eq(clients.organizationId, organizationId),
+        isNotNull(clients.businessTypeConfidence),
+        lt(clients.businessTypeConfidence, AUTO_CLASSIFY_CONFIDENCE)
+      )
+    )
+    .orderBy(clients.name);
+  return rows.map((r) => ({ ...r, confidence: r.confidence ?? 0 }));
 }
 
 export async function searchClients(organizationId: string, query: string) {

@@ -6,10 +6,12 @@ import {
   FileSearch,
   Search,
   ShieldAlert,
+  Sparkles,
 } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import {
   getDashboardCounts,
+  listBusinessTypeSuggestions,
   listQueue,
   searchClients,
   type DashboardQueue,
@@ -19,6 +21,7 @@ import type { CollectionRequestStatus } from "@/lib/collectionRequestStateMachin
 import { PageHeader } from "@/components/app/PageHeader";
 import { KpiCard } from "@/components/app/KpiCard";
 import { Card } from "@/components/app/Card";
+import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
 
 const QUEUE_CARDS: Array<{
@@ -32,6 +35,12 @@ const QUEUE_CARDS: Array<{
   { queue: "needs_review", label: "דורש בדיקת עובד", icon: ShieldAlert, accent: "blue" },
   { queue: "processing_documents", label: "מסמכים בעיבוד", icon: FileSearch, accent: "cyan" },
   { queue: "completed_today", label: "הושלמו היום", icon: CheckCircle2, accent: "emerald" },
+  {
+    queue: "business_type_suggestions",
+    label: "הצעות סיווג לקוחות",
+    icon: Sparkles,
+    accent: "warning",
+  },
 ];
 
 const QUEUE_TITLES: Record<DashboardQueue, string> = {
@@ -40,6 +49,7 @@ const QUEUE_TITLES: Record<DashboardQueue, string> = {
   needs_review: "דורש בדיקת עובד",
   processing_documents: "מסמכים בעיבוד",
   completed_today: "הושלמו היום",
+  business_type_suggestions: "הצעות סיווג לקוחות",
 };
 
 function relativeTime(date: Date) {
@@ -62,6 +72,74 @@ export default async function DashboardPage({
   const { queue, q } = await searchParams;
 
   const searchResults = q?.trim() ? await searchClients(session.organizationId, q.trim()) : null;
+
+  // Milestone 4 — client-shaped, not collection-request-shaped like every
+  // other queue, so it's its own branch with its own table columns rather
+  // than trying to force it through the shared QueueRow rendering below.
+  if (queue === "business_type_suggestions") {
+    const suggestions = await listBusinessTypeSuggestions(session.organizationId);
+
+    return (
+      <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+        <Link
+          href="/dashboard"
+          className="mb-3 inline-flex items-center text-sm text-text-muted transition-colors hover:text-brand-purple"
+        >
+          ← חזרה ללוח הבקרה
+        </Link>
+        <PageHeader
+          title="הצעות סיווג לקוחות"
+          description="סיווגים אוטומטיים בביטחון בינוני — כדאי לוודא, אך הם כבר פעילים ואינם דורשים פעולה מיידית."
+        />
+
+        {suggestions.length === 0 ? (
+          <EmptyState
+            icon={CheckCircle2}
+            title="אין הצעות סיווג הממתינות לבדיקה"
+            description="כל הלקוחות המסווגים זוהו בביטחון גבוה, או שטרם יובאו לקוחות."
+          />
+        ) : (
+          <Card padding="none" className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[480px] text-end text-sm">
+                <thead className="sticky top-0 bg-surface-muted text-text-muted">
+                  <tr>
+                    <th className="px-5 py-3.5 font-medium">לקוח</th>
+                    <th className="px-5 py-3.5 font-medium">סוג עסק מוצע</th>
+                    <th className="px-5 py-3.5 font-medium">ביטחון</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {suggestions.map((row) => (
+                    <tr
+                      key={row.id}
+                      className="border-t border-border transition-colors hover:bg-surface-muted/60"
+                    >
+                      <td className="px-5 py-4">
+                        <Link
+                          href={`/clients/${row.id}`}
+                          className="font-medium text-text-primary transition-colors hover:text-brand-purple"
+                        >
+                          {row.name}
+                        </Link>
+                        <p className="text-xs text-text-muted" dir="ltr">
+                          {row.phone}
+                        </p>
+                      </td>
+                      <td className="px-5 py-4 text-text-secondary">{row.businessTypeName ?? "—"}</td>
+                      <td className="px-5 py-4">
+                        <Badge tone="warning">{row.confidence}%</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+      </div>
+    );
+  }
 
   if (queue && queue in QUEUE_TITLES) {
     const rows = await listQueue(session.organizationId, queue as DashboardQueue);
@@ -150,6 +228,7 @@ export default async function DashboardPage({
     needs_review: counts.needsReview,
     processing_documents: counts.documentsProcessing,
     completed_today: counts.completedToday,
+    business_type_suggestions: counts.businessTypeSuggestions,
   };
 
   return (
