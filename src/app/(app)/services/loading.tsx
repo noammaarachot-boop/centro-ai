@@ -1,5 +1,7 @@
-import { SkeletonTable } from "@/components/app/Skeleton";
+import { SkeletonPage } from "@/components/app/Skeleton";
 
+// /services renders a card-grid, not a table - SkeletonPage matches its
+// actual shape (was SkeletonTable, a mismatch).
 export default function ServicesLoading() {
-  return <SkeletonTable rows={5} />;
+  return <SkeletonPage cards={4} />;
 }

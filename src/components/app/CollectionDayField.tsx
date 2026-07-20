@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { clsx } from "clsx";
 import { HelpTip } from "@/components/app/HelpTip";
+import { fieldClass, type FieldSize } from "@/components/app/FormField";
 
 const COLLECTION_DAY_PRESETS = [1, 5, 10, 15, 20, 25];
 
@@ -15,7 +16,9 @@ const DEFAULT_HELP_TEXT =
 // which mode is active (server-side clamped again in
 // src/app/onboarding/actions.ts's clampCollectionDay — never trust the
 // client alone). Used by both the org-wide default (Settings) and the
-// per-Business-Type override (ServiceScheduleOverrideCard) forms.
+// per-Business-Type override (ServiceScheduleOverrideCard) forms. Field
+// styling comes from FormField.tsx's shared fieldClass() so this input
+// looks identical to every other text/select field in the app.
 export function CollectionDayField({
   defaultValue,
   disabled,
@@ -24,7 +27,7 @@ export function CollectionDayField({
 }: {
   defaultValue: number;
   disabled?: boolean;
-  size?: "sm" | "md";
+  size?: FieldSize;
   helpText?: string;
 }) {
   const isPreset = COLLECTION_DAY_PRESETS.includes(defaultValue);
@@ -32,14 +35,11 @@ export function CollectionDayField({
   const [presetDay, setPresetDay] = useState(isPreset ? defaultValue : COLLECTION_DAY_PRESETS[0]);
   const [customDay, setCustomDay] = useState(defaultValue);
 
-  const labelClass =
-    size === "sm"
-      ? "mb-1 flex items-center gap-1 text-xs font-medium text-text-secondary"
-      : "mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary";
-  const controlClass = clsx(
-    "rounded-lg border border-border bg-white text-text-primary outline-none focus:border-brand-purple",
-    size === "sm" ? "px-2.5 py-2 text-xs" : "px-3 py-2.5 text-sm"
+  const labelClass = clsx(
+    "mb-1.5 flex items-center gap-1 font-medium text-text-secondary",
+    size === "sm" ? "text-xs" : "text-sm"
   );
+  const controlClass = fieldClass(size, "cursor-pointer");
 
   return (
     <div>
@@ -61,7 +61,7 @@ export function CollectionDayField({
             }
           }}
           disabled={disabled}
-          className={controlClass}
+          className={clsx(controlClass, "w-auto")}
         >
           {COLLECTION_DAY_PRESETS.map((day) => (
             <option key={day} value={day}>
@@ -78,7 +78,7 @@ export function CollectionDayField({
             value={customDay}
             onChange={(e) => setCustomDay(Number(e.target.value))}
             disabled={disabled}
-            className={clsx(controlClass, "w-16")}
+            className={clsx(fieldClass(size), "w-16")}
           />
         )}
       </div>

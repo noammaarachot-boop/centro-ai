@@ -203,6 +203,27 @@ body {
   animation: centro-fade-in-up var(--duration-medium) var(--ease-standard) both;
 }
 
+/* A restrained echo of the landing page's ambient aurora — two soft,
+   static blurred washes (no drift animation, no grid overlay) for the
+   auth/onboarding shell only, where a plain flat background otherwise
+   reads as bare. Deliberately much quieter than the landing page's 8-blob
+   composition per the manifesto's "invisible motion, performance first" —
+   this must never compete with a form the user is trying to fill in. */
+.centro-app-ambient {
+  background:
+    radial-gradient(
+      36% 32% at 15% 10%,
+      color-mix(in oklab, var(--color-brand-purple) 10%, transparent) 0%,
+      transparent 100%
+    ),
+    radial-gradient(
+      34% 30% at 88% 85%,
+      color-mix(in oklab, var(--color-brand-cyan) 8%, transparent) 0%,
+      transparent 100%
+    ),
+    var(--color-background);
+}
+
 @keyframes centro-shimmer {
   from {
     background-position: 150% 0;

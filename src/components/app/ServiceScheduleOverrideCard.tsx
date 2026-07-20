@@ -6,6 +6,7 @@ import { Card } from "@/components/app/Card";
 import { Button } from "@/components/app/Button";
 import { HelpTip } from "@/components/app/HelpTip";
 import { CollectionDayField } from "@/components/app/CollectionDayField";
+import { fieldClass } from "@/components/app/FormField";
 import { updateServiceScheduleOverrides } from "@/app/onboarding/actions";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
@@ -97,7 +98,7 @@ export function ServiceScheduleOverrideCard({
                 defaultValue={businessHoursStart}
                 disabled={!useOverrides}
                 dir="ltr"
-                className="w-full rounded-lg border border-border bg-white px-2.5 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={fieldClass("sm")}
               />
             </div>
             <div>
@@ -110,7 +111,7 @@ export function ServiceScheduleOverrideCard({
                 defaultValue={businessHoursEnd}
                 disabled={!useOverrides}
                 dir="ltr"
-                className="w-full rounded-lg border border-border bg-white px-2.5 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={fieldClass("sm")}
               />
             </div>
           </div>
@@ -131,7 +132,7 @@ export function ServiceScheduleOverrideCard({
                 min={1}
                 defaultValue={reminderIntervalDays}
                 disabled={!useOverrides}
-                className="w-full rounded-lg border border-border bg-white px-2.5 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={fieldClass("sm")}
               />
             </div>
             <div>
@@ -150,7 +151,7 @@ export function ServiceScheduleOverrideCard({
                 min={1}
                 defaultValue={inactivityTimeoutMinutes}
                 disabled={!useOverrides}
-                className="w-full rounded-lg border border-border bg-white px-2.5 py-2 text-xs text-text-primary outline-none focus:border-brand-purple"
+                className={fieldClass("sm")}
               />
             </div>
           </div>

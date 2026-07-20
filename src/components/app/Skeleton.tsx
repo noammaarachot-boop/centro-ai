@@ -48,6 +48,31 @@ export function SkeletonDetail({ sections = 3 }: { sections?: number }) {
   );
 }
 
+// For day-grouped/card-list pages (Activity History) rather than a real
+// <table> — a plain stack of row-cards, distinct from SkeletonTable's
+// single bordered block with internal dividers.
+export function SkeletonList({ rows = 6 }: { rows?: number }) {
+  return (
+    <div className="mx-auto max-w-4xl px-6 py-10 lg:px-10">
+      <Skeleton className="mb-2 h-7 w-40" />
+      <Skeleton className="mb-8 h-4 w-80 max-w-full" />
+      <div className="space-y-2.5">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div
+            key={i}
+            className="rounded-xl border border-border bg-surface p-4 shadow-card"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-3 w-12" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SkeletonTable({ rows = 5 }: { rows?: number }) {
   return (
     <div className="mx-auto max-w-5xl px-6 py-12 lg:px-10">

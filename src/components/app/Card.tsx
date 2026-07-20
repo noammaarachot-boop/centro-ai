@@ -28,7 +28,7 @@ export function Card({
   return (
     <div
       className={clsx(
-        "rounded-2xl border border-border bg-surface shadow-card transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+        "rounded-2xl border border-border bg-surface shadow-card transition-all duration-300 ease-[var(--ease-standard)]",
         padding === "sm" && "p-4",
         padding === "md" && "p-6",
         padding === "lg" && "p-8",

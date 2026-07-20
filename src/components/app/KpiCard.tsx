@@ -47,6 +47,12 @@ function useCountUp(target: number, durationMs = 700) {
   return reducedMotion ? target : value;
 }
 
+// The one stat-tile primitive for the whole app — absorbs what used to be
+// OneTimeDashboard's separate, non-animated, non-linked local `StatTile`.
+// Omitting `href` renders a plain (non-interactive, non-glowing) tile;
+// omitting `percentage` simply doesn't render the second line. Two
+// rendering modes, one component, so every stat tile in the app shares
+// the same count-up/icon/typography treatment.
 export function KpiCard({
   href,
   label,
@@ -55,29 +61,23 @@ export function KpiCard({
   icon,
   accent,
 }: {
-  href: string;
+  href?: string;
   label: string;
   value: number;
-  percentage: number;
+  percentage?: number;
   icon: ReactNode;
   accent: Accent;
 }) {
   const animatedValue = useCountUp(value);
 
-  return (
-    <Link
-      href={href}
-      className={clsx(
-        "group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-border bg-surface p-5 shadow-card transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-        "hover:-translate-y-1 hover:border-transparent",
-        ACCENT_GLOW_CLASS[accent]
-      )}
-    >
+  const content = (
+    <>
       <div className="flex items-start justify-between">
         <p className="text-sm font-medium text-text-secondary">{label}</p>
         <span
           className={clsx(
-            "grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-transform duration-300 group-hover:scale-110",
+            "grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-transform duration-300",
+            href && "group-hover:scale-110",
             ACCENT_ICON_CLASS[accent]
           )}
         >
@@ -88,8 +88,31 @@ export function KpiCard({
         <p className="text-3xl font-bold tabular-nums text-text-primary">
           {animatedValue}
         </p>
-        <p className="mt-1 text-xs text-text-muted">{percentage}% מהפעילות</p>
+        {percentage !== undefined && (
+          <p className="mt-1 text-xs text-text-muted">{percentage}% מהפעילות</p>
+        )}
       </div>
+    </>
+  );
+
+  const baseClass = clsx(
+    "group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-border bg-surface p-5 shadow-card transition-all duration-300 ease-[var(--ease-standard)]"
+  );
+
+  if (!href) {
+    return <div className={baseClass}>{content}</div>;
+  }
+
+  return (
+    <Link
+      href={href}
+      className={clsx(
+        baseClass,
+        "hover:-translate-y-1 hover:border-transparent",
+        ACCENT_GLOW_CLASS[accent]
+      )}
+    >
+      {content}
     </Link>
   );
 }
