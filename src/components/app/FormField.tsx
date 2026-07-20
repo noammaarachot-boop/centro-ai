@@ -67,6 +67,7 @@ export function TextField({
   fieldSize = "md",
   className,
   id,
+  endAdornment,
   ...props
 }: InputHTMLAttributes<HTMLInputElement> & {
   label: string;
@@ -74,17 +75,28 @@ export function TextField({
   error?: string;
   fieldSize?: FieldSize;
   id: string;
+  /** e.g. a password show/hide toggle button, rendered at the field's
+   * logical start edge (so it sits correctly for an LTR-typed input —
+   * email/password/phone — inside this app's RTL page direction). */
+  endAdornment?: React.ReactNode;
 }) {
   return (
     <div>
       <FieldLabel htmlFor={id} label={label} optional={optional} fieldSize={fieldSize} />
-      <input
-        id={id}
-        className={fieldClass(fieldSize, className)}
-        aria-invalid={!!error}
-        aria-describedby={error ? `${id}-error` : undefined}
-        {...props}
-      />
+      <div className="relative">
+        <input
+          id={id}
+          className={fieldClass(fieldSize, clsx(endAdornment && "ps-11", className))}
+          aria-invalid={!!error}
+          aria-describedby={error ? `${id}-error` : undefined}
+          {...props}
+        />
+        {endAdornment && (
+          <span className="absolute inset-y-0 start-0 flex items-center px-3">
+            {endAdornment}
+          </span>
+        )}
+      </div>
       <FieldError id={id} error={error} />
     </div>
   );

@@ -2,8 +2,10 @@
 
 import { useActionState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Loader2, Mail } from "lucide-react";
+import { ArrowLeft, Mail } from "lucide-react";
 import { requestPasswordReset, type ForgotPasswordState } from "./actions";
+import { TextField } from "@/components/app/FormField";
+import { Button } from "@/components/app/Button";
 
 const initialState: ForgotPasswordState = {};
 
@@ -40,22 +42,17 @@ export function ForgotPasswordForm() {
         </p>
       </div>
 
-      <div>
-        <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-text-secondary">
-          אימייל
-        </label>
-        <input
-          id="email"
-          name="email"
-          type="email"
-          inputMode="email"
-          autoComplete="username"
-          dir="ltr"
-          required
-          className="w-full rounded-xl border border-border bg-white px-4 py-3 text-end text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
-          placeholder="name@example.com"
-        />
-      </div>
+      <TextField
+        id="email"
+        name="email"
+        label="אימייל"
+        type="email"
+        inputMode="email"
+        autoComplete="username"
+        dir="ltr"
+        required
+        placeholder="name@example.com"
+      />
 
       {state.error && (
         <p role="alert" className="text-xs font-medium text-danger">
@@ -63,20 +60,9 @@ export function ForgotPasswordForm() {
         </p>
       )}
 
-      <button
-        type="submit"
-        disabled={isPending}
-        className="flex w-full items-center justify-center gap-2 rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-6 py-3.5 text-base font-semibold text-white shadow-card-lg transition-transform hover:scale-[1.01] active:scale-[0.98] disabled:opacity-70"
-      >
-        {isPending ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            שולח...
-          </>
-        ) : (
-          "שליחת קישור לאיפוס"
-        )}
-      </button>
+      <Button type="submit" variant="primary" size="lg" loading={isPending} className="w-full">
+        {isPending ? "שולח..." : "שליחת קישור לאיפוס"}
+      </Button>
 
       <p className="text-center text-xs text-text-muted">
         <Link href="/login" className="font-medium text-brand-purple hover:underline">

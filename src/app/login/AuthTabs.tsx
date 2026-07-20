@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { clsx } from "clsx";
 import { LoginForm } from "./LoginForm";
 import { RegisterForm } from "./RegisterForm";
+import { Tabs } from "@/components/app/Tabs";
 
 type Mode = "login" | "register";
 
@@ -23,42 +23,17 @@ export function AuthTabs({ initialMode = "login" }: { initialMode?: Mode }) {
 
   return (
     <div>
-      <div
-        role="tablist"
-        aria-label="התחברות או הרשמה"
-        className="mb-6 flex gap-1 rounded-full border border-border bg-surface-muted p-1"
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "login"}
-          onClick={() => setMode("login")}
-          className={clsx(
-            "flex-1 rounded-full px-4 py-2 text-sm font-semibold transition-colors",
-            mode === "login"
-              ? "bg-white text-text-primary shadow-card"
-              : "text-text-muted hover:text-text-primary"
-          )}
-        >
-          התחברות
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "register"}
-          onClick={() => setMode("register")}
-          className={clsx(
-            "flex-1 rounded-full px-4 py-2 text-sm font-semibold transition-colors",
-            mode === "register"
-              ? "bg-white text-text-primary shadow-card"
-              : "text-text-muted hover:text-text-primary"
-          )}
-        >
-          יצירת חשבון
-        </button>
-      </div>
+      <Tabs
+        label="התחברות או הרשמה"
+        value={mode}
+        onChange={(v) => setMode(v as Mode)}
+        items={[
+          { value: "login", label: "התחברות" },
+          { value: "register", label: "יצירת חשבון" },
+        ]}
+      />
 
-      <h1 className="mb-1 text-xl font-semibold text-text-primary">
+      <h1 className="mt-6 mb-1 text-xl font-semibold text-text-primary">
         {COPY[mode].title}
       </h1>
       <p className="mb-6 text-sm text-text-secondary">{COPY[mode].description}</p>
