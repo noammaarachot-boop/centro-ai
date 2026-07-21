@@ -185,6 +185,26 @@ body {
   scrollbar-width: none;
 }
 
+/* Floating WhatsApp button (landing page only, see
+   FloatingWhatsAppButton.tsx) — a soft ambient glow breathing behind the
+   button, color-matched to the WhatsApp channel color, echoing the site's
+   "glow behind, never inside" hover mechanic. Already neutralised by the
+   prefers-reduced-motion rule above. */
+@keyframes centro-whatsapp-breathe {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.1);
+  }
+}
+.whatsapp-fab-glow {
+  animation: centro-whatsapp-breathe 3.2s var(--ease-standard) infinite;
+}
+
 /* -----------------------------------------------------------------
    Authenticated application (src/app/(app)/**, src/components/app/**)
    Purely additive utilities — the landing page never references these.

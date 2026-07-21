@@ -15,6 +15,7 @@ import FinalCTASection from "@/components/landing/FinalCTASection";
 import ContactSection from "@/components/landing/ContactSection";
 import Footer from "@/components/landing/Footer";
 import DemoRequestModal from "@/components/landing/DemoRequestModal";
+import FloatingWhatsAppButton from "@/components/landing/FloatingWhatsAppButton";
 
 export default function Home() {
   return (
@@ -44,6 +45,7 @@ export default function Home() {
       </main>
       <Footer />
       <DemoRequestModal />
+      <FloatingWhatsAppButton />
     </div>
   );
 }

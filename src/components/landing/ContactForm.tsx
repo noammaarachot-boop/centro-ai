@@ -12,10 +12,11 @@ type FieldErrors = {
   email?: string;
 };
 
-type Status = "idle" | "submitting" | "success";
+type Status = "idle" | "submitting" | "success" | "error";
 
 const PHONE_PATTERN = /^[\d\s\-+()]{7,16}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const GENERIC_ERROR = "משהו השתבש בשליחה. נסו שוב בעוד רגע.";
 
 function markSubmitted() {
   try {
@@ -29,10 +30,6 @@ function markSubmitted() {
  * Reused by both ContactSection (inline, end of page) and
  * DemoRequestModal (timed popup) — idPrefix keeps field ids unique
  * when both instances happen to be mounted at once.
- *
- * handleSubmit below is a placeholder: it does not call a backend yet.
- * To connect it, replace the simulated delay with a real request, e.g.
- * `await fetch("/api/leads", { method: "POST", body: JSON.stringify(values) })`.
  */
 export default function ContactForm({
   idPrefix,
@@ -48,6 +45,7 @@ export default function ContactForm({
   const [email, setEmail] = useState("");
   const [errors, setErrors] = useState<FieldErrors>({});
   const [status, setStatus] = useState<Status>("idle");
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   function validate(): FieldErrors {
     const next: FieldErrors = {};
@@ -67,17 +65,36 @@ export default function ContactForm({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (status === "submitting") return;
+
     const nextErrors = validate();
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
     setStatus("submitting");
-    // Placeholder submit — simulates a network call. Swap for a real
-    // request to your CRM/email endpoint when one exists.
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    markSubmitted();
-    setStatus("success");
-    onSuccess?.();
+    setSubmitError(null);
+
+    try {
+      const res = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, phone, email: email || undefined }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setSubmitError(data?.error || GENERIC_ERROR);
+        setStatus("error");
+        return;
+      }
+
+      markSubmitted();
+      setStatus("success");
+      onSuccess?.();
+    } catch {
+      setSubmitError(GENERIC_ERROR);
+      setStatus("error");
+    }
   }
 
   if (status === "success") {
@@ -196,6 +213,12 @@ export default function ContactForm({
           </p>
         )}
       </div>
+
+      {status === "error" && submitError && (
+        <p role="alert" className="text-center text-xs font-medium text-danger">
+          {submitError}
+        </p>
+      )}
 
       <button
         type="submit"
