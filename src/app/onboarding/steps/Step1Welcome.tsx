@@ -13,7 +13,7 @@ export function Step1Welcome({ displayName }: { displayName: string }) {
     <div className="relative pt-2 pb-1 text-center">
       <div
         aria-hidden="true"
-        className="centro-welcome-glow pointer-events-none absolute -top-9 start-1/2 -z-0 h-[170px] w-[260px] -translate-x-1/2 rounded-full blur-[30px]"
+        className="centro-welcome-glow pointer-events-none absolute -top-9 left-1/2 -z-0 h-[170px] w-[260px] -translate-x-1/2 rounded-full blur-[30px]"
         style={{
           background:
             "radial-gradient(circle, color-mix(in oklab, var(--color-brand-purple) 22%, transparent), transparent 70%)",

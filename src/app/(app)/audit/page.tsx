@@ -128,7 +128,7 @@ export default async function AuditLogPage({
             {RANGE_LABELS[r]}
           </Link>
         ))}
-        <form action="/audit" method="GET" className="flex items-center gap-1.5">
+        <form action="/audit" method="GET" className="flex flex-wrap items-center gap-1.5">
           <input type="hidden" name="range" value="custom" />
           <input
             type="date"
