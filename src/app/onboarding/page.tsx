@@ -196,7 +196,8 @@ export default async function OnboardingPage({
   } else if (organization.workflowType === "one_time") {
     switch (step) {
       case 6: {
-        body = <Step6OneTimeImport />;
+        const clientList = await listClients(session.organizationId);
+        body = <Step6OneTimeImport totalClients={clientList.length} />;
         break;
       }
       case 7: {

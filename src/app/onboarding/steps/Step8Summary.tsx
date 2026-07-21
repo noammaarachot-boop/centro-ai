@@ -1,4 +1,4 @@
-import { Circle } from "lucide-react";
+import { XCircle } from "lucide-react";
 import { buttonVariants } from "@/components/app/Button";
 import { AnimatedCheckBadge } from "@/components/app/AnimatedCheckBadge";
 import { advanceOnboardingStep } from "../actions";
@@ -14,8 +14,9 @@ const ROW_START_MS = 100;
 
 // Each row fades in in turn; a `done` row's checkmark draws in and the
 // row briefly highlights at the same moment (see .centro-summary-row* in
-// globals.css) — an incomplete row just fades in with its hollow circle,
-// nothing to "complete" yet.
+// globals.css). An incomplete/skipped row shows a red X instead of an
+// empty hollow circle — same row text either way, just a clear
+// done/not-done signal.
 function SummaryRow({ done, label, index }: { done: boolean; label: string; index: number }) {
   const delayMs = ROW_START_MS + index * ROW_STAGGER_MS;
   const rowStyle = { "--row-delay": `${delayMs}ms` } as React.CSSProperties;
@@ -27,7 +28,7 @@ function SummaryRow({ done, label, index }: { done: boolean; label: string; inde
       {done ? (
         <AnimatedCheckBadge size={20} delayMs={delayMs} className="shrink-0" />
       ) : (
-        <Circle className="h-5 w-5 shrink-0 text-text-muted" />
+        <XCircle className="h-5 w-5 shrink-0 text-danger" aria-hidden="true" />
       )}
       <span className={done ? "text-sm text-text-primary" : "text-sm text-text-muted"}>
         {label}

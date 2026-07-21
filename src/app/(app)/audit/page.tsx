@@ -107,7 +107,7 @@ export default async function AuditLogPage({
     <div className="mx-auto max-w-4xl animate-fade-in-up px-6 py-10 lg:px-10">
       <PageHeader
         title="פעילות"
-        description={`רשומות בלתי ניתנות לעריכה של כל האירועים המשמעותיים במערכת (Ch.17). מוצגות רשומות מהטווח: ${RANGE_LABELS[range]}.`}
+        description={`רשומות בלתי ניתנות לעריכה של כל האירועים המשמעותיים במערכת. מוצגות רשומות מהטווח: ${RANGE_LABELS[range]}.`}
       />
 
       {/* Every filter here is a real navigation (<Link> with a plain href,

@@ -98,24 +98,28 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <KpiCard
+          href="/templates"
           label="תבניות"
           value={counts.templateCount}
           icon={<LayoutTemplate className="h-4.5 w-4.5" aria-hidden="true" />}
           accent="purple"
         />
         <KpiCard
+          href="/clients"
           label="לקוחות"
           value={counts.clientCount}
           icon={<Users className="h-4.5 w-4.5" aria-hidden="true" />}
           accent="blue"
         />
         <KpiCard
+          href="/collections"
           label="בקשות פעילות"
           value={counts.activeRequestCount}
           icon={<Activity className="h-4.5 w-4.5" aria-hidden="true" />}
           accent="cyan"
         />
         <KpiCard
+          href="/collections"
           label="הושלמו השבוע"
           value={counts.completedThisWeekCount}
           icon={<CheckCircle2 className="h-4.5 w-4.5" aria-hidden="true" />}

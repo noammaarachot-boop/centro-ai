@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CentroMarkGlow } from "@/components/app/CentroMarkGlow";
 
 // The one auth-screen card shell — replaces the identical
@@ -31,6 +32,15 @@ export function AuthCard({
           )}
           {children}
         </div>
+        <p className="text-center text-xs text-text-muted">
+          <Link href="/terms" target="_blank" rel="noopener noreferrer" className="hover:text-brand-purple hover:underline">
+            תנאי שימוש
+          </Link>
+          {" · "}
+          <Link href="/privacy" target="_blank" rel="noopener noreferrer" className="hover:text-brand-purple hover:underline">
+            מדיניות פרטיות
+          </Link>
+        </p>
       </div>
     </main>
   );

@@ -86,6 +86,16 @@ export function WizardShell({
 
           {children}
         </div>
+
+        <p className="mt-4 text-center text-xs text-text-muted">
+          <Link href="/terms" target="_blank" rel="noopener noreferrer" className="hover:text-brand-purple hover:underline">
+            תנאי שימוש
+          </Link>
+          {" · "}
+          <Link href="/privacy" target="_blank" rel="noopener noreferrer" className="hover:text-brand-purple hover:underline">
+            מדיניות פרטיות
+          </Link>
+        </p>
       </div>
     </main>
   );

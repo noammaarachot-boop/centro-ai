@@ -919,6 +919,16 @@ export async function reassignClientBusinessType(formData: FormData) {
 // analysis summary. Reuses the same structure/column-detection engine as
 // the recurring import (so real, messy office files still work) purely to
 // locate the name/phone columns — never to classify anything.
+//
+// Product fix — bring this up to the same upload/replace/add-another
+// parity the recurring workflow already has: reuses the exact same
+// `importedDuringOnboarding` flag + replace-deletion query
+// importParsedRows already relies on above (safe, already-proven
+// mechanism — nothing new added to the schema), just applied to this
+// workflow's own simpler insert path. Stays on step 6 after a successful
+// import (self-redirect, same trick importParsedRows uses for step 7)
+// instead of auto-advancing, so the step can show a review state with
+// replace/add-another controls before the user explicitly continues.
 export interface OneTimeImportState {
   error?: string;
   result?: { imported: number; skipped: number };
@@ -930,6 +940,7 @@ export async function importClientsSimple(
 ): Promise<OneTimeImportState> {
   const session = await requireSession();
   const file = formData.get("file");
+  const mode = readImportMode(formData);
 
   if (!(file instanceof File) || file.size === 0) {
     return { error: "נא לבחור קובץ להעלאה." };
@@ -957,6 +968,41 @@ export async function importClientsSimple(
   const parsedRows = buildClientRowsFromMapping(dataRows, analysis.mapping);
 
   const db = await getDb();
+
+  // "Replace Excel file" — same guarded, onboarding-only deletion as the
+  // recurring workflow's importParsedRows: only clients this wizard's own
+  // import created, never a pre-existing or manually-added client.
+  if (mode === "replace") {
+    const [organization] = await db
+      .select({ onboardingCompletedAt: organizations.onboardingCompletedAt })
+      .from(organizations)
+      .where(eq(organizations.id, session.organizationId))
+      .limit(1);
+
+    if (!organization?.onboardingCompletedAt) {
+      const removed = await db
+        .delete(clients)
+        .where(
+          and(
+            eq(clients.organizationId, session.organizationId),
+            eq(clients.importedDuringOnboarding, true)
+          )
+        )
+        .returning({ id: clients.id });
+
+      if (removed.length > 0) {
+        await recordAuditEvent({
+          organizationId: session.organizationId,
+          eventType: "clients.import_replaced",
+          description: `קובץ הייבוא הוחלף — ${removed.length} לקוחות מהייבוא הקודם הוסרו`,
+          actorType: "employee",
+          actorUserId: session.userId,
+          metadata: { removedCount: removed.length },
+        });
+      }
+    }
+  }
+
   const existing = await db
     .select({ phone: clients.phone })
     .from(clients)
@@ -971,13 +1017,13 @@ export async function importClientsSimple(
       continue;
     }
     // Name and phone only — no email/notes, no importedBusinessTypeText,
-    // no importedDuringOnboarding (that flag exists solely for the
-    // recurring wizard's "Replace Excel file" feature, which Workflow B
-    // doesn't have).
+    // and no classification anywhere in this function — that part of the
+    // recurring workflow's import stays exactly as workflow-A-only.
     await db.insert(clients).values({
       organizationId: session.organizationId,
       name: row.name,
       phone: row.phone,
+      importedDuringOnboarding: true,
     });
     existingPhones.add(row.phone);
     imported += 1;
@@ -992,8 +1038,8 @@ export async function importClientsSimple(
     metadata: { imported, skipped },
   });
 
-  await setOnboardingStep(session.organizationId, 7);
-  redirect("/onboarding?step=7");
+  await setOnboardingStep(session.organizationId, 6);
+  redirect("/onboarding?step=6");
 }
 
 // Workflow B's own Step 7 ("Working Hours"). Unlike the recurring path's
