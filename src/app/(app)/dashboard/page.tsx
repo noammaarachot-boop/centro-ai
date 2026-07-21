@@ -27,7 +27,7 @@ import { KpiCard } from "@/components/app/KpiCard";
 import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
-import { AiBriefing } from "@/components/app/AiBriefing";
+import { AiBriefing, type AiBriefingAction } from "@/components/app/AiBriefing";
 import { ProgressBar } from "@/components/app/ProgressBar";
 import { Table, TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 
@@ -97,6 +97,38 @@ function buildBriefing(counts: Awaited<ReturnType<typeof getDashboardCounts>>) {
   }
 
   return "אין עבודה פעילה כרגע — הכול נקי ומעודכן.";
+}
+
+// The same "needs attention" priority order buildBriefing() already
+// summarizes in prose, rendered as individually clickable chips. Every
+// href here already exists on the KpiCard grid below — purely a visual
+// shortcut onto existing navigation, not a new capability.
+function buildBriefingActions(
+  counts: Awaited<ReturnType<typeof getDashboardCounts>>
+): AiBriefingAction[] {
+  const actions: AiBriefingAction[] = [];
+  if (counts.needsReview.count > 0) {
+    actions.push({
+      href: "/dashboard?queue=needs_review",
+      label: "דורשות בדיקת עובד",
+      count: counts.needsReview.count,
+    });
+  }
+  if (counts.pendingConfirmations.count > 0) {
+    actions.push({
+      href: "/dashboard?queue=pending_confirmations",
+      label: "ממתינות לאישור לקוח",
+      count: counts.pendingConfirmations.count,
+    });
+  }
+  if (counts.businessTypeSuggestions.count > 0) {
+    actions.push({
+      href: "/dashboard?queue=business_type_suggestions",
+      label: "הצעות סיווג לקוחות",
+      count: counts.businessTypeSuggestions.count,
+    });
+  }
+  return actions;
 }
 
 function relativeTime(date: Date) {
@@ -311,6 +343,15 @@ export default async function DashboardPage({
     pending_confirmations: counts.pendingConfirmations,
   };
 
+  // Centro Glow's approved two-tier hierarchy: the single most urgent
+  // queue (needs_review — same item buildBriefing() already puts first)
+  // gets the large primary tile; every other queue stays a calm, equally-
+  // weighted tile. Purely a presentational split of the same QUEUE_CARDS
+  // list and countsByQueue map used before — no new data, no changed
+  // hrefs, no changed queue semantics.
+  const primaryCard = QUEUE_CARDS.find((c) => c.queue === "needs_review")!;
+  const calmCards = QUEUE_CARDS.filter((c) => c.queue !== "needs_review");
+
   return (
     <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
       <PageHeader
@@ -319,7 +360,7 @@ export default async function DashboardPage({
         description="תמונת מצב של העבודה הפעילה כרגע — לא רשימת כל הלקוחות."
       />
 
-      <AiBriefing text={buildBriefing(counts)} />
+      <AiBriefing text={buildBriefing(counts)} actions={buildBriefingActions(counts)} />
 
       <form action="/dashboard" method="GET" className="mb-8 flex items-center gap-2">
         <div className="relative flex-1">
@@ -329,12 +370,12 @@ export default async function DashboardPage({
             type="text"
             defaultValue={q ?? ""}
             placeholder="חיפוש לקוח לפי שם או טלפון..."
-            className="w-full rounded-xl border border-border bg-surface ps-10 pe-4 py-3 text-sm text-text-primary shadow-card outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
+            className="centro-glass w-full rounded-xl border border-border ps-10 pe-4 py-3 text-sm text-text-primary shadow-card outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
           />
         </div>
         <button
           type="submit"
-          className="rounded-xl border border-border bg-surface px-5 py-3 text-sm font-medium text-text-secondary shadow-card transition-all hover:border-brand-purple hover:text-brand-purple"
+          className="centro-glass rounded-xl border border-border px-5 py-3 text-sm font-medium text-text-secondary shadow-card transition-all hover:border-brand-purple hover:text-brand-purple"
         >
           חיפוש
         </button>
@@ -361,21 +402,32 @@ export default async function DashboardPage({
         </Card>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        {QUEUE_CARDS.map(({ queue: cardQueue, label, icon: Icon, accent }) => {
-          const { count, percentage } = countsByQueue[cardQueue];
-          return (
-            <KpiCard
-              key={cardQueue}
-              href={`/dashboard?queue=${cardQueue}`}
-              label={label}
-              value={count}
-              percentage={percentage}
-              icon={<Icon className="h-4.5 w-4.5" aria-hidden="true" />}
-              accent={accent}
-            />
-          );
-        })}
+      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[300px_1fr]">
+        <KpiCard
+          href={`/dashboard?queue=${primaryCard.queue}`}
+          label={primaryCard.label}
+          value={countsByQueue[primaryCard.queue].count}
+          sub="הפריט הכי דחוף כרגע — כדאי להתחיל כאן"
+          icon={<primaryCard.icon className="h-5 w-5" aria-hidden="true" />}
+          accent={primaryCard.accent}
+          variant="primary"
+        />
+        <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3">
+          {calmCards.map(({ queue: cardQueue, label, icon: Icon, accent }) => {
+            const { count, percentage } = countsByQueue[cardQueue];
+            return (
+              <KpiCard
+                key={cardQueue}
+                href={`/dashboard?queue=${cardQueue}`}
+                label={label}
+                value={count}
+                percentage={percentage}
+                icon={<Icon className="h-4.5 w-4.5" aria-hidden="true" />}
+                accent={accent}
+              />
+            );
+          })}
+        </div>
       </div>
     </div>
   );

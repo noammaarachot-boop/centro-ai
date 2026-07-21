@@ -244,6 +244,204 @@ body {
 }
 
 /* -----------------------------------------------------------------
+   Centro Glow — the app's premium visual language, approved after a
+   round of static mockup review (Dashboard first, then every other
+   screen). Additive only: new utilities layered on the same tokens
+   above, never a changed value. Applies app-wide going forward.
+----------------------------------------------------------------- */
+
+/* The app shell's ambient wash — mounted once at (app)/layout.tsx's
+   outer wrapper so every authenticated screen shares one atmosphere,
+   rather than each page redeclaring its own. Distinct from
+   .centro-app-ambient below (auth/onboarding only, deliberately
+   quieter) — this is the richer wash validated across every screen in
+   the approved review, now the app's default background treatment. */
+.centro-glow-field {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-brand-purple) 5.5%, transparent),
+      transparent 32%
+    ),
+    radial-gradient(
+      46% 40% at 12% 4%,
+      color-mix(in oklab, var(--color-brand-blue) 12%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      50% 46% at 90% 98%,
+      color-mix(in oklab, var(--color-brand-purple) 11%, transparent),
+      transparent 74%
+    ),
+    radial-gradient(
+      38% 32% at 72% 2%,
+      color-mix(in oklab, var(--color-brand-cyan) 10%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      32% 28% at 2% 70%,
+      color-mix(in oklab, var(--color-brand-cyan) 8%, transparent),
+      transparent 70%
+    );
+}
+
+/* A near-imperceptible static grain — a tactile/premium detail, opacity
+   low enough to read as "considered," never as visible noise. */
+.centro-grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.02;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Glass surfaces — the base for hero/briefing panels and elevated
+   cards. Translucent + backdrop-blur, distinct from Card's existing
+   solid --color-surface fill, so .centro-glow-field reads through it. */
+.centro-glass {
+  background: color-mix(in oklab, var(--color-surface) 74%, transparent);
+  backdrop-filter: blur(18px);
+}
+.centro-glass-strong {
+  background: color-mix(in oklab, var(--color-surface) 95%, transparent);
+  backdrop-filter: blur(24px);
+}
+
+/* The AI signature gradient — Deep Blue -> Premium Purple -> Electric
+   Teal. Reserved for AI-authored surfaces (the briefing's own accents,
+   an "AI" actor dot, a progress fill) — never a generic decorative
+   fill, so it stays a meaningful signal. */
+.centro-ai-gradient {
+  background: linear-gradient(
+    120deg,
+    var(--color-brand-blue),
+    var(--color-brand-purple) 52%,
+    var(--color-brand-cyan)
+  );
+}
+.centro-ai-gradient-text {
+  background: linear-gradient(
+    120deg,
+    var(--color-brand-blue),
+    var(--color-brand-purple) 52%,
+    var(--color-brand-cyan)
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+/* Icon badges — a soft two-stop gradient + a small colored shadow,
+   never a flat gray tint. One class per accent; a given icon picks
+   whichever accent matches what it means (communication -> blue,
+   AI/classification -> purple, throughput -> teal, success -> emerald,
+   needs-attention -> warning) — the same mapping used consistently
+   across every screen. */
+.centro-icon-blue {
+  background: linear-gradient(140deg, #d7e3ff, #adc2ff);
+  color: #2245d6;
+  box-shadow:
+    0 2px 4px -2px color-mix(in oklab, var(--color-brand-blue) 15%, transparent),
+    0 5px 14px -8px color-mix(in oklab, var(--color-brand-blue) 40%, transparent);
+}
+.centro-icon-purple {
+  background: linear-gradient(140deg, #e9d9ff, #c9a3ff);
+  color: #6423c9;
+  box-shadow:
+    0 2px 4px -2px color-mix(in oklab, var(--color-brand-purple) 15%, transparent),
+    0 5px 14px -8px color-mix(in oklab, var(--color-brand-purple) 40%, transparent);
+}
+.centro-icon-teal {
+  background: linear-gradient(140deg, #c6f0f2, #8fdfe4);
+  color: #0c7f8b;
+  box-shadow:
+    0 2px 4px -2px color-mix(in oklab, var(--color-brand-cyan) 15%, transparent),
+    0 5px 14px -8px color-mix(in oklab, var(--color-brand-cyan) 40%, transparent);
+}
+.centro-icon-emerald {
+  background: linear-gradient(140deg, #cdf2e2, #98e0bf);
+  color: #0a8a5f;
+  box-shadow:
+    0 2px 4px -2px color-mix(in oklab, var(--color-brand-emerald) 15%, transparent),
+    0 5px 14px -8px color-mix(in oklab, var(--color-brand-emerald) 40%, transparent);
+}
+.centro-icon-warning {
+  background: linear-gradient(140deg, #ffe6b0, #ffc873);
+  color: #7a4e05;
+  box-shadow:
+    0 2px 4px -2px color-mix(in oklab, var(--color-warning) 20%, transparent),
+    0 6px 16px -8px color-mix(in oklab, var(--color-warning) 40%, transparent);
+}
+
+/* The hover-glow-behind-card mechanic — every clickable card in the
+   app uses this. The glow sits behind the card (negative z-index,
+   large blur, spread mostly downward) and matches whichever accent
+   the card's own icon uses. Kept extremely soft per the approved
+   review — "barely noticeable at first, never bright or distracting." */
+@keyframes centro-glow-breathe {
+  0% {
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.1;
+  }
+  50% {
+    opacity: 0.14;
+  }
+  75% {
+    opacity: 0.09;
+  }
+  100% {
+    opacity: 0.11;
+  }
+}
+.centro-live-card {
+  position: relative;
+}
+.centro-live-card::after {
+  content: "";
+  position: absolute;
+  z-index: -2;
+  inset: 4% -12% -38% -12%;
+  border-radius: inherit;
+  filter: blur(48px);
+  opacity: 0;
+}
+.centro-live-card:hover::after {
+  animation: centro-glow-breathe 3.2s var(--ease-standard) infinite;
+}
+.centro-live-card.centro-glow-blue::after {
+  background: var(--color-brand-blue);
+}
+.centro-live-card.centro-glow-purple::after {
+  background: var(--color-brand-purple);
+}
+.centro-live-card.centro-glow-teal::after {
+  background: var(--color-brand-cyan);
+}
+.centro-live-card.centro-glow-emerald::after {
+  background: var(--color-brand-emerald);
+}
+.centro-live-card.centro-glow-warning::after {
+  background: var(--color-warning);
+}
+.centro-live-card.centro-glow-danger::after {
+  background: var(--color-danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .centro-live-card:hover::after {
+    animation: none;
+    opacity: 0.12;
+  }
+}
+
+/* -----------------------------------------------------------------
    Accessibility panel overrides (src/components/landing/Accessibility*)
    Purely additive: each rule only activates when the corresponding
    data-attribute is set on <html> by AccessibilityProvider, so the

@@ -27,7 +27,9 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-background lg:flex-row">
+    <div className="relative flex min-h-screen flex-col bg-background lg:flex-row">
+      <div className="centro-glow-field" aria-hidden="true" />
+      <div className="centro-grain" aria-hidden="true" />
       <Sidebar
         organizationName={session.organizationName}
         email={session.email}
@@ -35,7 +37,7 @@ export default async function AppLayout({
         workflowType={organization?.workflowType ?? "recurring"}
         logoutAction={logout}
       />
-      <main className="min-w-0 flex-1">{children}</main>
+      <main className="relative z-[1] min-w-0 flex-1">{children}</main>
     </div>
   );
 }

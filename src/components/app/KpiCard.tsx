@@ -6,20 +6,24 @@ import { clsx } from "clsx";
 
 type Accent = "purple" | "blue" | "cyan" | "emerald" | "warning";
 
+// Centro Glow — icon badges are a soft two-stop gradient + a small
+// colored shadow (never a flat tint), and the card's own hover glow
+// lives behind it (`.centro-live-card`'s ::after), matched to the same
+// accent, instead of a bright box-shadow directly on the card.
 const ACCENT_ICON_CLASS: Record<Accent, string> = {
-  purple: "bg-brand-purple/10 text-brand-purple",
-  blue: "bg-brand-blue/10 text-brand-blue",
-  cyan: "bg-brand-cyan/10 text-brand-cyan",
-  emerald: "bg-brand-emerald/10 text-brand-emerald",
-  warning: "bg-warning/10 text-warning",
+  purple: "centro-icon-purple",
+  blue: "centro-icon-blue",
+  cyan: "centro-icon-teal",
+  emerald: "centro-icon-emerald",
+  warning: "centro-icon-warning",
 };
 
 const ACCENT_GLOW_CLASS: Record<Accent, string> = {
-  purple: "hover:shadow-[var(--shadow-glow-purple)]",
-  blue: "hover:shadow-[var(--shadow-glow-blue)]",
-  cyan: "hover:shadow-[var(--shadow-glow-cyan)]",
-  emerald: "hover:shadow-[var(--shadow-glow-emerald)]",
-  warning: "hover:shadow-[var(--shadow-glow-warning)]",
+  purple: "centro-glow-purple",
+  blue: "centro-glow-blue",
+  cyan: "centro-glow-teal",
+  emerald: "centro-glow-emerald",
+  warning: "centro-glow-warning",
 };
 
 function useCountUp(target: number, durationMs = 700) {
@@ -50,9 +54,11 @@ function useCountUp(target: number, durationMs = 700) {
 // The one stat-tile primitive for the whole app — absorbs what used to be
 // OneTimeDashboard's separate, non-animated, non-linked local `StatTile`.
 // Omitting `href` renders a plain (non-interactive, non-glowing) tile;
-// omitting `percentage` simply doesn't render the second line. Two
-// rendering modes, one component, so every stat tile in the app shares
-// the same count-up/icon/typography treatment.
+// omitting `percentage` simply doesn't render the second line.
+// `variant="primary"` is the single, larger "needs you most" tile a
+// dashboard puts beside its calm KpiCard grid (Centro Glow's approved
+// two-tier hierarchy) — same component, just more visual weight and an
+// optional `sub` caption in place of the percentage line.
 export function KpiCard({
   href,
   label,
@@ -60,6 +66,8 @@ export function KpiCard({
   percentage,
   icon,
   accent,
+  variant = "default",
+  sub,
 }: {
   href?: string;
   label: string;
@@ -67,16 +75,20 @@ export function KpiCard({
   percentage?: number;
   icon: ReactNode;
   accent: Accent;
+  variant?: "default" | "primary";
+  sub?: string;
 }) {
   const animatedValue = useCountUp(value);
+  const isPrimary = variant === "primary";
 
   const content = (
     <>
       <div className="flex items-start justify-between">
-        <p className="text-sm font-medium text-text-secondary">{label}</p>
+        <p className="text-sm font-semibold text-text-secondary">{label}</p>
         <span
           className={clsx(
-            "grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-transform duration-300",
+            "grid shrink-0 place-items-center rounded-xl transition-transform duration-300 ease-[var(--ease-standard)]",
+            isPrimary ? "h-10 w-10" : "h-[33px] w-[33px]",
             href && "group-hover:scale-110",
             ACCENT_ICON_CLASS[accent]
           )}
@@ -84,19 +96,29 @@ export function KpiCard({
           {icon}
         </span>
       </div>
-      <div className="mt-4">
-        <p className="text-3xl font-bold tabular-nums text-text-primary">
+      <div className={isPrimary ? "mt-5" : "mt-4"}>
+        <p
+          className={clsx(
+            "font-bold tabular-nums text-text-primary",
+            isPrimary ? "text-[52px] leading-none tracking-tight" : "text-2xl"
+          )}
+        >
           {animatedValue}
         </p>
-        {percentage !== undefined && (
-          <p className="mt-1 text-xs text-text-muted">{percentage}% מהפעילות</p>
+        {isPrimary && sub ? (
+          <p className="mt-2 text-xs leading-relaxed text-text-secondary">{sub}</p>
+        ) : (
+          percentage !== undefined && (
+            <p className="mt-1 text-xs text-text-muted">{percentage}% מהפעילות</p>
+          )
         )}
       </div>
     </>
   );
 
   const baseClass = clsx(
-    "group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-border bg-surface p-5 shadow-card transition-all duration-300 ease-[var(--ease-standard)]"
+    "group relative flex flex-col justify-between rounded-2xl border border-border shadow-card transition-all duration-300 ease-[var(--ease-standard)]",
+    isPrimary ? "centro-glass-strong p-7" : "centro-glass p-5"
   );
 
   if (!href) {
@@ -106,11 +128,7 @@ export function KpiCard({
   return (
     <Link
       href={href}
-      className={clsx(
-        baseClass,
-        "hover:-translate-y-1 hover:border-transparent",
-        ACCENT_GLOW_CLASS[accent]
-      )}
+      className={clsx(baseClass, "centro-live-card hover:-translate-y-1", ACCENT_GLOW_CLASS[accent])}
     >
       {content}
     </Link>

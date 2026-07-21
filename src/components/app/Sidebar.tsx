@@ -171,7 +171,7 @@ export function Sidebar({
           chrome/brand presence and the trigger to open it. Previously
           there was no mobile handling at all: the sidebar was a fixed
           w-64/w-[76px] column regardless of viewport. */}
-      <div className="sticky top-0 z-30 flex items-center justify-between border-b border-border bg-surface/80 px-4 py-3 backdrop-blur-xl lg:hidden">
+      <div className="centro-glass-strong sticky top-0 z-30 flex items-center justify-between border-b border-border px-4 py-3 lg:hidden">
         <button
           type="button"
           onClick={() => setMobileOpen(true)}
@@ -203,9 +203,9 @@ export function Sidebar({
           // computed-style inspection: it fell back to left-anchored
           // positioning instead), so the physical property is the correct,
           // unambiguous choice here specifically.
-          "fixed inset-y-0 right-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col border-s border-border bg-surface transition-transform duration-300 ease-[var(--ease-standard)]",
+          "centro-glass-strong fixed inset-y-0 right-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col border-s border-border transition-transform duration-300 ease-[var(--ease-standard)]",
           mobileOpen ? "translate-x-0" : "translate-x-full",
-          "lg:sticky lg:top-0 lg:z-auto lg:w-64 lg:translate-x-0 lg:border-s-0 lg:border-e lg:bg-surface/80 lg:backdrop-blur-xl lg:transition-[width]",
+          "lg:sticky lg:top-0 lg:z-auto lg:w-64 lg:translate-x-0 lg:border-s-0 lg:border-e lg:transition-[width]",
           collapsed && "lg:w-[76px]"
         )}
       >
