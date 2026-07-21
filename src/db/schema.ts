@@ -23,14 +23,34 @@ export const workflowTypeEnum = pgEnum("workflow_type", ["recurring", "one_time"
 //
 // The three *ConnectedAt / *ActivatedAt columns track the Ch.3 onboarding
 // gate (BR-001: "Automation cannot be activated until all mandatory
-// integrations are connected"). Google/WhatsApp connection is mocked for
-// now (M5/M6 wire real OAuth) — a timestamp is set directly by the
-// onboarding UI instead of a real callback, but the gating logic against
-// these columns is the real, permanent logic.
+// integrations are connected"). WhatsApp connection is still mocked (a
+// timestamp set directly by the onboarding UI, no real callback yet).
+// Google Drive is real: googleConnectedAt is set by the actual OAuth
+// callback (src/app/api/auth/google/callback/route.ts) once tokens are
+// obtained, and automation additionally requires googleDriveFolderId to
+// be set (see tryActivateAutomation in onboarding/actions.ts) — Centro
+// must have both a connected account and a selected folder before it can
+// do anything with Drive.
 export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   googleConnectedAt: timestamp("google_connected_at", { withTimezone: true }),
+  // Encrypted at rest (AES-256-GCM, src/lib/googleAuth/tokenCipher.ts) —
+  // these grant real access to a real Google Drive folder, never stored or
+  // logged in plaintext. refreshToken is nullable because Google only
+  // issues one on the very first consent (with prompt=consent); a later
+  // token refresh response never repeats it, so an existing refresh token
+  // must never be overwritten with null.
+  googleAccessTokenEnc: text("google_access_token_enc"),
+  googleRefreshTokenEnc: text("google_refresh_token_enc"),
+  googleTokenExpiresAt: timestamp("google_token_expires_at", { withTimezone: true }),
+  // The single folder Centro is scoped to for this organization — chosen
+  // by the user (existing folder via Google Picker, or a newly created
+  // one) right after OAuth, under the minimal drive.file scope (see
+  // src/lib/googleAuth/config.ts). Centro never has access to anything
+  // outside this folder.
+  googleDriveFolderId: text("google_drive_folder_id"),
+  googleDriveFolderName: text("google_drive_folder_name"),
   whatsappConnectedAt: timestamp("whatsapp_connected_at", {
     withTimezone: true,
   }),

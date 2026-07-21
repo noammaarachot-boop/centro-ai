@@ -148,6 +148,13 @@
       "when": 1784566052452,
       "tag": "0020_safe_ironclad",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784646425585,
+      "tag": "0021_demonic_masque",
+      "breakpoints": true
     }
   ]
 }

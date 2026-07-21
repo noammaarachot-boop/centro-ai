@@ -35,6 +35,11 @@ import {
   classifyClientBusinessType,
   SUGGESTED_CONFIDENCE as SUGGESTED_THRESHOLD,
 } from "@/lib/ai/businessTypeClassifier";
+import {
+  clearTokens as clearGoogleTokens,
+  getValidAccessToken as getValidGoogleAccessToken,
+} from "@/lib/googleAuth/driveTokens";
+import { createDriveFolder, getDriveFolder } from "@/lib/googleAuth/drive";
 
 // >=95: silently auto-classified. 70-94: auto-classified but flagged
 // "suggested" in the UI. Below 70: never applied — left Unclassified and
@@ -285,26 +290,87 @@ async function setIntegrationTimestamp(
   refresh();
 }
 
-// Google/WhatsApp connection is mocked here per the "build against mocks
-// first" decision — these set the same organizations columns a real OAuth
-// callback will set in M5/M6, so the activation gate below never has to
-// change.
-export async function connectGoogle() {
-  await setIntegrationTimestamp(
-    "googleConnectedAt",
-    new Date(),
-    "integration.google_connected",
-    "חשבון Google חובר (הדגמה)"
-  );
+// Google Drive connection is real (src/app/api/auth/google/*) — the
+// "Connect" button in Step3Connect is a plain link to /api/auth/google/start,
+// not a form action, since it has to end in a full-page redirect to
+// accounts.google.com. WhatsApp remains mocked below.
+export async function disconnectGoogleDrive() {
+  const session = await requireSession();
+  await clearGoogleTokens(session.organizationId);
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "integration.google_disconnected",
+    description: "חיבור חשבון Google נותק",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+  // Always submitted from Step 3 itself — refresh() alone, no redirect().
+  refresh();
 }
 
-export async function disconnectGoogle() {
-  await setIntegrationTimestamp(
-    "googleConnectedAt",
-    null,
-    "integration.google_disconnected",
-    "חיבור חשבון Google נותק"
-  );
+// Real Drive API calls, scoped to the organization's own valid access
+// token (src/lib/googleAuth/driveTokens.ts refreshes it transparently if
+// needed). Both actions are only ever reachable once googleConnectedAt is
+// set (Step3Connect only renders them in that state).
+export async function createGoogleDriveFolder(formData: FormData) {
+  const session = await requireSession();
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) {
+    redirect("/onboarding?step=5&error=google-folder-failed");
+  }
+
+  try {
+    const accessToken = await getValidGoogleAccessToken(session.organizationId);
+    const folder = await createDriveFolder(accessToken, name);
+    await persistSelectedFolder(session.organizationId, folder.id, folder.name);
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "integration.google_folder_selected",
+      description: `נוצרה תיקיית Drive חדשה: ${folder.name}`,
+      actorType: "employee",
+      actorUserId: session.userId,
+    });
+  } catch (error) {
+    console.error("[google-drive] folder creation failed", error);
+    redirect("/onboarding?step=5&error=google-folder-failed");
+  }
+  // Always submitted from Step 3 itself — refresh() alone, no redirect().
+  refresh();
+}
+
+// Called directly (not as a <form> action) from GoogleDriveFolderPicker's
+// client-side Picker callback, so it returns a result instead of
+// redirecting — the caller triggers its own router.refresh(). Takes only
+// the folder id Picker returned — the name is never trusted from the
+// client, always re-fetched from Google below.
+export async function selectGoogleDriveFolder(
+  folderId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const session = await requireSession();
+  try {
+    const accessToken = await getValidGoogleAccessToken(session.organizationId);
+    const folder = await getDriveFolder(accessToken, folderId);
+    await persistSelectedFolder(session.organizationId, folder.id, folder.name);
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "integration.google_folder_selected",
+      description: `נבחרה תיקיית Drive קיימת: ${folder.name}`,
+      actorType: "employee",
+      actorUserId: session.userId,
+    });
+    return { ok: true };
+  } catch (error) {
+    console.error("[google-drive] folder selection failed", error);
+    return { ok: false, error: "google-folder-failed" };
+  }
+}
+
+async function persistSelectedFolder(organizationId: string, folderId: string, folderName: string) {
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({ googleDriveFolderId: folderId, googleDriveFolderName: folderName, updatedAt: new Date() })
+    .where(eq(organizations.id, organizationId));
 }
 
 export async function connectWhatsapp() {
@@ -341,7 +407,14 @@ async function tryActivateAutomation(session: {
     .where(eq(organizations.id, session.organizationId))
     .limit(1);
 
-  if (!organization?.googleConnectedAt || !organization?.whatsappConnectedAt) {
+  // Google Drive requires both a connected account and a selected folder
+  // — Centro has nowhere to store documents until a folder is chosen, so
+  // "connected" alone is not enough to gate automation on.
+  if (
+    !organization?.googleConnectedAt ||
+    !organization?.googleDriveFolderId ||
+    !organization?.whatsappConnectedAt
+  ) {
     return false;
   }
   if (organization.automationActivatedAt) return true;

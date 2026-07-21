@@ -131,6 +131,18 @@ function clampStep(value: number, totalSteps: number): number {
   return Math.min(Math.max(value, 1), totalSteps);
 }
 
+// Every ?error= code that can land back on step 5 (Step3Connect) —
+// the automation-activation gate (Settings) and every Google OAuth
+// failure mode (src/app/api/auth/google/*, onboarding/actions.ts).
+const STEP5_ERROR_MESSAGES: Record<string, string> = {
+  "integrations-required": "לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.",
+  "google-denied": "החיבור לחשבון Google בוטל.",
+  "google-invalid-state": "אימות החיבור לחשבון Google נכשל. נסו לחבר שוב.",
+  "google-oauth-failed": "החיבור לחשבון Google נכשל. נסו שוב בעוד רגע.",
+  "google-not-configured": "חיבור Google אינו זמין כרגע. פנו לתמיכה.",
+  "google-folder-failed": "בחירת/יצירת התיקייה ב-Drive נכשלה. נסו שוב.",
+};
+
 export default async function OnboardingPage({
   searchParams,
 }: {
@@ -187,6 +199,8 @@ export default async function OnboardingPage({
         body = (
           <Step3Connect
             googleConnectedAt={organization.googleConnectedAt}
+            googleDriveFolderId={organization.googleDriveFolderId}
+            googleDriveFolderName={organization.googleDriveFolderName}
             whatsappConnectedAt={organization.whatsappConnectedAt}
           />
         );
@@ -312,12 +326,12 @@ export default async function OnboardingPage({
       help={meta.help}
       hidePrevious={step === 1}
     >
-      {error === "integrations-required" && step === 5 && (
+      {error && step === 5 && STEP5_ERROR_MESSAGES[error] && (
         <p
           role="alert"
           className="mb-4 animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
-          לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.
+          {STEP5_ERROR_MESSAGES[error]}
         </p>
       )}
       {body}
