@@ -15,7 +15,7 @@ export function SkeletonPage({ cards = 3 }: { cards?: number }) {
         {Array.from({ length: cards }).map((_, i) => (
           <div
             key={i}
-            className="rounded-2xl border border-border bg-surface p-5 shadow-card"
+            className="centro-glass rounded-2xl border border-border p-5 shadow-card"
           >
             <Skeleton className="mb-4 h-4 w-24" />
             <Skeleton className="mb-2 h-8 w-16" />
@@ -36,7 +36,7 @@ export function SkeletonDetail({ sections = 3 }: { sections?: number }) {
         {Array.from({ length: sections }).map((_, i) => (
           <div
             key={i}
-            className="rounded-2xl border border-border bg-surface p-6 shadow-card"
+            className="centro-glass rounded-2xl border border-border p-6 shadow-card"
           >
             <Skeleton className="mb-4 h-4 w-32" />
             <Skeleton className="mb-2.5 h-10 w-full" />
@@ -60,7 +60,7 @@ export function SkeletonList({ rows = 6 }: { rows?: number }) {
         {Array.from({ length: rows }).map((_, i) => (
           <div
             key={i}
-            className="rounded-xl border border-border bg-surface p-4 shadow-card"
+            className="centro-glass rounded-xl border border-border p-4 shadow-card"
           >
             <div className="flex items-center justify-between gap-4">
               <Skeleton className="h-4 w-2/3" />
@@ -78,7 +78,7 @@ export function SkeletonTable({ rows = 5 }: { rows?: number }) {
     <div className="mx-auto max-w-5xl px-6 py-12 lg:px-10">
       <Skeleton className="mb-2 h-7 w-48" />
       <Skeleton className="mb-8 h-4 w-72 max-w-full" />
-      <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
+      <div className="centro-glass overflow-hidden rounded-2xl border border-border shadow-card">
         {Array.from({ length: rows }).map((_, i) => (
           <div
             key={i}

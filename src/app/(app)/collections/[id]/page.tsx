@@ -416,22 +416,31 @@ export default async function CollectionRequestDetailPage({
               />
             ) : (
               <ul className="mb-4 max-h-80 space-y-2 overflow-y-auto">
-                {messages.map((message) => (
-                  <li
-                    key={message.id}
-                    className={
-                      message.direction === "outbound"
-                        ? "ms-auto max-w-[80%] rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
-                        : "me-auto max-w-[80%] rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
-                    }
-                  >
-                    <p>{message.body}</p>
-                    <p className="mt-0.5 text-[10px] text-text-muted">
-                      {message.senderType} ·{" "}
-                      {new Date(message.createdAt).toLocaleTimeString("he-IL")}
-                    </p>
-                  </li>
-                ))}
+                {messages.map((message) => {
+                  const isAi = message.direction === "outbound" && message.senderType === "ai";
+                  return (
+                    <li
+                      key={message.id}
+                      className={
+                        isAi
+                          ? "centro-ai-gradient ms-auto max-w-[80%] rounded-2xl rounded-es-sm px-3 py-2 text-xs text-white"
+                          : message.direction === "outbound"
+                            ? "ms-auto max-w-[80%] rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
+                            : "me-auto max-w-[80%] rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
+                      }
+                    >
+                      <p>{message.body}</p>
+                      <p
+                        className={
+                          isAi ? "mt-0.5 text-[10px] text-white/75" : "mt-0.5 text-[10px] text-text-muted"
+                        }
+                      >
+                        {message.senderType} ·{" "}
+                        {new Date(message.createdAt).toLocaleTimeString("he-IL")}
+                      </p>
+                    </li>
+                  );
+                })}
               </ul>
             )}
 

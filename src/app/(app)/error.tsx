@@ -21,7 +21,7 @@ export default function AppError({
 
   return (
     <div className="mx-auto flex min-h-[60vh] max-w-lg animate-fade-in-up flex-col items-center justify-center px-6 py-10 text-center lg:px-10">
-      <span className="mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-danger/10 text-danger">
+      <span className="centro-icon-danger mb-4 grid h-14 w-14 place-items-center rounded-2xl">
         <AlertTriangle className="h-7 w-7" />
       </span>
       <h1 className="text-xl font-bold text-text-primary">משהו השתבש</h1>

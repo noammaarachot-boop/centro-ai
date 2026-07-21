@@ -18,7 +18,7 @@ export function Step4CollectionStyle() {
           <button type="submit" className="block w-full text-start">
             <Card interactive glow="purple" className="cursor-pointer">
               <div className="flex items-start gap-3">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-purple/10 text-brand-purple">
+                <span className="centro-icon-purple grid h-10 w-10 shrink-0 place-items-center rounded-xl">
                   <RefreshCw className="h-5 w-5" />
                 </span>
                 <div>
@@ -46,7 +46,7 @@ export function Step4CollectionStyle() {
           <button type="submit" className="block w-full text-start">
             <Card interactive glow="blue" className="cursor-pointer">
               <div className="flex items-start gap-3">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-blue/10 text-brand-blue">
+                <span className="centro-icon-blue grid h-10 w-10 shrink-0 place-items-center rounded-xl">
                   <Zap className="h-5 w-5" />
                 </span>
                 <div>

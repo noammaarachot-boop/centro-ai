@@ -62,10 +62,10 @@ export function ConfirmDialog({
       <div
         popover="auto"
         id={popoverId}
-        className="m-auto w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-card-lg backdrop:bg-text-primary/40 backdrop:backdrop-blur-sm"
+        className="centro-glass-strong m-auto w-full max-w-sm rounded-2xl border border-border p-6 shadow-card-lg backdrop:bg-text-primary/40 backdrop:backdrop-blur-sm"
       >
         <div className="mb-4 flex items-start gap-3">
-          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-danger/10 text-danger">
+          <span className="centro-icon-danger grid h-10 w-10 shrink-0 place-items-center rounded-xl">
             <AlertTriangle className="h-5 w-5" />
           </span>
           <div>

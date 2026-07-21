@@ -36,7 +36,7 @@ export function HelpTip({
         <div
           id={popoverId}
           role="tooltip"
-          className="animate-fade-in-up absolute z-20 mt-2 w-64 rounded-2xl border border-border bg-surface p-4 text-start shadow-card-lg start-0"
+          className="centro-glass-strong animate-fade-in-up absolute z-20 mt-2 w-64 rounded-2xl border border-border p-4 text-start shadow-card-lg start-0"
         >
           <button
             type="button"

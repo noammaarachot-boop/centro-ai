@@ -26,7 +26,7 @@ export default async function ResetPasswordPage({
         <ResetPasswordForm token={token!} />
       ) : (
         <div className="text-center">
-          <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full bg-danger/10 text-danger">
+          <div className="centro-icon-danger mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full">
             <ShieldAlert className="h-6 w-6" />
           </div>
           <h1 className="mb-1 text-xl font-semibold text-text-primary">

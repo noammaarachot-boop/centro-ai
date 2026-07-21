@@ -8,7 +8,7 @@ import { buttonVariants } from "@/components/app/Button";
 export default function AppNotFound() {
   return (
     <div className="mx-auto flex min-h-[60vh] max-w-lg animate-fade-in-up flex-col items-center justify-center px-6 py-10 text-center lg:px-10">
-      <span className="mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-brand-purple/10 text-brand-purple">
+      <span className="centro-icon-purple mb-4 grid h-14 w-14 place-items-center rounded-2xl">
         <SearchX className="h-7 w-7" />
       </span>
       <h1 className="text-xl font-bold text-text-primary">הדף לא נמצא</h1>

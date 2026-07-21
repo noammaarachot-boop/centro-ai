@@ -15,7 +15,7 @@ export function ForgotPasswordForm() {
   if (state.submitted) {
     return (
       <div className="text-center">
-        <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full bg-brand-emerald/10 text-brand-emerald">
+        <div className="centro-icon-emerald mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full">
           <Mail className="h-6 w-6" />
         </div>
         <h1 className="mb-1 text-xl font-semibold text-text-primary">בדקו את תיבת הדואר</h1>

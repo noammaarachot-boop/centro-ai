@@ -17,7 +17,7 @@ export function AuthCard({
     <main className="centro-app-ambient flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm animate-fade-in-up space-y-4">
         {above}
-        <div className="rounded-2xl border border-border bg-surface p-8 shadow-card-lg">
+        <div className="centro-glass-strong rounded-2xl border border-border p-8 shadow-card-lg">
           {children}
         </div>
       </div>

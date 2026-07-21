@@ -77,7 +77,7 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
             glow="purple"
             className="flex items-center gap-3 border-brand-purple/25 bg-brand-purple/5"
           >
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-purple/10 text-brand-purple">
+            <span className="centro-icon-purple grid h-10 w-10 shrink-0 place-items-center rounded-xl">
               <Sparkles className="h-5 w-5" />
             </span>
             <div>

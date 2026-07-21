@@ -378,6 +378,13 @@ body {
     0 2px 4px -2px color-mix(in oklab, var(--color-warning) 20%, transparent),
     0 6px 16px -8px color-mix(in oklab, var(--color-warning) 40%, transparent);
 }
+.centro-icon-danger {
+  background: linear-gradient(140deg, #ffd9d9, #ffabab);
+  color: #a3121b;
+  box-shadow:
+    0 2px 4px -2px color-mix(in oklab, var(--color-danger) 20%, transparent),
+    0 6px 16px -8px color-mix(in oklab, var(--color-danger) 40%, transparent);
+}
 
 /* The hover-glow-behind-card mechanic — every clickable card in the
    app uses this. The glow sits behind the card (negative z-index,
@@ -438,6 +445,41 @@ body {
   .centro-live-card:hover::after {
     animation: none;
     opacity: 0.12;
+  }
+}
+
+/* Onboarding completion's "celebration" moment — see CelebrationBadge.tsx.
+   Particles drift outward from the badge and fade once, on mount only
+   (`forwards`, no `infinite`) — a one-time premium flourish, not a loop. */
+.centro-celebrate {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.centro-celebrate-particle {
+  position: absolute;
+  border-radius: 9999px;
+  opacity: 0;
+  filter: blur(1px);
+  animation: centro-particle-float 1.6s var(--ease-standard) forwards;
+}
+@keyframes centro-particle-float {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.5);
+  }
+  30% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--particle-x, 0), var(--particle-y, -40px)) scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .centro-celebrate-particle {
+    animation: none;
+    opacity: 0;
   }
 }
 

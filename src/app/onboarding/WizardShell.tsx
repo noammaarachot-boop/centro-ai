@@ -47,7 +47,7 @@ export function WizardShell({
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-muted">
             <div
-              className="h-full rounded-full bg-gradient-to-l from-brand-purple to-brand-blue transition-all duration-500 ease-[var(--ease-standard)]"
+              className="centro-ai-gradient h-full rounded-full transition-all duration-500 ease-[var(--ease-standard)]"
               style={{ width: `${progressPercent}%` }}
             />
           </div>
@@ -55,7 +55,7 @@ export function WizardShell({
 
         <div
           key={step}
-          className="animate-fade-in-up rounded-2xl border border-border bg-surface p-6 shadow-card-lg sm:p-8"
+          className="centro-glass-strong animate-fade-in-up rounded-2xl border border-border p-6 shadow-card-lg sm:p-8"
         >
           {!hidePrevious && step > 1 && (
             <Link

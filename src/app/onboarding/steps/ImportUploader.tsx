@@ -54,7 +54,7 @@ export function ImportUploader({
   if (isPending) {
     return (
       <div className="flex flex-col items-center gap-4 py-8 text-center">
-        <span className="relative grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-l from-brand-purple to-brand-blue shadow-glow-purple">
+        <span className="centro-ai-gradient relative grid h-16 w-16 place-items-center rounded-2xl shadow-glow-purple">
           <Sparkles className="h-7 w-7 animate-pulse text-white" />
         </span>
         <div>
@@ -66,7 +66,7 @@ export function ImportUploader({
           </p>
         </div>
         <div className="h-1.5 w-48 overflow-hidden rounded-full bg-surface-muted">
-          <div className="h-full w-1/2 animate-pulse rounded-full bg-gradient-to-l from-brand-purple to-brand-blue" />
+          <div className="centro-ai-gradient h-full w-1/2 animate-pulse rounded-full" />
         </div>
       </div>
     );
@@ -216,7 +216,7 @@ export function ImportUploader({
           htmlFor={`file-${mode}`}
           className="flex cursor-pointer flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-border bg-surface-muted/40 px-6 py-10 text-center transition-colors hover:border-brand-purple/40 hover:bg-brand-purple/5"
         >
-          <span className="grid h-12 w-12 place-items-center rounded-2xl bg-brand-purple/10 text-brand-purple">
+          <span className="centro-icon-purple grid h-12 w-12 place-items-center rounded-2xl">
             <FileSpreadsheet className="h-6 w-6" />
           </span>
           <span className="text-sm font-medium text-text-primary">

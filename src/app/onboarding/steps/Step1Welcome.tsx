@@ -7,7 +7,7 @@ export function Step1Welcome({ displayName }: { displayName: string }) {
 
   return (
     <div className="text-center">
-      <span className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-l from-brand-purple to-brand-blue text-3xl shadow-glow-purple">
+      <span className="centro-ai-gradient mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl text-3xl shadow-glow-purple">
         👋
       </span>
       <h2 className="text-balance text-2xl font-bold text-text-primary">

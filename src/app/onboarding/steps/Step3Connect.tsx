@@ -28,7 +28,7 @@ function ConnectionRow({
     <div className="rounded-xl border border-border bg-surface-muted/40 p-4 transition-colors hover:border-brand-purple/20">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
-          <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-purple/10 text-brand-purple">
+          <span className="centro-icon-purple mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl">
             <Icon className="h-4.5 w-4.5" />
           </span>
           <div>
