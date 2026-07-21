@@ -21,8 +21,8 @@ import {
 import { recordAdHocDocumentObservation } from "@/lib/clientDocumentProfile";
 import { recordLearnedDocumentPattern } from "@/lib/documentLearning";
 import { createPendingConfirmation } from "@/lib/pendingConfirmations";
-import { OperationFailedError } from "@/lib/resilience";
-import { uploadDocument } from "@/lib/storage/driveAdapter";
+import { uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
+import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 
 // The one place every mutation in this file gets the Collection Request
 // from — every lookup by ID (client, service, document) must be proven to
@@ -70,33 +70,6 @@ async function getScopedDocument(
     .limit(1);
   if (!document) redirect(`/collections/${collectionRequestId}`);
   return document;
-}
-
-// FR-15.3: employees are notified only when automation genuinely can't
-// recover — withRetry (src/lib/resilience.ts) already exhausted retries
-// before this is ever reached. BR-15.1: the failure is logged and the
-// document stays approved-but-unfiled; it must never crash the action or
-// leave the Collection Request in a broken state.
-async function uploadDocumentResiliently(
-  organizationId: string,
-  clientId: string,
-  documentId: string,
-  fileName: string,
-  collectionRequestId: string
-) {
-  try {
-    await uploadDocument(clientId, documentId);
-  } catch (error) {
-    if (!(error instanceof OperationFailedError)) throw error;
-    await recordAuditEvent({
-      organizationId,
-      eventType: "document.drive_upload_failed",
-      description: `העלאת "${fileName}" ל-Drive נכשלה לאחר ניסיונות חוזרים - דורש בדיקת עובד`,
-      actorType: "system",
-      clientId,
-      collectionRequestId,
-    });
-  }
 }
 
 export async function createCollectionRequest(
@@ -195,16 +168,29 @@ const DOCUMENT_STATUS_LABELS: Record<string, string> = {
   needs_review: "דורש בדיקה",
 };
 
+// Attaching a real file here is optional (documents.fileName-only entry
+// remains valid, e.g. logging something received outside the app), but
+// when one is attached this is the one path in the product today with
+// genuinely real bytes to upload — see driveAdapter.ts's module comment.
 export async function addManualDocument(
   collectionRequestId: string,
   requirementId: string,
   formData: FormData
 ) {
   const session = await requireSession();
-  const fileName = String(formData.get("fileName") ?? "").trim();
+  const file = formData.get("file");
+  const attachedFile = file instanceof File && file.size > 0 ? file : null;
+  const fileName = String(formData.get("fileName") ?? "").trim() || attachedFile?.name || "";
   const status = String(formData.get("status") ?? "needs_review");
 
   if (!fileName) redirect(`/collections/${collectionRequestId}?error=filename-required`);
+
+  if (attachedFile) {
+    const extension = attachedFile.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!SUPPORTED_EXTENSIONS.includes(extension)) {
+      redirect(`/collections/${collectionRequestId}?error=unsupported-file-type`);
+    }
+  }
 
   const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
 
@@ -221,12 +207,15 @@ export async function addManualDocument(
     .returning();
 
   if (status === "approved") {
+    const fileBytes = attachedFile ? Buffer.from(await attachedFile.arrayBuffer()) : undefined;
     await uploadDocumentResiliently(
       session.organizationId,
       current.clientId,
       document.id,
       document.fileName,
-      collectionRequestId
+      collectionRequestId,
+      fileBytes,
+      attachedFile?.type || undefined
     );
   }
 

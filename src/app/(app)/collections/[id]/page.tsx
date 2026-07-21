@@ -27,6 +27,7 @@ import {
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
 import { driveFileLink } from "@/lib/storage/driveAdapter";
+import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { listAuditLog } from "@/lib/data/auditLog";
 import { listOpenConfirmationsForCollectionRequest } from "@/lib/pendingConfirmations";
 import { getOrganization } from "@/lib/data/organizations";
@@ -83,6 +84,8 @@ const CONVERSATION_STATUS_META: Record<string, { label: string; tone: BadgeTone 
   human_control: { label: "בשליטת עובד", tone: "purple" },
   closed: { label: "סגורה", tone: "neutral" },
 };
+
+const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_EXTENSIONS.map((ext) => `.${ext}`).join(",");
 
 const compactButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
 const pillButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
@@ -270,14 +273,19 @@ export default async function CollectionRequestDetailPage({
 
                 <form
                   action={addManualDocument.bind(null, id, requirement.id)}
-                  className="mt-3 flex items-center gap-2"
+                  className="mt-3 flex flex-wrap items-center gap-2"
                 >
                   <input
                     name="fileName"
                     type="text"
-                    required
-                    placeholder="שם קובץ (הוספה ידנית)"
-                    className={fieldClass("sm", "flex-1")}
+                    placeholder="שם קובץ (או השאירו ריק לשימוש בשם הקובץ המצורף)"
+                    className={fieldClass("sm", "min-w-[220px] flex-1")}
+                  />
+                  <input
+                    name="file"
+                    type="file"
+                    accept={SUPPORTED_DOCUMENT_ACCEPT}
+                    className="max-w-[200px] text-xs text-text-secondary file:me-2 file:rounded-full file:border file:border-border file:bg-white file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-text-secondary"
                   />
                   <select name="status" className={fieldClass("sm")}>
                     <option value="approved">אישור</option>
@@ -288,6 +296,9 @@ export default async function CollectionRequestDetailPage({
                     הוספה
                   </button>
                 </form>
+                <p className="mt-1 text-[11px] text-text-muted">
+                  צירוף קובץ אמיתי והעברתו לאישור מעלה אותו בפועל ל-Google Drive של העסק.
+                </p>
               </li>
             ))}
           </ul>

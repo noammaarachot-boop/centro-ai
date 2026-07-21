@@ -34,7 +34,7 @@ import {
   sendOutboundMessage,
   startConversation,
 } from "@/lib/conversationOrchestration";
-import { uploadDocument } from "@/lib/storage/driveAdapter";
+import { uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
 
 async function getCollectionRequestOrRedirect(
   organizationId: string,
@@ -296,7 +296,13 @@ async function processInboundAttachment(
   });
 
   if (status === "approved") {
-    await uploadDocument(clientId, document.id);
+    await uploadDocumentResiliently(
+      organizationId,
+      clientId,
+      document.id,
+      document.fileName,
+      collectionRequestId
+    );
   }
 
   const reopened = await reopenIfCompleted(organizationId, collectionRequestId);
