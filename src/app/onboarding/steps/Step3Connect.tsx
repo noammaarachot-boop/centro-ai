@@ -1,5 +1,6 @@
-import { CheckCircle2, Circle, HardDrive, MessageCircle } from "lucide-react";
 import { buttonVariants } from "@/components/app/Button";
+import { AnimatedCheckBadge } from "@/components/app/AnimatedCheckBadge";
+import { GoogleDriveMark, WhatsAppMark } from "@/components/app/BrandMarks";
 import {
   advanceOnboardingStep,
   connectGoogle,
@@ -9,14 +10,14 @@ import {
 } from "../actions";
 
 function ConnectionRow({
-  icon: Icon,
+  mark,
   label,
   explanation,
   connectedAt,
   connectAction,
   disconnectAction,
 }: {
-  icon: typeof HardDrive;
+  mark: React.ReactNode;
   label: string;
   explanation: string;
   connectedAt: Date | null;
@@ -28,17 +29,13 @@ function ConnectionRow({
     <div className="rounded-xl border border-border bg-surface-muted/40 p-4 transition-colors hover:border-brand-purple/20">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
-          <span className="centro-icon-purple mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl">
-            <Icon className="h-4.5 w-4.5" />
+          <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-border bg-white">
+            {mark}
           </span>
           <div>
             <div className="flex items-center gap-1.5">
               <p className="text-sm font-semibold text-text-primary">{label}</p>
-              {isConnected ? (
-                <CheckCircle2 className="h-4 w-4 text-brand-emerald" />
-              ) : (
-                <Circle className="h-4 w-4 text-text-muted" />
-              )}
+              {isConnected && <AnimatedCheckBadge key={connectedAt!.toISOString()} size={16} />}
             </div>
             <p className="mt-1 text-xs leading-relaxed text-text-secondary">{explanation}</p>
             {isConnected && (
@@ -73,7 +70,7 @@ export function Step3Connect({
   return (
     <div className="space-y-4">
       <ConnectionRow
-        icon={HardDrive}
+        mark={<GoogleDriveMark size={18} />}
         label="Google Drive"
         explanation="כל מסמך שמאושר עבור לקוח מאוחסן אוטומטית בתיקייה משלו בגוגל דרייב של העסק — מסודר ונגיש בלי עבודה ידנית."
         connectedAt={googleConnectedAt}
@@ -81,7 +78,7 @@ export function Step3Connect({
         disconnectAction={disconnectGoogle}
       />
       <ConnectionRow
-        icon={MessageCircle}
+        mark={<WhatsAppMark size={22} />}
         label="WhatsApp Business"
         explanation="Centro פונה ללקוחות ומקבל מהם מסמכים ישירות בוואטסאפ — בלי שתצטרכו לשלוח הודעה אחת בעצמכם."
         connectedAt={whatsappConnectedAt}

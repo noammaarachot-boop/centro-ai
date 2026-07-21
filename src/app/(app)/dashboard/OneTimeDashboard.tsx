@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { LayoutTemplate, Users, Activity, CheckCircle2, Plus, Sparkles } from "lucide-react";
-import { PageHeader } from "@/components/app/PageHeader";
+import { CentroStatusIndicator } from "@/components/app/CentroStatusIndicator";
 import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
 import { AiBriefing } from "@/components/app/AiBriefing";
@@ -57,16 +57,21 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
 
   return (
     <div className="mx-auto max-w-5xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
-      <PageHeader
-        title="לוח בקרה"
-        description="בקשות איסוף מסמכים חד-פעמיות, לפי תבנית."
-        actions={
-          <Link href="/templates" className={buttonVariants({ variant: "primary", size: "sm" })}>
-            <Plus className="h-4 w-4" />
-            תבנית חדשה
-          </Link>
-        }
-      />
+      <div className="mb-8">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h1 className="text-[26px] font-bold tracking-tight text-text-primary">לוח בקרה</h1>
+          <div className="flex shrink-0 items-center gap-3">
+            <CentroStatusIndicator />
+            <Link href="/templates" className={buttonVariants({ variant: "primary", size: "sm" })}>
+              <Plus className="h-4 w-4" />
+              תבנית חדשה
+            </Link>
+          </div>
+        </div>
+        <p className="mt-1.5 max-w-2xl text-sm text-text-secondary">
+          בקשות איסוף מסמכים חד-פעמיות, לפי תבנית.
+        </p>
+      </div>
 
       <AiBriefing text={buildBriefing(counts)} />
 

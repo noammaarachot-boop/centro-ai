@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { HelpTip } from "@/components/app/HelpTip";
+import { CentroMarkGlow } from "@/components/app/CentroMarkGlow";
 
 // Shared chrome around every wizard step — progress bar, title/description,
 // an optional "why is this important?" tip, and a Previous link back to the
@@ -57,6 +58,10 @@ export function WizardShell({
           key={step}
           className="centro-glass-strong animate-fade-in-up rounded-2xl border border-border p-6 shadow-card-lg sm:p-8"
         >
+          <div className="mb-3.5 flex justify-center">
+            <CentroMarkGlow size={30} breathe />
+          </div>
+
           {!hidePrevious && step > 1 && (
             <Link
               href={`/onboarding?step=${step - 1}`}

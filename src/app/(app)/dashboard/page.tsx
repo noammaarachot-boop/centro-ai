@@ -23,6 +23,7 @@ import { OneTimeDashboard } from "./OneTimeDashboard";
 import { StatusBadge } from "../collections/StatusBadge";
 import type { CollectionRequestStatus } from "@/lib/collectionRequestStateMachine";
 import { PageHeader } from "@/components/app/PageHeader";
+import { CentroStatusIndicator } from "@/components/app/CentroStatusIndicator";
 import { KpiCard } from "@/components/app/KpiCard";
 import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
@@ -354,11 +355,18 @@ export default async function DashboardPage({
 
   return (
     <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
-      <PageHeader
-        eyebrow={`שלום, ${session.organizationName}`}
-        title="לוח הבקרה"
-        description="תמונת מצב של העבודה הפעילה כרגע — לא רשימת כל הלקוחות."
-      />
+      <div className="mb-8">
+        <p className="mb-1.5 text-xs font-semibold tracking-wide text-brand-purple uppercase">
+          שלום, {session.organizationName}
+        </p>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h1 className="text-[26px] font-bold tracking-tight text-text-primary">לוח הבקרה</h1>
+          <CentroStatusIndicator />
+        </div>
+        <p className="mt-1.5 max-w-2xl text-sm text-text-secondary">
+          תמונת מצב של העבודה הפעילה כרגע — לא רשימת כל הלקוחות.
+        </p>
+      </div>
 
       <AiBriefing text={buildBriefing(counts)} actions={buildBriefingActions(counts)} />
 

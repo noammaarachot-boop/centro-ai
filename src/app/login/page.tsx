@@ -22,6 +22,7 @@ export default async function LoginPage({
 
   return (
     <AuthCard
+      showMark
       above={
         reset === "success" && (
           <p className="flex items-center gap-2 rounded-xl border border-brand-emerald/25 bg-brand-emerald/5 px-4 py-3 text-sm font-medium text-text-primary">

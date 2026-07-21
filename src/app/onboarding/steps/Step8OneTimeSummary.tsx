@@ -1,5 +1,6 @@
-import { CheckCircle2, Circle } from "lucide-react";
+import { Circle } from "lucide-react";
 import { buttonVariants } from "@/components/app/Button";
+import { AnimatedCheckBadge } from "@/components/app/AnimatedCheckBadge";
 import { advanceOnboardingStep } from "../actions";
 
 interface OrganizationSummary {
@@ -8,11 +9,23 @@ interface OrganizationSummary {
   whatsappConnectedAt: Date | null;
 }
 
-function SummaryRow({ done, label }: { done: boolean; label: string }) {
+const ROW_STAGGER_MS = 900;
+const ROW_START_MS = 100;
+
+// Each row fades in in turn; a `done` row's checkmark draws in and the
+// row briefly highlights at the same moment (see .centro-summary-row* in
+// globals.css) — an incomplete row just fades in with its hollow circle,
+// nothing to "complete" yet.
+function SummaryRow({ done, label, index }: { done: boolean; label: string; index: number }) {
+  const delayMs = ROW_START_MS + index * ROW_STAGGER_MS;
+  const rowStyle = { "--row-delay": `${delayMs}ms` } as React.CSSProperties;
   return (
-    <li className="flex items-center gap-2.5 rounded-xl border border-border bg-surface-muted/40 px-4 py-3">
+    <li
+      className={`centro-summary-row${done ? " centro-summary-row-highlight" : ""} flex items-center gap-2.5 rounded-xl border border-border bg-surface-muted/40 px-4 py-3`}
+      style={rowStyle}
+    >
       {done ? (
-        <CheckCircle2 className="h-5 w-5 shrink-0 text-brand-emerald" />
+        <AnimatedCheckBadge size={20} delayMs={delayMs} className="shrink-0" />
       ) : (
         <Circle className="h-5 w-5 shrink-0 text-text-muted" />
       )}
@@ -37,24 +50,34 @@ export function Step8OneTimeSummary({
 }) {
   const goToStep9 = advanceOnboardingStep.bind(null, 9);
 
+  const rows: { done: boolean; label: string }[] = [
+    { done: true, label: `העסק "${organization.name}" נוצר` },
+    { done: !!organization.googleConnectedAt, label: "Google Drive מחובר" },
+    { done: !!organization.whatsappConnectedAt, label: "WhatsApp Business מחובר" },
+    {
+      done: totalClients > 0,
+      label:
+        totalClients > 0
+          ? `${totalClients} לקוחות יובאו`
+          : "לא יובאו לקוחות עדיין — אפשר תמיד להוסיף מאוחר יותר",
+    },
+    { done: true, label: "שעות פעילות הוגדרו" },
+  ];
+  const continueDelayMs = ROW_START_MS + rows.length * ROW_STAGGER_MS;
+
   return (
     <div className="space-y-5">
       <ul className="space-y-2">
-        <SummaryRow done label={`העסק "${organization.name}" נוצר`} />
-        <SummaryRow done={!!organization.googleConnectedAt} label="Google Drive מחובר" />
-        <SummaryRow done={!!organization.whatsappConnectedAt} label="WhatsApp Business מחובר" />
-        <SummaryRow
-          done={totalClients > 0}
-          label={
-            totalClients > 0
-              ? `${totalClients} לקוחות יובאו`
-              : "לא יובאו לקוחות עדיין — אפשר תמיד להוסיף מאוחר יותר"
-          }
-        />
-        <SummaryRow done label="שעות פעילות הוגדרו" />
+        {rows.map((row, index) => (
+          <SummaryRow key={index} done={row.done} label={row.label} index={index} />
+        ))}
       </ul>
 
-      <form action={goToStep9}>
+      <form
+        action={goToStep9}
+        className="centro-summary-continue"
+        style={{ "--continue-delay": `${continueDelayMs}ms` } as React.CSSProperties}
+      >
         <button
           type="submit"
           className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}

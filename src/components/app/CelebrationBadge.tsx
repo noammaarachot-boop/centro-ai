@@ -1,42 +1,89 @@
-import { Sparkles } from "lucide-react";
+"use client";
 
-// A restrained, premium "celebration" moment for onboarding completion —
-// per the approved design review: "real premium celebrations, luxurious
-// not childish/gamey." A handful of soft blurred light particles drift
-// outward and fade once on mount (see .centro-celebrate-particle in
-// globals.css), framing a glowing AI-gradient badge — no emoji, no
-// confetti library, no looping animation once the moment settles.
-const PARTICLES: Array<{ color: string; size: number; x: string; y: string; delay: string }> = [
-  { color: "var(--color-brand-purple)", size: 10, x: "-46px", y: "-52px", delay: "0s" },
-  { color: "var(--color-brand-blue)", size: 8, x: "42px", y: "-58px", delay: "0.1s" },
-  { color: "var(--color-brand-cyan)", size: 9, x: "-56px", y: "12px", delay: "0.2s" },
-  { color: "#F472B6", size: 6, x: "52px", y: "4px", delay: "0.3s" },
-  { color: "var(--color-brand-purple)", size: 7, x: "2px", y: "-72px", delay: "0.4s" },
-  { color: "var(--color-brand-emerald)", size: 6, x: "-18px", y: "50px", delay: "0.5s" },
-];
+import { useEffect, useRef } from "react";
+import { Check } from "lucide-react";
 
+const CONFETTI_COLORS = ["#3B6DFF", "#7C3AED", "#17C3D6", "#FFFFFF", "#C9972E"];
+const PARTICLE_COUNT = 70;
+const DURATION_MS = 1700;
+const CANVAS_WIDTH = 640;
+const CANVAS_HEIGHT = 320;
+
+// Onboarding completion's one-time celebration — a canvas confetti burst
+// (blue/purple/teal/white/gold, ~1.7s) framing the "Centro ready" badge,
+// then the interface settles calm again. Runs once on mount; the
+// completion step itself only ever renders once per organization
+// (finishOnboarding redirects away and the step isn't reachable again),
+// so no separate first-time-only flag is needed here.
 export function CelebrationBadge() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const originX = CANVAS_WIDTH / 2;
+    const originY = 90;
+    const particles = Array.from({ length: PARTICLE_COUNT }).map(() => {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 5;
+      return {
+        x: originX,
+        y: originY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 2,
+        size: 3 + Math.random() * 4,
+        color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+        rotation: Math.random() * Math.PI,
+        rotationSpeed: (Math.random() - 0.5) * 0.3,
+      };
+    });
+
+    const start = performance.now();
+    let frameId: number;
+
+    function frame(t: number) {
+      const elapsed = t - start;
+      const life = Math.max(0, 1 - elapsed / DURATION_MS);
+      ctx!.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      particles.forEach((p) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.09;
+        p.rotation += p.rotationSpeed;
+        ctx!.save();
+        ctx!.globalAlpha = life;
+        ctx!.translate(p.x, p.y);
+        ctx!.rotate(p.rotation);
+        ctx!.fillStyle = p.color;
+        ctx!.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+        ctx!.restore();
+      });
+      if (elapsed < DURATION_MS) {
+        frameId = requestAnimationFrame(frame);
+      } else {
+        ctx!.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      }
+    }
+    frameId = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(frameId);
+  }, []);
+
   return (
-    <div className="centro-celebrate mx-auto mb-4 h-20 w-20">
-      {PARTICLES.map((particle, i) => (
-        <span
-          key={i}
-          aria-hidden="true"
-          className="centro-celebrate-particle"
-          style={
-            {
-              width: particle.size,
-              height: particle.size,
-              background: particle.color,
-              animationDelay: particle.delay,
-              "--particle-x": particle.x,
-              "--particle-y": particle.y,
-            } as React.CSSProperties
-          }
-        />
-      ))}
-      <span className="centro-ai-gradient grid h-20 w-20 place-items-center rounded-full text-white shadow-[0_18px_40px_-14px_rgba(124,58,237,0.45)]">
-        <Sparkles className="h-8 w-8" aria-hidden="true" />
+    <div className="relative mx-auto mb-4 grid h-[78px] w-[78px] place-items-center">
+      <canvas
+        ref={canvasRef}
+        width={CANVAS_WIDTH}
+        height={CANVAS_HEIGHT}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-1/2 top-1/2 -z-0 -translate-x-1/2 -translate-y-1/2"
+        style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT }}
+      />
+      <span className="centro-ai-gradient relative z-[1] grid h-[78px] w-[78px] place-items-center rounded-full text-white shadow-[0_18px_40px_-14px_rgba(124,58,237,0.45)]">
+        <Check className="h-[34px] w-[34px]" strokeWidth={2.4} aria-hidden="true" />
       </span>
     </div>
   );

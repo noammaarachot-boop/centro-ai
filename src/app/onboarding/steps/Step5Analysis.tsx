@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   ChevronDown,
@@ -16,6 +16,7 @@ import { Badge } from "@/components/app/Badge";
 import { buttonVariants, Button } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
 import { fieldClass } from "@/components/app/FormField";
+import { CentroMarkGlow } from "@/components/app/CentroMarkGlow";
 import {
   advanceOnboardingStep,
   assignBusinessTypeAction,
@@ -23,6 +24,32 @@ import {
   type ImportAnalysisSummary,
 } from "../actions";
 import { ImportUploader } from "./ImportUploader";
+
+// Mirrors KpiCard's useCountUp, but starts after a fixed delay so the
+// number only starts climbing once the summary card itself has finished
+// fading in — part of the "title -> card -> text -> numbers" reveal
+// sequence rather than a standalone effect.
+function useRevealCountUp(target: number, delayMs: number, durationMs = 900) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    let frame: number;
+    const start = performance.now();
+    const step = (t: number) => {
+      const elapsed = t - start - delayMs;
+      if (elapsed < 0) {
+        frame = requestAnimationFrame(step);
+        return;
+      }
+      const progress = Math.min(elapsed / durationMs, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setValue(Math.round(eased * target));
+      if (progress < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [target, delayMs, durationMs]);
+  return value;
+}
 
 interface ClientRow {
   id: string;
@@ -57,6 +84,14 @@ export function Step5Analysis({
   const total = totalClassified + unclassifiedClients.length;
   const goToStep6 = advanceOnboardingStep.bind(null, 8);
 
+  // Progressive reveal for the summary card only (title -> card -> text ->
+  // numbers), matching the approved AI-analysis mockup — everything below
+  // it (business-type grid, unclassified panel, etc.) is real interactive
+  // content the mockup never depicted, so it keeps its existing behavior.
+  const totalDisplay = useRevealCountUp(total, 1550);
+  const classifiedDisplay = useRevealCountUp(totalClassified, 1720);
+  const unclassifiedDisplay = useRevealCountUp(unclassifiedClients.length, 1890);
+
   function toggleSelected(id: string) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -89,13 +124,20 @@ export function Step5Analysis({
 
   return (
     <div className="space-y-6">
+      <div className="centro-reveal-title flex items-center gap-2">
+        <CentroMarkGlow size={22} breathe glow />
+        <span className="text-[11px] font-extrabold tracking-wide text-text-muted uppercase">
+          CENTRO פעיל — מנתח כעת
+        </span>
+      </div>
+
       {importSummary ? (
-        <div className="animate-fade-in-up rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
+        <div className="centro-reveal-card rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
           <div className="flex items-center gap-3">
             <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />
             <div>
               <p className="text-base font-bold text-text-primary">Centro הבין את הקובץ שלכם</p>
-              <p className="text-xs text-text-secondary">
+              <p className="centro-reveal-text text-xs text-text-secondary">
                 {importSummary.confidence === "high"
                   ? "הזיהוי בוצע אוטומטית, בביטחון גבוה"
                   : "הזיהוי אושר על ידכם לפני הייבוא"}
@@ -103,7 +145,7 @@ export function Step5Analysis({
             </div>
           </div>
 
-          <ul className="mt-4 space-y-1.5 text-sm text-text-secondary">
+          <ul className="centro-reveal-text mt-4 space-y-1.5 text-sm text-text-secondary">
             <li>✅ {importSummary.imported} לקוחות זוהו בקובץ</li>
             {importSummary.autoClassified > 0 && (
               <li>✅ {importSummary.autoClassified} סוגי עסק סווגו אוטומטית (ביטחון גבוה)</li>
@@ -130,44 +172,42 @@ export function Step5Analysis({
           )}
 
           <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-            <div>
-              <p className="text-2xl font-bold tabular-nums text-text-primary">{total}</p>
+            <div className="centro-reveal-row" style={{ animationDelay: "1.55s" }}>
+              <p className="text-2xl font-bold tabular-nums text-text-primary">{totalDisplay}</p>
               <p className="text-[11px] text-text-muted">לקוחות יובאו</p>
             </div>
-            <div>
-              <p className="text-2xl font-bold tabular-nums text-brand-emerald">{totalClassified}</p>
+            <div className="centro-reveal-row" style={{ animationDelay: "1.72s" }}>
+              <p className="text-2xl font-bold tabular-nums text-brand-emerald">{classifiedDisplay}</p>
               <p className="text-[11px] text-text-muted">סווגו (ודאי + הצעה)</p>
             </div>
-            <div>
-              <p className="text-2xl font-bold tabular-nums text-warning">
-                {unclassifiedClients.length}
-              </p>
+            <div className="centro-reveal-row" style={{ animationDelay: "1.89s" }}>
+              <p className="text-2xl font-bold tabular-nums text-warning">{unclassifiedDisplay}</p>
               <p className="text-[11px] text-text-muted">דורשים סיווג ידני</p>
             </div>
           </div>
         </div>
       ) : (
-        <div className="animate-fade-in-up rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
+        <div className="centro-reveal-card rounded-2xl border border-brand-emerald/25 bg-brand-emerald/5 px-5 py-4">
           <div className="flex items-center gap-3">
             <CheckCircle2 className="h-8 w-8 shrink-0 text-brand-emerald" />
             <div>
               <p className="text-base font-bold text-text-primary">הייבוא הושלם בהצלחה!</p>
-              <p className="text-xs text-text-secondary">Centro ניתח וסיווג את הלקוחות אוטומטית</p>
+              <p className="centro-reveal-text text-xs text-text-secondary">
+                Centro ניתח וסיווג את הלקוחות אוטומטית
+              </p>
             </div>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-            <div>
-              <p className="text-2xl font-bold tabular-nums text-text-primary">{total}</p>
+            <div className="centro-reveal-row" style={{ animationDelay: "1.55s" }}>
+              <p className="text-2xl font-bold tabular-nums text-text-primary">{totalDisplay}</p>
               <p className="text-[11px] text-text-muted">לקוחות יובאו</p>
             </div>
-            <div>
-              <p className="text-2xl font-bold tabular-nums text-brand-emerald">{totalClassified}</p>
+            <div className="centro-reveal-row" style={{ animationDelay: "1.72s" }}>
+              <p className="text-2xl font-bold tabular-nums text-brand-emerald">{classifiedDisplay}</p>
               <p className="text-[11px] text-text-muted">סווגו אוטומטית</p>
             </div>
-            <div>
-              <p className="text-2xl font-bold tabular-nums text-warning">
-                {unclassifiedClients.length}
-              </p>
+            <div className="centro-reveal-row" style={{ animationDelay: "1.89s" }}>
+              <p className="text-2xl font-bold tabular-nums text-warning">{unclassifiedDisplay}</p>
               <p className="text-[11px] text-text-muted">דורשים סיווג ידני</p>
             </div>
           </div>
