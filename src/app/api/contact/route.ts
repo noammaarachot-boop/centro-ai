@@ -1,16 +1,45 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 
 export const dynamic = "force-dynamic";
 
 const NAME_MAX = 200;
+const BUSINESS_NAME_MAX = 200;
+const MESSAGE_MAX = 2000;
 const PHONE_PATTERN = /^[\d\s\-+()]{7,16}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Anything submitted faster than this after the form rendered is almost
+// certainly a bot filling every field programmatically, not a person
+// reading and typing.
+const MIN_SUBMIT_MS = 1500;
+
+// Process-local, in-memory rate limiting — this route has exactly one
+// call site, so a small dedicated Map here (rather than a shared/
+// parameterized module) matches this codebase's "no abstraction beyond
+// what's needed" convention. Same "single pilot instance" caveat as
+// src/lib/auth/rateLimiter.ts.
+const RATE_WINDOW_MS = 10 * 60 * 1000;
+const RATE_MAX_SUBMISSIONS = 5;
+const submissionsByIp = new Map<string, { count: number; firstAt: number }>();
+
+function isRateLimited(ip: string): boolean {
+  const entry = submissionsByIp.get(ip);
+  if (!entry || Date.now() - entry.firstAt > RATE_WINDOW_MS) {
+    submissionsByIp.set(ip, { count: 1, firstAt: Date.now() });
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > RATE_MAX_SUBMISSIONS;
+}
 
 interface ContactPayload {
   name: string;
   phone: string;
   email?: string;
+  businessName?: string;
+  message?: string;
+  source: string;
 }
 
 function escapeHtml(value: string): string {
@@ -22,14 +51,14 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// Mirrors ContactForm's own client-side validation (src/components/landing/
-// ContactForm.tsx) — required again here since the client check is only a
-// UX convenience, never a security boundary.
+// Mirrors ContactForm's own client-side validation (src/components/
+// landing/ContactForm.tsx) — required again here since the client check
+// is only a UX convenience, never a security boundary.
 function parsePayload(body: unknown): { value: ContactPayload } | { error: string } {
   if (typeof body !== "object" || body === null) {
     return { error: "בקשה לא תקינה." };
   }
-  const { name, phone, email } = body as Record<string, unknown>;
+  const { name, phone, email, businessName, message, source } = body as Record<string, unknown>;
 
   if (typeof name !== "string" || !name.trim() || name.trim().length > NAME_MAX) {
     return { error: "נא להזין שם מלא." };
@@ -42,17 +71,38 @@ function parsePayload(body: unknown): { value: ContactPayload } | { error: strin
       return { error: "נא להזין כתובת אימייל תקינה." };
     }
   }
+  if (businessName !== undefined && businessName !== null && businessName !== "") {
+    if (typeof businessName !== "string" || businessName.length > BUSINESS_NAME_MAX) {
+      return { error: "שם העסק ארוך מדי." };
+    }
+  }
+  if (message !== undefined && message !== null && message !== "") {
+    if (typeof message !== "string" || message.length > MESSAGE_MAX) {
+      return { error: "ההודעה ארוכה מדי." };
+    }
+  }
 
   return {
     value: {
       name: name.trim(),
       phone: phone.trim(),
       email: typeof email === "string" && email.trim() ? email.trim() : undefined,
+      businessName: typeof businessName === "string" && businessName.trim() ? businessName.trim() : undefined,
+      message: typeof message === "string" && message.trim() ? message.trim() : undefined,
+      source: typeof source === "string" && source.trim() ? source.trim() : "לא ידוע",
     },
   };
 }
 
-export async function POST(request: Request) {
+function clientIp(request: NextRequest): string {
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (forwardedFor) return forwardedFor.split(",")[0].trim();
+  return request.headers.get("x-real-ip") ?? "unknown";
+}
+
+export async function POST(request: NextRequest) {
+  const ip = clientIp(request);
+
   let body: unknown;
   try {
     body = await request.json();
@@ -60,11 +110,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "בקשה לא תקינה." }, { status: 400 });
   }
 
+  // Honeypot + minimum-time-to-submit spam checks run before anything
+  // else and, deliberately, never surface a different response than a
+  // real success — showing a bot a distinct rejection just teaches it to
+  // adapt. A genuine visitor can never trigger either: the honeypot field
+  // is invisible (sr-only) and no person reads the form and fills it in
+  // under 1.5 seconds.
+  const { honeypot, renderedAt } = body as { honeypot?: unknown; renderedAt?: unknown };
+  const submittedTooFast =
+    typeof renderedAt === "number" && Number.isFinite(renderedAt) && Date.now() - renderedAt < MIN_SUBMIT_MS;
+  if ((typeof honeypot === "string" && honeypot.trim() !== "") || submittedTooFast) {
+    console.log(`[contact] blocked as spam (ip=${ip}, honeypot=${!!honeypot}, tooFast=${submittedTooFast})`);
+    return NextResponse.json({ status: "ok" });
+  }
+
   const parsed = parsePayload(body);
   if ("error" in parsed) {
     return NextResponse.json({ error: parsed.error }, { status: 400 });
   }
-  const { name, phone, email } = parsed.value;
+  const { name, phone, email, businessName, message, source } = parsed.value;
+
+  if (isRateLimited(ip)) {
+    console.log(`[contact] rate-limited (ip=${ip})`);
+    return NextResponse.json(
+      { error: "יותר מדי פניות בזמן קצר. נסו שוב בעוד כמה דקות." },
+      { status: 429 }
+    );
+  }
+
+  console.log(`[contact] submission received (ip=${ip}, source="${source}", name="${name}")`);
 
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
@@ -88,7 +162,10 @@ export async function POST(request: Request) {
     ["שם מלא", name],
     ["טלפון", phone],
     ["אימייל", email || "לא סופק"],
+    ["שם העסק", businessName || "לא סופק"],
+    ["הודעה", message || "לא סופקה"],
     ["תאריך ושעה", submittedAt],
+    ["מקור", source],
   ];
 
   const html = `
@@ -104,7 +181,7 @@ export async function POST(request: Request) {
                 ([label, value]) => `
               <tr>
                 <td style="padding: 10px 0; border-bottom: 1px solid #efeefa; color: #6b6880; font-size: 13px; font-weight: 600; white-space: nowrap; vertical-align: top;">${escapeHtml(label)}</td>
-                <td style="padding: 10px 0 10px 16px; border-bottom: 1px solid #efeefa; color: #1c1a2b; font-size: 14px;">${escapeHtml(value)}</td>
+                <td style="padding: 10px 0 10px 16px; border-bottom: 1px solid #efeefa; color: #1c1a2b; font-size: 14px; white-space: pre-wrap;">${escapeHtml(value)}</td>
               </tr>`
               )
               .join("")}
@@ -132,19 +209,20 @@ export async function POST(request: Request) {
     });
 
     if (error) {
-      console.error("[contact] Resend rejected the send", error);
+      console.error(`[contact] Resend rejected the send (ip=${ip})`, error);
       return NextResponse.json(
         { error: "שליחת ההודעה נכשלה. נסו שוב מאוחר יותר." },
         { status: 502 }
       );
     }
   } catch (err) {
-    console.error("[contact] Resend request failed", err);
+    console.error(`[contact] Resend request failed (ip=${ip})`, err);
     return NextResponse.json(
       { error: "שליחת ההודעה נכשלה. נסו שוב מאוחר יותר." },
       { status: 502 }
     );
   }
 
+  console.log(`[contact] email sent successfully (ip=${ip}, source="${source}")`);
   return NextResponse.json({ status: "ok" });
 }

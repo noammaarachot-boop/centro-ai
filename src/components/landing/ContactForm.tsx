@@ -35,17 +35,31 @@ export default function ContactForm({
   idPrefix,
   onSuccess,
   ctaLabel = "בקשו הדגמה",
+  source = "טופס יצירת קשר",
 }: {
   idPrefix: string;
   onSuccess?: () => void;
   ctaLabel?: string;
+  /** Where this instance of the form lives — included in the email so a
+   * submission from the inline section and the popup modal can be told
+   * apart. */
+  source?: string;
 }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [businessName, setBusinessName] = useState("");
+  const [message, setMessage] = useState("");
+  const [honeypot, setHoneypot] = useState("");
   const [errors, setErrors] = useState<FieldErrors>({});
   const [status, setStatus] = useState<Status>("idle");
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // When this instance first rendered — sent back to the server so it can
+  // reject submissions that arrive implausibly fast (a bot filling every
+  // field programmatically), invisible to a real visitor. useState's lazy
+  // initializer (not useRef) is the correct way to compute this once —
+  // calling Date.now() directly during render is impure.
+  const [renderedAt] = useState(() => Date.now());
 
   function validate(): FieldErrors {
     const next: FieldErrors = {};
@@ -78,7 +92,16 @@ export default function ContactForm({
       const res = await fetch("/api/contact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, phone, email: email || undefined }),
+        body: JSON.stringify({
+          name,
+          phone,
+          email: email || undefined,
+          businessName: businessName || undefined,
+          message: message || undefined,
+          source,
+          honeypot,
+          renderedAt,
+        }),
       });
 
       if (!res.ok) {
@@ -118,6 +141,27 @@ export default function ContactForm({
 
   return (
     <form onSubmit={handleSubmit} noValidate className="space-y-4">
+      {/* Honeypot — invisible to a real visitor, often auto-filled by
+          simple bots. sr-only is applied to the input itself (not just a
+          wrapper) so its own layout box is genuinely zero-size, not only
+          clipped by an ancestor. Never rendered as a normal field, never
+          required, checked server-side only. */}
+      <div aria-hidden="true">
+        <label htmlFor={`${idPrefix}-website`} className="sr-only">
+          אתר החברה
+        </label>
+        <input
+          id={`${idPrefix}-website`}
+          name="website"
+          type="text"
+          tabIndex={-1}
+          autoComplete="off"
+          className="sr-only"
+          value={honeypot}
+          onChange={(e) => setHoneypot(e.target.value)}
+        />
+      </div>
+
       <div>
         <label
           htmlFor={`${idPrefix}-name`}
@@ -212,6 +256,43 @@ export default function ContactForm({
             {errors.email}
           </p>
         )}
+      </div>
+
+      <div>
+        <label
+          htmlFor={`${idPrefix}-business-name`}
+          className="mb-1.5 block text-sm font-medium text-text-secondary"
+        >
+          שם העסק <span className="font-normal text-text-muted">(לא חובה)</span>
+        </label>
+        <input
+          id={`${idPrefix}-business-name`}
+          name="businessName"
+          type="text"
+          autoComplete="organization"
+          value={businessName}
+          onChange={(e) => setBusinessName(e.target.value)}
+          className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
+          placeholder="לדוגמה: משרד רואי חשבון כהן ושות׳"
+        />
+      </div>
+
+      <div>
+        <label
+          htmlFor={`${idPrefix}-message`}
+          className="mb-1.5 block text-sm font-medium text-text-secondary"
+        >
+          הודעה <span className="font-normal text-text-muted">(לא חובה)</span>
+        </label>
+        <textarea
+          id={`${idPrefix}-message`}
+          name="message"
+          rows={3}
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          className="w-full resize-none rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
+          placeholder="ספרו לנו קצת על מה שאתם מחפשים"
+        />
       </div>
 
       {status === "error" && submitError && (
