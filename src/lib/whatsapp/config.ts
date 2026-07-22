@@ -7,6 +7,15 @@ export interface WhatsAppConfig {
   appId: string;
   appSecret: string;
   systemUserToken: string;
+  // Optional — only needed when the app's "Valid OAuth Redirect URIs" has
+  // an entry configured, which makes Meta implicitly attach it to the
+  // Embedded Signup authorization and then require it echoed back
+  // byte-for-byte on the server-side code exchange, or the exchange fails
+  // with error_subcode 36008. Meta's own base Embedded Signup sample
+  // omits redirect_uri entirely, which is why this isn't required —
+  // exchangeSignupCode only sends it when set, so setups with no
+  // redirect URI configured keep working exactly as documented.
+  oauthRedirectUri: string | null;
 }
 
 // Server-side config for the shared Tech Provider setup (see the WhatsApp
@@ -24,5 +33,5 @@ export function getWhatsAppConfig(): WhatsAppConfig {
     );
   }
 
-  return { appId, appSecret, systemUserToken };
+  return { appId, appSecret, systemUserToken, oauthRedirectUri: process.env.WHATSAPP_OAUTH_REDIRECT_URI || null };
 }

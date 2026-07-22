@@ -11,8 +11,11 @@ export class WhatsAppSignupError extends Error {}
 // sends/receives through the one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech
 // Provider model), never a per-org token.
 export async function exchangeSignupCode(code: string): Promise<string> {
-  const { appId, appSecret } = getWhatsAppConfig();
+  const { appId, appSecret, oauthRedirectUri } = getWhatsAppConfig();
   const params = new URLSearchParams({ client_id: appId, client_secret: appSecret, code });
+  // Only sent when configured — see WhatsAppConfig.oauthRedirectUri for
+  // why this is conditional rather than always included.
+  if (oauthRedirectUri) params.set("redirect_uri", oauthRedirectUri);
 
   const response = await withRetry(() => fetch(`${GRAPH_API_BASE}/oauth/access_token?${params.toString()}`));
   if (!response.ok) {
