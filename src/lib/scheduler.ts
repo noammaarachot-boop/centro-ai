@@ -8,9 +8,7 @@ import {
   sendOutboundMessage,
 } from "@/lib/conversationOrchestration";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
-
-const REMINDER_MESSAGE =
-  "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";
+import { REMINDER_BODY as REMINDER_MESSAGE } from "@/lib/whatsapp/templates";
 
 /**
  * The real automatic trigger Ch.5/Ch.16 describe — "after N minutes of

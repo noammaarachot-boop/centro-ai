@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
+  clients,
   collectionRequests,
   conversations,
   messages,
@@ -14,19 +15,28 @@ import {
   canTransition,
   checkCompletionGate,
 } from "@/lib/collectionRequestStateMachine";
+import { OperationFailedError } from "@/lib/resilience";
+import { toE164 } from "@/lib/whatsapp/phone";
+import { sendTemplateMessage, sendTextMessage, WhatsAppSendError } from "@/lib/whatsapp/send";
+import {
+  DUPLICATE_BODY as DUPLICATE_TEMPLATE,
+  INITIAL_REQUEST_BODY as INITIAL_REQUEST_TEMPLATE,
+  TEMPLATE_BY_BODY,
+  THANK_YOU_BODY as THANK_YOU_TEMPLATE,
+} from "@/lib/whatsapp/templates";
 
 /**
- * WhatsApp transport is mocked throughout this module (M6 swaps in the
- * real Business API — see sendOutboundMessage's single call site). All the
- * decision logic (Ch.10 conversation flow, Ch.16 automation rules) is
- * real and does not change when the transport does.
+ * Real WhatsApp Cloud API integration (Real WhatsApp Integration M-WA-3 —
+ * see ARCHITECTURE.md's Document History). All the decision logic
+ * (Ch.10 conversation flow, Ch.16 automation rules) is unchanged; only
+ * sendOutboundMessage's transport is real now. Sending degrades
+ * gracefully rather than crashing a Collection Request — an org that
+ * isn't connected yet, an unnormalizable phone number, or a Cloud API
+ * failure all still record the message (matching the mock's old
+ * always-succeeds shape from the caller's perspective) with
+ * messages.deliveryStatus capturing what actually happened, mirroring
+ * driveAdapter.ts's uploadDocumentResiliently philosophy.
  */
-
-const INITIAL_REQUEST_TEMPLATE =
-  "שלום! זהו סנטרו, העוזר הדיגיטלי של המשרד. נשמח לקבל את המסמכים הנדרשים לתקופה הנוכחית.";
-const THANK_YOU_TEMPLATE =
-  "תודה, קיבלנו את המסמכים! האם סיימתם לשלוח את כל המסמכים? השיבו 'סיימתי' או 'יש עוד מסמכים'.";
-const DUPLICATE_TEMPLATE = "קיבלנו מסמך זה כבר, תודה.";
 
 async function getOrganizationConfig(organizationId: string) {
   const db = await getDb();
@@ -76,10 +86,66 @@ export async function ensureConversation(
   return conversation;
 }
 
-// The one call site that will change when M6 wires the real WhatsApp
-// Business API in place of this mock. BR-18.1 gating is real: outside
-// business hours, automated ("ai") messages are held rather than sent —
-// see the returned `held` flag, surfaced by callers.
+async function getClientPhoneForConversation(conversationId: string): Promise<string | null> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ phone: clients.phone })
+    .from(conversations)
+    .innerJoin(clients, eq(conversations.clientId, clients.id))
+    .where(eq(conversations.id, conversationId))
+    .limit(1);
+  return row?.phone ?? null;
+}
+
+// The real Cloud API send — never throws; every failure mode (not
+// connected, bad phone, no matching approved template, a genuine API
+// failure) is caught and turned into a deliveryStatus string instead,
+// per this module's doc comment. "ai" sends always go through a
+// pre-approved Template (WhatsApp platform requirement); "employee"
+// sends stay free-form text, since they only ever happen inside an
+// already-open conversation with the client.
+async function sendViaWhatsApp(
+  organization: typeof organizations.$inferSelect,
+  conversationId: string,
+  body: string,
+  senderType: "ai" | "employee"
+): Promise<{ whatsappMessageId: string | null; deliveryStatus: string }> {
+  if (!organization.whatsappPhoneNumberId) {
+    return { whatsappMessageId: null, deliveryStatus: "not_connected" };
+  }
+
+  const rawPhone = await getClientPhoneForConversation(conversationId);
+  const to = rawPhone ? toE164(rawPhone) : null;
+  if (!to) {
+    return { whatsappMessageId: null, deliveryStatus: "invalid_phone" };
+  }
+
+  try {
+    if (senderType === "ai") {
+      const template = TEMPLATE_BY_BODY.get(body);
+      if (!template) {
+        return { whatsappMessageId: null, deliveryStatus: "no_template" };
+      }
+      const result = await sendTemplateMessage(organization.whatsappPhoneNumberId, to, template.name, template.language);
+      return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
+    }
+
+    const result = await sendTextMessage(organization.whatsappPhoneNumberId, to, body);
+    return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
+  } catch (error) {
+    if (!(error instanceof WhatsAppSendError) && !(error instanceof OperationFailedError)) throw error;
+    console.error("[whatsapp] send failed (non-fatal, message still recorded)", error);
+    return { whatsappMessageId: null, deliveryStatus: "failed" };
+  }
+}
+
+// BR-18.1 gating is real: outside business hours, automated ("ai")
+// messages are held rather than sent — see the returned `sent` flag,
+// surfaced by callers. `sent` reflects only that gate, exactly as
+// before M-WA-3 — it is not the same thing as real delivery success,
+// which is recorded separately on the message row's own deliveryStatus
+// (see sendViaWhatsApp above) so a real send failure never changes this
+// function's return shape or crashes a caller that only checks `sent`.
 export async function sendOutboundMessage(
   organizationId: string,
   conversationId: string,
@@ -87,9 +153,9 @@ export async function sendOutboundMessage(
   senderType: "ai" | "employee"
 ): Promise<{ sent: boolean }> {
   const db = await getDb();
+  const organization = await getOrganizationConfig(organizationId);
 
   if (senderType === "ai") {
-    const organization = await getOrganizationConfig(organizationId);
     const service = await getServiceForConversation(conversationId);
     const effectiveConfig = resolveScheduleConfig(organization, service);
     if (!isWithinBusinessHours(effectiveConfig)) {
@@ -97,12 +163,21 @@ export async function sendOutboundMessage(
     }
   }
 
+  const { whatsappMessageId, deliveryStatus } = await sendViaWhatsApp(
+    organization,
+    conversationId,
+    body,
+    senderType
+  );
+
   await db.insert(messages).values({
     organizationId,
     conversationId,
     direction: "outbound",
     senderType,
     body,
+    whatsappMessageId,
+    deliveryStatus,
   });
   await db
     .update(conversations)

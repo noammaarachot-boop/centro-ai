@@ -9,6 +9,7 @@ import {
 } from "@/lib/whatsapp/embeddedSignup";
 import { getFirstPhoneNumberForWaba, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
 import { storeWabaConnection } from "@/lib/whatsapp/wabaTokens";
+import { ensureTemplatesProvisioned } from "@/lib/whatsapp/templates";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +62,18 @@ export async function POST(request: NextRequest) {
       actorType: "employee",
       actorUserId: session.userId,
     });
+
+    // Best-effort, deliberately outside the try/catch's failure path —
+    // a template submission problem (or this WABA not yet being ready
+    // for template review) must never undo an otherwise-successful
+    // connection. ensureTemplatesProvisioned already degrades each
+    // template independently; this just keeps its own failure from
+    // reaching the client as a connection error.
+    try {
+      await ensureTemplatesProvisioned(wabaId);
+    } catch (error) {
+      console.error("[whatsapp-oauth] template auto-provisioning failed (non-fatal)", error);
+    }
   } catch (error) {
     console.error("[whatsapp-oauth] Embedded Signup completion failed", error);
     const knownFailure = error instanceof WhatsAppSignupError || error instanceof WhatsAppApiError;
