@@ -23,14 +23,18 @@ export const workflowTypeEnum = pgEnum("workflow_type", ["recurring", "one_time"
 //
 // The three *ConnectedAt / *ActivatedAt columns track the Ch.3 onboarding
 // gate (BR-001: "Automation cannot be activated until all mandatory
-// integrations are connected"). WhatsApp connection is still mocked (a
-// timestamp set directly by the onboarding UI, no real callback yet).
-// Google Drive is real: googleConnectedAt is set by the actual OAuth
-// callback (src/app/api/auth/google/callback/route.ts) once tokens are
-// obtained, and automation additionally requires googleDriveFolderId to
-// be set (see tryActivateAutomation in onboarding/actions.ts) — Centro
-// must have both a connected account and a selected folder before it can
-// do anything with Drive.
+// integrations are connected"). Google Drive is real: googleConnectedAt is
+// set by the actual OAuth callback (src/app/api/auth/google/callback/route.ts)
+// once tokens are obtained, and automation additionally requires
+// googleDriveFolderId to be set (see tryActivateAutomation in
+// onboarding/actions.ts) — Centro must have both a connected account and a
+// selected folder before it can do anything with Drive. WhatsApp is real
+// too (src/lib/whatsapp/, src/app/api/auth/whatsapp/callback/route.ts) —
+// unlike Google, no per-org access/refresh token is stored: Centro is a
+// Meta Tech Provider and sends/receives for every connected organization
+// through one shared System User token (WHATSAPP_SYSTEM_USER_TOKEN),
+// scoped per-call by whatsappPhoneNumberId. These columns only identify
+// which WhatsApp Business Account/number this organization owns.
 export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
@@ -54,6 +58,18 @@ export const organizations = pgTable("organizations", {
   whatsappConnectedAt: timestamp("whatsapp_connected_at", {
     withTimezone: true,
   }),
+  // WABA id from Embedded Signup — the whole business account, which may
+  // in principle own more than one phone number (Centro only ever uses
+  // the one number resolved at connect time, referenced below).
+  whatsappBusinessAccountId: text("whatsapp_business_account_id"),
+  // Required on every Cloud API send/receive call — this, not the WABA id,
+  // is what the webhook payload's metadata.phone_number_id is matched
+  // against to resolve which organization an inbound message belongs to.
+  whatsappPhoneNumberId: text("whatsapp_phone_number_id"),
+  // Display-only — shown in Settings/Step3Connect so the accountant can
+  // confirm which number is connected.
+  whatsappDisplayPhoneNumber: text("whatsapp_display_phone_number"),
+  whatsappVerifiedName: text("whatsapp_verified_name"),
   automationActivatedAt: timestamp("automation_activated_at", {
     withTimezone: true,
   }),
@@ -773,3 +789,37 @@ export const clientDocumentRequirements = pgTable(
     ),
   ]
 );
+
+// Feature: Centro-to-lead outbound WhatsApp messaging (src/app/api/contact/
+// route.ts). Deliberately NOT organization-scoped — unlike every other
+// table in this file, a lead is Centro's own sales prospect, not a
+// customer organization's data. Persisted (previously the contact form
+// only emailed, with no DB write at all) so there's an auditable record
+// independent of email deliverability, and so a WhatsApp send failure has
+// somewhere to record the outcome for follow-up/retry.
+export const leadWhatsappStatus = pgEnum("lead_whatsapp_status", [
+  "not_applicable", // phone failed E.164 normalization — never attempted
+  "pending",
+  "sent",
+  "failed",
+]);
+
+export const leads = pgTable("leads", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  // Raw as submitted (the contact form's own loose validation shape) —
+  // kept even when E.164 normalization fails, for manual follow-up.
+  phone: text("phone").notNull(),
+  phoneE164: text("phone_e164"),
+  email: text("email"),
+  businessName: text("business_name"),
+  message: text("message"),
+  source: text("source").notNull(),
+  emailSentAt: timestamp("email_sent_at", { withTimezone: true }),
+  whatsappStatus: leadWhatsappStatus("whatsapp_status").notNull().default("pending"),
+  whatsappMessageId: text("whatsapp_message_id"),
+  whatsappError: text("whatsapp_error"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

@@ -155,6 +155,13 @@
       "when": 1784646425585,
       "tag": "0021_demonic_masque",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784708831582,
+      "tag": "0022_wise_the_hand",
+      "breakpoints": true
     }
   ]
 }
