@@ -36,6 +36,13 @@ const SIGNUP_MESSAGE_ORIGIN = "https://www.facebook.com";
 const SDK_LOAD_TIMEOUT_MS = 15_000;
 const LOGIN_TIMEOUT_MS = 60_000;
 
+// Temporary, verbose diagnostic logging for the live Embedded Signup
+// investigation — every SDK lifecycle event, every postMessage received
+// (matching or not), and the exact params/response passed to and from
+// FB.login(), all prefixed for easy console filtering. Safe to trim back
+// down once the popup-vs-plain-login issue is root-caused.
+const DEBUG_PREFIX = "[wa-debug]";
+
 interface EmbeddedSignupData {
   phone_number_id?: string;
   waba_id?: string;
@@ -58,32 +65,41 @@ function loadFacebookSdk(appId: string): Promise<void> {
   if (window.FB) return Promise.resolve();
   if (sdkLoadPromise) return sdkLoadPromise;
 
+  console.log(DEBUG_PREFIX, "loadFacebookSdk() starting", { appId, sdkVersion: FB_SDK_VERSION });
+
   const promise: Promise<void> = new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error("Facebook SDK load timed out")),
-      SDK_LOAD_TIMEOUT_MS
-    );
+    const timeout = setTimeout(() => {
+      console.error(DEBUG_PREFIX, "SDK load timed out after", SDK_LOAD_TIMEOUT_MS, "ms");
+      reject(new Error("Facebook SDK load timed out"));
+    }, SDK_LOAD_TIMEOUT_MS);
 
     window.fbAsyncInit = () => {
       clearTimeout(timeout);
-      window.FB!.init({ appId, xfbml: false, version: FB_SDK_VERSION });
+      const initParams = { appId, xfbml: false, version: FB_SDK_VERSION };
+      console.log(DEBUG_PREFIX, "fbAsyncInit fired, calling FB.init()", initParams);
+      window.FB!.init(initParams);
+      console.log(DEBUG_PREFIX, "FB.init() complete, window.FB =", window.FB);
       resolve();
     };
 
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${FB_SDK_SRC}"]`);
     if (existing) {
+      console.log(DEBUG_PREFIX, "SDK script tag already present, waiting for fbAsyncInit");
       existing.addEventListener("error", () => {
         clearTimeout(timeout);
+        console.error(DEBUG_PREFIX, "existing SDK script tag errored");
         reject(new Error("Failed to load Facebook SDK"));
       });
       return;
     }
+    console.log(DEBUG_PREFIX, "appending SDK script tag", FB_SDK_SRC);
     const script = document.createElement("script");
     script.src = FB_SDK_SRC;
     script.async = true;
     script.defer = true;
     script.onerror = () => {
       clearTimeout(timeout);
+      console.error(DEBUG_PREFIX, "SDK script tag failed to load");
       reject(new Error("Failed to load Facebook SDK"));
     };
     document.body.appendChild(script);
@@ -117,6 +133,9 @@ export function WhatsAppConnectButton() {
   // just an optimization.
   useEffect(() => {
     const appId = process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
+    const configId = process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
+    console.log(DEBUG_PREFIX, "WhatsAppConnectButton mounted", { appId, configId, location: window.location.href });
+
     let cancelled = false;
     // Routed through the same load/catch promise chain even when appId is
     // missing (rather than an early synchronous setState) so every status
@@ -127,10 +146,11 @@ export function WhatsAppConnectButton() {
       : Promise.reject(new Error("NEXT_PUBLIC_WHATSAPP_APP_ID not configured"));
     load
       .then(() => {
+        console.log(DEBUG_PREFIX, "SDK load promise resolved — status -> idle");
         if (!cancelled) setStatus("idle");
       })
       .catch((error) => {
-        console.error("[whatsapp] Facebook SDK failed to load", error);
+        console.error(DEBUG_PREFIX, "Facebook SDK failed to load", error);
         if (!cancelled) setStatus("error");
       });
     return () => {
@@ -140,10 +160,21 @@ export function WhatsAppConnectButton() {
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
+      // Logged unconditionally, before any filtering, so a wrong-origin or
+      // unexpected-shape message from Meta is still visible instead of
+      // being silently dropped by the checks below.
+      console.log(DEBUG_PREFIX, "postMessage received", {
+        origin: event.origin,
+        dataType: typeof event.data,
+        data: event.data,
+      });
+
       if (event.origin !== SIGNUP_MESSAGE_ORIGIN || typeof event.data !== "string") return;
       try {
         const data = JSON.parse(event.data);
+        console.log(DEBUG_PREFIX, "postMessage parsed as JSON", data);
         if (data?.type === "WA_EMBEDDED_SIGNUP" && data?.event === "FINISH") {
+          console.log(DEBUG_PREFIX, "WA_EMBEDDED_SIGNUP FINISH captured", data.data);
           signupDataRef.current = data.data ?? {};
         }
       } catch {
@@ -158,9 +189,16 @@ export function WhatsAppConnectButton() {
   // `await`, no promise chain in between the click and it. See
   // loadFacebookSdk's comment for exactly why that ordering matters.
   function connect() {
+    const appId = process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
     const configId = process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
+    console.log(DEBUG_PREFIX, "connect() clicked", {
+      appId,
+      configId,
+      fbSdkLoaded: !!window.FB,
+    });
+
     if (!window.FB || !configId) {
-      console.error("[whatsapp] Facebook SDK not ready, or NEXT_PUBLIC_WHATSAPP_CONFIG_ID not configured");
+      console.error(DEBUG_PREFIX, "aborting: Facebook SDK not ready, or NEXT_PUBLIC_WHATSAPP_CONFIG_ID not configured");
       setStatus("error");
       return;
     }
@@ -172,27 +210,35 @@ export function WhatsAppConnectButton() {
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      console.error("[whatsapp] Embedded Signup timed out (popup may have been blocked or closed)");
+      console.error(DEBUG_PREFIX, "FB.login() timed out after", LOGIN_TIMEOUT_MS, "ms — popup may have been blocked or closed without ever calling back");
       setStatus("error");
     }, LOGIN_TIMEOUT_MS);
 
-    window.FB.login(
-      (response) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        void finishSignup(response);
-      },
-      { config_id: configId, response_type: "code", override_default_response_type: true }
-    );
+    const loginParams = { config_id: configId, response_type: "code" as const, override_default_response_type: true as const };
+    console.log(DEBUG_PREFIX, "calling window.FB.login() with params", loginParams);
+
+    window.FB.login((response) => {
+      console.log(DEBUG_PREFIX, "FB.login() callback fired", JSON.parse(JSON.stringify(response ?? null)));
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      void finishSignup(response);
+    }, loginParams);
   }
 
   async function finishSignup(response: FacebookLoginResponse) {
     const code = response.authResponse?.code;
     const { waba_id: wabaId, phone_number_id: phoneNumberId } = signupDataRef.current;
+    console.log(DEBUG_PREFIX, "finishSignup()", {
+      hasCode: !!code,
+      wabaId,
+      phoneNumberId,
+      capturedSignupData: signupDataRef.current,
+    });
     if (!code || !wabaId || !phoneNumberId) {
       // Popup closed or declined without completing signup — not a
       // failure state, just back to idle so the user can retry.
+      console.warn(DEBUG_PREFIX, "missing code/wabaId/phoneNumberId — treating as a cancelled/incomplete signup, not an error");
       setStatus("idle");
       return;
     }
