@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Resend } from "resend";
+import nodemailer from "nodemailer";
+import { withRetry } from "@/lib/resilience";
 
 export const dynamic = "force-dynamic";
 
@@ -140,9 +141,10 @@ export async function POST(request: NextRequest) {
 
   console.log(`[contact] submission received (ip=${ip}, source="${source}", name="${name}")`);
 
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    console.error("[contact] RESEND_API_KEY is not configured");
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
+  if (!gmailUser || !gmailAppPassword) {
+    console.error("[contact] GMAIL_USER / GMAIL_APP_PASSWORD is not configured");
     return NextResponse.json(
       { error: "שירות השליחה אינו זמין כרגע. נסו שוב מאוחר יותר." },
       { status: 503 }
@@ -150,7 +152,6 @@ export async function POST(request: NextRequest) {
   }
 
   const to = process.env.CONTACT_EMAIL_TO || "Centro.ai.team@gmail.com";
-  const from = process.env.RESEND_FROM_EMAIL || "Centro Website <onboarding@resend.dev>";
 
   const submittedAt = new Date().toLocaleString("he-IL", {
     dateStyle: "full",
@@ -196,27 +197,28 @@ export async function POST(request: NextRequest) {
 
   const text = rows.map(([label, value]) => `${label}: ${value}`).join("\n");
 
-  const resend = new Resend(apiKey);
-
+  // Gmail SMTP always sends as the authenticated account regardless of what
+  // "from" is set to (anti-spoofing) — GMAIL_USER is both the auth identity
+  // and the visible sender. No domain verification or DNS records needed:
+  // this is exactly the same trust boundary as sending from a real Gmail
+  // account through any mail client.
   try {
-    const { error } = await resend.emails.send({
-      from,
-      to,
-      replyTo: email || undefined,
-      subject: `פנייה חדשה מהאתר — ${name}`,
-      html,
-      text,
+    await withRetry(() => {
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: { user: gmailUser, pass: gmailAppPassword },
+      });
+      return transporter.sendMail({
+        from: `"Centro Website" <${gmailUser}>`,
+        to,
+        replyTo: email || undefined,
+        subject: `פנייה חדשה מהאתר — ${name}`,
+        html,
+        text,
+      });
     });
-
-    if (error) {
-      console.error(`[contact] Resend rejected the send (ip=${ip})`, error);
-      return NextResponse.json(
-        { error: "שליחת ההודעה נכשלה. נסו שוב מאוחר יותר." },
-        { status: 502 }
-      );
-    }
   } catch (err) {
-    console.error(`[contact] Resend request failed (ip=${ip})`, err);
+    console.error(`[contact] Gmail send failed (ip=${ip})`, err);
     return NextResponse.json(
       { error: "שליחת ההודעה נכשלה. נסו שוב מאוחר יותר." },
       { status: 502 }
