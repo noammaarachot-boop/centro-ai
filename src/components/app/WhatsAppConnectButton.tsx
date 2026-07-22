@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { buttonVariants } from "./Button";
@@ -37,10 +37,6 @@ declare global {
 
 const FB_SDK_SRC = "https://connect.facebook.net/en_US/sdk.js";
 const FB_SDK_VERSION = "v21.0";
-// Meta only ever posts Embedded Signup events from this exact origin —
-// checked before parsing so an unrelated postMessage from another script
-// on the page can never be mistaken for a signup result.
-const SIGNUP_MESSAGE_ORIGIN = "https://www.facebook.com";
 // Safety nets so this button can never get stuck spinning forever again —
 // see the "why preload" comment on loadFacebookSdk below for the bug this
 // class of timeout guards against.
@@ -48,16 +44,10 @@ const SDK_LOAD_TIMEOUT_MS = 15_000;
 const LOGIN_TIMEOUT_MS = 60_000;
 
 // Temporary, verbose diagnostic logging for the live Embedded Signup
-// investigation — every SDK lifecycle event, every postMessage received
-// (matching or not), and the exact params/response passed to and from
-// FB.login(), all prefixed for easy console filtering. Safe to trim back
-// down once the popup-vs-plain-login issue is root-caused.
+// investigation — every SDK lifecycle event and the exact params/response
+// passed to and from FB.login(), all prefixed for easy console filtering.
+// Safe to trim back down once live verification is fully closed out.
 const DEBUG_PREFIX = "[wa-debug]";
-
-interface EmbeddedSignupData {
-  phone_number_id?: string;
-  waba_id?: string;
-}
 
 let sdkLoadPromise: Promise<void> | null = null;
 
@@ -141,7 +131,6 @@ function loadFacebookSdk(appId: string): Promise<void> {
 export function WhatsAppConnectButton() {
   const router = useRouter();
   const [status, setStatus] = useState<"loading-sdk" | "idle" | "connecting" | "error">("loading-sdk");
-  const signupDataRef = useRef<EmbeddedSignupData>({});
 
   // Preload starts the moment the row renders, not on click — see
   // loadFacebookSdk's comment for why this ordering is load-bearing, not
@@ -173,38 +162,14 @@ export function WhatsAppConnectButton() {
     };
   }, []);
 
-  useEffect(() => {
-    function handleMessage(event: MessageEvent) {
-      // Logged unconditionally, before any filtering, so a wrong-origin or
-      // unexpected-shape message from Meta is still visible instead of
-      // being silently dropped by the checks below.
-      console.log(DEBUG_PREFIX, "postMessage received", {
-        origin: event.origin,
-        dataType: typeof event.data,
-        data: event.data,
-      });
-
-      if (event.origin !== SIGNUP_MESSAGE_ORIGIN || typeof event.data !== "string") return;
-      try {
-        const data = JSON.parse(event.data);
-        console.log(DEBUG_PREFIX, "postMessage parsed as JSON", data);
-        // Captures data from every WA_EMBEDDED_SIGNUP message, not only one
-        // with event === "FINISH", and merges rather than replaces — Meta
-        // can deliver waba_id/phone_number_id on an intermediate
-        // step-progress message rather than (or in addition to) the final
-        // one, and a strict "only FINISH, always overwrite" handler would
-        // silently discard fields a later message doesn't repeat.
-        if (data?.type === "WA_EMBEDDED_SIGNUP" && data?.data) {
-          console.log(DEBUG_PREFIX, `WA_EMBEDDED_SIGNUP event="${data.event}" data captured`, data.data);
-          signupDataRef.current = { ...signupDataRef.current, ...data.data };
-        }
-      } catch {
-        // Not JSON — not a signup message, ignore.
-      }
-    }
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
+  // A WA_EMBEDDED_SIGNUP postMessage listener used to live here, meant to
+  // capture waba_id/phone_number_id directly from Meta. Removed after
+  // live testing (including a correctly-configured `extras` param on
+  // FB.login()) confirmed Meta never sends it for this app/configuration
+  // — the [wa-debug] logging showed FB.login()'s own callback firing with
+  // a valid code, but zero postMessage events ever arriving. Both ids are
+  // now derived entirely server-side from the exchanged code instead (see
+  // POST /api/auth/whatsapp/callback).
 
   // Deliberately synchronous up to the FB.login() call itself — no
   // `await`, no promise chain in between the click and it. See
@@ -225,7 +190,6 @@ export function WhatsAppConnectButton() {
     }
 
     setStatus("connecting");
-    signupDataRef.current = {};
 
     let settled = false;
     const timeout = setTimeout(() => {
@@ -259,17 +223,10 @@ export function WhatsAppConnectButton() {
 
   async function finishSignup(response: FacebookLoginResponse) {
     const code = response.authResponse?.code;
-    const { waba_id: wabaId, phone_number_id: phoneNumberId } = signupDataRef.current;
-    console.log(DEBUG_PREFIX, "finishSignup()", {
-      hasCode: !!code,
-      wabaId,
-      phoneNumberId,
-      capturedSignupData: signupDataRef.current,
-    });
-    if (!code || !wabaId || !phoneNumberId) {
+    console.log(DEBUG_PREFIX, "finishSignup()", { hasCode: !!code });
+    if (!code) {
       // Popup closed or declined without completing signup — not a
       // failure state, just back to idle so the user can retry.
-      console.warn(DEBUG_PREFIX, "missing code/wabaId/phoneNumberId — treating as a cancelled/incomplete signup, not an error");
       setStatus("idle");
       return;
     }
@@ -278,7 +235,7 @@ export function WhatsAppConnectButton() {
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, wabaId, phoneNumberId }),
+        body: JSON.stringify({ code }),
       });
       if (!result.ok) {
         setStatus("error");

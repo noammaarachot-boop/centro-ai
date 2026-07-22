@@ -1,18 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/session";
 import { recordAuditEvent } from "@/lib/audit";
-import { exchangeSignupCode, subscribeToWabaWebhooks, WhatsAppSignupError } from "@/lib/whatsapp/embeddedSignup";
-import { getPhoneNumberDetails, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
+import {
+  exchangeSignupCode,
+  resolveWabaIdFromToken,
+  subscribeToWabaWebhooks,
+  WhatsAppSignupError,
+} from "@/lib/whatsapp/embeddedSignup";
+import { getFirstPhoneNumberForWaba, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
 import { storeWabaConnection } from "@/lib/whatsapp/wabaTokens";
 
 export const dynamic = "force-dynamic";
 
 // Entry point for WhatsAppConnectButton's client-side Embedded Signup —
-// a fetch() POST once FB.login() and the WA_EMBEDDED_SIGNUP postMessage
-// both resolve, not a redirect. Unlike Google's callback (a real
-// full-page navigation back from accounts.google.com), Embedded Signup
-// stays inside a popup the whole time, so this just returns JSON for the
-// client component to react to.
+// a fetch() POST once FB.login() resolves with an authorization code.
+// Not a redirect, unlike Google's callback: Embedded Signup stays inside
+// a popup the whole time, so this just returns JSON for the client
+// component to react to.
+//
+// Originally also expected wabaId/phoneNumberId reported by Meta's
+// WA_EMBEDDED_SIGNUP postMessage, but that channel was confirmed — after
+// extensive live testing, including a correctly-configured `extras`
+// param on FB.login() — to never fire for this app/configuration. Both
+// are now derived entirely server-side from the exchanged code itself:
+// debug_token's granular_scopes reveals which WABA the signup granted
+// access to (resolveWabaIdFromToken), and that WABA's own /phone_numbers
+// listing supplies the connected number (getFirstPhoneNumberForWaba).
 export async function POST(request: NextRequest) {
   const session = await requireSession();
 
@@ -23,38 +36,28 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid-request" }, { status: 400 });
   }
 
-  const { code, wabaId, phoneNumberId } = body as {
-    code?: unknown;
-    wabaId?: unknown;
-    phoneNumberId?: unknown;
-  };
-  if (
-    typeof code !== "string" ||
-    !code ||
-    typeof wabaId !== "string" ||
-    !wabaId ||
-    typeof phoneNumberId !== "string" ||
-    !phoneNumberId
-  ) {
+  const { code } = body as { code?: unknown };
+  if (typeof code !== "string" || !code) {
     return NextResponse.json({ error: "invalid-request" }, { status: 400 });
   }
 
   try {
-    await exchangeSignupCode(code);
+    const userAccessToken = await exchangeSignupCode(code);
+    const wabaId = await resolveWabaIdFromToken(userAccessToken);
     await subscribeToWabaWebhooks(wabaId);
-    const details = await getPhoneNumberDetails(phoneNumberId);
+    const phoneNumber = await getFirstPhoneNumberForWaba(wabaId);
 
     await storeWabaConnection(session.organizationId, {
       businessAccountId: wabaId,
-      phoneNumberId: details.id,
-      displayPhoneNumber: details.displayPhoneNumber,
-      verifiedName: details.verifiedName,
+      phoneNumberId: phoneNumber.id,
+      displayPhoneNumber: phoneNumber.displayPhoneNumber,
+      verifiedName: phoneNumber.verifiedName,
     });
 
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "integration.whatsapp_connected",
-      description: `חשבון WhatsApp Business חובר (${details.displayPhoneNumber})`,
+      description: `חשבון WhatsApp Business חובר (${phoneNumber.displayPhoneNumber})`,
       actorType: "employee",
       actorUserId: session.userId,
     });
