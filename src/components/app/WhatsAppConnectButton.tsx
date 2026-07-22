@@ -30,26 +30,75 @@ const FB_SDK_VERSION = "v21.0";
 // checked before parsing so an unrelated postMessage from another script
 // on the page can never be mistaken for a signup result.
 const SIGNUP_MESSAGE_ORIGIN = "https://www.facebook.com";
+// Safety nets so this button can never get stuck spinning forever again —
+// see the "why preload" comment on loadFacebookSdk below for the bug this
+// class of timeout guards against.
+const SDK_LOAD_TIMEOUT_MS = 15_000;
+const LOGIN_TIMEOUT_MS = 60_000;
 
 interface EmbeddedSignupData {
   phone_number_id?: string;
   waba_id?: string;
 }
 
+let sdkLoadPromise: Promise<void> | null = null;
+
+// Deliberately started as early as possible (component mount, see the
+// useEffect below) and kept entirely separate from the click handler.
+// FB.login() must be called synchronously inside a real click event's own
+// call stack, or the browser no longer treats its popup as user-initiated
+// and silently blocks it — no error, no callback, nothing. The original
+// bug here was `await loadFacebookSdk(appId)` sitting between the click
+// and `FB.login()`: even with the SDK cached, that `await` yields at
+// least one microtask, which was enough for some browsers to drop the
+// click's user-activation flag, so the popup never opened and the
+// promise wrapping FB.login() waited forever for a callback that was
+// never going to fire.
 function loadFacebookSdk(appId: string): Promise<void> {
   if (window.FB) return Promise.resolve();
-  return new Promise((resolve) => {
+  if (sdkLoadPromise) return sdkLoadPromise;
+
+  const promise: Promise<void> = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Facebook SDK load timed out")),
+      SDK_LOAD_TIMEOUT_MS
+    );
+
     window.fbAsyncInit = () => {
+      clearTimeout(timeout);
       window.FB!.init({ appId, xfbml: false, version: FB_SDK_VERSION });
       resolve();
     };
-    if (document.querySelector(`script[src="${FB_SDK_SRC}"]`)) return;
+
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${FB_SDK_SRC}"]`);
+    if (existing) {
+      existing.addEventListener("error", () => {
+        clearTimeout(timeout);
+        reject(new Error("Failed to load Facebook SDK"));
+      });
+      return;
+    }
     const script = document.createElement("script");
     script.src = FB_SDK_SRC;
     script.async = true;
     script.defer = true;
+    script.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error("Failed to load Facebook SDK"));
+    };
     document.body.appendChild(script);
   });
+
+  sdkLoadPromise = promise;
+  // A failed load must not stay cached — the next mount/click gets a
+  // fresh attempt instead of being permanently stuck on one failure
+  // (e.g. a transient network blip). Fire-and-forget: the caller's own
+  // `promise` reference still carries the rejection.
+  promise.catch(() => {
+    sdkLoadPromise = null;
+  });
+
+  return promise;
 }
 
 // Visually identical to ConnectionRow's generic connect button
@@ -60,8 +109,34 @@ function loadFacebookSdk(appId: string): Promise<void> {
 // than a plain form action."
 export function WhatsAppConnectButton() {
   const router = useRouter();
-  const [status, setStatus] = useState<"idle" | "connecting" | "error">("idle");
+  const [status, setStatus] = useState<"loading-sdk" | "idle" | "connecting" | "error">("loading-sdk");
   const signupDataRef = useRef<EmbeddedSignupData>({});
+
+  // Preload starts the moment the row renders, not on click — see
+  // loadFacebookSdk's comment for why this ordering is load-bearing, not
+  // just an optimization.
+  useEffect(() => {
+    const appId = process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
+    let cancelled = false;
+    // Routed through the same load/catch promise chain even when appId is
+    // missing (rather than an early synchronous setState) so every status
+    // transition here happens inside a promise callback, not directly in
+    // the effect body.
+    const load = appId
+      ? loadFacebookSdk(appId)
+      : Promise.reject(new Error("NEXT_PUBLIC_WHATSAPP_APP_ID not configured"));
+    load
+      .then(() => {
+        if (!cancelled) setStatus("idle");
+      })
+      .catch((error) => {
+        console.error("[whatsapp] Facebook SDK failed to load", error);
+        if (!cancelled) setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -79,37 +154,50 @@ export function WhatsAppConnectButton() {
     return () => window.removeEventListener("message", handleMessage);
   }, []);
 
-  async function connect() {
-    setStatus("connecting");
-    const appId = process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
+  // Deliberately synchronous up to the FB.login() call itself — no
+  // `await`, no promise chain in between the click and it. See
+  // loadFacebookSdk's comment for exactly why that ordering matters.
+  function connect() {
     const configId = process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
-    if (!appId || !configId) {
-      console.error("[whatsapp] NEXT_PUBLIC_WHATSAPP_APP_ID / NEXT_PUBLIC_WHATSAPP_CONFIG_ID not configured");
+    if (!window.FB || !configId) {
+      console.error("[whatsapp] Facebook SDK not ready, or NEXT_PUBLIC_WHATSAPP_CONFIG_ID not configured");
       setStatus("error");
       return;
     }
 
+    setStatus("connecting");
+    signupDataRef.current = {};
+
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.error("[whatsapp] Embedded Signup timed out (popup may have been blocked or closed)");
+      setStatus("error");
+    }, LOGIN_TIMEOUT_MS);
+
+    window.FB.login(
+      (response) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        void finishSignup(response);
+      },
+      { config_id: configId, response_type: "code", override_default_response_type: true }
+    );
+  }
+
+  async function finishSignup(response: FacebookLoginResponse) {
+    const code = response.authResponse?.code;
+    const { waba_id: wabaId, phone_number_id: phoneNumberId } = signupDataRef.current;
+    if (!code || !wabaId || !phoneNumberId) {
+      // Popup closed or declined without completing signup — not a
+      // failure state, just back to idle so the user can retry.
+      setStatus("idle");
+      return;
+    }
+
     try {
-      await loadFacebookSdk(appId);
-      signupDataRef.current = {};
-
-      const response = await new Promise<FacebookLoginResponse>((resolve) => {
-        window.FB!.login(resolve, {
-          config_id: configId,
-          response_type: "code",
-          override_default_response_type: true,
-        });
-      });
-
-      const code = response.authResponse?.code;
-      const { waba_id: wabaId, phone_number_id: phoneNumberId } = signupDataRef.current;
-      if (!code || !wabaId || !phoneNumberId) {
-        // Popup closed or declined without completing signup — not a
-        // failure state, just back to idle so the user can retry.
-        setStatus("idle");
-        return;
-      }
-
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -119,24 +207,25 @@ export function WhatsAppConnectButton() {
         setStatus("error");
         return;
       }
-
       setStatus("idle");
       router.refresh();
     } catch (error) {
-      console.error("[whatsapp] Embedded Signup failed", error);
+      console.error("[whatsapp] Embedded Signup completion failed", error);
       setStatus("error");
     }
   }
+
+  const isBusy = status === "connecting" || status === "loading-sdk";
 
   return (
     <div>
       <button
         type="button"
         onClick={connect}
-        disabled={status === "connecting"}
+        disabled={isBusy}
         className={buttonVariants({ variant: "secondary", size: "sm", className: "shrink-0" })}
       >
-        {status === "connecting" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "חיבור"}
+        {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "חיבור"}
       </button>
       {status === "error" && (
         <p role="alert" className="mt-1.5 text-xs font-medium text-danger">
