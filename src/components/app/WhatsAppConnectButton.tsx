@@ -14,7 +14,13 @@ interface FacebookLoginResponse {
 declare global {
   interface Window {
     FB?: {
-      init: (params: { appId: string; xfbml: boolean; version: string }) => void;
+      init: (params: {
+        appId: string;
+        cookie: boolean;
+        xfbml: boolean;
+        autoLogAppEvents: boolean;
+        version: string;
+      }) => void;
       login: (
         callback: (response: FacebookLoginResponse) => void,
         params: { config_id: string; response_type: "code"; override_default_response_type: true }
@@ -75,7 +81,11 @@ function loadFacebookSdk(appId: string): Promise<void> {
 
     window.fbAsyncInit = () => {
       clearTimeout(timeout);
-      const initParams = { appId, xfbml: false, version: FB_SDK_VERSION };
+      // Matches Meta's own Embedded Signup sample init call exactly
+      // (cookie/xfbml/autoLogAppEvents included even though this button
+      // uses none of the page-parsing or cookie-session features they
+      // enable, for full parity with the documented shape).
+      const initParams = { appId, cookie: true, xfbml: true, autoLogAppEvents: true, version: FB_SDK_VERSION };
       console.log(DEBUG_PREFIX, "fbAsyncInit fired, calling FB.init()", initParams);
       window.FB!.init(initParams);
       console.log(DEBUG_PREFIX, "FB.init() complete, window.FB =", window.FB);
