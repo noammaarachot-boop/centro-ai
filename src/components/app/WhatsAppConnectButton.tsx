@@ -23,7 +23,12 @@ declare global {
       }) => void;
       login: (
         callback: (response: FacebookLoginResponse) => void,
-        params: { config_id: string; response_type: "code"; override_default_response_type: true }
+        params: {
+          config_id: string;
+          response_type: "code";
+          override_default_response_type: true;
+          extras: { setup: Record<string, never>; featureType: string; sessionInfoVersion: string };
+        }
       ) => void;
     };
     fbAsyncInit?: () => void;
@@ -230,7 +235,17 @@ export function WhatsAppConnectButton() {
       setStatus("error");
     }, LOGIN_TIMEOUT_MS);
 
-    const loginParams = { config_id: configId, response_type: "code" as const, override_default_response_type: true as const };
+    // `extras` is what actually turns this on as Embedded Signup rather
+    // than a plain Business Login — without it, Meta only ever returns
+    // the authorization code via this callback and never sends the
+    // WA_EMBEDDED_SIGNUP postMessage events carrying waba_id/
+    // phone_number_id, which is exactly the bug this fixes.
+    const loginParams = {
+      config_id: configId,
+      response_type: "code" as const,
+      override_default_response_type: true as const,
+      extras: { setup: {}, featureType: "", sessionInfoVersion: "3" },
+    };
     console.log(DEBUG_PREFIX, "calling window.FB.login() with params", loginParams);
 
     window.FB.login((response) => {
