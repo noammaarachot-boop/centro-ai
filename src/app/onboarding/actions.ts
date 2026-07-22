@@ -40,6 +40,7 @@ import {
   getValidAccessToken as getValidGoogleAccessToken,
 } from "@/lib/googleAuth/driveTokens";
 import { createDriveFolder, getDriveFolder } from "@/lib/googleAuth/drive";
+import { clearWabaConnection } from "@/lib/whatsapp/wabaTokens";
 
 // >=95: silently auto-classified. 70-94: auto-classified but flagged
 // "suggested" in the UI. Below 70: never applied — left Unclassified and
@@ -265,35 +266,10 @@ export async function advanceOnboardingStep(nextStep: number) {
   redirect(`/onboarding?step=${nextStep}`);
 }
 
-async function setIntegrationTimestamp(
-  column: "googleConnectedAt" | "whatsappConnectedAt",
-  value: Date | null,
-  eventType: string,
-  description: string
-) {
-  const session = await requireSession();
-  const db = await getDb();
-  await db
-    .update(organizations)
-    .set({ [column]: value, updatedAt: new Date() })
-    .where(eq(organizations.id, session.organizationId));
-
-  await recordAuditEvent({
-    organizationId: session.organizationId,
-    eventType,
-    description,
-    actorType: "employee",
-    actorUserId: session.userId,
-  });
-
-  // Always submitted from Step 3 itself — refresh() alone, no redirect().
-  refresh();
-}
-
 // Google Drive connection is real (src/app/api/auth/google/*) — the
 // "Connect" button in Step3Connect is a plain link to /api/auth/google/start,
 // not a form action, since it has to end in a full-page redirect to
-// accounts.google.com. WhatsApp remains mocked below.
+// accounts.google.com.
 export async function disconnectGoogleDrive() {
   const session = await requireSession();
   await clearGoogleTokens(session.organizationId);
@@ -373,22 +349,24 @@ async function persistSelectedFolder(organizationId: string, folderId: string, f
     .where(eq(organizations.id, organizationId));
 }
 
-export async function connectWhatsapp() {
-  await setIntegrationTimestamp(
-    "whatsappConnectedAt",
-    new Date(),
-    "integration.whatsapp_connected",
-    "חשבון WhatsApp Business חובר (הדגמה)"
-  );
-}
-
+// WhatsApp is connected via Meta Embedded Signup, a client-side popup
+// flow (see WhatsAppConnectButton.tsx + POST /api/auth/whatsapp/callback)
+// — there's no plain "connect" server action to submit, unlike the old
+// mocked version. Disconnecting is still a plain form action.
 export async function disconnectWhatsapp() {
-  await setIntegrationTimestamp(
-    "whatsappConnectedAt",
-    null,
-    "integration.whatsapp_disconnected",
-    "חיבור WhatsApp Business נותק"
-  );
+  const session = await requireSession();
+  await clearWabaConnection(session.organizationId);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "integration.whatsapp_disconnected",
+    description: "חיבור WhatsApp Business נותק",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  // Always submitted from Step 3 itself — refresh() alone, no redirect().
+  refresh();
 }
 
 // BR-001 (Ch.3): automation cannot be activated until all mandatory

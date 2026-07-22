@@ -202,6 +202,7 @@ export default async function OnboardingPage({
             googleDriveFolderId={organization.googleDriveFolderId}
             googleDriveFolderName={organization.googleDriveFolderName}
             whatsappConnectedAt={organization.whatsappConnectedAt}
+            whatsappDisplayPhoneNumber={organization.whatsappDisplayPhoneNumber}
           />
         );
         break;

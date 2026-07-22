@@ -3,58 +3,60 @@ import { buttonVariants } from "@/components/app/Button";
 import { AnimatedCheckBadge } from "@/components/app/AnimatedCheckBadge";
 import { GoogleDriveMark, WhatsAppMark } from "@/components/app/BrandMarks";
 import { GoogleDriveFolderPicker } from "@/components/app/GoogleDriveFolderPicker";
+import { WhatsAppConnectButton } from "@/components/app/WhatsAppConnectButton";
 import {
   advanceOnboardingStep,
-  connectWhatsapp,
   createGoogleDriveFolder,
   disconnectGoogleDrive,
   disconnectWhatsapp,
 } from "../actions";
 
-function ConnectionRow({
-  mark,
-  label,
-  explanation,
-  connectedAt,
-  connectAction,
-  disconnectAction,
+// WhatsApp's row has a real connection flow (Meta Embedded Signup, a
+// client-side popup — not a plain form action) instead of the old mocked
+// connect button, so it gets its own row like GoogleDriveConnectionRow
+// rather than sharing the generic ConnectionRow other future integrations
+// might still use.
+function WhatsAppConnectionRow({
+  whatsappConnectedAt,
+  whatsappDisplayPhoneNumber,
 }: {
-  mark: React.ReactNode;
-  label: string;
-  explanation: string;
-  connectedAt: Date | null;
-  connectAction: () => Promise<void>;
-  disconnectAction: () => Promise<void>;
+  whatsappConnectedAt: Date | null;
+  whatsappDisplayPhoneNumber: string | null;
 }) {
-  const isConnected = !!connectedAt;
+  const isConnected = !!whatsappConnectedAt;
   return (
     <div className="rounded-xl border border-border bg-surface-muted/40 p-4 transition-colors hover:border-brand-purple/20">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-border bg-white">
-            {mark}
+            <WhatsAppMark size={22} />
           </span>
           <div>
             <div className="flex items-center gap-1.5">
-              <p className="text-sm font-semibold text-text-primary">{label}</p>
-              {isConnected && <AnimatedCheckBadge key={connectedAt!.toISOString()} size={16} />}
+              <p className="text-sm font-semibold text-text-primary">WhatsApp Business</p>
+              {isConnected && <AnimatedCheckBadge key={whatsappConnectedAt!.toISOString()} size={16} />}
             </div>
-            <p className="mt-1 text-xs leading-relaxed text-text-secondary">{explanation}</p>
+            <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+              Centro פונה ללקוחות ומקבל מהם מסמכים ישירות בוואטסאפ — בלי שתצטרכו לשלוח הודעה אחת בעצמכם.
+            </p>
             {isConnected && (
               <p className="mt-1 text-xs text-text-muted">
-                חובר ב-{connectedAt!.toLocaleDateString("he-IL")}
+                מספר מחובר: {whatsappDisplayPhoneNumber ?? "—"}
               </p>
             )}
           </div>
         </div>
-        <form action={isConnected ? disconnectAction : connectAction}>
-          <button
-            type="submit"
-            className={buttonVariants({ variant: "secondary", size: "sm", className: "shrink-0" })}
-          >
-            {isConnected ? "ניתוק" : "חיבור"}
-          </button>
-        </form>
+        {!isConnected && <WhatsAppConnectButton />}
+        {isConnected && (
+          <form action={disconnectWhatsapp}>
+            <button
+              type="submit"
+              className={buttonVariants({ variant: "secondary", size: "sm", className: "shrink-0" })}
+            >
+              ניתוק
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -154,11 +156,13 @@ export function Step3Connect({
   googleDriveFolderId,
   googleDriveFolderName,
   whatsappConnectedAt,
+  whatsappDisplayPhoneNumber,
 }: {
   googleConnectedAt: Date | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   whatsappConnectedAt: Date | null;
+  whatsappDisplayPhoneNumber: string | null;
 }) {
   const goToStep4 = advanceOnboardingStep.bind(null, 6);
 
@@ -169,13 +173,9 @@ export function Step3Connect({
         googleDriveFolderId={googleDriveFolderId}
         googleDriveFolderName={googleDriveFolderName}
       />
-      <ConnectionRow
-        mark={<WhatsAppMark size={22} />}
-        label="WhatsApp Business"
-        explanation="Centro פונה ללקוחות ומקבל מהם מסמכים ישירות בוואטסאפ — בלי שתצטרכו לשלוח הודעה אחת בעצמכם."
-        connectedAt={whatsappConnectedAt}
-        connectAction={connectWhatsapp}
-        disconnectAction={disconnectWhatsapp}
+      <WhatsAppConnectionRow
+        whatsappConnectedAt={whatsappConnectedAt}
+        whatsappDisplayPhoneNumber={whatsappDisplayPhoneNumber}
       />
 
       <form action={goToStep4} className="pt-2">
