@@ -183,9 +183,15 @@ export function WhatsAppConnectButton() {
       try {
         const data = JSON.parse(event.data);
         console.log(DEBUG_PREFIX, "postMessage parsed as JSON", data);
-        if (data?.type === "WA_EMBEDDED_SIGNUP" && data?.event === "FINISH") {
-          console.log(DEBUG_PREFIX, "WA_EMBEDDED_SIGNUP FINISH captured", data.data);
-          signupDataRef.current = data.data ?? {};
+        // Captures data from every WA_EMBEDDED_SIGNUP message, not only one
+        // with event === "FINISH", and merges rather than replaces — Meta
+        // can deliver waba_id/phone_number_id on an intermediate
+        // step-progress message rather than (or in addition to) the final
+        // one, and a strict "only FINISH, always overwrite" handler would
+        // silently discard fields a later message doesn't repeat.
+        if (data?.type === "WA_EMBEDDED_SIGNUP" && data?.data) {
+          console.log(DEBUG_PREFIX, `WA_EMBEDDED_SIGNUP event="${data.event}" data captured`, data.data);
+          signupDataRef.current = { ...signupDataRef.current, ...data.data };
         }
       } catch {
         // Not JSON — not a signup message, ignore.
