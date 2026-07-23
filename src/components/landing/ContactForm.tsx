@@ -71,7 +71,9 @@ export default function ContactForm({
     } else if (!PHONE_PATTERN.test(phone.trim())) {
       next.phone = "נא להזין מספר טלפון תקין";
     }
-    if (email.trim() && !EMAIL_PATTERN.test(email.trim())) {
+    if (!email.trim()) {
+      next.email = "נא להזין כתובת אימייל";
+    } else if (!EMAIL_PATTERN.test(email.trim())) {
       next.email = "נא להזין כתובת אימייל תקינה";
     }
     return next;
@@ -95,7 +97,7 @@ export default function ContactForm({
         body: JSON.stringify({
           name,
           phone,
-          email: email || undefined,
+          email,
           businessName: businessName || undefined,
           message: message || undefined,
           source,
@@ -231,7 +233,7 @@ export default function ContactForm({
           htmlFor={`${idPrefix}-email`}
           className="mb-1.5 block text-sm font-medium text-text-secondary"
         >
-          אימייל <span className="font-normal text-text-muted">(לא חובה)</span>
+          אימייל <span aria-hidden="true">*</span>
         </label>
         <input
           id={`${idPrefix}-email`}
@@ -242,6 +244,7 @@ export default function ContactForm({
           dir="ltr"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          aria-required="true"
           aria-invalid={!!errors.email}
           aria-describedby={errors.email ? `${idPrefix}-email-error` : undefined}
           className="w-full rounded-xl border border-border bg-white px-4 py-3 text-end text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
@@ -263,7 +266,7 @@ export default function ContactForm({
           htmlFor={`${idPrefix}-business-name`}
           className="mb-1.5 block text-sm font-medium text-text-secondary"
         >
-          שם העסק <span className="font-normal text-text-muted">(לא חובה)</span>
+          סוג העסק <span className="font-normal text-text-muted">(לא חובה)</span>
         </label>
         <input
           id={`${idPrefix}-business-name`}
@@ -273,7 +276,7 @@ export default function ContactForm({
           value={businessName}
           onChange={(e) => setBusinessName(e.target.value)}
           className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
-          placeholder="לדוגמה: משרד רואי חשבון כהן ושות׳"
+          placeholder="לדוגמה: קליניקת שיניים, משרד עורכי דין, סוכנות ביטוח..."
         />
       </div>
 
@@ -291,7 +294,7 @@ export default function ContactForm({
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           className="w-full resize-none rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary outline-none transition-colors focus:border-brand-purple"
-          placeholder="ספרו לנו קצת על מה שאתם מחפשים"
+          placeholder="נשמח לשמוע איך Centro יכול לעזור לכם."
         />
       </div>
 

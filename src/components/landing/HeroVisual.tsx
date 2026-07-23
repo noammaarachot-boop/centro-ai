@@ -65,7 +65,12 @@ export default function HeroVisual() {
         }
         className="absolute inset-0 grid place-items-center"
       >
-        <div className="relative h-[15.5rem] w-[15.5rem] rounded-[1.75rem] border border-white/60 bg-white/95 p-3 shadow-card-lg backdrop-blur-md sm:h-64 sm:w-64">
+        {/* backdrop-blur is desktop-only: on mobile Safari, backdrop-filter
+            creates a compositing layer that renders this card's own
+            transform-animated children (the flying PDF icon in
+            DocumentFlowAnimation) behind the blur instead of above it. The
+            blur is barely visible on a card this small and opaque anyway. */}
+        <div className="relative h-[15.5rem] w-[15.5rem] rounded-[1.75rem] border border-white/60 bg-white p-3 shadow-card-lg sm:bg-white/95 sm:backdrop-blur-md sm:h-64 sm:w-64">
           <DocumentFlowAnimation />
         </div>
       </motion.div>

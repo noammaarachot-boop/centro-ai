@@ -5,7 +5,7 @@ import { motion, useReducedMotion, useScroll, useTransform } from "framer-motion
 import {
   Bell,
   FileWarning,
-  Mail,
+  ImageOff,
   MessageCircleMore,
   FileSpreadsheet,
   FolderX,
@@ -37,11 +37,11 @@ const CHIPS: Chip[] = [
     tone: "text-warning bg-warning/10",
   },
   {
-    icon: Mail,
-    text: "קובץ מצורף בג׳ימייל",
+    icon: ImageOff,
+    text: "תמונה מטושטשת של קבלה",
     chaos: { x: 190, y: 40, rotate: -6 },
     order: { x: 220, y: -64 },
-    tone: "text-gmail bg-gmail/10",
+    tone: "text-brand-blue bg-brand-blue/10",
   },
   {
     icon: FileSpreadsheet,
@@ -142,11 +142,44 @@ export default function ProblemSection() {
         </motion.p>
       </div>
 
-      <div className="relative mx-auto mt-16 h-[22rem] max-w-3xl sm:h-80">
+      {/* Mobile: a plain wrapped flex row that reflows to the real viewport
+          width. The absolute chaos-to-order scroll animation below scales
+          each chip's *position* by `spread`, but never its rendered size
+          (text is whitespace-nowrap) — on narrow viewports the six
+          full-width chips end up crammed into a shrunk radius and overlap.
+          A static wrap sidesteps that entirely, and also drops six
+          concurrent scroll-linked useTransform listeners on mobile. */}
+      <motion.div
+        variants={fadeUp}
+        initial="hidden"
+        whileInView="show"
+        viewport={viewportOnce}
+        className="mx-auto mt-12 flex max-w-sm flex-wrap justify-center gap-2 px-4 sm:hidden"
+      >
+        {CHIPS.map((chip, i) => (
+          <StaticChip key={i} chip={chip} />
+        ))}
+      </motion.div>
+
+      <div className="relative mx-auto mt-16 hidden h-80 max-w-3xl sm:block">
         {CHIPS.map((chip, i) => (
           <ChaosChip key={i} chip={chip} progress={scrollYProgress} spread={spread} />
         ))}
       </div>
     </section>
+  );
+}
+
+function StaticChip({ chip }: { chip: Chip }) {
+  const Icon = chip.icon;
+  return (
+    <div className="flex items-center gap-2 rounded-2xl border border-border bg-white px-3.5 py-2.5 shadow-card">
+      <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full ${chip.tone}`}>
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="whitespace-nowrap text-sm font-medium text-text-secondary">
+        {chip.text}
+      </span>
+    </div>
   );
 }

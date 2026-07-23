@@ -1,8 +1,15 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ArrowLeft, MessageSquare } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { fadeUp, staggerContainer, viewportOnce } from "@/lib/motion";
+import TrialCta from "./TrialCta";
+import { WhatsAppOfficialBadge } from "./icons/IntegrationIcons";
+import { WHATSAPP_NUMBER } from "./FloatingWhatsAppButton";
+
+const FINAL_CTA_WHATSAPP_MESSAGE =
+  "היי! 🤖 ראיתי את האתר ואני רוצה ש־Centro תרדוף אחרי המסמכים במקומי.";
+const FINAL_CTA_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(FINAL_CTA_WHATSAPP_MESSAGE)}`;
 
 export default function FinalCTASection() {
   return (
@@ -42,22 +49,28 @@ export default function FinalCTASection() {
             לנהל את האיסוף, כדי שאתם תוכלו להתמקד בעבודה החשובה באמת.
           </motion.p>
 
+          <motion.div variants={fadeUp} className="relative mt-9 flex justify-center">
+            <TrialCta variant="inverse" />
+          </motion.div>
+
           <motion.div
             variants={fadeUp}
-            className="relative mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row"
+            className="relative mt-4 flex flex-col items-center justify-center gap-3 sm:flex-row"
           >
             <a
               href="#demo"
-              className="group flex w-full items-center justify-center gap-2 rounded-full bg-white px-7 py-3.5 text-base font-semibold text-brand-purple-deep shadow-card transition-transform hover:scale-[1.02] active:scale-[0.98] sm:w-auto"
+              className="group flex w-full items-center justify-center gap-2 rounded-full border border-white/30 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-white/10 sm:w-auto"
             >
               בקשו הדגמה
               <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />
             </a>
             <a
-              href="mailto:hello@centro.example.com"
-              className="flex w-full items-center justify-center gap-2 rounded-full border border-white/30 px-7 py-3.5 text-base font-semibold text-white transition-colors hover:bg-white/10 sm:w-auto"
+              href={FINAL_CTA_WHATSAPP_HREF}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex w-full items-center justify-center gap-2 rounded-full border border-white/30 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-white/10 sm:w-auto"
             >
-              <MessageSquare className="h-5 w-5" />
+              <WhatsAppOfficialBadge className="h-5 w-5" />
               דברו איתנו
             </a>
           </motion.div>

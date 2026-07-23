@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Accessibility,
@@ -21,6 +22,11 @@ export default function AccessibilityWidget() {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Mounted site-wide (root layout), but FloatingWhatsAppButton only
+  // exists on the landing page ("/") — the panel only needs extra
+  // mobile clearance to open above it there, never on app pages where
+  // no WhatsApp button is stacked underneath.
+  const isLandingPage = usePathname() === "/";
 
   useEffect(() => {
     if (!open) return;
@@ -72,7 +78,7 @@ export default function AccessibilityWidget() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.96 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="absolute bottom-full left-0 mb-3 w-[17rem] max-h-[70vh] overflow-y-auto rounded-2xl border border-border bg-white p-4 shadow-card-lg"
+            className={`absolute bottom-full left-0 w-[17rem] max-h-[70vh] overflow-y-auto rounded-2xl border border-border bg-white p-4 shadow-card-lg ${isLandingPage ? "mb-[4.5rem] sm:mb-3" : "mb-3"}`}
           >
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-bold text-text-primary">
@@ -168,7 +174,7 @@ export default function AccessibilityWidget() {
         onClick={() => setOpen((v) => !v)}
         aria-label={open ? "סגירת הגדרות נגישות" : "פתיחת הגדרות נגישות"}
         aria-expanded={open}
-        className="grid h-14 w-14 place-items-center rounded-full text-white shadow-card-lg ring-1 ring-white/50 transition-transform hover:scale-105 active:scale-95"
+        className={`grid place-items-center rounded-full text-white shadow-card-lg ring-1 ring-white/50 transition-transform hover:scale-105 active:scale-95 ${isLandingPage ? "h-12 w-12 sm:h-14 sm:w-14" : "h-14 w-14"}`}
         style={{
           background:
             "linear-gradient(135deg, var(--color-brand-purple), var(--color-brand-blue))",

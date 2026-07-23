@@ -5,10 +5,15 @@ import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import ContactForm, { SUBMITTED_STORAGE_KEY } from "./ContactForm";
 import { CentroMark } from "./icons/CentroMark";
+import { WhatsAppOfficialBadge } from "./icons/IntegrationIcons";
+import { WHATSAPP_NUMBER } from "./FloatingWhatsAppButton";
 
 const SHOWN_THIS_SESSION_KEY = "centro-demo-modal-shown";
-const TRIGGER_DELAY_MS = 45_000;
+const TRIGGER_DELAY_MS = 15_000;
 const RETRY_DELAY_MS = 1_500;
+const MODAL_WHATSAPP_MESSAGE =
+  "היי! 🤖 ראיתי את חלון ההרשמה באתר ורוצה לדבר עכשיו.";
+const MODAL_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(MODAL_WHATSAPP_MESSAGE)}`;
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -181,6 +186,19 @@ export default function DemoRequestModal() {
 
             <div className="mt-6">
               <ContactForm idPrefix="demo-modal" source="עמוד הבית — חלון בקשת הדגמה" />
+            </div>
+
+            <div className="mt-5 border-t border-border pt-5 text-center">
+              <p className="text-sm text-text-secondary">רוצים לדבר איתנו עכשיו?</p>
+              <a
+                href={MODAL_WHATSAPP_HREF}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 inline-flex items-center justify-center gap-2 rounded-full bg-whatsapp px-5 py-2.5 text-sm font-semibold text-white shadow-card transition-transform hover:scale-[1.02] active:scale-[0.98]"
+              >
+                <WhatsAppOfficialBadge className="h-5 w-5" />
+                אפשר כאן
+              </a>
             </div>
           </motion.div>
         </div>

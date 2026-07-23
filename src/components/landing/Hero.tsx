@@ -1,10 +1,16 @@
 "use client";
 
+import { ArrowLeft } from "lucide-react";
 import { motion } from "framer-motion";
-import { ArrowLeft, PlayCircle } from "lucide-react";
 import HeroVisual from "./HeroVisual";
+import TrialCta from "./TrialCta";
 import { fadeUp, staggerContainer } from "@/lib/motion";
 import { CentroMark } from "./icons/CentroMark";
+
+function scrollToContact(event: React.MouseEvent<HTMLAnchorElement>) {
+  event.preventDefault();
+  document.getElementById("contact")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 
 export default function Hero() {
   return (
@@ -30,7 +36,7 @@ export default function Hero() {
             className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-white px-4 py-1.5 text-sm font-medium text-text-secondary shadow-sm"
           >
             <CentroMark className="h-4 w-4" title="Centro" />
-            <span className="h-1.5 w-1.5 rounded-full bg-brand-emerald" />
+            <span className="centro-status-dot h-1.5 w-1.5 rounded-full bg-brand-emerald" />
             העובד הדיגיטלי לאיסוף מסמכים
           </motion.span>
 
@@ -41,10 +47,7 @@ export default function Hero() {
             תפסיקו לרדוף אחרי מסמכים.
             <br />
             <span className="bg-gradient-to-l from-brand-purple via-brand-blue to-brand-cyan bg-clip-text text-transparent">
-              <span dir="ltr" className="inline-block">
-                Centro
-              </span>{" "}
-              כבר עושה את זה בשבילכם.
+              <span dir="ltr">Centro</span> עושה את זה בשבילכם.
             </span>
           </motion.h1>
 
@@ -56,23 +59,25 @@ export default function Hero() {
             תזכורות ומסדר הכול במקום הנכון.
           </motion.p>
 
+          <motion.p
+            variants={fadeUp}
+            className="mx-auto mt-3 max-w-lg text-pretty text-sm font-medium text-brand-purple-deep lg:mx-0"
+          >
+            מתאים לכל עסק שאוסף מסמכים מלקוחות כחלק מתהליך העבודה שלו.
+          </motion.p>
+
           <motion.div
             variants={fadeUp}
             className="mt-9 flex flex-col items-center gap-3 sm:flex-row sm:justify-center lg:justify-start"
           >
+            <TrialCta className="w-full sm:w-auto" />
             <a
-              href="#final-cta"
-              className="group flex w-full items-center justify-center gap-2 rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-7 py-3.5 text-base font-semibold text-white shadow-card-lg transition-transform hover:scale-[1.02] active:scale-[0.98] sm:w-auto"
+              href="#contact"
+              onClick={scrollToContact}
+              className="group flex w-full items-center justify-center gap-2 rounded-full border border-border bg-white px-7 py-3.5 text-base font-semibold text-text-primary transition-colors hover:bg-surface-muted sm:w-auto"
             >
               בקשו הדגמה
               <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" />
-            </a>
-            <a
-              href="#demo"
-              className="flex w-full items-center justify-center gap-2 rounded-full border border-border bg-white px-7 py-3.5 text-base font-semibold text-text-primary transition-colors hover:bg-surface-muted sm:w-auto"
-            >
-              <PlayCircle className="h-5 w-5 text-brand-purple" />
-              ראו את Centro בפעולה
             </a>
           </motion.div>
 
@@ -82,7 +87,7 @@ export default function Hero() {
           >
             מתחבר ל־
             <span dir="ltr" className="inline-block px-1">
-              WhatsApp · Gmail · Google Drive
+              WhatsApp · Google Drive
             </span>
             ועובד מהיום הראשון.
           </motion.p>

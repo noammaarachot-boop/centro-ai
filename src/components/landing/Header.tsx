@@ -77,6 +77,12 @@ export default function Header() {
             צפו איך זה עובד
           </a>
           <a
+            href="/login"
+            className="rounded-full px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:text-text-primary"
+          >
+            התחבר
+          </a>
+          <a
             href="#final-cta"
             className="rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-5 py-2.5 text-sm font-semibold text-white shadow-card transition-transform hover:scale-[1.03] active:scale-[0.98]"
           >
@@ -121,6 +127,13 @@ export default function Header() {
               className="rounded-full border border-border px-4 py-3 text-center text-sm font-medium text-text-primary"
             >
               צפו איך זה עובד
+            </a>
+            <a
+              href="/login"
+              onClick={() => setMobileOpen(false)}
+              className="px-4 py-2 text-center text-sm font-medium text-text-secondary"
+            >
+              התחבר
             </a>
             <a
               href="#final-cta"

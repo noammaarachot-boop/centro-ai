@@ -15,7 +15,7 @@ const rubik = Rubik({
 export const metadata: Metadata = {
   title: "Centro — העובד הדיגיטלי שאוסף לכם מסמכים",
   description:
-    "Centro הוא העובד הדיגיטלי של משרד הראייה החשבונאות שלכם: פונה ללקוחות, אוסף מסמכים, מנתח אותם עם AI ומסדר הכול לבד — בוואטסאפ, ג׳ימייל וגוגל דרייב.",
+    "Centro הוא העובד הדיגיטלי של העסק שלכם: פונה ללקוחות, אוסף מסמכים, מנתח אותם עם AI ומסדר הכול לבד — בוואטסאפ ובגוגל דרייב.",
   metadataBase: new URL("https://centro.example.com"),
   openGraph: {
     title: "Centro — העובד הדיגיטלי שאוסף לכם מסמכים",

@@ -22,15 +22,20 @@ export function WhatsAppGlyph(props: IconProps) {
   );
 }
 
-export function GmailGlyph(props: IconProps) {
+/**
+ * Official-style WhatsApp badge — full green circle + the real WhatsApp
+ * phone/speech-bubble glyph, unlike WhatsAppGlyph above which is
+ * deliberately brand-neutral. Used only where the button's whole purpose
+ * is "chat with us on WhatsApp" (FloatingWhatsAppButton, popup/final CTAs)
+ * — the exact use case WhatsApp's public brand resources are meant for.
+ */
+export function WhatsAppOfficialBadge(props: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <rect x="2" y="4.5" width="20" height="15" rx="3" fill="currentColor" />
-      <path d="M2 6.6 12 13 22 6.6v2.5L12 15.5 2 9.1V6.6Z" fill="#fff" opacity="0.92" />
+    <svg viewBox="0 0 32 32" fill="none" {...props}>
+      <circle cx="16" cy="16" r="16" fill="#25D366" />
       <path
-        d="M2.4 5.6 12 12l9.6-6.4A2.5 2.5 0 0 0 19.5 4.5h-15A2.5 2.5 0 0 0 2.4 5.6Z"
-        fill="#fff"
-        opacity="0.22"
+        fill="#FFFFFF"
+        d="M16 6.5c-5.25 0-9.5 4.25-9.5 9.5 0 1.68.44 3.28 1.28 4.7L6.5 25.5l4.95-1.3c1.36.75 2.9 1.15 4.55 1.15 5.25 0 9.5-4.25 9.5-9.5s-4.25-9.35-9.5-9.35zm5.6 13.4c-.24.66-1.4 1.28-1.93 1.34-.5.06-1.1.08-1.77-.11-.4-.12-.93-.3-1.6-.6-2.8-1.2-4.63-4-4.77-4.19-.14-.2-1.14-1.52-1.14-2.9s.72-2.05.98-2.33c.24-.27.53-.34.71-.34h.5c.16 0 .38 0 .58.44.24.55.8 1.9.87 2.04.07.14.12.3.02.48-.09.18-.14.3-.28.46-.14.16-.3.36-.42.48-.14.14-.3.3-.13.58.17.29.75 1.25 1.62 2.02 1.11.99 2.05 1.3 2.33 1.44.29.15.46.13.63-.07.17-.19.72-.85.92-1.14.19-.29.38-.24.63-.14.26.1 1.62.77 1.9.91.27.15.45.22.52.34.07.13.07.72-.17 1.39z"
       />
     </svg>
   );
@@ -107,7 +112,6 @@ export function SparkleGlyph(props: IconProps) {
 
 export type IntegrationKey =
   | "whatsapp"
-  | "gmail"
   | "drive"
   | "pdf"
   | "excel"
@@ -118,7 +122,6 @@ export const INTEGRATION_META: Record<
   { label: string; color: string; Glyph: (p: IconProps) => React.JSX.Element }
 > = {
   whatsapp: { label: "WhatsApp", color: "var(--color-whatsapp)", Glyph: WhatsAppGlyph },
-  gmail: { label: "Gmail", color: "var(--color-gmail)", Glyph: GmailGlyph },
   drive: { label: "Google Drive", color: "var(--color-drive)", Glyph: DriveGlyph },
   pdf: { label: "PDF", color: "var(--color-pdf)", Glyph: PDFGlyph },
   excel: { label: "Excel", color: "var(--color-excel)", Glyph: ExcelGlyph },

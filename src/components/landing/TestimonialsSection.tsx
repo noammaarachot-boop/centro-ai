@@ -27,7 +27,7 @@ const TESTIMONIALS: Testimonial[] = [
   {
     quote: "התהליך ברור הרבה יותר. אני יודע בדיוק מה חסר בלי לבדוק ידנית.",
     name: "עידן",
-    role: "רואה חשבון",
+    role: "מנהל קליניקת שיניים",
   },
   {
     quote: "התזכורות האוטומטיות הורידו לצוות שלנו עומס משמעותי.",
@@ -37,17 +37,17 @@ const TESTIMONIALS: Testimonial[] = [
   {
     quote: "הלקוחות שלי פחות מוצפים בתזכורות ידניות ממני, וזה מורגש.",
     name: "רועי",
-    role: "יועץ מס",
+    role: "בעל סוכנות ביטוח",
   },
   {
     quote: "קל להבין מה כבר התקבל ומה עדיין בהמתנה בלי לחפש בין תיקיות.",
     name: "ליאור",
-    role: "חשבת שכר",
+    role: "מנהלת תפעול בחברת נדל״ן",
   },
   {
     quote: "יש לנו תמונת מצב ברורה בלי להתעסק בכל מסמך בנפרד.",
     name: "שירן",
-    role: "בעלת משרד הנהלת חשבונות",
+    role: "בעלת סטודיו לעיצוב פנים",
   },
   {
     quote: "החיסכון בזמן על איסוף חשבוניות מורגש כבר מהחודש הראשון.",
@@ -62,12 +62,12 @@ const TESTIMONIALS: Testimonial[] = [
   {
     quote: "הצוות שלנו כבר לא צריך לזכור להזכיר ללקוחות לשלוח קבצים.",
     name: "אלון",
-    role: "בעל משרד הנהלת חשבונות",
+    role: "מנהל משרד עורכי דין",
   },
   {
     quote: "הכול מגיע מסודר לתיקייה הנכונה בלי שנצטרך להתערב.",
     name: "עומר",
-    role: "יועץ מס",
+    role: "בעל חברת ייבוא",
   },
 ];
 
@@ -114,7 +114,7 @@ function TestimonialCard({
       aria-label={`${item.name}, ${item.role}`}
       aria-hidden={hidden || undefined}
       tabIndex={hidden ? -1 : 0}
-      className="relative w-[19rem] shrink-0 snap-start overflow-hidden rounded-[1.5rem] border border-white/70 bg-white/90 p-5 text-right shadow-card backdrop-blur-md transition-shadow duration-300 hover:shadow-card-lg sm:w-[21rem]"
+      className="relative w-[19rem] shrink-0 snap-start overflow-hidden rounded-[1.5rem] border border-white/70 bg-white p-5 text-right shadow-card transition-shadow duration-300 hover:shadow-card-lg sm:w-[21rem] sm:bg-white/90 sm:backdrop-blur-md"
       style={{
         boxShadow:
           "0 1px 2px rgba(22,19,42,0.04), 0 16px 36px -18px color-mix(in oklab, var(--color-brand-purple) 35%, transparent)",
@@ -288,7 +288,7 @@ export default function TestimonialsSection() {
           viewport={viewportOnce}
           className="mx-auto mt-5 max-w-xl text-pretty text-lg leading-relaxed text-text-secondary"
         >
-          משרדי הנהלת חשבונות שמפסיקים לרדוף אחרי מסמכים ומתחילים לעבוד
+          עסקים מכל התחומים שמפסיקים לרדוף אחרי מסמכים ומתחילים לעבוד
           בצורה מסודרת יותר.
         </motion.p>
       </div>

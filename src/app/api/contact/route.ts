@@ -43,7 +43,7 @@ function isRateLimited(ip: string): boolean {
 interface ContactPayload {
   name: string;
   phone: string;
-  email?: string;
+  email: string;
   businessName?: string;
   message?: string;
   source: string;
@@ -73,14 +73,15 @@ function parsePayload(body: unknown): { value: ContactPayload } | { error: strin
   if (typeof phone !== "string" || !PHONE_PATTERN.test(phone.trim())) {
     return { error: "נא להזין מספר טלפון תקין." };
   }
-  if (email !== undefined && email !== null && email !== "") {
-    if (typeof email !== "string" || !EMAIL_PATTERN.test(email.trim())) {
-      return { error: "נא להזין כתובת אימייל תקינה." };
-    }
+  if (typeof email !== "string" || !email.trim()) {
+    return { error: "נא להזין כתובת אימייל." };
+  }
+  if (!EMAIL_PATTERN.test(email.trim())) {
+    return { error: "נא להזין כתובת אימייל תקינה." };
   }
   if (businessName !== undefined && businessName !== null && businessName !== "") {
     if (typeof businessName !== "string" || businessName.length > BUSINESS_NAME_MAX) {
-      return { error: "שם העסק ארוך מדי." };
+      return { error: "סוג העסק ארוך מדי." };
     }
   }
   if (message !== undefined && message !== null && message !== "") {
@@ -93,7 +94,7 @@ function parsePayload(body: unknown): { value: ContactPayload } | { error: strin
     value: {
       name: name.trim(),
       phone: phone.trim(),
-      email: typeof email === "string" && email.trim() ? email.trim() : undefined,
+      email: email.trim(),
       businessName: typeof businessName === "string" && businessName.trim() ? businessName.trim() : undefined,
       message: typeof message === "string" && message.trim() ? message.trim() : undefined,
       source: typeof source === "string" && source.trim() ? source.trim() : "לא ידוע",
@@ -224,8 +225,8 @@ export async function POST(request: NextRequest) {
   const rows: Array<[string, string]> = [
     ["שם מלא", name],
     ["טלפון", phone],
-    ["אימייל", email || "לא סופק"],
-    ["שם העסק", businessName || "לא סופק"],
+    ["אימייל", email],
+    ["סוג העסק", businessName || "לא סופק"],
     ["הודעה", message || "לא סופקה"],
     ["תאריך ושעה", submittedAt],
     ["מקור", source],

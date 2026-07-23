@@ -19,7 +19,6 @@ type OrbitItem = {
 
 const DEFAULT_ITEMS: OrbitItem[] = [
   { type: "whatsapp", radius: 168, size: 58, startAngle: 20, duration: 34, direction: 1 },
-  { type: "gmail", radius: 150, size: 48, startAngle: 150, duration: 30, direction: -1, blur: 0.4, opacity: 0.94 },
   { type: "drive", radius: 190, size: 52, startAngle: 250, duration: 40, direction: 1 },
   { type: "pdf", radius: 130, size: 42, startAngle: 320, duration: 26, direction: -1, blur: 0.4, opacity: 0.9 },
   { type: "excel", radius: 205, size: 44, startAngle: 100, duration: 44, direction: -1, blur: 0.6, opacity: 0.88 },

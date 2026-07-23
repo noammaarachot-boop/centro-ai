@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { DriveGlyph } from "./icons/IntegrationIcons";
 import { fadeUp, staggerContainer, viewportOnce } from "@/lib/motion";
+import TrialCta from "./TrialCta";
 
 const TRUST_ITEMS = [
   {
@@ -116,19 +117,15 @@ export default function TrustSection() {
           style={{ background: "var(--gradient-hero)" }}
         >
           <p className="text-lg font-semibold leading-relaxed text-white sm:text-xl">
-            אנחנו בשלב מוקדם, ובונים את Centro יחד עם משרדי ראיית חשבון
-            נבחרים.
+            מתאים לכל עסק שאוסף מסמכים מלקוחות כחלק מתהליך העבודה שלו.
           </p>
           <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-white/85">
-            מחפשים משרדים שרוצים להיות בין הראשונים שמטמיעים עובד דיגיטלי
-            לאיסוף מסמכים. חוות דעת ולקוחות אמיתיים יתווספו כאן בהמשך.
+            תנו ל־Centro לרדוף במקומכם — 14 יום להתנסות, בלי לשנות שום דבר
+            אחר בעבודה השוטפת שלכם.
           </p>
-          <a
-            href="#final-cta"
-            className="mt-6 inline-flex items-center justify-center rounded-full bg-white px-6 py-3 text-sm font-semibold text-brand-purple-deep shadow-card transition-transform hover:scale-[1.02] active:scale-[0.98]"
-          >
-            הצטרפו לפיילוט
-          </a>
+          <div className="mt-6 flex justify-center">
+            <TrialCta variant="inverse" />
+          </div>
         </div>
       </motion.div>
     </section>

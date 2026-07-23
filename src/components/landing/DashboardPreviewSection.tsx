@@ -49,7 +49,9 @@ export default function DashboardPreviewSection() {
         viewport={viewportOnce}
         className="mx-auto mt-14 max-w-4xl px-4 sm:px-6"
       >
-        <div className="rounded-[1.75rem] border border-white/70 bg-white/90 p-3 shadow-card-lg backdrop-blur-xl sm:p-4">
+        {/* backdrop-blur is desktop-only — expensive to composite on mobile
+            GPUs, and this card is opaque enough without it. */}
+        <div className="rounded-[1.75rem] border border-white/70 bg-white p-3 shadow-card-lg sm:bg-white/90 sm:p-4 sm:backdrop-blur-xl">
           <div className="flex items-center justify-between rounded-2xl bg-surface-muted/70 px-4 py-2.5">
             <span className="flex items-center gap-2 text-sm font-semibold text-text-primary">
               <CentroMark className="h-6 w-6" title="Centro" />

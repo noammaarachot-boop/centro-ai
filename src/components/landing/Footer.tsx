@@ -27,8 +27,8 @@ export default function Footer() {
               </span>
             </div>
             <p className="mt-3 max-w-xs text-sm leading-relaxed text-text-secondary">
-              העובד הדיגיטלי שאוסף, מנתח ומסדר מסמכים עבור משרדי ראיית
-              חשבון — כדי שאתם תתמקדו במה שחשוב באמת.
+              העובד הדיגיטלי שאוסף, מנתח ומסדר מסמכים עבור עסקים מכל
+              הסוגים — כדי שאתם תתמקדו במה שחשוב באמת.
             </p>
           </div>
 

@@ -156,7 +156,9 @@ export default function InteractiveDemoSection() {
         viewport={viewportOnce}
         className="mx-auto mt-10 max-w-xl px-4 sm:px-6"
       >
-        <div className="rounded-[1.75rem] border border-white/70 bg-white/90 p-5 shadow-card-lg backdrop-blur-xl sm:p-7">
+        {/* backdrop-blur is desktop-only — see DashboardPreviewSection's
+            identical note; same mobile-performance rationale. */}
+        <div className="rounded-[1.75rem] border border-white/70 bg-white p-5 shadow-card-lg sm:bg-white/90 sm:p-7 sm:backdrop-blur-xl">
           <AnimatePresence mode="wait">
             {state === "prompt" && (
               <motion.div
@@ -264,8 +266,14 @@ export default function InteractiveDemoSection() {
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="mt-5 flex justify-center"
+                    className="mt-5 flex flex-col items-center gap-3"
                   >
+                    <a
+                      href="/register"
+                      className="rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-5 py-2.5 text-sm font-semibold text-white shadow-card transition-transform hover:scale-[1.02] active:scale-[0.98]"
+                    >
+                      אהבתם? נסו את זה על העסק שלכם
+                    </a>
                     <button
                       type="button"
                       onClick={start}
