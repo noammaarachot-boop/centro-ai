@@ -100,11 +100,23 @@ export default function HeroVisual() {
       className="relative mx-auto aspect-square w-full max-w-[420px]"
       style={{ perspective: 1000 }}
     >
-      {/* ambient glow */}
+      {/* Ambient glow — a multi-stop radial gradient, not a blurred solid
+          shape (blur has a real, if soft, edge once it drops below a
+          visible threshold, which read as a hard seam on mobile).
+          `farthest-side` is required: this div's box is a square, and a
+          bare `circle` gradient defaults to `farthest-corner` sizing, so
+          straight down — where this glow meets the next section — the
+          gradient was still ~8% opaque at the box's own edge and got
+          clipped there. `farthest-side` reaches 0% opacity before any
+          edge, in every direction. Same brand colors as --gradient-hero
+          elsewhere on this page, expressed as an explicit radial fade. */}
       <div
         aria-hidden="true"
-        className="absolute inset-[6%] rounded-full blur-3xl"
-        style={{ background: "var(--gradient-hero)", opacity: 0.32 }}
+        className="absolute -inset-[25%]"
+        style={{
+          background:
+            "radial-gradient(circle farthest-side, color-mix(in oklab, var(--color-brand-purple) 30%, transparent) 0%, color-mix(in oklab, var(--color-brand-blue) 18%, transparent) 45%, color-mix(in oklab, var(--color-brand-cyan) 8%, transparent) 70%, transparent 100%)",
+        }}
       />
 
       <OrbitingIntegrations
