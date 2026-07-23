@@ -50,11 +50,20 @@ async function createModel(provider: AiProvider, apiKey: string, modelId: string
   }
 }
 
+export interface ResolvedModel {
+  model: LanguageModel;
+  provider: AiProvider;
+  modelId: string;
+}
+
 // The one place this integration throws over a missing key — never
 // getAiCoreConfig() itself (see its own doc comment), only here, at the
 // moment a caller actually needs a working model and the provider they
 // asked for (explicitly, or via the resolved default) has no key.
-export async function resolveLanguageModel(provider?: AiProvider): Promise<LanguageModel> {
+// Returns provider/modelId alongside the model itself so callers (the
+// agent loop) can persist accurate metadata without re-deriving it from
+// the model instance.
+export async function resolveModelInfo(provider?: AiProvider): Promise<ResolvedModel> {
   const config = getAiCoreConfig();
   const resolvedProvider = provider ?? config.defaultProvider;
 
@@ -66,5 +75,13 @@ export async function resolveLanguageModel(provider?: AiProvider): Promise<Langu
     throw new AiProviderNotConfiguredError(resolvedProvider);
   }
 
-  return createModel(resolvedProvider, apiKey, config.models[resolvedProvider]);
+  const modelId = config.models[resolvedProvider];
+  const model = await createModel(resolvedProvider, apiKey, modelId);
+  return { model, provider: resolvedProvider, modelId };
+}
+
+// Convenience wrapper for callers that only need the model itself (e.g.
+// a quick connectivity check) without the provider/modelId metadata.
+export async function resolveLanguageModel(provider?: AiProvider): Promise<LanguageModel> {
+  return (await resolveModelInfo(provider)).model;
 }
