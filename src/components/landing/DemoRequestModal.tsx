@@ -9,7 +9,7 @@ import { WhatsAppOfficialBadge } from "./icons/IntegrationIcons";
 import { WHATSAPP_NUMBER } from "./FloatingWhatsAppButton";
 
 const SHOWN_THIS_SESSION_KEY = "centro-demo-modal-shown";
-const TRIGGER_DELAY_MS = 15_000;
+const TRIGGER_DELAY_MS = 35_000;
 const RETRY_DELAY_MS = 1_500;
 const MODAL_WHATSAPP_MESSAGE =
   "היי! 🤖 ראיתי את חלון ההרשמה באתר ורוצה לדבר עכשיו.";
@@ -38,8 +38,9 @@ function anotherOverlayOpen() {
 
 /**
  * Opens the shared contact form (see ContactForm.tsx) inside a modal,
- * once, 45s after the page loads — unless the visitor already saw it
- * this session, already submitted, or another overlay is open.
+ * once, TRIGGER_DELAY_MS after the page loads — unless the visitor
+ * already saw it this session, already submitted, or another overlay
+ * is open.
  */
 export default function DemoRequestModal() {
   const [open, setOpen] = useState(false);

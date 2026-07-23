@@ -12,13 +12,6 @@ const NAV_LINKS = [
   { href: "#faq", label: "שאלות נפוצות" },
 ];
 
-// The mobile dropdown gets its own curated list rather than reusing
-// NAV_LINKS directly — "איך זה עובד" and "הדגמה" both read as duplicates
-// of "צפו איך זה עובד" once that and "צור קשר" are added, which is too
-// much for a short mobile menu. Desktop keeps the full NAV_LINKS above,
-// unchanged.
-const MOBILE_NAV_LINKS = [{ href: "#faq", label: "שאלות נפוצות" }];
-
 function scrollToDemo(event: React.MouseEvent<HTMLAnchorElement>) {
   event.preventDefault();
   document.getElementById("demo")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -120,19 +113,17 @@ export default function Header() {
           transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
           className="absolute inset-x-4 top-[4.5rem] rounded-2xl border border-border bg-white p-4 shadow-card-lg md:hidden"
         >
-          <nav className="flex flex-col gap-1" aria-label="ניווט לנייד">
-            {MOBILE_NAV_LINKS.map((link) => (
-              <a
-                key={link.href}
-                href={link.href}
-                onClick={() => setMobileOpen(false)}
-                className="rounded-lg px-3 py-3 text-base font-medium text-text-primary hover:bg-surface-muted"
-              >
-                {link.label}
-              </a>
-            ))}
-          </nav>
-          <div className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
+          <nav
+            className="flex flex-col gap-2"
+            aria-label="ניווט לנייד"
+          >
+            <a
+              href="#faq"
+              onClick={() => setMobileOpen(false)}
+              className="rounded-full border border-border px-4 py-3 text-center text-sm font-medium text-text-primary"
+            >
+              שאלות נפוצות
+            </a>
             <a
               href="#demo"
               onClick={() => setMobileOpen(false)}
@@ -157,10 +148,15 @@ export default function Header() {
             >
               התחבר
             </a>
+          </nav>
+          <div className="mt-3 border-t border-border pt-3">
             <a
-              href="#final-cta"
-              onClick={() => setMobileOpen(false)}
-              className="rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-4 py-3 text-center text-sm font-semibold text-white shadow-card"
+              href="#demo"
+              onClick={(e) => {
+                scrollToDemo(e);
+                setMobileOpen(false);
+              }}
+              className="block rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-4 py-3 text-center text-sm font-semibold text-white shadow-card"
             >
               בקשו הדגמה
             </a>

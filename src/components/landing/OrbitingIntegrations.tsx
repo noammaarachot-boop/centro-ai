@@ -25,12 +25,43 @@ const DEFAULT_ITEMS: OrbitItem[] = [
   { type: "ai", radius: 118, size: 46, startAngle: 200, duration: 22, direction: 1 },
 ];
 
-function OrbitIcon({ item, spread }: { item: OrbitItem; spread: number }) {
+function OrbitIcon({
+  item,
+  spread,
+  sizeScale,
+  minRadius,
+  maxRadius,
+}: {
+  item: OrbitItem;
+  spread: number;
+  sizeScale?: number;
+  minRadius?: number;
+  maxRadius?: number;
+}) {
   const reduceMotion = useReducedMotion();
   const { color, Glyph, label } = INTEGRATION_META[item.type];
   const { startAngle, duration, direction } = item;
-  const radius = item.radius * spread;
-  const size = item.size * spread;
+  // Each icon's own half-size eats into the available clearance budget
+  // twice over (once against the visibility ceiling, once against the
+  // clearance floor), so on mobile it's scaled down separately from
+  // (smaller than) the position-only `spread`, to free up real room for
+  // the radius clamp below. Defaults to `spread` so tablet/desktop are
+  // unaffected when the caller doesn't pass it.
+  const size = item.size * (sizeScale ?? spread);
+  const naturalRadius = item.radius * spread;
+  // minRadius/maxRadius (from HeroVisual, real DOM measurements) only
+  // arrive below the sm breakpoint, where the card doesn't shrink nearly
+  // as much as `spread` does, so the tuned tablet/desktop radii below
+  // can no longer be trusted to clear it. Both bounds already account
+  // for the card and container edges, not this icon's own half-size, so
+  // it's added/subtracted here per-icon before clamping. When the two
+  // bounds cross (the card's corner genuinely doesn't fit within the
+  // visible container on very narrow phones), the clamp resolves to
+  // maxRadius — staying fully on-screen wins over full clearance.
+  const radius =
+    minRadius !== undefined && maxRadius !== undefined
+      ? Math.min(Math.max(naturalRadius, minRadius + size / 2), maxRadius - size / 2)
+      : naturalRadius;
 
   if (reduceMotion) {
     const rad = (startAngle * Math.PI) / 180;
@@ -125,10 +156,16 @@ function IconBadge({
 export default function OrbitingIntegrations({
   items = DEFAULT_ITEMS,
   spread = 1,
+  sizeScale,
+  minRadius,
+  maxRadius,
   className = "",
 }: {
   items?: OrbitItem[];
   spread?: number;
+  sizeScale?: number;
+  minRadius?: number;
+  maxRadius?: number;
   className?: string;
 }) {
   return (
@@ -137,7 +174,14 @@ export default function OrbitingIntegrations({
       aria-hidden="true"
     >
       {items.map((item, i) => (
-        <OrbitIcon key={`${item.type}-${i}`} item={item} spread={spread} />
+        <OrbitIcon
+          key={`${item.type}-${i}`}
+          item={item}
+          spread={spread}
+          sizeScale={sizeScale}
+          minRadius={minRadius}
+          maxRadius={maxRadius}
+        />
       ))}
     </div>
   );
