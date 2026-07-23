@@ -20,7 +20,7 @@ export default function Hero() {
     >
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0"
+        className="centro-hero-mesh-fade pointer-events-none absolute inset-0"
         style={{ background: "var(--gradient-mesh)" }}
       />
 

@@ -32,6 +32,7 @@ export function RegisterForm() {
   const [state, formAction, isPending] = useActionState(register, initialState);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [termsAndPrivacyAccepted, setTermsAndPrivacyAccepted] = useState(false);
 
   return (
     <form action={formAction} className="space-y-4">
@@ -109,7 +110,8 @@ export function RegisterForm() {
         <label className="flex items-start gap-2 text-sm text-text-secondary">
           <input
             type="checkbox"
-            name="termsAccepted"
+            checked={termsAndPrivacyAccepted}
+            onChange={(e) => setTermsAndPrivacyAccepted(e.target.checked)}
             className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-brand-purple"
           />
           <span>
@@ -121,17 +123,8 @@ export function RegisterForm() {
               className="text-brand-purple hover:underline"
             >
               תנאי השימוש
-            </Link>
-          </span>
-        </label>
-        <label className="flex items-start gap-2 text-sm text-text-secondary">
-          <input
-            type="checkbox"
-            name="privacyAccepted"
-            className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-brand-purple"
-          />
-          <span>
-            קראתי ואני מסכים/ה ל
+            </Link>{" "}
+            ול
             <Link
               href="/privacy"
               target="_blank"
@@ -140,8 +133,16 @@ export function RegisterForm() {
             >
               מדיניות הפרטיות
             </Link>
+            .
           </span>
         </label>
+        {/* actions.ts's register() reads two separate form fields
+            (termsAccepted / privacyAccepted) and records two separate
+            *_AcceptedAt timestamps — both mirrored from the single
+            checkbox above so neither the server action nor the DB schema
+            need to change for a single-checkbox UI. */}
+        <input type="checkbox" name="termsAccepted" checked={termsAndPrivacyAccepted} readOnly hidden />
+        <input type="checkbox" name="privacyAccepted" checked={termsAndPrivacyAccepted} readOnly hidden />
         {state.fieldErrors?.terms && (
           <p role="alert" className="text-xs font-medium text-danger">
             {state.fieldErrors.terms}

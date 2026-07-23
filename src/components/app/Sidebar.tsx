@@ -18,17 +18,30 @@ import {
   Menu,
   X,
   Sparkles,
+  LifeBuoy,
 } from "lucide-react";
 import { CentroMark } from "@/components/landing/icons/CentroMark";
+import { WHATSAPP_NUMBER } from "@/components/landing/FloatingWhatsAppButton";
 
+const SUPPORT_WHATSAPP_MESSAGE = "היי! אני צריך/ה עזרה עם Centro.";
+const SUPPORT_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(SUPPORT_WHATSAPP_MESSAGE)}`;
+
+// "עוזר AI" is hidden (not rendered) rather than removed — every route,
+// API, and component behind it is untouched, this only stops the nav
+// item itself from rendering. Restore by deleting the `hidden: true`
+// line from both arrays below.
+// "תמיכה" is an external WhatsApp link, not an internal route — it's
+// rendered as a plain <a target="_blank"> instead of next/link's <Link>
+// (see the `external` branch in the nav .map() below).
 const RECURRING_NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
-  { href: "/assistant", label: "עוזר AI", icon: Sparkles },
+  { href: "/assistant", label: "עוזר AI", icon: Sparkles, hidden: true },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/services", label: "תבניות", icon: Layers },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
   { href: "/audit", label: "פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },
+  { href: SUPPORT_WHATSAPP_HREF, label: "תמיכה", icon: LifeBuoy, external: true },
 ];
 
 // Product Evolution M4 — Workflow B's own, smaller nav: Templates replaces
@@ -39,11 +52,12 @@ const RECURRING_NAV_LINKS = [
 // visited directly; only the nav itself is workflow-specific.
 const ONE_TIME_NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
-  { href: "/assistant", label: "עוזר AI", icon: Sparkles },
+  { href: "/assistant", label: "עוזר AI", icon: Sparkles, hidden: true },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/templates", label: "תבניות", icon: LayoutTemplate },
   { href: "/audit", label: "פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },
+  { href: SUPPORT_WHATSAPP_HREF, label: "תמיכה", icon: LifeBuoy, external: true },
 ];
 
 export function Sidebar({
@@ -89,21 +103,39 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
-        {NAV_LINKS.map((link) => {
+        {NAV_LINKS.filter((link) => !("hidden" in link && link.hidden)).map((link) => {
           const active =
             pathname === link.href || pathname.startsWith(`${link.href}/`);
           const Icon = link.icon;
+          const linkClassName = clsx(
+            "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ease-[var(--ease-standard)]",
+            active
+              ? "bg-gradient-to-l from-brand-purple/10 to-brand-blue/5 text-brand-purple"
+              : "text-text-secondary hover:bg-surface-muted hover:text-text-primary"
+          );
+
+          if ("external" in link && link.external) {
+            return (
+              <a
+                key={link.href}
+                href={link.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={linkClassName}
+                title={collapsed ? link.label : undefined}
+              >
+                <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+                {!collapsed && <span className="truncate">{link.label}</span>}
+              </a>
+            );
+          }
+
           return (
             <Link
               key={link.href}
               href={link.href}
               onClick={() => setMobileOpen(false)}
-              className={clsx(
-                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ease-[var(--ease-standard)]",
-                active
-                  ? "bg-gradient-to-l from-brand-purple/10 to-brand-blue/5 text-brand-purple"
-                  : "text-text-secondary hover:bg-surface-muted hover:text-text-primary"
-              )}
+              className={linkClassName}
               title={collapsed ? link.label : undefined}
             >
               {active && (

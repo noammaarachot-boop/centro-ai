@@ -494,6 +494,26 @@ body {
   }
 }
 
+/* Hero's own decorative --gradient-mesh layer (see Hero.tsx) is clipped
+   by the section's overflow-hidden, which creates a visible hard edge
+   where it meets the next section on mobile — the section is shorter
+   there relative to the gradient's own fade radius, so the color hasn't
+   tapered off yet by the time it hits the clip line. This mask softens
+   just that edge into a gradual fade — same gradient, same colors, same
+   layout, purely how it tapers at the bottom. Desktop already has room
+   for the gradient to fade out naturally before the clip line, so the
+   mask is removed there to leave that rendering untouched. */
+.centro-hero-mesh-fade {
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black 78%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black 78%, transparent 100%);
+}
+@media (min-width: 640px) {
+  .centro-hero-mesh-fade {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
 /* CentroMarkGlow — an optional soft halo and/or gentle breathing scale
    wrapped AROUND the official CentroMark SVG (see
    src/components/landing/icons/CentroMark.tsx, imported unmodified).
