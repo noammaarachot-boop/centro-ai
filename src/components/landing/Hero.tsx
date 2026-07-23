@@ -7,9 +7,9 @@ import TrialCta from "./TrialCta";
 import { fadeUp, staggerContainer } from "@/lib/motion";
 import { CentroMark } from "./icons/CentroMark";
 
-function scrollToDemo(event: React.MouseEvent<HTMLAnchorElement>) {
+function scrollToContact(event: React.MouseEvent<HTMLAnchorElement>) {
   event.preventDefault();
-  document.getElementById("demo")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  document.getElementById("contact")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 export default function Hero() {
@@ -72,8 +72,8 @@ export default function Hero() {
           >
             <TrialCta className="w-full sm:w-auto" />
             <a
-              href="#demo"
-              onClick={scrollToDemo}
+              href="#contact"
+              onClick={scrollToContact}
               className="group flex w-full items-center justify-center gap-2 rounded-full border border-border bg-white px-7 py-3.5 text-base font-semibold text-text-primary transition-colors hover:bg-surface-muted sm:w-auto"
             >
               בקשו הדגמה

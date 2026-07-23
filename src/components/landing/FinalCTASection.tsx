@@ -11,6 +11,11 @@ const FINAL_CTA_WHATSAPP_MESSAGE =
   "היי! 🤖 ראיתי את האתר ואני רוצה ש־Centro תרדוף אחרי המסמכים במקומי.";
 const FINAL_CTA_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(FINAL_CTA_WHATSAPP_MESSAGE)}`;
 
+function scrollToContact(event: React.MouseEvent<HTMLAnchorElement>) {
+  event.preventDefault();
+  document.getElementById("contact")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 export default function FinalCTASection() {
   return (
     <section id="final-cta" className="relative py-24 sm:py-32">
@@ -58,7 +63,8 @@ export default function FinalCTASection() {
             className="relative mt-4 flex flex-col items-center justify-center gap-3 sm:flex-row"
           >
             <a
-              href="#demo"
+              href="#contact"
+              onClick={scrollToContact}
               className="group flex w-full items-center justify-center gap-2 rounded-full border border-white/30 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-white/10 sm:w-auto"
             >
               בקשו הדגמה

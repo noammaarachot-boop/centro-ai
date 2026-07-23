@@ -12,9 +12,9 @@ const NAV_LINKS = [
   { href: "#faq", label: "שאלות נפוצות" },
 ];
 
-function scrollToDemo(event: React.MouseEvent<HTMLAnchorElement>) {
+function scrollToContact(event: React.MouseEvent<HTMLAnchorElement>) {
   event.preventDefault();
-  document.getElementById("demo")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  document.getElementById("contact")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 export default function Header() {
@@ -88,7 +88,8 @@ export default function Header() {
             התחבר
           </a>
           <a
-            href="#final-cta"
+            href="#contact"
+            onClick={scrollToContact}
             className="rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-5 py-2.5 text-sm font-semibold text-white shadow-card transition-transform hover:scale-[1.03] active:scale-[0.98]"
           >
             בקשו הדגמה
@@ -132,9 +133,9 @@ export default function Header() {
               צפו איך זה עובד
             </a>
             <a
-              href="#demo"
+              href="#contact"
               onClick={(e) => {
-                scrollToDemo(e);
+                scrollToContact(e);
                 setMobileOpen(false);
               }}
               className="rounded-full border border-border px-4 py-3 text-center text-sm font-medium text-text-primary"
@@ -151,9 +152,9 @@ export default function Header() {
           </nav>
           <div className="mt-3 border-t border-border pt-3">
             <a
-              href="#demo"
+              href="#contact"
               onClick={(e) => {
-                scrollToDemo(e);
+                scrollToContact(e);
                 setMobileOpen(false);
               }}
               className="block rounded-full bg-gradient-to-l from-brand-purple to-brand-blue px-4 py-3 text-center text-sm font-semibold text-white shadow-card"
