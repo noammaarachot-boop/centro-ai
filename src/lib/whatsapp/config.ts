@@ -16,6 +16,14 @@ export interface WhatsAppConfig {
   // exchangeSignupCode only sends it when set, so setups with no
   // redirect URI configured keep working exactly as documented.
   oauthRedirectUri: string | null;
+  // Same value the webhook route's GET handshake checks
+  // (WHATSAPP_WEBHOOK_VERIFY_TOKEN) — also needed by
+  // embeddedSignup.ts's subscribeToWabaWebhooks to ensure the app-level
+  // "messages" field subscription, not just the per-WABA link. Optional
+  // here so a misconfigured deployment degrades to "webhook subscription
+  // skipped, connection still succeeds" rather than failing the whole
+  // Embedded Signup flow over a missing webhook setting.
+  webhookVerifyToken: string | null;
 }
 
 // Server-side config for the shared Tech Provider setup (see the WhatsApp
@@ -33,5 +41,11 @@ export function getWhatsAppConfig(): WhatsAppConfig {
     );
   }
 
-  return { appId, appSecret, systemUserToken, oauthRedirectUri: process.env.WHATSAPP_OAUTH_REDIRECT_URI || null };
+  return {
+    appId,
+    appSecret,
+    systemUserToken,
+    oauthRedirectUri: process.env.WHATSAPP_OAUTH_REDIRECT_URI || null,
+    webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || null,
+  };
 }
