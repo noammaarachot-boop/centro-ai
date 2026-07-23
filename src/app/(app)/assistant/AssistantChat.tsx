@@ -3,8 +3,32 @@
 import { useState, type FormEvent } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Loader2, Send, Sparkles } from "lucide-react";
 import { buttonVariants } from "@/components/app/Button";
+
+// Assistant replies are always markdown-formatted (bold, lists — every
+// model does this by convention) — found via live testing that plain-
+// text rendering showed the raw `**asterisks**` literally. No prose
+// plugin is installed in this codebase, so element styling is set here
+// directly rather than adding @tailwindcss/typography for one surface.
+const MARKDOWN_COMPONENTS = {
+  p: (props: React.ComponentPropsWithoutRef<"p">) => <p className="mb-2 last:mb-0" {...props} />,
+  ul: (props: React.ComponentPropsWithoutRef<"ul">) => (
+    <ul className="mb-2 list-disc space-y-0.5 pe-4 last:mb-0" {...props} />
+  ),
+  ol: (props: React.ComponentPropsWithoutRef<"ol">) => (
+    <ol className="mb-2 list-decimal space-y-0.5 pe-4 last:mb-0" {...props} />
+  ),
+  strong: (props: React.ComponentPropsWithoutRef<"strong">) => <strong className="font-bold" {...props} />,
+  a: (props: React.ComponentPropsWithoutRef<"a">) => (
+    <a className="underline underline-offset-2" target="_blank" rel="noopener noreferrer" {...props} />
+  ),
+  code: (props: React.ComponentPropsWithoutRef<"code">) => (
+    <code className="rounded bg-black/10 px-1 py-0.5 text-[0.85em]" {...props} />
+  ),
+};
 
 export interface InitialChatMessage {
   id: string;
@@ -68,11 +92,17 @@ export function AssistantChat({
               key={message.id}
               className={
                 isAssistant
-                  ? "centro-ai-gradient me-auto max-w-[80%] rounded-2xl rounded-ss-sm px-4 py-2.5 text-sm text-white whitespace-pre-wrap"
+                  ? "centro-ai-gradient me-auto max-w-[80%] rounded-2xl rounded-ss-sm px-4 py-2.5 text-sm text-white"
                   : "ms-auto max-w-[80%] rounded-2xl rounded-se-sm bg-brand-purple/10 px-4 py-2.5 text-sm text-text-primary whitespace-pre-wrap"
               }
             >
-              {text}
+              {isAssistant ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                  {text}
+                </ReactMarkdown>
+              ) : (
+                text
+              )}
             </div>
           );
         })}
