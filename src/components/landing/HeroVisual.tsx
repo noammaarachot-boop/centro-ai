@@ -55,7 +55,14 @@ export default function HeroVisual() {
         style={{ background: "var(--gradient-hero)", opacity: 0.32 }}
       />
 
-      <OrbitingIntegrations spread={orbitSpread} />
+      {/* z-20 on mobile only: at the mobile spread (0.7), several orbit
+          radii are smaller than half the card's mobile footprint, so
+          those icons' paths pass behind the card for part of each
+          rotation. Painting the orbit layer above the card (mobile only)
+          keeps every icon visible at all times, matching desktop — where
+          the larger spread already keeps radii outside the card and this
+          extra z-index has no visible effect. */}
+      <OrbitingIntegrations spread={orbitSpread} className="z-20 sm:z-0" />
 
       <motion.div
         style={
@@ -63,7 +70,7 @@ export default function HeroVisual() {
             ? undefined
             : { rotateX, rotateY, x: shiftX, y: shiftY, transformStyle: "preserve-3d" }
         }
-        className="absolute inset-0 grid place-items-center"
+        className="absolute inset-0 z-10 grid place-items-center"
       >
         {/* backdrop-blur is desktop-only: on mobile Safari, backdrop-filter
             creates a compositing layer that renders this card's own

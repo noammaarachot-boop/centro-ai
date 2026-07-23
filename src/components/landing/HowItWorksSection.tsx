@@ -6,6 +6,7 @@ import {
   motion,
   useMotionValueEvent,
   useScroll,
+  type PanInfo,
 } from "framer-motion";
 import {
   BellRing,
@@ -61,19 +62,6 @@ const STEPS: Step[] = [
 ];
 
 export default function HowItWorksSection() {
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(0);
-
-  const { scrollYProgress } = useScroll({
-    target: wrapperRef,
-    offset: ["start start", "end end"],
-  });
-
-  useMotionValueEvent(scrollYProgress, "change", (v) => {
-    const idx = Math.min(STEPS.length - 1, Math.floor(v * STEPS.length));
-    setActive(Math.max(0, idx));
-  });
-
   return (
     <section id="how-it-works" className="relative py-16 sm:py-24">
       <div className="mx-auto max-w-3xl px-4 text-center sm:px-6">
@@ -97,89 +85,230 @@ export default function HowItWorksSection() {
         </motion.h2>
       </div>
 
-      <div ref={wrapperRef} className="relative mt-14 h-[280vh] sm:h-[320vh]">
-        <div className="sticky top-20 flex h-[calc(100vh-6rem)] max-h-[42rem] items-center overflow-hidden sm:top-24">
-          <div className="mx-auto grid w-full max-w-5xl grid-cols-1 items-center gap-10 px-4 sm:px-6 lg:grid-cols-2 lg:gap-16">
-            {/* Step index rail */}
-            <div className="order-2 flex flex-col gap-2 lg:order-1">
-              {STEPS.map((step, i) => (
-                <button
-                  key={step.title}
-                  type="button"
-                  onClick={() => {
-                    const el = wrapperRef.current;
-                    if (!el) return;
-                    const top =
-                      el.offsetTop + (el.offsetHeight * i) / STEPS.length + 4;
-                    window.scrollTo({ top, behavior: "smooth" });
-                  }}
-                  className="group flex items-center gap-4 rounded-2xl p-3 text-right transition-colors"
-                  aria-current={active === i}
+      <div className="hidden sm:block">
+        <DesktopSteps />
+      </div>
+      <div className="sm:hidden">
+        <MobileSteps />
+      </div>
+    </section>
+  );
+}
+
+// Desktop/tablet — unchanged scroll-jacking behavior: a tall wrapper pins
+// a sticky panel while scrollYProgress drives which step is active. Left
+// exactly as it was; only extracted into its own component so the mobile
+// variant below can live alongside it without touching this logic.
+function DesktopSteps() {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState(0);
+
+  const { scrollYProgress } = useScroll({
+    target: wrapperRef,
+    offset: ["start start", "end end"],
+  });
+
+  useMotionValueEvent(scrollYProgress, "change", (v) => {
+    const idx = Math.min(STEPS.length - 1, Math.floor(v * STEPS.length));
+    setActive(Math.max(0, idx));
+  });
+
+  return (
+    <div ref={wrapperRef} className="relative mt-14 h-[280vh] sm:h-[320vh]">
+      <div className="sticky top-20 flex h-[calc(100vh-6rem)] max-h-[42rem] items-center overflow-hidden sm:top-24">
+        <div className="mx-auto grid w-full max-w-5xl grid-cols-1 items-center gap-10 px-4 sm:px-6 lg:grid-cols-2 lg:gap-16">
+          {/* Step index rail */}
+          <div className="order-2 flex flex-col gap-2 lg:order-1">
+            {STEPS.map((step, i) => (
+              <button
+                key={step.title}
+                type="button"
+                onClick={() => {
+                  const el = wrapperRef.current;
+                  if (!el) return;
+                  const top =
+                    el.offsetTop + (el.offsetHeight * i) / STEPS.length + 4;
+                  window.scrollTo({ top, behavior: "smooth" });
+                }}
+                className="group flex items-center gap-4 rounded-2xl p-3 text-right transition-colors"
+                aria-current={active === i}
+              >
+                <span
+                  className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-bold transition-colors ${
+                    active === i
+                      ? "bg-gradient-to-br text-white " + step.accent
+                      : "bg-surface-muted text-text-muted"
+                  }`}
                 >
+                  {i + 1}
+                </span>
+                <span>
                   <span
-                    className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-bold transition-colors ${
-                      active === i
-                        ? "bg-gradient-to-br text-white " + step.accent
-                        : "bg-surface-muted text-text-muted"
+                    className={`block text-base font-semibold transition-colors ${
+                      active === i ? "text-text-primary" : "text-text-muted"
                     }`}
                   >
-                    {i + 1}
+                    {step.title}
                   </span>
-                  <span>
-                    <span
-                      className={`block text-base font-semibold transition-colors ${
-                        active === i ? "text-text-primary" : "text-text-muted"
-                      }`}
-                    >
-                      {step.title}
-                    </span>
-                    <AnimatePresence>
-                      {active === i && (
-                        <motion.span
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: "auto" }}
-                          exit={{ opacity: 0, height: 0 }}
-                          transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                          className="block max-w-sm text-sm leading-relaxed text-text-secondary"
-                        >
-                          {step.description}
-                        </motion.span>
-                      )}
-                    </AnimatePresence>
-                  </span>
-                </button>
-              ))}
-            </div>
+                  <AnimatePresence>
+                    {active === i && (
+                      <motion.span
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                        className="block max-w-sm text-sm leading-relaxed text-text-secondary"
+                      >
+                        {step.description}
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                </span>
+              </button>
+            ))}
+          </div>
 
-            {/* Visual */}
-            <div className="order-1 flex justify-center lg:order-2">
-              <div className="relative h-72 w-72 rounded-[2rem] border border-white/70 bg-white shadow-card-lg sm:h-80 sm:w-80">
+          {/* Visual */}
+          <div className="order-1 flex justify-center lg:order-2">
+            <div className="relative h-72 w-72 rounded-[2rem] border border-white/70 bg-white shadow-card-lg sm:h-80 sm:w-80">
+              <div
+                className="absolute inset-0 rounded-[2rem] opacity-[0.07]"
+                style={{ background: "var(--gradient-hero)" }}
+                aria-hidden="true"
+              />
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={active}
+                  initial={{ opacity: 0, scale: 0.94 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                  className="relative flex h-full w-full flex-col items-center justify-center gap-5 p-8"
+                >
+                  <StepVisual index={active} />
+                  <span className="rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-text-secondary shadow-sm">
+                    {STEPS[active].chip}
+                  </span>
+                </motion.div>
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Mobile — the scroll-jacked sticky panel above is uncomfortable on touch
+// (it needs many small vertical scroll gestures to advance, and fights
+// the browser's own momentum scrolling). This is a normal-flow, fixed-
+// height swipe carousel instead: no tall wrapper, no sticky, no
+// scroll-linked state — the page scrolls past it exactly like any other
+// section once the visitor is done swiping through it.
+const SWIPE_THRESHOLD_PX = 45;
+
+function MobileSteps() {
+  const [active, setActive] = useState(0);
+
+  function goTo(index: number) {
+    setActive(Math.max(0, Math.min(STEPS.length - 1, index)));
+  }
+
+  function handleDragEnd(
+    _event: MouseEvent | TouchEvent | PointerEvent,
+    info: PanInfo
+  ) {
+    if (info.offset.x < -SWIPE_THRESHOLD_PX) {
+      goTo(active + 1);
+    } else if (info.offset.x > SWIPE_THRESHOLD_PX) {
+      goTo(active - 1);
+    }
+  }
+
+  return (
+    <div className="mt-10">
+      {/* Step numbers double as tabs — tapping one jumps straight there. */}
+      <div className="flex items-center justify-center gap-2 px-4">
+        {STEPS.map((step, i) => (
+          <button
+            key={step.title}
+            type="button"
+            onClick={() => goTo(i)}
+            aria-label={`שלב ${i + 1}: ${step.title}`}
+            aria-current={active === i}
+            className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-bold transition-colors ${
+              active === i
+                ? "bg-gradient-to-br text-white " + step.accent
+                : "bg-surface-muted text-text-muted"
+            }`}
+          >
+            {i + 1}
+          </button>
+        ))}
+      </div>
+
+      {/* dir="ltr" on the track is the actual fix, not decoration: under
+          the page's real dir="rtl", a flex child is anchored to the RIGHT
+          edge by default, so translating the track further left (to
+          reveal a later step) dragged the whole thing off-screen to the
+          left instead of sliding the next card into view — the identical
+          bug already documented and fixed in TestimonialsSection's
+          marquee. Forcing ltr here anchors the track's left edge at the
+          viewport's left edge, which is what the translateX math assumes;
+          dir="rtl" is re-applied per-card below so the Hebrew content
+          inside still reads correctly. */}
+      <div className="mt-6 overflow-hidden px-4">
+        <motion.div
+          dir="ltr"
+          className="flex"
+          drag="x"
+          dragConstraints={{ left: 0, right: 0 }}
+          dragElastic={0.2}
+          onDragEnd={handleDragEnd}
+          animate={{ x: `-${active * 100}%` }}
+          transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+        >
+          {STEPS.map((step, i) => (
+            <div key={step.title} dir="rtl" className="w-full shrink-0 px-1">
+              <div className="relative mx-auto flex h-64 w-full max-w-[15rem] flex-col items-center justify-center gap-5 rounded-[2rem] border border-white/70 bg-white p-6 shadow-card-lg">
                 <div
                   className="absolute inset-0 rounded-[2rem] opacity-[0.07]"
                   style={{ background: "var(--gradient-hero)" }}
                   aria-hidden="true"
                 />
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={active}
-                    initial={{ opacity: 0, scale: 0.94 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.96 }}
-                    transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                    className="relative flex h-full w-full flex-col items-center justify-center gap-5 p-8"
-                  >
-                    <StepVisual index={active} />
-                    <span className="rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-text-secondary shadow-sm">
-                      {STEPS[active].chip}
-                    </span>
-                  </motion.div>
-                </AnimatePresence>
+                <StepVisual index={i} />
+                <span className="relative rounded-full border border-border bg-white px-3 py-1.5 text-xs font-medium text-text-secondary shadow-sm">
+                  {step.chip}
+                </span>
+              </div>
+              <div className="mt-5 px-2 text-center">
+                <p className="text-base font-semibold text-text-primary">
+                  {step.title}
+                </p>
+                <p className="mt-1.5 text-sm leading-relaxed text-text-secondary">
+                  {step.description}
+                </p>
               </div>
             </div>
-          </div>
-        </div>
+          ))}
+        </motion.div>
       </div>
-    </section>
+
+      {/* Pagination dots */}
+      <div className="mt-6 flex items-center justify-center gap-1.5" aria-hidden="true">
+        {STEPS.map((step, i) => (
+          <span
+            key={step.title}
+            className="h-1.5 rounded-full transition-all duration-300"
+            style={{
+              width: i === active ? 20 : 6,
+              backgroundColor:
+                i === active ? "var(--color-brand-purple)" : "var(--color-border)",
+            }}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 

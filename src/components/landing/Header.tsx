@@ -12,6 +12,18 @@ const NAV_LINKS = [
   { href: "#faq", label: "שאלות נפוצות" },
 ];
 
+// The mobile dropdown gets its own curated list rather than reusing
+// NAV_LINKS directly — "איך זה עובד" and "הדגמה" both read as duplicates
+// of "צפו איך זה עובד" once that and "צור קשר" are added, which is too
+// much for a short mobile menu. Desktop keeps the full NAV_LINKS above,
+// unchanged.
+const MOBILE_NAV_LINKS = [{ href: "#faq", label: "שאלות נפוצות" }];
+
+function scrollToDemo(event: React.MouseEvent<HTMLAnchorElement>) {
+  event.preventDefault();
+  document.getElementById("demo")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 export default function Header() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -109,7 +121,7 @@ export default function Header() {
           className="absolute inset-x-4 top-[4.5rem] rounded-2xl border border-border bg-white p-4 shadow-card-lg md:hidden"
         >
           <nav className="flex flex-col gap-1" aria-label="ניווט לנייד">
-            {NAV_LINKS.map((link) => (
+            {MOBILE_NAV_LINKS.map((link) => (
               <a
                 key={link.href}
                 href={link.href}
@@ -129,9 +141,19 @@ export default function Header() {
               צפו איך זה עובד
             </a>
             <a
+              href="#demo"
+              onClick={(e) => {
+                scrollToDemo(e);
+                setMobileOpen(false);
+              }}
+              className="rounded-full border border-border px-4 py-3 text-center text-sm font-medium text-text-primary"
+            >
+              צור קשר
+            </a>
+            <a
               href="/login"
               onClick={() => setMobileOpen(false)}
-              className="px-4 py-2 text-center text-sm font-medium text-text-secondary"
+              className="rounded-full border border-border px-4 py-2.5 text-center text-sm font-medium text-text-secondary"
             >
               התחבר
             </a>
