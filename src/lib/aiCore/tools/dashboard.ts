@@ -7,6 +7,7 @@ import {
   listQueue,
   type DashboardQueue,
 } from "@/lib/data/dashboard";
+import { toJsonSafe } from "./jsonSafe";
 import type { ToolContext } from "./types";
 
 const QUEUE_VALUES = [
@@ -37,13 +38,13 @@ export function createDashboardTools(ctx: ToolContext) {
       description:
         "Get the organization's dashboard summary counts: active/waiting-for-client/needs-review/processing/completed-today collection requests, plus counts of clients needing a business-type suggestion reviewed and open client confirmations. Good first call for a broad 'what needs my attention' question.",
       inputSchema: z.object({}),
-      execute: async () => getDashboardCounts(ctx.organizationId),
+      execute: async () => toJsonSafe(await getDashboardCounts(ctx.organizationId)),
     }),
     list_dashboard_queue: tool({
       description:
         "List the actual items behind one of the dashboard's summary counts (from get_dashboard_counts). Use after get_dashboard_counts to see specifics, e.g. which collection requests are waiting_for_client.",
       inputSchema: z.object({ queue: z.enum(QUEUE_VALUES) }),
-      execute: async ({ queue }) => fetchQueue(ctx.organizationId, queue),
+      execute: async ({ queue }) => toJsonSafe(await fetchQueue(ctx.organizationId, queue)),
     }),
   };
 }

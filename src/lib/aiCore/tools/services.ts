@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { getService, listServiceClients, listServiceRequirements, listServices } from "@/lib/data/services";
+import { toJsonSafe } from "./jsonSafe";
 import type { ToolContext } from "./types";
 
 export function createServiceTools(ctx: ToolContext) {
@@ -9,7 +10,7 @@ export function createServiceTools(ctx: ToolContext) {
       description:
         "List every service/template this organization offers (a service defines a set of required documents for a recurring or one-time collection cycle).",
       inputSchema: z.object({}),
-      execute: async () => listServices(ctx.organizationId),
+      execute: async () => toJsonSafe(await listServices(ctx.organizationId)),
     }),
     get_service: tool({
       description: "Get one service by id, including its document requirements and which clients are assigned to it.",
@@ -21,7 +22,7 @@ export function createServiceTools(ctx: ToolContext) {
           listServiceRequirements(serviceId),
           listServiceClients(ctx.organizationId, serviceId),
         ]);
-        return { service, requirements, clients };
+        return toJsonSafe({ service, requirements, clients });
       },
     }),
   };

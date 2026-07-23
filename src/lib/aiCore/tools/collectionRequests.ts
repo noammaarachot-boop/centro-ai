@@ -6,6 +6,7 @@ import {
   listRequirementsWithDocuments,
   listUnmatchedDocuments,
 } from "@/lib/data/collectionRequests";
+import { toJsonSafe } from "./jsonSafe";
 import type { ToolContext } from "./types";
 
 export function createCollectionRequestTools(ctx: ToolContext) {
@@ -14,7 +15,7 @@ export function createCollectionRequestTools(ctx: ToolContext) {
       description:
         "List this organization's collection requests (document-collection cycles per client), each with its status, period label, client, and service name. Use for questions like 'which requests are active' or 'what's currently waiting on a client'.",
       inputSchema: z.object({}),
-      execute: async () => listCollectionRequests(ctx.organizationId),
+      execute: async () => toJsonSafe(await listCollectionRequests(ctx.organizationId)),
     }),
     get_collection_request: tool({
       description:
@@ -27,7 +28,7 @@ export function createCollectionRequestTools(ctx: ToolContext) {
           listRequirementsWithDocuments(collectionRequestId),
           listUnmatchedDocuments(collectionRequestId),
         ]);
-        return { request, requirements, unmatchedDocuments };
+        return toJsonSafe({ request, requirements, unmatchedDocuments });
       },
     }),
   };

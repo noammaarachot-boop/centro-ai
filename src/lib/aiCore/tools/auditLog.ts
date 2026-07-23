@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { listAuditLog } from "@/lib/data/auditLog";
+import { toJsonSafe } from "./jsonSafe";
 import type { ToolContext } from "./types";
 
 export function createAuditLogTools(ctx: ToolContext) {
@@ -16,15 +17,17 @@ export function createAuditLogTools(ctx: ToolContext) {
         limit: z.number().int().min(1).max(200).optional(),
       }),
       execute: async ({ clientId, collectionRequestId, fromIso, toIso, limit }) =>
-        listAuditLog(
-          ctx.organizationId,
-          {
-            clientId,
-            collectionRequestId,
-            from: fromIso ? new Date(fromIso) : undefined,
-            to: toIso ? new Date(toIso) : undefined,
-          },
-          limit ?? 200
+        toJsonSafe(
+          await listAuditLog(
+            ctx.organizationId,
+            {
+              clientId,
+              collectionRequestId,
+              from: fromIso ? new Date(fromIso) : undefined,
+              to: toIso ? new Date(toIso) : undefined,
+            },
+            limit ?? 200
+          )
         ),
     }),
   };

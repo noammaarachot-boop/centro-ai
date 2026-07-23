@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { getOrganization } from "@/lib/data/organizations";
+import { toJsonSafe } from "./jsonSafe";
 import type { ToolContext } from "./types";
 
 export function createOrganizationTools(ctx: ToolContext) {
@@ -11,7 +12,7 @@ export function createOrganizationTools(ctx: ToolContext) {
       inputSchema: z.object({}),
       execute: async () => {
         const organization = await getOrganization(ctx.organizationId);
-        return organization ?? { error: "not_found" as const };
+        return toJsonSafe(organization ?? { error: "not_found" as const });
       },
     }),
   };
