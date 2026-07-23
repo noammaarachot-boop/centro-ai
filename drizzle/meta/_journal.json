@@ -169,6 +169,13 @@
       "when": 1784788071626,
       "tag": "0023_narrow_lester",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784801696150,
+      "tag": "0024_spicy_maggott",
+      "breakpoints": true
     }
   ]
 }

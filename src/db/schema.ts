@@ -845,3 +845,79 @@ export const leads = pgTable("leads", {
     .notNull()
     .defaultNow(),
 });
+
+// --- AI Core: internal employee <-> Centro AI copilot conversations ---
+// Deliberately separate from `conversations`/`messages` above: those
+// model a WhatsApp conversation about a specific collection request for
+// a specific client (both FKs NOT NULL) and carry no role/tool-call
+// shape — a poor fit for a general-purpose employee<->AI chat that has
+// neither a client nor a collection request. See src/lib/aiCore/ for the
+// engine that reads/writes these tables.
+export const aiConversationStatus = pgEnum("ai_conversation_status", [
+  "active",
+  "archived",
+]);
+
+export const aiConversations = pgTable("ai_conversations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  // Null until derived from the first user message (memory/persistence.ts)
+  // — renders as a generic "New conversation" until then.
+  title: text("title"),
+  status: aiConversationStatus("status").notNull().default("active"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const aiMessageRole = pgEnum("ai_message_role", [
+  "system",
+  "user",
+  "assistant",
+  "tool",
+]);
+
+// One row per provider ModelMessage, not per turn — an assistant turn
+// that calls tools produces an assistant row (the tool call) and one or
+// more tool rows (the tool result) before any final text, in call order.
+export const aiMessages = pgTable("ai_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  conversationId: uuid("conversation_id")
+    .notNull()
+    .references(() => aiConversations.id, { onDelete: "cascade" }),
+  role: aiMessageRole("role").notNull(),
+  // Display-only plain text for the chat UI — extracted from `parts`
+  // (a string content is used as-is; a content-part array is reduced to
+  // its text parts, joined). Null on a role="tool" row or a role=
+  // "assistant" row that made only tool calls with no text.
+  content: text("content"),
+  // The exact { role, content } the provider SDK produced or expects —
+  // content may be a plain string or an array of text/tool-call/tool-
+  // result parts (AssistantModelMessage/ToolModelMessage's own shape).
+  // `content` above is a lossy display projection of this; `parts` is
+  // what memory/persistence.ts replays verbatim into the next turn's
+  // `messages` array, so history reconstruction is never lossy.
+  parts: jsonb("parts").notNull(),
+  // Set only on role="assistant" rows — which provider/model produced
+  // this reply, for observability and so a follow-up turn can resolve
+  // back to the same provider (see providers/resolveModel.ts).
+  provider: text("provider"),
+  modelId: text("model_id"),
+  // Token usage / finishReason — observability only, never read by the
+  // agent loop itself.
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
