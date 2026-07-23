@@ -1,5 +1,6 @@
 import {
   boolean,
+  customType,
   integer,
   jsonb,
   pgEnum,
@@ -9,6 +10,17 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+
+// Raw binary storage — Drizzle has no first-party bytea helper, so this
+// is the minimal custom column type needed for documents.pendingFileContent
+// below. Only ever holds a document's bytes transiently (between a real
+// WhatsApp receipt and an employee's later approve/reject decision);
+// never a general-purpose file store.
+const bytea = customType<{ data: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 // Product Evolution M1: the permanent fork chosen once during onboarding
 // between the existing recurring/learning workflow and the new one-time/
@@ -612,6 +624,16 @@ export const documents = pgTable("documents", {
   status: documentStatus("status").notNull().default("received"),
   fileName: text("file_name").notNull(),
   googleDriveFileId: text("google_drive_file_id"),
+  // M-WA-4 — real WhatsApp attachments are downloaded once, at receipt
+  // time, but only auto-approved documents upload to Drive immediately
+  // (BR-11.5: only validated documents are stored in Drive). A document
+  // landing as needs_review would otherwise lose its real bytes forever
+  // by the time an employee later approves it through reviewDocument —
+  // this is where they wait in the meantime. Cleared back to null the
+  // moment they're either uploaded (approved) or no longer needed
+  // (rejected) — never a long-term store.
+  pendingFileContent: bytea("pending_file_content"),
+  pendingFileMimeType: text("pending_file_mime_type"),
   // Ch.14: when a document is manually deleted from Drive, Centro keeps
   // the database record, flips status to deleted_from_drive, and the UI
   // shows "Deleted manually on DD/MM/YYYY HH:MM" using this timestamp.

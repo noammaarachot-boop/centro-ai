@@ -294,13 +294,24 @@ export async function processInboundAttachment(
       requirementId,
       fileName,
       status,
+      // Only held when the document *isn't* auto-approved (BR-11.5: only
+      // validated documents are stored in Drive, so an approved document
+      // uploads immediately below instead and never needs this). Without
+      // this, a document landing as needs_review would lose its real
+      // bytes forever by the time an employee later approves it through
+      // reviewDocument (collections/actions.ts), which has no other way
+      // to get them back — WhatsApp never re-sends media, and Meta's own
+      // media URLs expire long before a human gets around to reviewing.
+      ...(status !== "approved" && fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
     })
     .returning();
 
   await recordAuditEvent({
     organizationId,
     eventType: "document.received",
-    description: `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ, הדמיה)`,
+    description: fileBytes
+      ? `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ)`
+      : `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ, הדמיה)`,
     actorType: "client",
     clientId,
     collectionRequestId,

@@ -247,12 +247,22 @@ export async function reviewDocument(
   }
 
   const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
-  await getScopedDocument(session.organizationId, collectionRequestId, documentId);
+  const scoped = await getScopedDocument(session.organizationId, collectionRequestId, documentId);
 
   const db = await getDb();
+  // Cleared on any decision that reaches a final state — approved uses
+  // them once below, rejected no longer needs them; only a repeated
+  // needs_review decision leaves them in place for a possible later
+  // approval. See documents.pendingFileContent's own comment for why
+  // this exists at all.
+  const clearPending = decision !== "needs_review";
   const [document] = await db
     .update(documents)
-    .set({ status: decision as "approved" | "rejected" | "needs_review", updatedAt: new Date() })
+    .set({
+      status: decision as "approved" | "rejected" | "needs_review",
+      updatedAt: new Date(),
+      ...(clearPending ? { pendingFileContent: null, pendingFileMimeType: null } : {}),
+    })
     .where(eq(documents.id, documentId))
     .returning();
   if (!document) redirect(`/collections/${collectionRequestId}`);
@@ -263,7 +273,9 @@ export async function reviewDocument(
       current.clientId,
       document.id,
       document.fileName,
-      collectionRequestId
+      collectionRequestId,
+      scoped.pendingFileContent ?? undefined,
+      scoped.pendingFileMimeType ?? undefined
     );
   }
 

@@ -162,6 +162,13 @@
       "when": 1784708831582,
       "tag": "0022_wise_the_hand",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784788071626,
+      "tag": "0023_narrow_lester",
+      "breakpoints": true
     }
   ]
 }
