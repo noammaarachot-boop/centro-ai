@@ -17,11 +17,13 @@ import {
   ChevronsLeft,
   Menu,
   X,
+  Sparkles,
 } from "lucide-react";
 import { CentroMark } from "@/components/landing/icons/CentroMark";
 
 const RECURRING_NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
+  { href: "/assistant", label: "עוזר AI", icon: Sparkles },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/services", label: "תבניות", icon: Layers },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
@@ -37,6 +39,7 @@ const RECURRING_NAV_LINKS = [
 // visited directly; only the nav itself is workflow-specific.
 const ONE_TIME_NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
+  { href: "/assistant", label: "עוזר AI", icon: Sparkles },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/templates", label: "תבניות", icon: LayoutTemplate },
   { href: "/audit", label: "פעילות", icon: ScrollText },

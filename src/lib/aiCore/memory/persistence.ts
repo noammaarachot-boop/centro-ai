@@ -84,6 +84,34 @@ export async function loadConversationHistory(conversationId: string): Promise<M
   return rows.map((row) => ({ role: row.role, content: row.parts }) as ModelMessage);
 }
 
+export interface DisplayMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
+// For initial page-load rendering only (AssistantChat's `initialMessages`
+// prop) — a deliberately simplified projection of the full trace: only
+// user/assistant rows with real display text, skipping pure tool-call/
+// tool-result rows entirely. The live/streaming session still shows real
+// tool activity as it happens; this only affects what a fresh page
+// reload replays, and a correct, honest simplification (show the real
+// questions and real final answers) beats a half-reconstructed replay of
+// intermediate tool-call bubbles from persisted data.
+export async function listMessagesForDisplay(conversationId: string): Promise<DisplayMessage[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({ id: aiMessages.id, role: aiMessages.role, content: aiMessages.content })
+    .from(aiMessages)
+    .where(eq(aiMessages.conversationId, conversationId))
+    .orderBy(asc(aiMessages.createdAt));
+  return rows
+    .filter((row): row is { id: string; role: "user" | "assistant"; content: string } =>
+      (row.role === "user" || row.role === "assistant") && !!row.content
+    )
+    .map((row) => ({ id: row.id, role: row.role, text: row.content }));
+}
+
 export async function appendUserMessage(
   conversationId: string,
   organizationId: string,
