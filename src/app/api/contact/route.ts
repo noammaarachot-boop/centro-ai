@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { eq } from "drizzle-orm";
 import nodemailer from "nodemailer";
+import { getDb } from "@/db";
+import { leads } from "@/db/schema";
 import { withRetry } from "@/lib/resilience";
+import { toE164 } from "@/lib/whatsapp/phone";
+import { sendTemplateMessage } from "@/lib/whatsapp/send";
+import { LEAD_WELCOME_TEMPLATE } from "@/lib/whatsapp/templates";
 
 export const dynamic = "force-dynamic";
 
@@ -99,6 +105,62 @@ function clientIp(request: NextRequest): string {
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) return forwardedFor.split(",")[0].trim();
   return request.headers.get("x-real-ip") ?? "unknown";
+}
+
+// Feature 1 (M-WA-5): persists the lead and best-effort WhatsApps them a
+// welcome message from Centro's own sales number — deliberately separate
+// from any customer organization's connected number (Features 2/3),
+// since these are Centro's own leads, not a customer's client. Never
+// throws: a WhatsApp failure (or the org not having configured
+// CENTRO_WHATSAPP_PHONE_NUMBER_ID/WHATSAPP_LEAD_WELCOME_TEMPLATE_NAME
+// yet) is recorded on the lead row for visibility, never surfaced to the
+// visitor — email delivery is the only thing this route's success
+// depends on, exactly as before this feature existed.
+async function recordLeadAndSendWelcome(input: {
+  name: string;
+  phone: string;
+  email?: string;
+  businessName?: string;
+  message?: string;
+  source: string;
+}): Promise<void> {
+  const db = await getDb();
+  const phoneE164 = toE164(input.phone);
+
+  const [lead] = await db
+    .insert(leads)
+    .values({
+      name: input.name,
+      phone: input.phone,
+      phoneE164,
+      email: input.email,
+      businessName: input.businessName,
+      message: input.message,
+      source: input.source,
+      emailSentAt: new Date(),
+      whatsappStatus: phoneE164 ? "pending" : "not_applicable",
+    })
+    .returning();
+
+  const phoneNumberId = process.env.CENTRO_WHATSAPP_PHONE_NUMBER_ID;
+  const templateName = process.env.WHATSAPP_LEAD_WELCOME_TEMPLATE_NAME;
+  if (!phoneE164 || !phoneNumberId || !templateName) return;
+
+  try {
+    const result = await sendTemplateMessage(phoneNumberId, phoneE164, templateName, LEAD_WELCOME_TEMPLATE.language, [
+      input.name,
+    ]);
+    await db
+      .update(leads)
+      .set({ whatsappStatus: "sent", whatsappMessageId: result.messageId })
+      .where(eq(leads.id, lead.id));
+  } catch (error) {
+    const whatsappError = error instanceof Error ? error.message : String(error);
+    await db
+      .update(leads)
+      .set({ whatsappStatus: "failed", whatsappError: whatsappError.slice(0, 500) })
+      .where(eq(leads.id, lead.id));
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -226,5 +288,12 @@ export async function POST(request: NextRequest) {
   }
 
   console.log(`[contact] email sent successfully (ip=${ip}, source="${source}")`);
+
+  try {
+    await recordLeadAndSendWelcome({ name, phone, email, businessName, message, source });
+  } catch (error) {
+    console.error(`[contact] lead recording/WhatsApp welcome failed (ip=${ip})`, error);
+  }
+
   return NextResponse.json({ status: "ok" });
 }

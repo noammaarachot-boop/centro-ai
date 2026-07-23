@@ -8,6 +8,15 @@ export interface TemplateDefinition {
   language: string;
   category: "UTILITY" | "MARKETING" | "AUTHENTICATION";
   bodyText: string;
+  // Required by Meta for any template whose bodyText contains {{1}},
+  // {{2}}, ... placeholders — one example value per placeholder, in
+  // order. Omitting this for a parameterized template doesn't just get
+  // rejected for policy reasons, it fails submission outright with
+  // rejected_reason: INVALID_FORMAT (confirmed live: this is exactly
+  // what happened to LEAD_WELCOME_TEMPLATE before this field existed).
+  // None of REQUIRED_TEMPLATES' four bodies use any placeholder, so this
+  // stays undefined for all of them.
+  exampleParams?: string[];
 }
 
 // Single source of truth for the four automated ("ai") message bodies —
@@ -39,6 +48,28 @@ export const TEMPLATE_BY_BODY: ReadonlyMap<string, TemplateDefinition> = new Map
   REQUIRED_TEMPLATES.map((template) => [template.bodyText, template])
 );
 
+// Feature 1 (M-WA-5) — sent only from Centro's own sales number
+// (CENTRO_WHATSAPP_PHONE_NUMBER_ID) to a landing-page lead, never
+// auto-provisioned per connecting organization the way REQUIRED_TEMPLATES
+// is, since customer orgs never send this one. {{1}} is the lead's name.
+//
+// Requested as UTILITY, but confirmed live that Meta's own content
+// classifier overrides this to MARKETING regardless of what's requested
+// here — submitting UTILITY doesn't fail, it's just silently ignored in
+// favor of Meta's own categorization. The category field below reflects
+// what actually governs sending (Meta's applied category), not our
+// original intent: MARKETING messages need the recipient to have
+// opted in, which "filled out a contact form" may or may not satisfy
+// depending on how strictly Meta enforces it — worth confirming once
+// this template clears review and a real send is attempted.
+export const LEAD_WELCOME_TEMPLATE: TemplateDefinition = {
+  name: "centro_lead_welcome_v2",
+  language: "he",
+  category: "MARKETING",
+  bodyText: "שלום {{1}}, תודה שפניתם ל-Centro! קיבלנו את הפנייה שלכם ונחזור אליכם בהקדם.",
+  exampleParams: ["ישראל"],
+};
+
 // Idempotent — lists existing templates on the WABA first and only
 // submits ones that don't already exist (by name+language), so this is
 // safe to call every time a signup completes (per the plan's
@@ -47,7 +78,12 @@ export const TEMPLATE_BY_BODY: ReadonlyMap<string, TemplateDefinition> = new Map
 // template. Each submission is independently best-effort: one template
 // failing to submit (e.g. this WABA hasn't finished its own review yet)
 // must never block the others or the connection itself from completing.
-export async function ensureTemplatesProvisioned(wabaId: string): Promise<void> {
+// `templates` defaults to the four per-org ones; the one-time lead-welcome
+// setup for Centro's own WABA passes [LEAD_WELCOME_TEMPLATE] instead.
+export async function ensureTemplatesProvisioned(
+  wabaId: string,
+  templates: TemplateDefinition[] = REQUIRED_TEMPLATES
+): Promise<void> {
   const { systemUserToken } = getWhatsAppConfig();
 
   const existingResponse = await withRetry(() =>
@@ -65,7 +101,7 @@ export async function ensureTemplatesProvisioned(wabaId: string): Promise<void> 
   };
   const existingKeys = new Set((existingData.data ?? []).map((t) => `${t.name}:${t.language}`));
 
-  for (const template of REQUIRED_TEMPLATES) {
+  for (const template of templates) {
     if (existingKeys.has(`${template.name}:${template.language}`)) continue;
 
     const createResponse = await withRetry(() =>
@@ -79,7 +115,13 @@ export async function ensureTemplatesProvisioned(wabaId: string): Promise<void> 
           name: template.name,
           language: template.language,
           category: template.category,
-          components: [{ type: "BODY", text: template.bodyText }],
+          components: [
+            {
+              type: "BODY",
+              text: template.bodyText,
+              ...(template.exampleParams ? { example: { body_text: [template.exampleParams] } } : {}),
+            },
+          ],
         }),
       })
     );
