@@ -85,7 +85,14 @@ export function AssistantChat({
         )}
       </div>
 
-      <form onSubmit={handleSubmit} className="flex items-center gap-2 border-t border-border p-4">
+      {/* pl-20 (physical, not the logical ps-*) is deliberate — clears
+          the globally fixed AccessibilityWidget (bottom-5/6 left-5/6,
+          h-14 w-14, src/app/layout.tsx) so this bar's own send button,
+          which lands at the physical left end of this RTL flex row,
+          never renders underneath it. Same class of physical-vs-logical
+          fix FloatingWhatsAppButton's own placement already established
+          for the identical widget. */}
+      <form onSubmit={handleSubmit} className="flex items-center gap-2 border-t border-border p-4 pl-20">
         <input
           type="text"
           value={input}
