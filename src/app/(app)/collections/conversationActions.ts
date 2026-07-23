@@ -171,13 +171,24 @@ export async function simulateInboundMessage(
 // src/lib/ai/documentClassifier.ts. `manualRequirementId`, when provided,
 // is a human hint that bypasses classification entirely — modeling a
 // case where an employee already knows the answer.
-async function processInboundAttachment(
+//
+// `fileBytes`/`mimeType` are optional and, since M-WA-4, threaded
+// straight into uploadDocumentResiliently exactly like addManualDocument
+// already does — when the real WhatsApp webhook (src/app/api/webhooks/
+// whatsapp/route.ts) supplies real downloaded bytes, those are what get
+// stored in Drive; simulateInboundMessage below never has real bytes
+// (it's a UI-driven filename-only stand-in), so it omits them and still
+// gets the same honest placeholder as before. Exported for the webhook
+// route to call directly.
+export async function processInboundAttachment(
   organizationId: string,
   collectionRequestId: string,
   conversationId: string,
   clientId: string,
   fileName: string,
-  manualRequirementId: string | null
+  manualRequirementId: string | null,
+  fileBytes?: Buffer,
+  mimeType?: string
 ) {
   const db = await getDb();
 
@@ -301,7 +312,9 @@ async function processInboundAttachment(
       clientId,
       document.id,
       document.fileName,
-      collectionRequestId
+      collectionRequestId,
+      fileBytes,
+      mimeType
     );
   }
 
