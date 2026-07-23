@@ -5,6 +5,28 @@ import { streamAgentTurn } from "@/lib/aiCore/agent/loop";
 
 export const dynamic = "force-dynamic";
 
+// Process-local, in-memory rate limiting — this route has exactly one call
+// site, so a small dedicated Map here (rather than a shared/parameterized
+// module) matches src/app/api/contact/route.ts's precedent. Keyed per
+// employee (not IP): the thing being bounded is real per-turn LLM provider
+// cost, which scales with how many turns one signed-in employee can trigger,
+// not with request origin. Same "single pilot instance" caveat as
+// src/lib/auth/rateLimiter.ts — revisit with a shared store if this ever
+// runs as multiple instances.
+const RATE_WINDOW_MS = 5 * 60 * 1000;
+const RATE_MAX_TURNS = 20;
+const turnsByUser = new Map<string, { count: number; firstAt: number }>();
+
+function isRateLimited(userId: string): boolean {
+  const entry = turnsByUser.get(userId);
+  if (!entry || Date.now() - entry.firstAt > RATE_WINDOW_MS) {
+    turnsByUser.set(userId, { count: 1, firstAt: Date.now() });
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > RATE_MAX_TURNS;
+}
+
 interface UIMessagePart {
   type: string;
   text?: string;
@@ -31,6 +53,14 @@ function latestUserMessageText(messages: IncomingUIMessage[]): string | null {
 // only ever reads the last message's text out of it.
 export async function POST(request: NextRequest) {
   const session = await requireSession();
+
+  if (isRateLimited(session.userId)) {
+    return NextResponse.json(
+      { error: "יותר מדי הודעות בזמן קצר. נסו שוב בעוד כמה דקות." },
+      { status: 429 }
+    );
+  }
+
   const body = (await request.json()) as { conversationId?: string; messages?: IncomingUIMessage[] };
 
   const conversationId = body.conversationId;

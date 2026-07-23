@@ -17,6 +17,21 @@ import { createDriveTools } from "./drive";
 // persistence layer changes. Gmail/Calendar/Notion/WhatsApp-send are
 // deliberately not here yet — no placeholder tools for integrations that
 // don't exist for real.
+//
+// Every tool today is read-only (get_/list_/query_/search_), so none of
+// them call recordAuditEvent (src/lib/audit.ts) — there's nothing to log.
+// The first tool whose execute() writes data must call it, same as every
+// other mutation path in this codebase (collections/actions.ts, etc.):
+//   - actorType: "ai" (already a valid AuditActorType — added with the
+//     rest of the enum for exactly this future case)
+//   - actorUserId: ctx.actingUserId — the employee who drove the turn,
+//     not a synthetic "AI" user, so the log reads like every other
+//     employee-attributed action
+//   - eventType/description: describe the actual mutation (e.g.
+//     "collection_request.status_changed"), not "ai.tool_called" — the
+//     audit log is a record of what happened, not of how it happened
+//   - call it from inside the tool's own execute(), after the mutation
+//     succeeds, exactly where the equivalent Server Action would call it
 export function buildToolRegistry(ctx: ToolContext): ToolSet {
   return {
     ...createClientTools(ctx),
