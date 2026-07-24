@@ -921,3 +921,63 @@ export const aiMessages = pgTable("ai_messages", {
     .notNull()
     .defaultNow(),
 });
+
+// Owner Dashboard (internal, platform-owner-only — see
+// docs/plans or the owner-dashboard plan for full rationale). Deliberately
+// separate from `users`/`sessions`/`organizations`: the platform owner is
+// not a tenant, and `sessions.organizationId`/`Session.organizationId` are
+// non-nullable, so folding the owner into that model would either need a
+// dummy internal organization or a nullability change on the app's hottest
+// read path. These three tables are the same recipe as `users`/`sessions`/
+// `auditLogs` with the org dimension removed, kept additive and isolated.
+export const platformOwners = pgTable("platform_owners", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  email: text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// Same shape as `sessions`, minus organizationId — opaque random id stored
+// server-side, cookie holds only the id. Provisioned exclusively via
+// scripts/create-owner.ts; there is no self-registration route.
+export const platformOwnerSessions = pgTable("platform_owner_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  platformOwnerId: uuid("platform_owner_id")
+    .notNull()
+    .references(() => platformOwners.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+// Distinguishes events a future alerting mechanism should surface
+// ("warning"/"critical") from routine activity ("info") — the hook the
+// Owner Dashboard's later System Health phase is designed around, so
+// adding real alert delivery afterward needs no schema change.
+export const platformOwnerAuditSeverity = pgEnum(
+  "platform_owner_audit_severity",
+  ["info", "warning", "critical"]
+);
+
+// Mirrors `auditLogs`' insert-only design (no update/delete path) without
+// its organizationId FK, which is NOT NULL there and can't represent an
+// ownerless actor. Records the owner's own actions on the platform (login,
+// logout, and later account-lifecycle actions like suspend/reactivate).
+export const platformOwnerAuditLog = pgTable("platform_owner_audit_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  eventType: text("event_type").notNull(),
+  severity: platformOwnerAuditSeverity("severity").notNull().default("info"),
+  // set null (not restrict) on delete, matching auditLogs.actorUserId's
+  // precedent — this is an observability trail, not business data.
+  platformOwnerId: uuid("platform_owner_id").references(() => platformOwners.id, {
+    onDelete: "set null",
+  }),
+  description: text("description").notNull(),
+  metadata: jsonb("metadata"),
+});

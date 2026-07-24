@@ -176,6 +176,13 @@
       "when": 1784801696150,
       "tag": "0024_spicy_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784838539086,
+      "tag": "0025_powerful_lifeguard",
+      "breakpoints": true
     }
   ]
 }
