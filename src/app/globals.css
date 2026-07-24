@@ -809,6 +809,30 @@ html[data-a11y-grayscale="true"] {
   filter: grayscale(1);
 }
 
+/* ---------------------------------------------------------------
+   Owner Dashboard shell tokens (internal, platform-owner-only).
+   A distinct dark/amber "control center" palette, deliberately not the
+   customer app's purple/blue brand — so a screenshot of this surface is
+   never confusable with the customer-facing product. Scoped to this one
+   class; nothing here touches the tokens above.
+---------------------------------------------------------------- */
+.centro-owner-shell {
+  --owner-bg: #0b0e14;
+  --owner-surface: #12161f;
+  --owner-surface-muted: #171c27;
+  --owner-border: #262c3a;
+  --owner-text-primary: #f2f3f7;
+  --owner-text-secondary: #a7adbd;
+  --owner-text-muted: #6e7486;
+  --owner-accent: #f5a524;
+  --owner-accent-deep: #c97f0e;
+
+  background: var(--owner-bg);
+  color: var(--owner-text-primary);
+  color-scheme: dark;
+  min-height: 100vh;
+}
+
 html[data-a11y-underline="true"] a {
   text-decoration: underline;
   text-underline-offset: 3px;
