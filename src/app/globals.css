@@ -810,27 +810,50 @@ html[data-a11y-grayscale="true"] {
 }
 
 /* ---------------------------------------------------------------
-   Owner Dashboard shell tokens (internal, platform-owner-only).
-   A distinct dark/amber "control center" palette, deliberately not the
-   customer app's purple/blue brand — so a screenshot of this surface is
-   never confusable with the customer-facing product. Scoped to this one
-   class; nothing here touches the tokens above.
+   Owner Dashboard shell (internal, platform-owner-only).
+
+   Originally attempted as a full dark theme by overriding the
+   --color-* custom properties within a scoped class, so Card/KpiCard/
+   Table/Badge/EmptyState/PageHeader/FormField would pick up a dark
+   palette unmodified. That doesn't work: Tailwind v4's `@theme inline`
+   resolves every `--color-*`-derived utility class (text-text-primary,
+   border-border, bg-surface-muted, ...) to a literal value at build
+   time rather than emitting `var(--color-text-primary)` — confirmed
+   directly (overriding the custom property at runtime has no effect on
+   already-generated utility classes). Reusing those components
+   unmodified therefore means reusing their actual (light) styling, not
+   a themeable one — forking every component to use arbitrary-value
+   `[var(...)]` classes just to enable a dark scope isn't worth the
+   duplication for an internal tool.
+
+   Visual distinction from the customer app (still a real requirement —
+   this surface must never be confusable with it) comes instead from a
+   distinctly branded header/chrome, hand-written below rather than
+   through the shared theme tokens. Page content underneath reuses the
+   shared components exactly as designed, in their normal light theme.
 ---------------------------------------------------------------- */
 .centro-owner-shell {
-  --owner-bg: #0b0e14;
-  --owner-surface: #12161f;
-  --owner-surface-muted: #171c27;
-  --owner-border: #262c3a;
-  --owner-text-primary: #f2f3f7;
-  --owner-text-secondary: #a7adbd;
-  --owner-text-muted: #6e7486;
+  --owner-header-bg: #14171f;
+  --owner-header-border: #262a35;
+  --owner-header-text: #f2f3f7;
+  --owner-header-text-muted: #9ba0b0;
   --owner-accent: #f5a524;
-  --owner-accent-deep: #c97f0e;
 
-  background: var(--owner-bg);
-  color: var(--owner-text-primary);
-  color-scheme: dark;
   min-height: 100vh;
+}
+
+.centro-owner-header {
+  background: var(--owner-header-bg);
+  border-bottom: 1px solid var(--owner-header-border);
+  color: var(--owner-header-text);
+}
+.centro-owner-header a,
+.centro-owner-header button {
+  color: var(--owner-header-text-muted);
+}
+.centro-owner-header a:hover,
+.centro-owner-header button:hover {
+  color: var(--owner-header-text);
 }
 
 html[data-a11y-underline="true"] a {
