@@ -52,12 +52,17 @@ export default async function OwnerOrganizationsPage({
             {organizations.map((org) => (
               <TableRow key={org.id}>
                 <TableCell>
-                  <Link
-                    href={`/owner/organizations/${org.id}`}
-                    className="font-semibold text-text-primary transition-colors hover:text-brand-purple"
-                  >
-                    {org.name?.trim() || t("owner.organizations.unnamed")}
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    <Link
+                      href={`/owner/organizations/${org.id}`}
+                      className="font-semibold text-text-primary transition-colors hover:text-brand-purple"
+                    >
+                      {org.name?.trim() || t("owner.organizations.unnamed")}
+                    </Link>
+                    {org.suspendedAt && (
+                      <Badge tone="danger">{t("owner.organizations.suspended")}</Badge>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <div className="flex flex-col gap-1 text-xs text-text-secondary">

@@ -85,6 +85,7 @@ export const he = {
   "owner.organizations.onboarding.complete": "הושלמה",
   "owner.organizations.onboarding.incomplete": "לא הושלמה",
   "owner.organizations.unnamed": "ארגון ללא שם",
+  "owner.organizations.suspended": "מושהה",
 
   "owner.orgDetail.backLink": "כל הארגונים",
   "owner.orgDetail.infoTitle": "פרטי ארגון",
@@ -108,6 +109,13 @@ export const he = {
   "owner.orgDetail.activityTitle": "פעילות אחרונה",
   "owner.orgDetail.activityEmpty": "אין עדיין פעילות רשומה עבור ארגון זה.",
   "owner.orgDetail.notFound": "הארגון לא נמצא.",
+  "owner.orgDetail.suspendedBanner": "הארגון מושהה מאז {{date}}. המשתמשים בארגון אינם יכולים להתחבר למערכת.",
+  "owner.orgDetail.suspendTrigger": "השעיית ארגון",
+  "owner.orgDetail.suspendTitle": "להשעות את הארגון?",
+  "owner.orgDetail.suspendDescription":
+    "המשתמשים בארגון לא יוכלו להתחבר למערכת עד להפעלה מחדש. ניתן לבטל את ההשעיה בכל עת.",
+  "owner.orgDetail.suspendConfirm": "השעיה",
+  "owner.orgDetail.reactivateTrigger": "הפעלה מחדש",
 } as const;
 
 export type OwnerMessageKey = keyof typeof he;

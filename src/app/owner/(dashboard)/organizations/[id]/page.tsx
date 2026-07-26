@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowRight, Users, ClipboardList, ListChecks, History } from "lucide-react";
+import { ArrowRight, ShieldAlert, ShieldCheck, Users, ClipboardList, ListChecks, History } from "lucide-react";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { getOrganizationOverview } from "@/lib/data/owner/organizations";
 import { listAuditLog } from "@/lib/data/auditLog";
@@ -9,9 +9,12 @@ import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { KpiCard } from "@/components/app/KpiCard";
 import { Badge } from "@/components/app/Badge";
+import { Button } from "@/components/app/Button";
+import { ConfirmDialog } from "@/components/app/ConfirmDialog";
 import { EmptyState } from "@/components/app/EmptyState";
 import { formatOwnerDate, formatOwnerDateTime } from "@/lib/owner/formatDate";
 import { t } from "@/lib/owner/i18n/t";
+import { reactivateOrganizationAction, suspendOrganizationAction } from "./actions";
 
 export const metadata: Metadata = { title: "פרטי ארגון — מסוף בעלים" };
 
@@ -51,13 +54,45 @@ export default async function OwnerOrganizationDetailPage({
         title={overview.name?.trim() || t("owner.organizations.unnamed")}
         description={overview.userEmail ?? undefined}
         actions={
-          <Badge tone={overview.onboardingCompletedAt ? "success" : "warning"} dot>
-            {overview.onboardingCompletedAt
-              ? t("owner.organizations.onboarding.complete")
-              : t("owner.organizations.onboarding.incomplete")}
-          </Badge>
+          <>
+            <Badge tone={overview.onboardingCompletedAt ? "success" : "warning"} dot>
+              {overview.onboardingCompletedAt
+                ? t("owner.organizations.onboarding.complete")
+                : t("owner.organizations.onboarding.incomplete")}
+            </Badge>
+            {overview.suspendedAt ? (
+              <form action={reactivateOrganizationAction}>
+                <input type="hidden" name="organizationId" value={overview.id} />
+                <Button type="submit" variant="secondary" size="sm">
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                  {t("owner.orgDetail.reactivateTrigger")}
+                </Button>
+              </form>
+            ) : (
+              <ConfirmDialog
+                trigger={
+                  <span className="flex items-center gap-1.5">
+                    <ShieldAlert className="h-4 w-4" aria-hidden="true" />
+                    {t("owner.orgDetail.suspendTrigger")}
+                  </span>
+                }
+                triggerClassName="inline-flex items-center gap-1.5 rounded-full border border-danger/25 bg-danger/5 px-3.5 py-2 text-xs font-semibold text-danger transition-colors hover:border-danger/50 hover:bg-danger/10"
+                title={t("owner.orgDetail.suspendTitle")}
+                description={t("owner.orgDetail.suspendDescription")}
+                confirmLabel={t("owner.orgDetail.suspendConfirm")}
+                formAction={suspendOrganizationAction}
+                hiddenFields={{ organizationId: overview.id }}
+              />
+            )}
+          </>
         }
       />
+
+      {overview.suspendedAt && (
+        <div className="mb-6 rounded-2xl border border-danger/25 bg-danger/5 px-4 py-3 text-sm font-medium text-danger">
+          {t("owner.orgDetail.suspendedBanner", { date: formatOwnerDate(overview.suspendedAt) })}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
         <KpiCard

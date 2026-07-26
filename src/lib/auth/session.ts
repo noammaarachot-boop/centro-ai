@@ -19,6 +19,13 @@ export interface Session {
   fullName: string | null;
   organizationId: string;
   organizationName: string;
+  // Owner Dashboard Phase 5 — null unless the platform owner has
+  // suspended this organization. Enforced in requireSession() below,
+  // not here: getSession()'s existing null/non-null return contract is
+  // relied on unchanged by callers like the login page and
+  // redirectAfterAuth(), so a suspended org still gets a real Session
+  // object back from getSession() itself.
+  organizationSuspendedAt: Date | null;
 }
 
 // `rememberMe` defaults to true so every existing caller (register(), and
@@ -66,6 +73,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
       fullName: users.fullName,
       organizationId: organizations.id,
       organizationName: organizations.name,
+      organizationSuspendedAt: organizations.suspendedAt,
     })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
@@ -87,6 +95,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
     fullName: row.fullName,
     organizationId: row.organizationId,
     organizationName: row.organizationName,
+    organizationSuspendedAt: row.organizationSuspendedAt,
   };
 });
 
@@ -107,6 +116,14 @@ export async function requireSession(): Promise<Session> {
   const session = await getSession();
   if (!session) {
     redirect("/login");
+  }
+  // Owner Dashboard Phase 5 — checked here, not inside getSession(), so
+  // this is the one gate every protected page/action already goes
+  // through (same reasoning as the rest of this comment). /suspended
+  // itself reads getSession() directly rather than calling
+  // requireSession(), so it can never redirect into itself.
+  if (session.organizationSuspendedAt) {
+    redirect("/suspended");
   }
   return session;
 }

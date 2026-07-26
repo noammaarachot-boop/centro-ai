@@ -16,6 +16,7 @@ export interface OwnerOrganizationListRow {
   onboardingCompletedAt: Date | null;
   whatsappConnectedAt: Date | null;
   googleConnectedAt: Date | null;
+  suspendedAt: Date | null;
   createdAt: Date;
   userEmail: string | null;
   userPhone: string | null;
@@ -40,6 +41,7 @@ export async function listOrganizations(query?: string): Promise<OwnerOrganizati
       onboardingCompletedAt: organizations.onboardingCompletedAt,
       whatsappConnectedAt: organizations.whatsappConnectedAt,
       googleConnectedAt: organizations.googleConnectedAt,
+      suspendedAt: organizations.suspendedAt,
       createdAt: organizations.createdAt,
       userEmail: users.email,
       userPhone: users.phone,
@@ -70,6 +72,7 @@ export interface OwnerOrganizationOverview {
   whatsappDisplayPhoneNumber: string | null;
   googleConnectedAt: Date | null;
   googleDriveFolderName: string | null;
+  suspendedAt: Date | null;
   userEmail: string | null;
   userPhone: string | null;
   userFullName: string | null;
@@ -134,6 +137,7 @@ export async function getOrganizationOverview(
     whatsappDisplayPhoneNumber: org.whatsappDisplayPhoneNumber,
     googleConnectedAt: org.googleConnectedAt,
     googleDriveFolderName: org.googleDriveFolderName,
+    suspendedAt: org.suspendedAt,
     userEmail: user?.email ?? null,
     userPhone: user?.phone ?? null,
     userFullName: user?.fullName ?? null,

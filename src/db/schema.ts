@@ -143,6 +143,14 @@ export const organizations = pgTable("organizations", {
   sampleTemplateCardShownAt: timestamp("sample_template_card_shown_at", {
     withTimezone: true,
   }),
+  // Owner Dashboard Phase 5 — platform-owner-only account lifecycle
+  // action (src/app/owner/(dashboard)/organizations/[id]/actions.ts).
+  // Null = active. Enforced in src/lib/auth/session.ts's requireSession()
+  // (not getSession() itself, whose null/non-null contract many other
+  // callers — the login page, redirectAfterAuth — depend on unchanged);
+  // read as part of getSession()'s existing organizations join, so
+  // checking it costs zero extra queries on the app's hottest read path.
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
