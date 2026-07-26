@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { LogOut, Search, LayoutGrid, Building2 } from "lucide-react";
+import { LogOut, Search, LayoutGrid, Building2, DollarSign } from "lucide-react";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { ownerLogout } from "@/app/owner/actions";
 import { t } from "@/lib/owner/i18n/t";
@@ -13,6 +13,7 @@ export const metadata: Metadata = {
 const NAV_LINKS = [
   { href: "/owner", label: "owner.nav.home" as const, icon: LayoutGrid },
   { href: "/owner/organizations", label: "owner.nav.organizations" as const, icon: Building2 },
+  { href: "/owner/costs", label: "owner.nav.costs" as const, icon: DollarSign },
 ];
 
 // Guards every page under src/app/owner/(dashboard)/** — a sibling

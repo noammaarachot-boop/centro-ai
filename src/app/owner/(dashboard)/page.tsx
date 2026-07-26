@@ -11,12 +11,14 @@ import {
   MessageCircle,
   HardDrive,
   History,
+  DollarSign,
 } from "lucide-react";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { getOwnerHomeMetrics } from "@/lib/data/owner/metrics";
 import { getOnboardingFunnel } from "@/lib/data/owner/funnel";
 import { listRecentActivity } from "@/lib/data/owner/activity";
 import { getOwnerHealthSignals } from "@/lib/data/owner/health";
+import { getOwnerAiCostsToday } from "@/lib/data/owner/costs";
 import { computeHealthStatus } from "@/lib/owner/health";
 import { PageHeader } from "@/components/app/PageHeader";
 import { KpiCard } from "@/components/app/KpiCard";
@@ -26,17 +28,26 @@ import { EmptyState } from "@/components/app/EmptyState";
 import { OwnerFunnelChart } from "@/components/owner/OwnerFunnelChart";
 import { OwnerAutoRefresh } from "@/components/owner/OwnerAutoRefresh";
 import { OwnerHealthBadge } from "@/components/owner/OwnerHealthBadge";
+import { OwnerCurrencyKpiCard } from "@/components/owner/OwnerCurrencyKpiCard";
 import { formatOwnerDateTime } from "@/lib/owner/formatDate";
 import { t } from "@/lib/owner/i18n/t";
+
+const AI_COST_FORMATTER = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
 
 export default async function OwnerHomePage() {
   await requireOwnerSession();
 
-  const [metrics, funnel, activity, healthSignals] = await Promise.all([
+  const [metrics, funnel, activity, healthSignals, aiCostsToday] = await Promise.all([
     getOwnerHomeMetrics(),
     getOnboardingFunnel(),
     listRecentActivity(),
     getOwnerHealthSignals(),
+    getOwnerAiCostsToday(),
   ]);
   const health = computeHealthStatus(healthSignals);
 
@@ -114,6 +125,13 @@ export default async function OwnerHomePage() {
           value={metrics.aiMessagesToday}
           icon={<Sparkles className="h-4 w-4" aria-hidden="true" />}
           accent="purple"
+        />
+        <OwnerCurrencyKpiCard
+          label={t("owner.home.kpi.aiCostToday")}
+          formattedValue={AI_COST_FORMATTER.format(aiCostsToday.totalEstimatedCostUsd)}
+          approximate={aiCostsToday.hasRowsWithUnknownPricing}
+          icon={<DollarSign className="h-4 w-4" aria-hidden="true" />}
+          accent="warning"
         />
         <KpiCard
           label={t("owner.home.kpi.whatsappMessagesToday")}
