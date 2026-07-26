@@ -8,6 +8,7 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { isRateLimited, clearAttempts, recordFailedAttempt } from "@/lib/auth/rateLimiter";
 import { createSession } from "@/lib/auth/session";
 import { redirectAfterAuth } from "@/lib/onboarding";
+import { validateRegistrationFields } from "./registrationValidation";
 
 export interface LoginState {
   error?: string;
@@ -15,8 +16,6 @@ export interface LoginState {
 
 const INVALID_CREDENTIALS_MESSAGE = "פרטי ההתחברות שגויים.";
 const RATE_LIMITED_MESSAGE = "יותר מדי ניסיונות התחברות כושלים. נא לנסות שוב בעוד כמה דקות.";
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MIN_PASSWORD_LENGTH = 8;
 
 export async function login(
   _prevState: LoginState,
@@ -108,30 +107,16 @@ export async function register(
   const password = String(formData.get("password") ?? "");
   const confirmPassword = String(formData.get("confirmPassword") ?? "");
   const termsAccepted = formData.get("termsAccepted") === "on";
-  const privacyAccepted = formData.get("privacyAccepted") === "on";
 
-  const fieldErrors: RegisterState["fieldErrors"] = {};
-  if (!fullName) fieldErrors.fullName = "נא להזין שם מלא.";
-  if (!phone) fieldErrors.phone = "נא להזין מספר טלפון.";
-  if (!email) {
-    fieldErrors.email = "נא להזין כתובת אימייל.";
-  } else if (!EMAIL_PATTERN.test(email)) {
-    fieldErrors.email = "נא להזין כתובת אימייל תקינה.";
-  }
-  if (!password) {
-    fieldErrors.password = "נא להזין סיסמה.";
-  } else if (password.length < MIN_PASSWORD_LENGTH) {
-    fieldErrors.password = `הסיסמה חייבת להכיל לפחות ${MIN_PASSWORD_LENGTH} תווים.`;
-  }
-  if (!confirmPassword) {
-    fieldErrors.confirmPassword = "נא לאמת את הסיסמה.";
-  } else if (password !== confirmPassword) {
-    fieldErrors.confirmPassword = "הסיסמאות אינן תואמות.";
-  }
-  if (!termsAccepted || !privacyAccepted) {
-    fieldErrors.terms = "יש לאשר את תנאי השימוש ואת מדיניות הפרטיות.";
-  }
-  if (Object.keys(fieldErrors).length > 0) return { fieldErrors };
+  const fieldErrors = validateRegistrationFields({
+    fullName,
+    phone,
+    email,
+    password,
+    confirmPassword,
+    termsAccepted,
+  });
+  if (fieldErrors) return { fieldErrors };
 
   const db = await getDb();
 
