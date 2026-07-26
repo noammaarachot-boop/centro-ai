@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
+import { recordAuditEvent } from "@/lib/audit";
 import { decryptToken, encryptToken } from "./tokenCipher";
 import { refreshAccessToken, revokeToken, type TokenSet } from "./oauthClient";
 
@@ -75,7 +76,27 @@ export async function getValidAccessToken(organizationId: string): Promise<strin
     throw new GoogleNotConnectedError();
   }
 
-  const refreshed = await refreshAccessToken(decryptToken(row.googleRefreshTokenEnc));
+  let refreshed;
+  try {
+    refreshed = await refreshAccessToken(decryptToken(row.googleRefreshTokenEnc));
+  } catch (error) {
+    // Owner Dashboard System Health signal — previously this failure
+    // only ever reached a console.error somewhere up the call stack.
+    // Best-effort: a failure recording the failure must never mask the
+    // original error, so this is caught and swallowed on its own.
+    try {
+      await recordAuditEvent({
+        organizationId,
+        eventType: "integration.google_token_refresh_failed",
+        description: "רענון טוקן Google Drive נכשל",
+        actorType: "system",
+        metadata: { severity: "warning" },
+      });
+    } catch (auditError) {
+      console.error("[owner-health] failed to record google_token_refresh_failed audit event", auditError);
+    }
+    throw error;
+  }
   await storeTokens(organizationId, { ...refreshed, refreshToken: null });
   return refreshed.accessToken;
 }

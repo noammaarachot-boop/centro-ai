@@ -16,6 +16,8 @@ import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { getOwnerHomeMetrics } from "@/lib/data/owner/metrics";
 import { getOnboardingFunnel } from "@/lib/data/owner/funnel";
 import { listRecentActivity } from "@/lib/data/owner/activity";
+import { getOwnerHealthSignals } from "@/lib/data/owner/health";
+import { computeHealthStatus } from "@/lib/owner/health";
 import { PageHeader } from "@/components/app/PageHeader";
 import { KpiCard } from "@/components/app/KpiCard";
 import { Card } from "@/components/app/Card";
@@ -23,17 +25,20 @@ import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { OwnerFunnelChart } from "@/components/owner/OwnerFunnelChart";
 import { OwnerAutoRefresh } from "@/components/owner/OwnerAutoRefresh";
+import { OwnerHealthBadge } from "@/components/owner/OwnerHealthBadge";
 import { formatOwnerDateTime } from "@/lib/owner/formatDate";
 import { t } from "@/lib/owner/i18n/t";
 
 export default async function OwnerHomePage() {
   await requireOwnerSession();
 
-  const [metrics, funnel, activity] = await Promise.all([
+  const [metrics, funnel, activity, healthSignals] = await Promise.all([
     getOwnerHomeMetrics(),
     getOnboardingFunnel(),
     listRecentActivity(),
+    getOwnerHealthSignals(),
   ]);
+  const health = computeHealthStatus(healthSignals);
 
   const funnelStages = [
     { label: t("owner.home.funnel.registered"), value: funnel.registered },
@@ -47,7 +52,12 @@ export default async function OwnerHomePage() {
   return (
     <div>
       <OwnerAutoRefresh />
-      <PageHeader eyebrow={t("owner.home.eyebrow")} title={t("owner.home.pageTitle")} description={t("owner.home.pageDescription")} />
+      <PageHeader
+        eyebrow={t("owner.home.eyebrow")}
+        title={t("owner.home.pageTitle")}
+        description={t("owner.home.pageDescription")}
+        actions={<OwnerHealthBadge status={health} />}
+      />
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         <KpiCard

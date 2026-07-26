@@ -981,3 +981,20 @@ export const platformOwnerAuditLog = pgTable("platform_owner_audit_log", {
   description: text("description").notNull(),
   metadata: jsonb("metadata"),
 });
+
+export const jobRunStatus = pgEnum("job_run_status", ["success", "failed"]);
+
+// System Health foundation — previously the cron tick (POST /api/cron/tick)
+// returned its {evaluated, reminded, delivered} counts in the HTTP response
+// only, with nothing persisted; there was no way to answer "did last
+// night's tick run, and did it fail" after the fact. One row per tick.
+export const jobRuns = pgTable("job_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  jobName: text("job_name").notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }).notNull(),
+  status: jobRunStatus("status").notNull(),
+  // On success: the task's own returned counts. On failure: an error
+  // message. Observability only, same spirit as aiMessages.metadata.
+  resultSummary: jsonb("result_summary"),
+});

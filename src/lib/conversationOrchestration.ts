@@ -135,6 +135,20 @@ async function sendViaWhatsApp(
   } catch (error) {
     if (!(error instanceof WhatsAppSendError) && !(error instanceof OperationFailedError)) throw error;
     console.error("[whatsapp] send failed (non-fatal, message still recorded)", error);
+    // Owner Dashboard System Health signal. Best-effort and isolated from
+    // the non-fatal contract above: a failure recording the failure must
+    // never turn this into a thrown error.
+    try {
+      await recordAuditEvent({
+        organizationId: organization.id,
+        eventType: "whatsapp.outbound_send_failed",
+        description: "שליחת הודעת WhatsApp יוצאת נכשלה",
+        actorType: "system",
+        metadata: { severity: "warning" },
+      });
+    } catch (auditError) {
+      console.error("[owner-health] failed to record whatsapp.outbound_send_failed audit event", auditError);
+    }
     return { whatsappMessageId: null, deliveryStatus: "failed" };
   }
 }

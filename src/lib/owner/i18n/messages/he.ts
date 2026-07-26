@@ -45,6 +45,9 @@ export const he = {
   "owner.home.activityTitle": "פעילות אחרונה",
   "owner.home.activityEmpty": "אין עדיין פעילות רשומה.",
   "owner.home.activityOwnerBadge": "פעולת בעלים",
+  "owner.health.healthy": "המערכת תקינה",
+  "owner.health.warning": "אזהרה",
+  "owner.health.critical": "קריטי",
 
   "owner.organizations.pageTitle": "ארגונים",
   "owner.organizations.pageDescription": "כל הארגונים הרשומים בפלטפורמה.",

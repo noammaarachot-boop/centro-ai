@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { runScheduledTasks } from "@/lib/scheduler";
+import { getDb } from "@/db";
+import { jobRuns } from "@/db/schema";
 
 export const dynamic = "force-dynamic";
+
+const JOB_NAME = "cron.tick";
 
 // Meant to be hit by an external scheduler (Vercel Cron, GitHub Actions
 // scheduled workflow, etc.) — there's no in-process cron in a
@@ -23,6 +27,33 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await runScheduledTasks();
-  return NextResponse.json({ status: "ok", ...result });
+  // Owner Dashboard System Health foundation — previously this tick's
+  // outcome only ever reached whoever called this endpoint, once, and was
+  // otherwise lost. Recording start/finish here (rather than inside
+  // runScheduledTasks itself) keeps this observability concern out of the
+  // scheduler's own logic, since that function has a second, unrelated
+  // call site (Settings' manual per-organization "run now" button).
+  const startedAt = new Date();
+  const db = await getDb();
+
+  try {
+    const result = await runScheduledTasks();
+    await db.insert(jobRuns).values({
+      jobName: JOB_NAME,
+      startedAt,
+      finishedAt: new Date(),
+      status: "success",
+      resultSummary: result,
+    });
+    return NextResponse.json({ status: "ok", ...result });
+  } catch (error) {
+    await db.insert(jobRuns).values({
+      jobName: JOB_NAME,
+      startedAt,
+      finishedAt: new Date(),
+      status: "failed",
+      resultSummary: { error: error instanceof Error ? error.message : String(error) },
+    });
+    throw error;
+  }
 }
