@@ -153,6 +153,18 @@ const PRESET_STARTERS: Record<string, StarterBusinessType[]> = {
       ],
     },
   ],
+  business_consultant: [
+    {
+      name: "לקוח ייעוץ עסקי",
+      canonicalKey: "pe:business_consultant:client",
+      suggestedRequirements: [
+        { name: "תעודת זהות / תעודת התאגדות", defaultChecked: true },
+        { name: "הסכם ייעוץ", defaultChecked: true },
+        { name: "תוכנית עסקית / מסמכי רקע", defaultChecked: false },
+        { name: "דוחות כספיים", defaultChecked: false },
+      ],
+    },
+  ],
 };
 
 // Additional domains recognized only via keyword matching against a free-

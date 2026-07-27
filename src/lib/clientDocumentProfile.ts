@@ -9,7 +9,7 @@ import {
   serviceDocumentRequirements,
 } from "@/db/schema";
 import { createPendingConfirmation, type PendingConfirmationKind } from "@/lib/pendingConfirmations";
-import { isOneTimeWorkflowOrganization } from "@/lib/data/organizations";
+import { isOnDemandService } from "@/lib/data/organizations";
 
 /**
  * Milestone 6 ("Adaptive Document Collection") — the one thing Architecture
@@ -109,18 +109,25 @@ export async function recordAdHocDocumentObservation(
   rawName: string,
   fileName: string
 ): Promise<void> {
-  // Product Evolution M7 — Workflow B never learns anything (Templates
-  // are entirely explicit/user-edited), checked first so a one-time
-  // organization's ad-hoc document naming never starts an occurrence
-  // count that could never be surfaced anyway (M6's confirmation flow is
-  // recurring-only UI, but this guard makes the boundary real at the
-  // data layer too, not just by omission in the UI).
-  if (await isOneTimeWorkflowOrganization(organizationId)) return;
+  const db = await getDb();
+
+  // Product Evolution M9 — Templates (On-Demand Services) never learn
+  // anything, checked first so an ad-hoc document naming on an On-Demand
+  // request never starts an occurrence count that could never be
+  // surfaced anyway (M6's confirmation flow is Recurring-only UI, but
+  // this guard makes the boundary real at the data layer too, not just
+  // by omission in the UI). Resolved per-Service, not per-organization —
+  // the same organization can also have Recurring Services whose
+  // learning must be unaffected.
+  const [collectionRequest] = await db
+    .select({ serviceId: collectionRequests.serviceId })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .limit(1);
+  if (!collectionRequest || (await isOnDemandService(collectionRequest.serviceId))) return;
 
   const name = normalizeName(rawName);
   if (!name) return;
-
-  const db = await getDb();
 
   const [client] = await db
     .select()
@@ -186,11 +193,11 @@ export async function detectMissingRequirements(
   clientId: string,
   serviceId: string
 ): Promise<void> {
-  // Product Evolution M7 — same boundary as recordAdHocDocumentObservation
-  // above. A one-time-workflow "collection request" is a single Template
-  // send, not a recurring cycle — there is no "missing across two
+  // Product Evolution M9 — same per-Service boundary as
+  // recordAdHocDocumentObservation above. An On-Demand request is a single
+  // Template send, not a recurring cycle — there is no "missing across two
   // consecutive cycles" concept to observe.
-  if (await isOneTimeWorkflowOrganization(organizationId)) return;
+  if (await isOnDemandService(serviceId)) return;
 
   const db = await getDb();
 

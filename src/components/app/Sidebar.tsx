@@ -28,33 +28,26 @@ const SUPPORT_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURI
 
 // "עוזר AI" is hidden (not rendered) rather than removed — every route,
 // API, and component behind it is untouched, this only stops the nav
-// item itself from rendering. Restore by deleting the `hidden: true`
-// line from both arrays below.
+// item itself from rendering. Restore by deleting the `hidden: true` line.
 // "תמיכה" is an external WhatsApp link, not an internal route — it's
 // rendered as a plain <a target="_blank"> instead of next/link's <Link>
 // (see the `external` branch in the nav .map() below).
-const RECURRING_NAV_LINKS = [
+//
+// Product Evolution M9 — a single nav for every organization, regardless
+// of which collection mode it started onboarding with. "שירותים"/
+// "תבניות" used to be two mutually-exclusive, workflow-gated labels for
+// what was structurally the same underlying page family (services vs.
+// templates, both just Service rows — see ARCHITECTURE.md); now that any
+// organization can use both modes, they're two permanent, always-visible
+// links using the approved product terminology directly, so the nav itself
+// teaches the distinction rather than hiding one side of it.
+const NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
   { href: "/assistant", label: "עוזר AI", icon: Sparkles, hidden: true },
   { href: "/clients", label: "לקוחות", icon: Users },
-  { href: "/services", label: "תבניות", icon: Layers },
+  { href: "/services", label: "איסוף מחזורי", icon: Layers },
+  { href: "/templates", label: "איסוף לפי צורך", icon: LayoutTemplate },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
-  { href: "/audit", label: "פעילות", icon: ScrollText },
-  { href: "/settings", label: "הגדרות", icon: Settings },
-  { href: SUPPORT_WHATSAPP_HREF, label: "תמיכה", icon: LifeBuoy, external: true },
-];
-
-// Product Evolution M4 — Workflow B's own, smaller nav: Templates replaces
-// Services/Collections as the primary surface (a Template *is* a bare
-// Service under the hood, and sending one creates real Collection
-// Requests — see ARCHITECTURE.md — so nothing is lost by not linking those
-// routes directly, just decluttered). The underlying routes still work if
-// visited directly; only the nav itself is workflow-specific.
-const ONE_TIME_NAV_LINKS = [
-  { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
-  { href: "/assistant", label: "עוזר AI", icon: Sparkles, hidden: true },
-  { href: "/clients", label: "לקוחות", icon: Users },
-  { href: "/templates", label: "תבניות", icon: LayoutTemplate },
   { href: "/audit", label: "פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },
   { href: SUPPORT_WHATSAPP_HREF, label: "תמיכה", icon: LifeBuoy, external: true },
@@ -64,19 +57,16 @@ export function Sidebar({
   organizationName,
   email,
   logoUrl,
-  workflowType,
   logoutAction,
 }: {
   organizationName: string;
   email: string;
   logoUrl?: string | null;
-  workflowType: "recurring" | "one_time";
   logoutAction: () => Promise<void>;
 }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const NAV_LINKS = workflowType === "one_time" ? ONE_TIME_NAV_LINKS : RECURRING_NAV_LINKS;
 
   const navContent = (
     <>

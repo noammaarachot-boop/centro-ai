@@ -22,13 +22,29 @@ const bytea = customType<{ data: Buffer }>({
   },
 });
 
-// Product Evolution M1: the permanent fork chosen once during onboarding
-// between the existing recurring/learning workflow and the new one-time/
-// template-driven workflow. Defaults to "recurring" so every pre-existing
-// organization keeps its exact current behavior with zero migration risk.
-// Not exposed as an editable Settings toggle — switching later is a data
-// migration question, out of scope unless explicitly requested.
-export const workflowTypeEnum = pgEnum("workflow_type", ["recurring", "one_time"]);
+// Product Evolution M9 ("Recurring vs. On-Demand"): the onboarding wizard's
+// own choice of how the office wants to *start* using Centro. This used to
+// be a permanent, organization-wide lock (M1) — it no longer is. Every
+// onboarded organization can create both Recurring Collections (Services,
+// automatically scheduled) and On-Demand Collections (Templates, sent only
+// when an employee decides to) regardless of what they picked here; this
+// column only personalizes the wizard's own steps and copy, plus a couple
+// of purely cosmetic defaults (which dashboard variant renders by default,
+// the AI copilot's one-line self-description). The real, per-item mode gate
+// is `services.collectionMode` below — every runtime behavior (learning,
+// scheduling, nav) reads that, never this column.
+// "one_time" is the pre-M9 value, kept only so existing rows keep meaning
+// exactly what they always meant ("started via the on-demand-only wizard
+// path") — application code treats it as a synonym for "on_demand" and
+// never writes it again. "both" is new: the wizard runs the fuller
+// (recurring) setup flow, since post-onboarding on-demand needs no extra
+// steps of its own (see src/app/onboarding/page.tsx).
+export const workflowTypeEnum = pgEnum("workflow_type", [
+  "recurring",
+  "one_time",
+  "on_demand",
+  "both",
+]);
 
 // Owns all configuration, users and (starting M3) clients/services/collection
 // data. EPS Ch.2 PR-005 / Ch.8: every other table is scoped to one of these.
@@ -82,6 +98,19 @@ export const organizations = pgTable("organizations", {
   // confirm which number is connected.
   whatsappDisplayPhoneNumber: text("whatsapp_display_phone_number"),
   whatsappVerifiedName: text("whatsapp_verified_name"),
+  // Product Evolution M9 ("Disable automation must really disable
+  // automation") — this column already behaved as a live on/off toggle
+  // (activateAutomation/deactivateAutomation in onboarding/actions.ts set
+  // and clear it, not only once at onboarding), it just wasn't actually
+  // *consulted* by the send/scheduling pipeline before now. Null halts
+  // every automatic action org-wide: no new recurring cycle is created
+  // (see services.collectionMode's scheduler consumer) and no automated
+  // WhatsApp send goes out (conversationOrchestration.ts's
+  // sendOutboundMessage checks this before ever calling the transport).
+  // Never touches historical data — purely a forward-looking gate on the
+  // write/send paths. A per-Service pause (services.automationPausedAt) is
+  // the narrower sibling of this — this one wins over everything when
+  // null, regardless of any individual Service's own state.
   automationActivatedAt: timestamp("automation_activated_at", {
     withTimezone: true,
   }),
@@ -300,6 +329,19 @@ export const clients = pgTable(
     // with certainty" (>=95) from "suggested, worth a glance" (70-94) rather
     // than treating every classified client identically.
     businessTypeConfidence: integer("business_type_confidence"),
+    // Product Evolution M9 ("AI Suggests, User Approves") — null means this
+    // client's businessTypeId (if any) is still only a suggestion: it has
+    // NOT yet been confirmed by a human, and per assignClientsToBusinessType
+    // (src/lib/businessTypes.ts) it does not yet carry a clientServices
+    // assignment either — so it cannot yet affect what's requested from
+    // this client. Set the moment a human confirms the classification
+    // (Step 5's "Confirm" action, whether that's a bulk approval of an
+    // already-suggested group or a manual assignment/correction — both go
+    // through the same confirmation step now). A manual assignment is
+    // confirmed by construction the instant it's made.
+    classificationConfirmedAt: timestamp("classification_confirmed_at", {
+      withTimezone: true,
+    }),
     // Epic 4: the raw business-type-column (or row-context) text an import
     // produced for this client, kept even when classification failed or
     // was only a low-confidence guess. src/lib/businessTypes.ts's learning
@@ -342,6 +384,20 @@ export const clients = pgTable(
   ]
 );
 
+// Product Evolution M9: whether one specific Service/Template is a
+// Recurring Collection (Centro automatically opens its next cycle on a
+// schedule) or an On-Demand Collection (an employee decides when to send
+// it; never auto-repeats). This — not organizations.workflowType — is the
+// real, per-item gate every runtime behavior checks: the learning engine
+// (src/lib/clientDocumentProfile.ts, src/lib/documentLearning.ts), the
+// automatic cycle-creation scheduler (src/lib/recurringScheduler.ts), and
+// nothing else — Templates/Services pages are simply always both visible
+// post-onboarding now, no gate needed there at all.
+export const serviceCollectionModeEnum = pgEnum("service_collection_mode", [
+  "recurring",
+  "on_demand",
+]);
+
 // Defines recurring document requirements (EPS Ch.4 BR-001: "Services
 // define requirements; clients do not"). Scheduling config (frequency,
 // business hours) is added when the collection engine is built — it has
@@ -353,6 +409,34 @@ export const services = pgTable("services", {
     .references(() => organizations.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   description: text("description"),
+  // Product Evolution M9. Defaults to "on_demand" at the column level —
+  // every pre-M9 row is backfilled explicitly by migration 0028 (Recurring
+  // if it backs a business_types row, On-Demand otherwise), so the default
+  // only ever applies to a genuinely new row going forward.
+  collectionMode: serviceCollectionModeEnum("collection_mode")
+    .notNull()
+    .default("on_demand"),
+  // "Every X months" — 1=monthly, 2=every two months, 3=quarterly,
+  // 6=every six months, 12=annually, or any other positive integer for a
+  // custom cadence. One field covers every named option and "custom" at
+  // once, deliberately — a separate unit/enum was considered and rejected
+  // as unnecessary complexity for what is always, in the end, a count of
+  // months. Null = collectionMode is "on_demand" (frequency is meaningless
+  // for it), or a "recurring" Service whose schedule hasn't been
+  // configured yet. See src/lib/recurringScheduler.ts for the engine that
+  // actually consumes this.
+  collectionFrequencyIntervalMonths: integer(
+    "collection_frequency_interval_months"
+  ),
+  // Product Evolution M9 — the narrower, per-template sibling of
+  // organizations.automationPausedAt: pausing one Recurring Collection
+  // (e.g. one Business Type) never affects any other Service's automatic
+  // cycles or messages. Meaningless for an On-Demand Service (nothing
+  // automatic ever runs for one), but not enforced NOT NULL-false-only at
+  // the schema level since it costs nothing to allow and simplifies the
+  // scheduler's WHERE clause (checked unconditionally, matches nothing for
+  // an on_demand row either way).
+  automationPausedAt: timestamp("automation_paused_at", { withTimezone: true }),
   // Epic 3: per-business-type reminder/business-hours overrides, set from
   // the onboarding wizard's Reminder Rules step (or later from this
   // service's own page). Null = "use the organization's default" — see
@@ -529,6 +613,19 @@ export const clientServices = pgTable(
     assignedAt: timestamp("assigned_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // Product Evolution M9 — lives on this join row, not on `services`,
+    // because different clients can be assigned to the same Recurring
+    // Service at different times and each needs its own independent "next
+    // cycle due" clock. Null whenever the Service isn't (yet) a configured
+    // Recurring Collection. Set the moment a client is assigned to a
+    // Recurring Service with a frequency already configured, and advanced
+    // by +collectionFrequencyIntervalMonths each time the scheduler
+    // (src/lib/recurringScheduler.ts) successfully opens a new cycle for
+    // this exact pairing — recomputed from "now" (not the original anchor)
+    // whenever the Service's frequency/anchor day changes, so a
+    // mid-stream schedule edit takes effect immediately rather than
+    // silently drifting.
+    nextCollectionRunAt: timestamp("next_collection_run_at", { withTimezone: true }),
   },
   (table) => [
     uniqueIndex("client_services_client_id_service_id_idx").on(
@@ -642,6 +739,23 @@ export const documents = pgTable("documents", {
   // (rejected) — never a long-term store.
   pendingFileContent: bytea("pending_file_content"),
   pendingFileMimeType: text("pending_file_mime_type"),
+  // Product Evolution M9 ("Never Lose a Document") — pendingFileContent
+  // above is now also the Drive-outage safety net for an *approved*
+  // document: reviewDocument/addManualDocument no longer clear it the
+  // moment status flips to "approved" — only once uploadDocumentResiliently
+  // (src/lib/storage/driveAdapter.ts) confirms the upload actually
+  // succeeded. These three columns track that retry lifecycle. Set the
+  // first time an approved document's Drive upload fails;
+  // driveUploadRetryCount increments on each subsequent retry attempt
+  // (src/lib/recurringScheduler.ts's cron tick, alongside the recurring-
+  // cycle job); driveRetryExhaustedAt is set once retries pass a sane
+  // ceiling, surfacing the document as needing real human attention
+  // (Owner Dashboard system health + an audit event) rather than retrying
+  // forever. All three are cleared back to null the moment the upload
+  // finally succeeds, alongside pendingFileContent itself.
+  driveUploadFailedAt: timestamp("drive_upload_failed_at", { withTimezone: true }),
+  driveUploadRetryCount: integer("drive_upload_retry_count").notNull().default(0),
+  driveRetryExhaustedAt: timestamp("drive_retry_exhausted_at", { withTimezone: true }),
   // Ch.14: when a document is manually deleted from Drive, Centro keeps
   // the database record, flips status to deleted_from_drive, and the UI
   // shows "Deleted manually on DD/MM/YYYY HH:MM" using this timestamp.

@@ -4,9 +4,11 @@ import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { getDb } from "@/db";
-import { serviceDocumentRequirements, services } from "@/db/schema";
+import { clientServices, organizations, serviceDocumentRequirements, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import { resolveScheduleConfig } from "@/lib/businessHours";
+import { computeInitialCollectionRunAt } from "@/lib/recurringScheduler";
 
 export interface ServiceFormState {
   error?: string;
@@ -35,7 +37,7 @@ export async function createService(
   const description = String(formData.get("description") ?? "").trim();
 
   if (!name) {
-    return { fieldErrors: { name: "נא להזין שם תבנית." } };
+    return { fieldErrors: { name: "נא להזין שם." } };
   }
 
   const db = await getDb();
@@ -45,13 +47,19 @@ export async function createService(
       organizationId: session.organizationId,
       name,
       description: description || null,
+      collectionMode: "recurring",
+      // Product Evolution M9 — a sensible default (monthly), same as
+      // createBusinessType (src/lib/businessTypes.ts), so a manually
+      // created Recurring Collection works automatically out of the box;
+      // always editable afterward via ServiceFrequencyCard.
+      collectionFrequencyIntervalMonths: 1,
     })
     .returning();
 
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "service.created",
-    description: `התבנית "${service.name}" נוצרה`,
+    description: `איסוף מחזורי "${service.name}" נוצר`,
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -69,7 +77,7 @@ export async function updateService(
   const description = String(formData.get("description") ?? "").trim();
 
   if (!name) {
-    return { fieldErrors: { name: "נא להזין שם תבנית." } };
+    return { fieldErrors: { name: "נא להזין שם." } };
   }
 
   const db = await getDb();
@@ -79,12 +87,12 @@ export async function updateService(
     .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
     .returning();
 
-  if (!service) return { error: "התבנית לא נמצאה." };
+  if (!service) return { error: "האיסוף המחזורי לא נמצא." };
 
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "service.updated",
-    description: `פרטי התבנית "${service.name}" עודכנו`,
+    description: `פרטי האיסוף המחזורי "${service.name}" עודכנו`,
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -106,7 +114,7 @@ export async function deleteService(serviceId: string) {
       await recordAuditEvent({
         organizationId: session.organizationId,
         eventType: "service.deleted",
-        description: `התבנית "${service.name}" נמחקה`,
+        description: `האיסוף המחזורי "${service.name}" נמחק`,
         actorType: "employee",
         actorUserId: session.userId,
       });
@@ -149,6 +157,107 @@ export async function addRequirement(serviceId: string, formData: FormData) {
     organizationId: session.organizationId,
     eventType: "service.requirement_added",
     description: `דרישת מסמך "${name}" נוספה לתבנית`,
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  refresh();
+}
+
+// Product Evolution M9 ("a simple pause/resume control for an individual
+// recurring collection") — narrower than the org-wide "Deactivate
+// automation" switch: pausing one Recurring Collection never touches any
+// other Service's automatic cycles or messages (see
+// conversationOrchestration.ts's sendOutboundMessage and the recurring
+// scheduler, both of which check this specific Service's
+// automationPausedAt). Historical data is untouched either way — this
+// only ever gates future automatic activity.
+export async function pauseServiceAutomation(serviceId: string) {
+  const session = await requireSession();
+  const service = await getOrgScopedService(session.organizationId, serviceId);
+
+  const db = await getDb();
+  await db
+    .update(services)
+    .set({ automationPausedAt: new Date(), updatedAt: new Date() })
+    .where(eq(services.id, service.id));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "service.automation_paused",
+    description: "האוטומציה הושהתה עבור איסוף מחזורי זה",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  refresh();
+}
+
+export async function resumeServiceAutomation(serviceId: string) {
+  const session = await requireSession();
+  const service = await getOrgScopedService(session.organizationId, serviceId);
+
+  const db = await getDb();
+  await db
+    .update(services)
+    .set({ automationPausedAt: null, updatedAt: new Date() })
+    .where(eq(services.id, service.id));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "service.automation_resumed",
+    description: "האוטומציה חודשה עבור איסוף מחזורי זה",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  refresh();
+}
+
+// Product Evolution M9 ("Recurring Collection must become truly
+// automatic") — sets how often this Service's next cycle opens on its
+// own. Recomputes every currently-assigned client's nextCollectionRunAt
+// from *today* (not the old schedule) whenever the frequency or anchor
+// day changes, so a mid-stream edit takes effect immediately rather than
+// silently drifting against a stale baseline — the one deliberate,
+// documented edge-case decision here (see recurringScheduler.ts).
+export async function updateServiceFrequency(serviceId: string, formData: FormData) {
+  const session = await requireSession();
+  const db = await getDb();
+
+  const [service] = await db
+    .select()
+    .from(services)
+    .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
+    .limit(1);
+  if (!service) redirect("/services");
+
+  const rawMonths = Number(formData.get("collectionFrequencyIntervalMonths") ?? 1);
+  const intervalMonths = Number.isInteger(rawMonths) ? Math.min(Math.max(rawMonths, 1), 36) : 1;
+
+  await db
+    .update(services)
+    .set({ collectionFrequencyIntervalMonths: intervalMonths, updatedAt: new Date() })
+    .where(eq(services.id, serviceId));
+
+  const [organization] = await db
+    .select()
+    .from(organizations)
+    .where(eq(organizations.id, session.organizationId))
+    .limit(1);
+  if (organization) {
+    const anchorDay = resolveScheduleConfig(organization, service).collectionDayOfMonth;
+    const nextRunAt = computeInitialCollectionRunAt(anchorDay);
+    await db
+      .update(clientServices)
+      .set({ nextCollectionRunAt: nextRunAt })
+      .where(eq(clientServices.serviceId, serviceId));
+  }
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "service.frequency_updated",
+    description: `תדירות האיסוף המחזורי עודכנה לכל ${intervalMonths} חודשים`,
     actorType: "employee",
     actorUserId: session.userId,
   });

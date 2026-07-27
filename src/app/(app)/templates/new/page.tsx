@@ -1,17 +1,13 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
-import { getOrganization } from "@/lib/data/organizations";
 import { createTemplate } from "../actions";
 import { TemplateForm } from "../TemplateForm";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 
 export default async function NewTemplatePage() {
-  const session = await requireSession();
-  const organization = await getOrganization(session.organizationId);
-  if (organization?.workflowType !== "one_time") notFound();
+  await requireSession();
 
   return (
     <div className="mx-auto max-w-lg animate-fade-in-up px-6 py-10 lg:px-10">

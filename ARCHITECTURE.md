@@ -305,6 +305,140 @@ model itself already implied should exist.
 
 ---
 
+## Chapter 10 — Recurring vs. On-Demand: A Per-Item Choice, Not a Permanent Lock
+
+Chapter 9 established `organizations.workflowType` as a permanent, set-once fork between
+two entire product experiences. Product Evolution M9 changed the underlying business
+model: **every organization can use both Recurring Collection and On-Demand Collection
+at once**, chosen per item (per Service), not once per organization. This chapter
+records what changed and, just as importantly, what Chapters 1–9 already got right and
+did not need to change.
+
+### 10.1 The Real Gate Moved from the Organization to the Service
+
+`services.collectionMode` (`"recurring" | "on_demand"`) is now the one predicate every
+runtime behavior checks — not `organizations.workflowType`. A Recurring Service (what
+Chapter 9 called a Business Type) automatically schedules its own next cycle and learns
+from its clients exactly as Chapters 1–8 describe; an On-Demand Service (what Chapter 9
+called a Template) never does either, exactly as §9.3 describes — that distinction is
+unchanged. What changed is scope: both kinds of Service can now exist side by side in
+one organization, so the three functions that ever write learned state
+(`recordAdHocDocumentObservation`, `detectMissingRequirements`,
+`recordLearnedDocumentPattern`) resolve the specific Service a request belongs to and
+check *its* `collectionMode`, not the organization's. `organizations.workflowType`
+survives only as a record of which onboarding path the organization started on — it
+personalizes the wizard and picks a default dashboard, and nothing else reads it as a
+behavioral gate.
+
+### 10.2 Onboarding: Three Choices, One Permanent Effect Removed
+
+Onboarding's Collection Style step now offers three options — Recurring, On-Demand, or
+Both — matching the terminology used everywhere else in the product: **איסוף מחזורי**
+(Recurring Collection) and **איסוף לפי צורך** (On-Demand Collection). "Both" runs the
+fuller Recurring setup path, since On-Demand needs no dedicated setup steps of its own —
+it's simply available from the navigation the moment onboarding completes. Unlike
+Chapter 9's original design, this choice is no longer permanent or exclusive: the
+navigation always shows both "איסוף מחזורי" and "איסוף לפי צורך" once onboarding is
+done, regardless of which the organization started with, and either kind of Service can
+be created at any time from its own "new" page.
+
+### 10.3 Recurring Collection Actually Recurs Now
+
+Chapter 9 (and the schema comment on `organizations.collectionDayOfMonth` before this
+milestone) was explicit that no scheduler auto-created Collection Requests — every cycle
+was opened by an employee, by hand. `src/lib/recurringScheduler.ts` closes that gap: a
+new `services.collectionFrequencyIntervalMonths` ("every X months" — one field covers
+monthly, quarterly, semi-annual, annual, and any custom interval at once, deliberately
+not a separate unit/enum) and a per-assignment `client_services.nextCollectionRunAt`
+drive a new cron pass (`runRecurringCycleCreation`, called from `runScheduledTasks`
+alongside the existing reminder/inactivity/Drive-retry passes) that opens the next
+cycle — snapshotting requirements and sending the initial request through the exact same
+`startConversation` a manual "send" already used — the moment a pairing comes due, then
+advances the schedule from where it was supposed to fire (not from "now"), so a late
+tick never drifts the cadence forward.
+
+This is deliberately server-side, not a UI convention: the query that finds due work
+filters on `services.collectionMode = "recurring"` as a hard `WHERE` clause. An
+On-Demand Service is structurally ineligible — there is no code path by which one could
+be picked up, not a flag that a future caller could forget to check.
+
+### 10.4 Frequency and Reminders Are Explicitly Different Concepts
+
+**Frequency** (`collectionFrequencyIntervalMonths`, resolved against the existing
+per-Service anchor-day override) decides when the *next cycle* starts. **Reminders**
+(the five fields Chapter 9 already knew about — business hours/days, reminder interval,
+inactivity timeout) decide what happens *inside* an already-open cycle that's still
+waiting on documents. They were easy to conflate before this milestone because both
+lived on the same override card; they now have their own card
+(`ServiceFrequencyCard`/`FrequencyField`) sitting beside the existing
+`ServiceScheduleOverrideCard`, and neither onboarding's Reminder Rules step nor a
+Service's own settings page treats them as one setting.
+
+### 10.5 AI Suggests, the User Approves — Classification Is Never Silently Authoritative
+
+Before this milestone, an automatic classification (import-time or a same-name guess on
+manual client creation) was written and made effective in the same step — `businessTypeId`
+was set *and* the client was immediately linked to that type's Service, before any human
+had seen it. `clients.classificationConfirmedAt` now separates those two moments: an
+automatic classifier writes a *suggestion* (`businessTypeId`/`businessTypeConfidence`
+visible in the UI) but never creates the `clientServices` link and never records a
+learned synonym until a human confirms it — either by correcting it (a manual choice is
+confirmed by construction) or by approving it as-is (Step 5's per-type "Confirm" button,
+`confirmPendingClassifications`, approving every pending suggestion for one type in one
+click rather than one client at a time). Until confirmed, a suggestion cannot affect
+what's requested from that client — this is the concrete, code-level form of this
+document's own trust principle (Chapter 1: "Centro does not guess. It observes,
+suggests, confirms, and only then learns.") applied to classification, not only document
+requirements.
+
+When a spreadsheet carries no usable type signal at all, Centro still never guesses —
+Step 5's existing unclassified-client picker gained a text filter and a
+select-all-filtered control, so dividing hundreds of clients into groups by hand stays
+fast rather than becoming a one-at-a-time chore.
+
+### 10.6 WhatsApp and Google Drive Are Mandatory, Verified, and Recoverable
+
+`tryActivateAutomation`'s BR-001 gate (Ch.3, extended in the Google Drive OAuth Integration
+round) used to be best-effort — onboarding could complete with neither integration
+connected. `finishOnboarding` now hard-blocks: `checkIntegrationStatus`
+(`src/lib/integrationRequirements.ts`) verifies WhatsApp's identifiers are present and
+actually attempts a Google token refresh (catching a revoked/expired connection, not
+just "was connected once") before onboarding can complete, sending the office back to
+the Connect step with a specific, honest reason otherwise. The same check gates the real
+moment a collection *starts* (`initiateConversation`), surfacing the exact required
+wording ("לא ניתן להתחיל את האיסוף... יש לחבר מחדש...") with a direct link back to
+Settings — which, for the first time, can also reconnect or disconnect both integrations
+after onboarding, not only during it.
+
+### 10.7 A Document Is Never Lost to a Drive Outage
+
+`uploadDocumentResiliently` used to clear a document's temporarily-held bytes
+(`documents.pendingFileContent`) the moment it was marked "approved," before knowing
+whether the Drive upload actually succeeded — a failure right after approval meant the
+real file was gone for good, leaving only a placeholder. The held bytes are now cleared
+only on confirmed success; a failure instead records `driveUploadFailedAt` and
+increments `driveUploadRetryCount`, and a new retry pass (`retryFailedDriveUploads`,
+called every cron tick alongside the recurring-cycle pass) re-attempts it automatically
+through the same resilient path. After `DRIVE_RETRY_MAX_ATTEMPTS` (8) consecutive
+failures, the document is marked `driveRetryExhaustedAt` and escalated as a critical
+audit event rather than retried forever — still holding its bytes, still recoverable by
+hand, never silently dropped.
+
+### 10.8 Disable Automation Now Actually Disables It
+
+The Settings "Deactivate automation" toggle already behaved like a live on/off switch in
+the database (`organizations.automationActivatedAt` set and cleared on demand) — it just
+wasn't consulted by the send pipeline. `sendOutboundMessage`, the one chokepoint every
+automated ("ai") message goes through, now checks it before doing anything else, so
+deactivating genuinely stops every automatic send and every automatic cycle-creation
+attempt org-wide, immediately, with no historical data touched. A narrower sibling,
+`services.automationPausedAt`, does the same for one Recurring Service at a time,
+leaving every other Service unaffected — both controls carry a plain-language "what does
+this do, will anything be deleted, will clients be messaged" explanation next to the
+button itself, not just in this document.
+
+---
+
 ## Document History
 
 | Date | Change |
@@ -336,3 +470,4 @@ model itself already implied should exist.
 | Contact Form — Gmail SMTP Replaces Resend | Resend required verifying `centro-ai.co.il` as a sending domain before it would deliver to any address other than the account's own signup email — this needed DNS changes (DKIM/SPF/MX records) at the domain's registrar (LiveDNS), whose panel turned out to silently reject nameserver-delegation changes through its records UI (the real control lives on a separate "Manage Domain" page, confirmed against LiveDNS's own documentation) — a real, external blocker with no code-side fix. Rather than keep the domain-verification dependency, the contact form (`POST /api/contact`) now sends via Gmail SMTP (Nodemailer, replacing the `resend` package) using an account's own App Password (`GMAIL_USER`/`GMAIL_APP_PASSWORD`) — no domain verification, no DNS records, no external DNS provider required at all. Every other part of the contact-form work from the previous two rounds (full field payload, honeypot + timing + rate-limit spam protection, server-side logging, validation) is unchanged; only the final send call was swapped. Verified live with a real submission through the actual deployed form, confirmed delivered. The Resend domain resource and its API keys were removed/cleaned up as no longer needed. |
 | Real WhatsApp Integration — M-WA-1 (Schema) | The start of a five-milestone plan (approved in advance, not built ad hoc) to replace WhatsApp's 100%-mocked integration with a real one, across three goals: Centro auto-messaging every landing-page lead, each organization connecting its own WhatsApp Business Account, and that connection running the existing, already-real conversation/document-collection engine for real. Architecture decision: unlike Google Drive's necessarily per-organization OAuth tokens, WhatsApp uses the Meta Tech Provider model — one shared System User access token sends/receives for every connected organization's number, scoped per call by that organization's `phone_number_id`; no per-org token to store, encrypt, or refresh. This milestone is schema only, purely additive, and changes no behavior: four new `organizations` columns (`whatsappBusinessAccountId`, `whatsappPhoneNumberId`, `whatsappDisplayPhoneNumber`, `whatsappVerifiedName` — the pre-existing `whatsappConnectedAt` is reused as-is) and a new, deliberately organization-unscoped `leads` table (Centro's own sales leads, not a customer organization's data) for the not-yet-built Feature 1 lead-welcome flow. Verified as a true no-op: every existing WhatsApp-touching flow (the mocked connect/disconnect buttons, the conversation engine, the scheduler) confirmed unchanged. |
 | Real WhatsApp Integration — M-WA-2 (Real Per-Org Connect) | WhatsApp's "Connect" button (Step3Connect, onboarding step 5) is real for the first time, via Meta Embedded Signup rather than an OAuth redirect — the flow stays inside a popup the whole time (`WhatsAppConnectButton.tsx` loads the Facebook JS SDK and calls `FB.login()` with the app's Embedded Signup Configuration), so the result reaches Centro two ways at once: Meta posts a `WA_EMBEDDED_SIGNUP` `postMessage` (checked against Meta's own origin) carrying the new WABA id and phone_number_id, while `FB.login()`'s own callback returns a short-lived authorization `code`. Both are sent together to a new `POST /api/auth/whatsapp/callback` (a JSON-returning POST, not a redirect — Google's callback is a redirect only because its flow ends in a real page navigation back from accounts.google.com, which Embedded Signup never does). The route exchanges the code (`src/lib/whatsapp/embeddedSignup.ts`'s `exchangeSignupCode` — this confirms the signup completed on Meta's side; the resulting token itself is discarded, since Centro sends/receives through the one shared System User token, not a per-org one), subscribes Centro's app to that WABA's webhooks (`subscribeToWabaWebhooks`, required separately — Embedded Signup connects the number but doesn't implicitly wire up webhook delivery), and resolves the phone number's real display/verified name from the Graph API rather than trusting anything the client reported (`src/lib/whatsapp/phoneNumbers.ts`'s `getPhoneNumberDetails`) before storing the connection (`src/lib/whatsapp/wabaTokens.ts`). `WhatsAppConnectionRow` (replacing the old generic mock `ConnectionRow` for this one integration) shows the real connected number once linked, mirroring `GoogleDriveConnectionRow`'s existing precedent for "a connection that needs more than a plain form action." Disconnecting clears all four new columns plus `whatsappConnectedAt`. Every other consumer of `whatsappConnectedAt` — `tryActivateAutomation`'s BR-001 gate, Settings' `integrationsReady`, Step 8's Setup Summary — needed no changes, since the column they already read didn't move, only what writes it did. `tsc`/lint/build/tests all clean; live verification against a real Meta test WABA is pending the account owner's Meta App credentials (App ID/Secret, System User token, Embedded Signup Configuration ID). |
+| Product Evolution M9 — Recurring vs. On-Demand Collection | See Chapter 10 for the full rationale. Summary: the permanent, organization-wide "recurring vs one-time" lock (Chapter 9) became a per-Service choice (`services.collectionMode`) so one organization can run both at once; onboarding's Collection Style step gained a third "Both" option; a real automatic cycle-creation engine (`src/lib/recurringScheduler.ts`) was built from scratch (`services.collectionFrequencyIntervalMonths` + `client_services.nextCollectionRunAt`, driven by a new cron pass), closing a gap this document had explicitly flagged since Chapter 9 — On-Demand Services remain structurally unable to auto-recur (a hard `WHERE collectionMode = 'recurring'` clause, not a convention); frequency and reminder cadence are now modeled and surfaced as explicitly separate settings; automatic classification is a suggestion only (`clients.classificationConfirmedAt`) until a human confirms it, closing a real trust gap where a guess could become authoritative before anyone saw it; WhatsApp and Google Drive became a hard-blocking, live-verified onboarding requirement (`src/lib/integrationRequirements.ts`) instead of best-effort, with a Settings-based reconnect path added since one now genuinely needs to exist; a Drive upload failure right after approval no longer risks losing the document (bytes are held and automatically retried, up to 8 attempts, before escalating); and the "Deactivate automation" toggle, which already behaved like a live switch in the database, is now actually consulted by the send/scheduling pipeline, joined by a narrower per-Service pause. Verified live end-to-end: full registration → onboarding → hard-block-without-integrations flow; classification-suggestion → confirm flow (pending count provably decreasing per confirmation); industry-specific document personalization (a business-consultant category correctly never offered the accounting-specific starter types, and vice versa); pause/resume on a live Service; the global automation toggle; a live-triggered blocked-send showing the exact required reconnect message and a working Settings link; and, most importantly, the automatic engine itself against a real due schedule — a cycle was created for the recurring pairing, the schedule advanced (confirmed non-repeating on an immediate second run), and zero cycles were ever created for the on-demand pairing across the same run. |

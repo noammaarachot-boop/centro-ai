@@ -16,7 +16,12 @@ import {
 // connect button, so it gets its own row like GoogleDriveConnectionRow
 // rather than sharing the generic ConnectionRow other future integrations
 // might still use.
-function WhatsAppConnectionRow({
+// Exported (Product Evolution M9) — reused as-is by /settings so WhatsApp
+// and Google Drive can be reconnected any time, not only during onboarding
+// (both are mandatory to *start* a collection, so a connection breaking
+// later — an expired token, a disconnected WhatsApp number — must have a
+// real way back without redoing the whole wizard).
+export function WhatsAppConnectionRow({
   whatsappConnectedAt,
   whatsappDisplayPhoneNumber,
 }: {
@@ -68,14 +73,18 @@ function WhatsAppConnectionRow({
 // redirect to accounts.google.com) replaces the old mocked connect
 // button; once googleConnectedAt is set but no folder is selected, this
 // renders the choose-a-folder UI instead of a checkmark.
-function GoogleDriveConnectionRow({
+export function GoogleDriveConnectionRow({
   googleConnectedAt,
   googleDriveFolderId,
   googleDriveFolderName,
+  connectReturnTo,
 }: {
   googleConnectedAt: Date | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
+  /** Where /api/auth/google/callback sends the user back to — see its own
+   * allowlist. Defaults to onboarding's own Step 5. */
+  connectReturnTo?: "/settings";
 }) {
   const isConnected = !!googleConnectedAt;
   const hasFolder = isConnected && !!googleDriveFolderId;
@@ -103,7 +112,11 @@ function GoogleDriveConnectionRow({
         </div>
         {!isConnected && (
           <a
-            href="/api/auth/google/start"
+            href={
+              connectReturnTo
+                ? `/api/auth/google/start?returnTo=${encodeURIComponent(connectReturnTo)}`
+                : "/api/auth/google/start"
+            }
             className={buttonVariants({ variant: "secondary", size: "sm", className: "shrink-0" })}
           >
             חיבור
@@ -129,6 +142,7 @@ function GoogleDriveConnectionRow({
           <div className="flex flex-wrap items-start gap-2">
             <GoogleDriveFolderPicker />
             <form action={createGoogleDriveFolder} className="flex items-center gap-1.5">
+              {connectReturnTo && <input type="hidden" name="returnTo" value={connectReturnTo} />}
               <input
                 type="text"
                 name="name"

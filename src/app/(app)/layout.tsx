@@ -34,7 +34,6 @@ export default async function AppLayout({
         organizationName={session.organizationName}
         email={session.email}
         logoUrl={organization?.logoUrl ?? null}
-        workflowType={organization?.workflowType ?? "recurring"}
         logoutAction={logout}
       />
       <main className="relative z-[1] min-w-0 flex-1">{children}</main>

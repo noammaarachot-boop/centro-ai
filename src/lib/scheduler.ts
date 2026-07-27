@@ -9,6 +9,8 @@ import {
 } from "@/lib/conversationOrchestration";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 import { REMINDER_BODY as REMINDER_MESSAGE } from "@/lib/whatsapp/templates";
+import { retryFailedDriveUploads } from "@/lib/storage/driveAdapter";
+import { runRecurringCycleCreation } from "@/lib/recurringScheduler";
 
 /**
  * The real automatic trigger Ch.5/Ch.16 describe — "after N minutes of
@@ -39,6 +41,8 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   evaluated: number;
   reminded: number;
   delivered: number;
+  driveRetried: number;
+  recurringCyclesCreated: number;
 }> {
   const db = await getDb();
   const allOrganizations = organizationId
@@ -48,6 +52,8 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   let evaluated = 0;
   let reminded = 0;
   let delivered = 0;
+  let driveRetried = 0;
+  let recurringCyclesCreated = 0;
 
   for (const organization of allOrganizations) {
     // Ch.16 FR-16.4: after inactivity, evaluate whether known requirements
@@ -175,7 +181,22 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       const sent = await attemptScheduledDelivery(organization.id, request.id, request.clientId);
       if (sent) delivered += 1;
     }
+
+    // Product Evolution M9 ("Never Lose a Document") — retries every
+    // document still holding a safe temporary copy after a previous Drive
+    // upload failure, per organization, every tick (bounded by
+    // DRIVE_RETRY_MAX_ATTEMPTS per document — see driveAdapter.ts).
+    const { retried } = await retryFailedDriveUploads(organization.id);
+    driveRetried += retried;
+
+    // Product Evolution M9 ("Recurring Collection must become truly
+    // automatic") — opens the next cycle for every Recurring Service /
+    // client pairing whose schedule has come due, every tick. On-Demand
+    // Services are structurally excluded (see recurringScheduler.ts's own
+    // query), never a per-call flag that could be forgotten.
+    const { created } = await runRecurringCycleCreation(organization.id);
+    recurringCyclesCreated += created;
   }
 
-  return { evaluated, reminded, delivered };
+  return { evaluated, reminded, delivered, driveRetried, recurringCyclesCreated };
 }

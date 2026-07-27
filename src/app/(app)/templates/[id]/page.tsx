@@ -50,10 +50,14 @@ export default async function TemplateDetailPage({
   const { error, sent, scheduled } = await searchParams;
 
   const organization = await getOrganization(session.organizationId);
-  if (organization?.workflowType !== "one_time") notFound();
+  if (!organization) notFound();
 
   const template = await getService(session.organizationId, id);
   if (!template) notFound();
+  // Product Evolution M9 — gated on this specific Service's own mode, not
+  // the organization's (an org can have both kinds now); a Recurring
+  // Service lives at /services/[id], not here.
+  if (template.collectionMode !== "on_demand") notFound();
 
   const requirements = await listServiceRequirements(id);
   const assignedClients = await listServiceClients(session.organizationId, id);

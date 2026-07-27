@@ -2,14 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, FileStack, Layers, Trash2, X } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
-import { getOrganization } from "@/lib/data/organizations";
 import {
   getClient,
   listClientServices,
   listUnassignedServicesForClient,
 } from "@/lib/data/clients";
 import { listBusinessTypes } from "@/lib/businessTypes";
-import { AUTO_CLASSIFY_CONFIDENCE } from "@/lib/ai/businessTypeClassifier";
 import { listClientDocumentProfileChanges } from "@/lib/clientDocumentProfile";
 import {
   assignService,
@@ -42,21 +40,21 @@ export default async function ClientDetailPage({
   const client = await getClient(session.organizationId, id);
   if (!client) notFound();
 
-  const [organization, assignedServices, unassignedServices, businessTypes, documentProfileChanges] =
+  const [assignedServices, unassignedServices, businessTypes, documentProfileChanges] =
     await Promise.all([
-      getOrganization(session.organizationId),
       listClientServices(session.organizationId, id),
       listUnassignedServicesForClient(session.organizationId, id),
       listBusinessTypes(session.organizationId),
       listClientDocumentProfileChanges(session.organizationId, id),
     ]);
-  const isOneTime = organization?.workflowType === "one_time";
-  const assignedSectionTitle = isOneTime ? "תבניות משויכות" : "שירותים משויכים";
-  const assignedEmptyTitle = isOneTime ? "אין תבניות משויכות" : "אין שירותים משויכים";
-  const assignedEmptyDescription = isOneTime
-    ? "שייכו תבנית ללקוח כדי לפתוח עבורו בקשות איסוף מסמכים."
-    : "שייכו שירות ללקוח כדי לפתוח עבורו בקשות איסוף מסמכים.";
-  const assignMoreLabel = isOneTime ? "שיוך תבנית נוספת" : "שיוך שירות נוסף";
+  // Product Evolution M9 — a client can be assigned to both a Recurring
+  // Collection and an On-Demand Template at once now, so this section is
+  // deliberately mode-neutral rather than picking one word based on the
+  // organization's (no-longer-exclusive) onboarding choice.
+  const assignedSectionTitle = "איסופים משויכים";
+  const assignedEmptyTitle = "אין איסופים משויכים";
+  const assignedEmptyDescription = "שייכו איסוף מחזורי או תבנית ללקוח כדי לפתוח עבורו בקשות איסוף מסמכים.";
+  const assignMoreLabel = "שיוך איסוף נוסף";
   const currentBusinessType = businessTypes.find((t) => t.id === client.businessTypeId) ?? null;
 
   // Milestone 6 — plain-language label per (action, status) combination.
@@ -135,14 +133,27 @@ export default async function ClientDetailPage({
       <Card>
         <h2 className="mb-4 text-lg font-semibold text-text-primary">סוג עסק</h2>
         {currentBusinessType ? (
-          <div className="mb-4 flex items-center gap-2">
-            <span className="text-sm font-medium text-text-primary">{currentBusinessType.name}</span>
-            {client.businessTypeConfidence !== null && (
-              <Badge tone={client.businessTypeConfidence >= AUTO_CLASSIFY_CONFIDENCE ? "success" : "warning"}>
-                {client.businessTypeConfidence >= AUTO_CLASSIFY_CONFIDENCE
-                  ? "סיווג ודאי"
-                  : "הצעה — כדאי לוודא"}
-              </Badge>
+          <div className="mb-4 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-text-primary">{currentBusinessType.name}</span>
+              {client.classificationConfirmedAt ? (
+                <Badge tone="success">מאושר</Badge>
+              ) : (
+                <Badge tone="purple">הצעת Centro — ממתין לאישורכם</Badge>
+              )}
+            </div>
+            {!client.classificationConfirmedAt && (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs text-text-secondary">
+                  זו הצעה בלבד — היא עדיין לא משפיעה על אילו מסמכים מבוקשים מהלקוח.
+                </p>
+                <form action={boundSetBusinessType}>
+                  <input type="hidden" name="businessTypeId" value={currentBusinessType.id} />
+                  <button type="submit" className="text-xs font-medium text-brand-purple hover:underline">
+                    אישור הסיווג
+                  </button>
+                </form>
+              </div>
             )}
           </div>
         ) : (

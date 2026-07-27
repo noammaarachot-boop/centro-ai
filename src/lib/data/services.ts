@@ -7,12 +7,22 @@ import {
   services,
 } from "@/db/schema";
 
-export async function listServices(organizationId: string) {
+// Product Evolution M9 — `mode` filters to just this organization's
+// Recurring Services (/services) or On-Demand Templates (/templates); omit
+// it for every other existing caller that still wants the full list.
+export async function listServices(
+  organizationId: string,
+  mode?: "recurring" | "on_demand"
+) {
   const db = await getDb();
   return db
     .select()
     .from(services)
-    .where(eq(services.organizationId, organizationId))
+    .where(
+      mode
+        ? and(eq(services.organizationId, organizationId), eq(services.collectionMode, mode))
+        : eq(services.organizationId, organizationId)
+    )
     .orderBy(services.name);
 }
 

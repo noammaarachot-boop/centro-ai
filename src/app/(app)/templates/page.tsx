@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { LayoutTemplate, Plus, Sparkles } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
@@ -12,18 +11,20 @@ import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { buttonVariants } from "@/components/app/Button";
 
-// Product Evolution M5 — the real Templates list, replacing Milestone 4's
-// placeholder. A Template is a bare `services` row for a one-time-workflow
-// organization, so this reuses listServices/listServiceRequirements
-// directly rather than a parallel data layer.
+// Product Evolution M9 — every organization can create On-Demand
+// Collections regardless of how it started onboarding; the old
+// workflowType-based notFound() gate is gone (see services.collectionMode).
+// A Template is a bare `services` row with collectionMode "on_demand", so
+// this reuses listServices/listServiceRequirements directly rather than a
+// parallel data layer.
 export default async function TemplatesPage() {
   const session = await requireSession();
   const organization = await getOrganization(session.organizationId);
-  if (organization?.workflowType !== "one_time") notFound();
+  if (!organization) return null;
 
   await seedExampleTemplates(session.organizationId);
 
-  const templates = await listServices(session.organizationId);
+  const templates = await listServices(session.organizationId, "on_demand");
   const withCounts = await Promise.all(
     templates.map(async (template) => ({
       template,
@@ -41,8 +42,8 @@ export default async function TemplatesPage() {
   return (
     <div className="mx-auto max-w-5xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
       <PageHeader
-        title="תבניות"
-        description="תבנית מגדירה אילו מסמכים לבקש ומאיזה לקוחות — ואפשר לשלוח אותה שוב ושוב."
+        title="איסוף לפי צורך"
+        description="תבנית מגדירה אילו מסמכים לבקש — אתם מחליטים מתי לשלוח אותה, ואף מחזור עתידי לא נפתח אוטומטית."
         actions={
           <Link href="/templates/new" className={buttonVariants({ variant: "primary", size: "sm" })}>
             <Plus className="h-4 w-4" />

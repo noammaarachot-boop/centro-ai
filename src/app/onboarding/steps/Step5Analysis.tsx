@@ -20,6 +20,7 @@ import { CentroMarkGlow } from "@/components/app/CentroMarkGlow";
 import {
   advanceOnboardingStep,
   assignBusinessTypeAction,
+  confirmBusinessTypeSuggestions,
   reassignClientBusinessType,
   type ImportAnalysisSummary,
 } from "../actions";
@@ -63,15 +64,25 @@ interface BusinessTypeRow {
   clientCount: number;
 }
 
+interface PendingSuggestionRow {
+  id: string;
+  name: string;
+  phone: string;
+  businessTypeId: string | null;
+  businessTypeConfidence: number | null;
+}
+
 export function Step5Analysis({
   businessTypes,
   clientsByType,
   unclassifiedClients,
+  pendingSuggestions,
   importSummary,
 }: {
   businessTypes: BusinessTypeRow[];
   clientsByType: ClientRow[][];
   unclassifiedClients: ClientRow[];
+  pendingSuggestions: PendingSuggestionRow[];
   importSummary?: ImportAnalysisSummary;
 }) {
   const [expandedTypeId, setExpandedTypeId] = useState<string | null>(null);
@@ -79,10 +90,28 @@ export function Step5Analysis({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [creatingNewType, setCreatingNewType] = useState(false);
   const [activeUploader, setActiveUploader] = useState<"replace" | "add" | null>(null);
+  // Product Evolution M9 ("fast and non-exhausting for hundreds of
+  // clients") — a filter narrows a long list down to find specific
+  // clients quickly, and "select all" always means "every currently
+  // filtered client," so an office can divide hundreds of clients into
+  // groups in a few passes (filter -> select all -> assign -> repeat)
+  // instead of hunting through one long scrollable list.
+  const [unclassifiedFilter, setUnclassifiedFilter] = useState("");
 
   const totalClassified = businessTypes.reduce((sum, t) => sum + t.clientCount, 0);
-  const total = totalClassified + unclassifiedClients.length;
+  const total = totalClassified + pendingSuggestions.length + unclassifiedClients.length;
   const goToStep6 = advanceOnboardingStep.bind(null, 8);
+
+  // Product Evolution M9 — group pending (unconfirmed) suggestions by the
+  // business type Centro guessed, so Step 5 can offer one "Confirm" button
+  // per group instead of per client.
+  const pendingByType = new Map<string, PendingSuggestionRow[]>();
+  for (const suggestion of pendingSuggestions) {
+    if (!suggestion.businessTypeId) continue;
+    const list = pendingByType.get(suggestion.businessTypeId) ?? [];
+    list.push(suggestion);
+    pendingByType.set(suggestion.businessTypeId, list);
+  }
 
   // Progressive reveal for the summary card only (title -> card -> text ->
   // numbers), matching the approved AI-analysis mockup — everything below
@@ -97,6 +126,28 @@ export function Step5Analysis({
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  }
+
+  const normalizedFilter = unclassifiedFilter.trim().toLowerCase();
+  const filteredUnclassifiedClients = normalizedFilter
+    ? unclassifiedClients.filter(
+        (c) => c.name.toLowerCase().includes(normalizedFilter) || c.phone.includes(normalizedFilter)
+      )
+    : unclassifiedClients;
+  const allFilteredSelected =
+    filteredUnclassifiedClients.length > 0 &&
+    filteredUnclassifiedClients.every((c) => selectedIds.has(c.id));
+
+  function toggleSelectAllFiltered() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        for (const c of filteredUnclassifiedClients) next.delete(c.id);
+      } else {
+        for (const c of filteredUnclassifiedClients) next.add(c.id);
+      }
       return next;
     });
   }
@@ -327,6 +378,79 @@ export function Step5Analysis({
         })}
       </div>
 
+      {pendingByType.size > 0 && (
+        <Card className="border-brand-purple/25 bg-brand-purple/5">
+          <div className="flex items-start gap-3">
+            <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand-purple" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-text-primary">
+                Centro הציע סיווג עבור {pendingSuggestions.length} לקוחות — נדרש אישורכם
+              </p>
+              <p className="mt-1 text-xs text-text-secondary">
+                אלה הצעות בלבד: הן עדיין לא משפיעות על אילו מסמכים מבוקשים מהלקוחות האלה.
+                אשרו כל קבוצה בנפרד, או שנו את הסיווג לפני האישור.
+              </p>
+              <div className="mt-3 space-y-3">
+                {[...pendingByType.entries()].map(([businessTypeId, clientsInGroup]) => {
+                  const type = businessTypes.find((t) => t.id === businessTypeId);
+                  if (!type) return null;
+                  return (
+                    <div
+                      key={businessTypeId}
+                      className="rounded-xl border border-border bg-surface p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-text-primary">
+                          {type.name} — {clientsInGroup.length}{" "}
+                          {clientsInGroup.length === 1 ? "לקוח מוצע" : "לקוחות מוצעים"}
+                        </p>
+                        <form action={confirmBusinessTypeSuggestions}>
+                          <input type="hidden" name="businessTypeId" value={businessTypeId} />
+                          <Button type="submit" variant="secondary" size="sm">
+                            אישור הסיווג ({clientsInGroup.length})
+                          </Button>
+                        </form>
+                      </div>
+                      <ul className="mt-2 space-y-1.5">
+                        {clientsInGroup.map((c) => (
+                          <li key={c.id} className="flex items-center justify-between gap-2">
+                            <span className="text-xs text-text-secondary">
+                              {c.name}{" "}
+                              <span dir="ltr" className="text-text-muted">
+                                ({c.phone})
+                              </span>
+                              {c.businessTypeConfidence != null && c.businessTypeConfidence < 95 && (
+                                <span className="ms-1.5 text-[11px] text-text-muted">— הצעה, לא ודאי</span>
+                              )}
+                            </span>
+                            <form action={reassignClientBusinessType} className="shrink-0">
+                              <input type="hidden" name="clientId" value={c.id} />
+                              <select
+                                name="businessTypeId"
+                                defaultValue={businessTypeId}
+                                onChange={(e) => e.currentTarget.form?.requestSubmit()}
+                                aria-label={`שינוי סוג עסק עבור ${c.name}`}
+                                className="rounded-lg border border-border bg-white px-1.5 py-1 text-[11px] text-text-primary outline-none focus:border-brand-purple"
+                              >
+                                {businessTypes.map((t) => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </form>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {unclassifiedClients.length > 0 && (
         <Card className="border-warning/30 bg-warning/5">
           <div className="flex items-start gap-3">
@@ -365,8 +489,41 @@ export function Step5Analysis({
                   action={assignBusinessTypeAction}
                   className="animate-fade-in-up mt-3 space-y-3 rounded-xl border border-border bg-surface p-3"
                 >
-                  <ul className="max-h-40 space-y-1.5 overflow-y-auto">
-                    {unclassifiedClients.map((c) => (
+                  {unclassifiedClients.length > 8 && (
+                    <input
+                      type="text"
+                      value={unclassifiedFilter}
+                      onChange={(e) => setUnclassifiedFilter(e.target.value)}
+                      placeholder="חיפוש לפי שם או טלפון..."
+                      className={fieldClass("sm")}
+                    />
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
+                      <input
+                        type="checkbox"
+                        checked={allFilteredSelected}
+                        onChange={toggleSelectAllFiltered}
+                        className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
+                      />
+                      {normalizedFilter
+                        ? `בחירת כל התוצאות המסוננות (${filteredUnclassifiedClients.length})`
+                        : `בחירת הכל (${filteredUnclassifiedClients.length})`}
+                    </label>
+                    {selectedIds.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedIds(new Set())}
+                        className="text-xs font-medium text-text-muted hover:underline"
+                      >
+                        ביטול בחירה
+                      </button>
+                    )}
+                  </div>
+
+                  <ul className="max-h-60 space-y-1.5 overflow-y-auto">
+                    {filteredUnclassifiedClients.map((c) => (
                       <li key={c.id}>
                         <label className="flex items-center gap-2 text-xs text-text-primary">
                           <input
@@ -384,7 +541,21 @@ export function Step5Analysis({
                         </label>
                       </li>
                     ))}
+                    {filteredUnclassifiedClients.length === 0 && (
+                      <li className="text-xs text-text-muted">אין לקוחות תואמים לחיפוש.</li>
+                    )}
                   </ul>
+
+                  {/* Selected clients outside the current filter must still
+                      submit — the checkboxes above only render the
+                      filtered subset, so their hidden values here keep any
+                      previously-selected-then-filtered-out client in the
+                      submitted form data too. */}
+                  {[...selectedIds]
+                    .filter((id) => !filteredUnclassifiedClients.some((c) => c.id === id))
+                    .map((id) => (
+                      <input key={id} type="hidden" name="clientId" value={id} />
+                    ))}
 
                   {!creatingNewType ? (
                     <div className="flex items-center gap-2">
@@ -434,6 +605,9 @@ export function Step5Analysis({
             {t.name}: {t.clientCount}
           </Badge>
         ))}
+        {pendingSuggestions.length > 0 && (
+          <Badge tone="purple">ממתינים לאישור: {pendingSuggestions.length}</Badge>
+        )}
         {unclassifiedClients.length > 0 && (
           <Badge tone="warning">לא סווגו: {unclassifiedClients.length}</Badge>
         )}

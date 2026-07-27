@@ -10,6 +10,8 @@ import {
   services,
 } from "@/db/schema";
 import { suggestStarterBusinessTypes } from "@/lib/ai/businessCategorySuggestions";
+import { resolveScheduleConfig } from "@/lib/businessHours";
+import { computeInitialCollectionRunAt } from "@/lib/recurringScheduler";
 
 // The five standard starter types' stable identity — see business_types'
 // schema comment (src/db/schema.ts) for why this exists. Keep in sync with
@@ -138,7 +140,11 @@ export async function listBusinessTypes(organizationId: string) {
       canonicalKey: businessTypes.canonicalKey,
       serviceId: businessTypes.serviceId,
       isCustom: businessTypes.isCustom,
-      clientCount: sql<number>`count(${clients.id})::int`,
+      // Product Evolution M9 — only *confirmed* clients count as real
+      // members of this type; an unreviewed suggestion must never look
+      // like an already-effective assignment (see
+      // listPendingClassificationSuggestions below for those).
+      clientCount: sql<number>`count(${clients.id}) filter (where ${clients.classificationConfirmedAt} is not null)::int`,
     })
     .from(businessTypes)
     .leftJoin(clients, eq(clients.businessTypeId, businessTypes.id))
@@ -172,9 +178,15 @@ export async function createBusinessType(
   } = {}
 ) {
   const db = await getDb();
+  // Product Evolution M9 — a sensible, immediately-useful default (monthly)
+  // rather than leaving frequency unset: automation should work out of the
+  // box the moment a client is confirmed against this type, not require a
+  // separate manual visit to /services/[id] first. Always editable/
+  // changeable afterward (ServiceFrequencyCard) — this is a starting
+  // default, never a fixed rule.
   const [service] = await db
     .insert(services)
-    .values({ organizationId, name })
+    .values({ organizationId, name, collectionMode: "recurring", collectionFrequencyIntervalMonths: 1 })
     .returning({ id: services.id });
 
   const [businessType] = await db
@@ -255,15 +267,26 @@ export async function seedStarterBusinessTypes(organizationId: string) {
 }
 
 // Sets the classification and, since Business Type implies its backing
-// Service, assigns the client to that service too — a wizard-classified
-// client is immediately ready for real Collection Requests, no separate
-// manual "assign service" step required afterward. `confidence` defaults
-// to 100 — every caller except the classification pipeline itself
-// (src/app/onboarding/actions.ts's importParsedRows, which passes the
-// classifier's actual score) is a human decision, which is definitionally
-// certain, not a guess.
+// Service, assigns the client to that service too — but ONLY once the
+// classification is *confirmed* (Product Evolution M9, "AI Suggests, User
+// Approves"). `confirmed` defaults to true because every caller except the
+// automatic classifier pipelines (src/app/onboarding/actions.ts's
+// importParsedRows, src/app/(app)/clients/actions.ts's
+// classifyAndAssignBusinessType — both pass `confirmed: false`) is a human
+// directly picking/confirming a value, which is definitionally certain, not
+// a guess. `confidence` defaults to 100 for the exact same reason.
 //
-// Epic 4 STEP 7 ("Learn From Corrections"): before updating, looks up
+// When `confirmed` is false: businessTypeId/businessTypeConfidence are set
+// (so the UI can display the suggestion) but clients.classificationConfirmedAt
+// stays null, no clientServices row is created (so the suggestion cannot yet
+// affect what's requested from this client — BR per the M9 trust
+// principle), and no learned synonym is recorded (an unreviewed guess must
+// never quietly become "confident" for a future import). Calling this again
+// later with `confirmed: true` for the same businessTypeId — e.g. Step 5's
+// bulk "Confirm" action — is what actually turns a suggestion into a real
+// assignment; it's the same function, just the human-approval half of it.
+//
+// Epic 4 STEP 7 ("Learn From Corrections"): on a confirmed call, looks up
 // each client's raw imported business-type text
 // (clients.importedBusinessTypeText) and remembers it as a synonym for
 // this exact organization + business type — see recordLearnedSynonyms
@@ -273,7 +296,7 @@ export async function assignClientsToBusinessType(
   organizationId: string,
   clientIds: string[],
   businessTypeId: string,
-  options: { confidence?: number } = {}
+  options: { confidence?: number; confirmed?: boolean } = {}
 ) {
   if (clientIds.length === 0) return;
   const db = await getDb();
@@ -282,27 +305,65 @@ export async function assignClientsToBusinessType(
   if (!businessType) return;
 
   const confidence = options.confidence ?? 100;
+  const confirmed = options.confirmed ?? true;
 
-  const rowsWithText = await db
-    .select({ id: clients.id, importedBusinessTypeText: clients.importedBusinessTypeText })
-    .from(clients)
-    .where(and(eq(clients.organizationId, organizationId), inArray(clients.id, clientIds)));
-  await recordLearnedSynonyms(
-    organizationId,
-    businessTypeId,
-    rowsWithText.map((r) => r.importedBusinessTypeText).filter((t): t is string => !!t?.trim())
-  );
+  if (confirmed) {
+    const rowsWithText = await db
+      .select({ id: clients.id, importedBusinessTypeText: clients.importedBusinessTypeText })
+      .from(clients)
+      .where(and(eq(clients.organizationId, organizationId), inArray(clients.id, clientIds)));
+    await recordLearnedSynonyms(
+      organizationId,
+      businessTypeId,
+      rowsWithText.map((r) => r.importedBusinessTypeText).filter((t): t is string => !!t?.trim())
+    );
+  }
+
+  // Product Evolution M9 — a client newly (and confirmed-ly) assigned to a
+  // Recurring Service with a configured frequency gets its first
+  // automatic-cycle date scheduled right away, not left null forever; an
+  // On-Demand Service, or a Recurring one whose frequency hasn't been set
+  // up yet, simply leaves it null (nothing to schedule).
+  let initialRunAt: Date | null = null;
+  if (confirmed) {
+    const [service] = await db
+      .select()
+      .from(services)
+      .where(eq(services.id, businessType.serviceId))
+      .limit(1);
+    if (service?.collectionMode === "recurring" && service.collectionFrequencyIntervalMonths) {
+      const [organization] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1);
+      if (organization) {
+        const anchorDay = resolveScheduleConfig(organization, service).collectionDayOfMonth;
+        initialRunAt = computeInitialCollectionRunAt(anchorDay);
+      }
+    }
+  }
 
   for (const clientId of clientIds) {
     await db
       .update(clients)
-      .set({ businessTypeId, businessTypeConfidence: confidence, updatedAt: new Date() })
+      .set({
+        businessTypeId,
+        businessTypeConfidence: confidence,
+        classificationConfirmedAt: confirmed ? new Date() : null,
+        updatedAt: new Date(),
+      })
       .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)));
 
-    await db
-      .insert(clientServices)
-      .values({ clientId, serviceId: businessType.serviceId })
-      .onConflictDoNothing();
+    if (confirmed) {
+      await db
+        .insert(clientServices)
+        .values({ clientId, serviceId: businessType.serviceId, nextCollectionRunAt: initialRunAt })
+        .onConflictDoUpdate({
+          target: [clientServices.clientId, clientServices.serviceId],
+          set: { nextCollectionRunAt: initialRunAt },
+        });
+    }
   }
 }
 
@@ -362,6 +423,9 @@ export async function listUnclassifiedClients(organizationId: string) {
     .orderBy(clients.name);
 }
 
+// Confirmed members only — a pending suggestion for this type shows up in
+// listPendingClassificationSuggestions below instead, never here (an
+// unreviewed guess must never look like it already belongs).
 export async function listClientsByBusinessType(
   organizationId: string,
   businessTypeId: string
@@ -371,7 +435,58 @@ export async function listClientsByBusinessType(
     .select()
     .from(clients)
     .where(
-      and(eq(clients.organizationId, organizationId), eq(clients.businessTypeId, businessTypeId))
+      and(
+        eq(clients.organizationId, organizationId),
+        eq(clients.businessTypeId, businessTypeId),
+        sql`${clients.classificationConfirmedAt} is not null`
+      )
     )
     .orderBy(clients.name);
+}
+
+// Product Evolution M9 ("AI Suggests, User Approves") — clients the
+// classifier (or a same-name auto-classify on manual creation) matched
+// with enough confidence to apply, but that no human has confirmed yet.
+// businessTypeId is already set (so the suggestion is visible/correctable)
+// but classificationConfirmedAt is still null, so nothing downstream (no
+// clientServices row, no document requirements) is affected by it yet —
+// see assignClientsToBusinessType's `confirmed` option.
+export async function listPendingClassificationSuggestions(organizationId: string) {
+  const db = await getDb();
+  return db
+    .select({
+      id: clients.id,
+      name: clients.name,
+      phone: clients.phone,
+      businessTypeId: clients.businessTypeId,
+      businessTypeConfidence: clients.businessTypeConfidence,
+    })
+    .from(clients)
+    .where(
+      and(
+        eq(clients.organizationId, organizationId),
+        sql`${clients.businessTypeId} is not null`,
+        sql`${clients.classificationConfirmedAt} is null`
+      )
+    )
+    .orderBy(clients.name);
+}
+
+// Confirms every currently-pending suggestion for one Business Type at
+// once — Step 5's per-group "Confirm" bulk action. Reuses
+// assignClientsToBusinessType unchanged (same businessTypeId, `confirmed:
+// true`), so confirming is exactly "the same assignment, now approved by a
+// human" — never a separate code path that could drift from what a manual
+// assignment does.
+export async function confirmPendingClassifications(
+  organizationId: string,
+  businessTypeId: string
+) {
+  const pending = await listPendingClassificationSuggestions(organizationId);
+  const clientIds = pending
+    .filter((c) => c.businessTypeId === businessTypeId)
+    .map((c) => c.id);
+  if (clientIds.length === 0) return 0;
+  await assignClientsToBusinessType(organizationId, clientIds, businessTypeId, { confirmed: true });
+  return clientIds.length;
 }

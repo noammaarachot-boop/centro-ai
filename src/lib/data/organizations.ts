@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { organizations } from "@/db/schema";
+import { organizations, services } from "@/db/schema";
 
 export async function getOrganization(organizationId: string) {
   const db = await getDb();
@@ -12,16 +12,20 @@ export async function getOrganization(organizationId: string) {
   return organization ?? null;
 }
 
-// Product Evolution M7 — the one predicate every document-profile-learning
-// write path (src/lib/clientDocumentProfile.ts,
-// src/lib/documentLearning.ts) checks before writing anything. Centro
-// learns only which documents to collect (Architecture Ch.8), and only for
-// the recurring workflow — Workflow B manages its document lists entirely
-// through explicit, user-edited Templates, never through observed
-// recurrence. Checked inside each write function itself, not only at its
-// call sites, so this boundary holds even if a future caller forgets to
-// check first.
-export async function isOneTimeWorkflowOrganization(organizationId: string): Promise<boolean> {
-  const organization = await getOrganization(organizationId);
-  return organization?.workflowType === "one_time";
+// Product Evolution M9 — the real, per-item predicate every document-
+// profile-learning write path checks now: Centro learns only which
+// documents to collect (Architecture Ch.8), and only for a specific
+// Recurring Service's own clients/requests — never for an On-Demand
+// Service, regardless of what else the same organization also has.
+// Checked inside each write function itself (src/lib/clientDocumentProfile.ts,
+// src/lib/documentLearning.ts), not only at call sites, so this boundary
+// holds even if a future caller forgets to check first.
+export async function isOnDemandService(serviceId: string): Promise<boolean> {
+  const db = await getDb();
+  const [service] = await db
+    .select({ collectionMode: services.collectionMode })
+    .from(services)
+    .where(eq(services.id, serviceId))
+    .limit(1);
+  return service?.collectionMode === "on_demand";
 }

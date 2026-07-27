@@ -1,7 +1,7 @@
 export interface SystemPromptContext {
   organizationName: string;
   businessCategory: string | null;
-  workflowType: "recurring" | "one_time" | null;
+  workflowType: "recurring" | "one_time" | "on_demand" | "both" | null;
   actingUserName: string | null;
   actingUserEmail: string;
 }
@@ -10,13 +10,21 @@ export interface SystemPromptContext {
 // (agent/loop.ts) assemble SystemPromptContext from the session plus one
 // getOrganization() read, rather than this function doing its own
 // lookups, so it stays a plain string-builder.
+//
+// Product Evolution M9: every organization can use both collection modes
+// post-onboarding now, so this is purely a description of which mode(s)
+// the office originally set up with — not a live behavioral gate (see
+// services.collectionMode for that) — described honestly as "both" when
+// that's what the office chose.
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const workflowLabel =
-    ctx.workflowType === "one_time"
-      ? "מבוסס תבניות (Templates), חד-פעמי לכל בקשה"
+    ctx.workflowType === "one_time" || ctx.workflowType === "on_demand"
+      ? "איסוף לפי צורך (תבניות חד-פעמיות, ללא מחזורים אוטומטיים)"
       : ctx.workflowType === "recurring"
-        ? "איסוף מסמכים קבוע וחוזר, עם למידה מהתנהגות לקוחות"
-        : "לא ידוע";
+        ? "איסוף מחזורי (מחזורים נפתחים אוטומטית, עם למידה מהתנהגות לקוחות)"
+        : ctx.workflowType === "both"
+          ? "גם איסוף מחזורי וגם איסוף לפי צורך"
+          : "לא ידוע";
 
   return [
     `אתה "Centro AI" — העוזר הדיגיטלי הפנימי של הצוות ב-${ctx.organizationName}, משרד מסוג ${ctx.businessCategory ?? "לא מוגדר"}.`,

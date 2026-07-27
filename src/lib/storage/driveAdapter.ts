@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
-import { clients, documents, organizations } from "@/db/schema";
+import { clients, collectionRequests, documents, organizations } from "@/db/schema";
 import { OperationFailedError, withRetry } from "@/lib/resilience";
 import { getValidAccessToken, GoogleNotConnectedError } from "@/lib/googleAuth/driveTokens";
 import { createDriveFolder, uploadDriveFile } from "@/lib/googleAuth/drive";
@@ -14,17 +14,13 @@ import { recordAuditEvent } from "@/lib/audit";
  * client — Centro never has access to, or writes outside of, that one
  * folder, matching the drive.file scope's own promise.
  *
- * `uploadDocument`'s actual file *content* is still a placeholder when no
- * real bytes are supplied (see PLACEHOLDER_CONTENT below) — this product
- * has no real inbound-document channel yet (WhatsApp receipt is still
- * mocked, see src/lib/conversationOrchestration.ts), so there is nothing
- * real to upload from that path. The one place real bytes genuinely exist
- * today is a manual document upload by an employee (addManualDocument,
- * src/app/(app)/collections/actions.ts), which passes them through here
- * unchanged. Every other call site (WhatsApp-simulated receipt) uploads an
- * honest, clearly-labeled placeholder instead of pretending to have real
- * content — the Drive folder/upload mechanics themselves are 100% real
- * either way, only the file's content differs.
+ * `uploadDocument`'s actual file *content* falls back to a placeholder
+ * only when no real bytes are supplied (see placeholderContent below) —
+ * e.g. simulateInboundMessage's UI-driven filename-only stand-in, which
+ * has no bytes to give it. Real inbound WhatsApp attachments (M-WA-4, see
+ * src/lib/whatsapp/media.ts and the webhook route) and manual uploads
+ * (addManualDocument, src/app/(app)/collections/actions.ts) both pass
+ * their real bytes through here unchanged.
  */
 
 export interface DriveFolder {
@@ -152,16 +148,33 @@ export async function uploadDocument(
   });
 }
 
+// Product Evolution M9 ("Never Lose a Document") — retries stop being
+// attempted, and the document is surfaced as needing real human attention,
+// once it's failed this many times. Chosen to give a genuinely transient
+// outage (a few hours, even a full day of Google downtime) plenty of room
+// across the existing cron cadence, without retrying an unrecoverable
+// failure (e.g. a permanently revoked grant) forever.
+export const DRIVE_RETRY_MAX_ATTEMPTS = 8;
+
 // FR-15.3: employees are notified only when automation genuinely can't
 // recover — withRetry already exhausted retries before OperationFailedError
 // is ever reached. BR-15.1: a Drive failure is logged and the document
 // stays approved-but-unfiled; it must never crash the caller or leave the
 // Collection Request in a broken state. Shared by every call site that
-// uploads a just-approved document (manual add, review, and AI
-// auto-approval via the WhatsApp simulator) so all three degrade the same
-// way — a document approved before the organization ever connects Drive
-// gets its own clear, distinct audit message rather than being reported
-// as a generic upload failure.
+// uploads a just-approved document (manual add, review, and real inbound
+// WhatsApp attachments) so all three degrade the same way — a document
+// approved before the organization ever connects Drive gets its own clear,
+// distinct audit message rather than being reported as a generic upload
+// failure.
+//
+// "Never lose a document": the caller is responsible for having already
+// persisted `fileBytes` into documents.pendingFileContent *before* calling
+// this (see collections/actions.ts's reviewDocument and
+// conversationActions.ts's processInboundAttachment) — this function only
+// ever clears that column once the upload has genuinely succeeded, and on
+// failure records driveUploadFailedAt/driveUploadRetryCount so
+// src/lib/scheduler.ts's cron tick can retry it later without any bytes
+// having to survive anywhere else in the meantime.
 export async function uploadDocumentResiliently(
   organizationId: string,
   clientId: string,
@@ -170,29 +183,121 @@ export async function uploadDocumentResiliently(
   collectionRequestId: string,
   fileBytes?: Buffer,
   mimeType?: string
-): Promise<void> {
+): Promise<{ uploaded: boolean }> {
+  const db = await getDb();
   try {
     await uploadDocument(clientId, documentId, fileBytes, mimeType);
+    // Success — the real bytes are safely in Drive now; the temporary copy
+    // (if any was held) and the retry-tracking columns are no longer
+    // needed.
+    await db
+      .update(documents)
+      .set({
+        pendingFileContent: null,
+        pendingFileMimeType: null,
+        driveUploadFailedAt: null,
+        driveUploadRetryCount: 0,
+        driveRetryExhaustedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(documents.id, documentId));
+    return { uploaded: true };
   } catch (error) {
     if (error instanceof GoogleNotConnectedError) {
+      await db
+        .update(documents)
+        .set({ driveUploadFailedAt: new Date(), updatedAt: new Date() })
+        .where(eq(documents.id, documentId));
       await recordAuditEvent({
         organizationId,
         eventType: "document.drive_upload_skipped",
-        description: `המסמך "${fileName}" אושר אך לא הועלה ל-Drive — חשבון Google עדיין לא מחובר לתיקייה`,
+        description: `המסמך "${fileName}" אושר אך לא הועלה ל-Drive — חשבון Google עדיין לא מחובר לתיקייה. המסמך נשמר באופן זמני ויועלה אוטומטית ברגע שהחיבור יחודש.`,
         actorType: "system",
         clientId,
         collectionRequestId,
       });
-      return;
+      return { uploaded: false };
     }
     if (!(error instanceof OperationFailedError)) throw error;
+
+    const [current] = await db
+      .select({ driveUploadRetryCount: documents.driveUploadRetryCount })
+      .from(documents)
+      .where(eq(documents.id, documentId))
+      .limit(1);
+    const retryCount = (current?.driveUploadRetryCount ?? 0) + 1;
+    const exhausted = retryCount >= DRIVE_RETRY_MAX_ATTEMPTS;
+
+    await db
+      .update(documents)
+      .set({
+        driveUploadFailedAt: new Date(),
+        driveUploadRetryCount: retryCount,
+        ...(exhausted ? { driveRetryExhaustedAt: new Date() } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(documents.id, documentId));
+
     await recordAuditEvent({
       organizationId,
-      eventType: "document.drive_upload_failed",
-      description: `העלאת "${fileName}" ל-Drive נכשלה לאחר ניסיונות חוזרים - דורש בדיקת עובד`,
+      eventType: exhausted ? "document.drive_upload_exhausted" : "document.drive_upload_failed",
+      description: exhausted
+        ? `העלאת "${fileName}" ל-Drive נכשלה ${retryCount} פעמים ברציפות — נדרשת בדיקה ידנית דחופה. המסמך עדיין נשמר באופן זמני ולא אבד.`
+        : `העלאת "${fileName}" ל-Drive נכשלה (ניסיון ${retryCount}/${DRIVE_RETRY_MAX_ATTEMPTS}) — תתבצע אוטומטית התנסות חוזרת. המסמך נשמר באופן זמני ולא אבד.`,
       actorType: "system",
       clientId,
       collectionRequestId,
+      metadata: { severity: exhausted ? "critical" : "warning", retryCount },
     });
+    return { uploaded: false };
   }
+}
+
+// Product Evolution M9 — the retry pass itself, called from
+// src/lib/scheduler.ts's cron tick. Finds every document still holding a
+// safe temporary copy after a failed upload (driveUploadFailedAt set,
+// pendingFileContent still present, not yet exhausted) and attempts it
+// again through the exact same resilient path — never a separate,
+// divergent upload code path.
+export async function retryFailedDriveUploads(organizationId: string): Promise<{ retried: number }> {
+  const db = await getDb();
+  const pending = await db
+    .select({
+      id: documents.id,
+      collectionRequestId: documents.collectionRequestId,
+      fileName: documents.fileName,
+      pendingFileContent: documents.pendingFileContent,
+      pendingFileMimeType: documents.pendingFileMimeType,
+    })
+    .from(documents)
+    .where(
+      and(
+        eq(documents.organizationId, organizationId),
+        isNotNull(documents.driveUploadFailedAt),
+        isNull(documents.driveRetryExhaustedAt)
+      )
+    );
+
+  let retried = 0;
+  for (const doc of pending) {
+    const [request] = await db
+      .select({ clientId: collectionRequests.clientId })
+      .from(collectionRequests)
+      .where(eq(collectionRequests.id, doc.collectionRequestId))
+      .limit(1);
+    if (!request) continue;
+
+    await uploadDocumentResiliently(
+      organizationId,
+      request.clientId,
+      doc.id,
+      doc.fileName,
+      doc.collectionRequestId,
+      doc.pendingFileContent ?? undefined,
+      doc.pendingFileMimeType ?? undefined
+    );
+    retried += 1;
+  }
+
+  return { retried };
 }

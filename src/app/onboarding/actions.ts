@@ -22,9 +22,11 @@ import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { markOnboardingComplete } from "@/lib/onboarding";
 import { clampCollectionDay } from "@/lib/businessHours";
+import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import { BUSINESS_CATEGORIES, type BusinessCategory } from "@/lib/businessCategories";
 import {
   assignClientsToBusinessType,
+  confirmPendingClassifications,
   createBusinessType,
   getLearnedSynonyms,
   getSuggestedRequirements,
@@ -155,13 +157,18 @@ export async function updateBusinessCategory(
   redirect("/onboarding?step=4");
 }
 
-// Step 4 (new). Bound to the chosen value (`.bind(null, "recurring" |
-// "one_time")`), matching this file's existing `advanceOnboardingStep`
-// pattern — the choice is a decisive action (two distinct buttons), not a
-// selection to confirm separately. Permanent for the pilot: not exposed as
-// an editable Settings toggle, since changing it later is a data-migration
-// question, not a form field.
-export async function updateWorkflowType(value: "recurring" | "one_time") {
+// Step 4. Bound to the chosen value (`.bind(null, "recurring" |
+// "on_demand" | "both")`), matching this file's existing
+// `advanceOnboardingStep` pattern — the choice is a decisive action (three
+// distinct buttons), not a selection to confirm separately.
+//
+// Product Evolution M9 — this ONLY personalizes which wizard steps come
+// next (organizations.workflowType is purely informational post-
+// onboarding now, see its own schema comment); it is not the permanent,
+// exclusive lock it used to be. Every organization can create both
+// Recurring and On-Demand collections after onboarding regardless of what
+// it picks here — see services.collectionMode, the real per-item gate.
+export async function updateWorkflowType(value: "recurring" | "on_demand" | "both") {
   const session = await requireSession();
   const db = await getDb();
   await db
@@ -169,13 +176,16 @@ export async function updateWorkflowType(value: "recurring" | "one_time") {
     .set({ workflowType: value, onboardingStep: 5, updatedAt: new Date() })
     .where(eq(organizations.id, session.organizationId));
 
+  const descriptions: Record<typeof value, string> = {
+    recurring: "העסק בחר להתחיל באיסוף מחזורי",
+    on_demand: "העסק בחר להתחיל באיסוף לפי צורך",
+    both: "העסק בחר להתחיל גם באיסוף מחזורי וגם באיסוף לפי צורך",
+  };
+
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "organization.workflow_type_set",
-    description:
-      value === "recurring"
-        ? "העסק בחר באיסוף מסמכים קבוע וחוזר"
-        : "העסק בחר באיסוף מסמכים חד-פעמי",
+    description: descriptions[value],
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -287,12 +297,20 @@ export async function disconnectGoogleDrive() {
 // Real Drive API calls, scoped to the organization's own valid access
 // token (src/lib/googleAuth/driveTokens.ts refreshes it transparently if
 // needed). Both actions are only ever reachable once googleConnectedAt is
-// set (Step3Connect only renders them in that state).
+// set (Step3Connect/Settings only render them in that state).
+//
+// Product Evolution M9 — reused from Settings now too, not only onboarding
+// Step 5, so a failure redirect needs to land back on whichever page the
+// form was actually submitted from (a hidden `returnTo` field, same
+// pattern as updateOfficeInfo above) instead of always onboarding.
 export async function createGoogleDriveFolder(formData: FormData) {
   const session = await requireSession();
   const name = String(formData.get("name") ?? "").trim();
+  const returnTo = formData.get("returnTo")?.toString() || "/onboarding?step=5";
+  const errorSeparator = returnTo.includes("?") ? "&" : "?";
+
   if (!name) {
-    redirect("/onboarding?step=5&error=google-folder-failed");
+    redirect(`${returnTo}${errorSeparator}error=google-folder-failed`);
   }
 
   try {
@@ -308,9 +326,10 @@ export async function createGoogleDriveFolder(formData: FormData) {
     });
   } catch (error) {
     console.error("[google-drive] folder creation failed", error);
-    redirect("/onboarding?step=5&error=google-folder-failed");
+    redirect(`${returnTo}${errorSeparator}error=google-folder-failed`);
   }
-  // Always submitted from Step 3 itself — refresh() alone, no redirect().
+  // Always submitted from the page it renders on (Step 3 or Settings) —
+  // refresh() alone, no redirect().
   refresh();
 }
 
@@ -447,12 +466,26 @@ export async function deactivateAutomation() {
 }
 
 // Step 9's "Go to Dashboard" — the wizard's real completion action.
-// Best-effort activates automation (silently skipped if the office never
-// connected both integrations in Step 3; nothing here blocks finishing),
-// then marks onboarding complete so every subsequent login goes straight
-// to the Dashboard instead of back through this wizard.
+// Product Evolution M9 ("WhatsApp and Google Drive are mandatory"): this
+// used to be best-effort (silently skip activation, never block
+// finishing). It now hard-blocks — verified live via
+// checkIntegrationStatus, not merely "was connected once" — sending the
+// office back to the Connect step with a specific, honest error instead of
+// letting onboarding complete in a state where Centro can't actually do
+// anything yet.
 export async function finishOnboarding() {
   const session = await requireSession();
+
+  const status = await checkIntegrationStatus(session.organizationId);
+  if (!status.whatsappReady || !status.driveReady) {
+    const errorCode = !status.whatsappReady && !status.driveReady
+      ? "both-required"
+      : !status.whatsappReady
+        ? "whatsapp-required"
+        : "drive-required";
+    redirect(`/onboarding?step=5&error=${errorCode}`);
+  }
+
   await tryActivateAutomation(session);
   await markOnboardingComplete(session.organizationId);
 
@@ -709,8 +742,15 @@ async function importParsedRows(
     }
 
     for (const group of groups.values()) {
+      // Product Evolution M9 ("AI Suggests, User Approves") — this is the
+      // automatic classifier, not a human, so it only ever suggests: the
+      // businessTypeId/confidence are set for the wizard to display, but
+      // classificationConfirmedAt stays null and no clientServices row is
+      // created until Step 5's "Confirm" action approves it (or a manual
+      // reassignment there implicitly confirms a different type instead).
       await assignClientsToBusinessType(session.organizationId, group.clientIds, group.businessTypeId, {
         confidence: group.confidence,
+        confirmed: false,
       });
     }
 
@@ -921,6 +961,34 @@ export async function assignBusinessTypeAction(formData: FormData) {
       organizationId: session.organizationId,
       eventType: "clients.business_type_assigned",
       description: `${clientIds.length} לקוחות שויכו לסוג עסק`,
+      actorType: "employee",
+      actorUserId: session.userId,
+    });
+  }
+
+  // Always submitted from Step 5 itself — refresh() alone, no redirect().
+  refresh();
+}
+
+// Product Evolution M9 ("AI Suggests, User Approves") — Step 5's per-type
+// "Confirm" button: turns every currently-pending suggestion for one
+// Business Type into a real, effective assignment (clientServices row +
+// classificationConfirmedAt) in a single action, so approving dozens of
+// correctly-guessed clients at once takes one click, not one per client.
+export async function confirmBusinessTypeSuggestions(formData: FormData) {
+  const session = await requireSession();
+  const businessTypeId = String(formData.get("businessTypeId") ?? "");
+  if (!businessTypeId) {
+    refresh();
+    return;
+  }
+
+  const confirmedCount = await confirmPendingClassifications(session.organizationId, businessTypeId);
+  if (confirmedCount > 0) {
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "clients.business_type_suggestions_confirmed",
+      description: `${confirmedCount} סיווגי סוג עסק מוצעים אושרו`,
       actorType: "employee",
       actorUserId: session.userId,
     });

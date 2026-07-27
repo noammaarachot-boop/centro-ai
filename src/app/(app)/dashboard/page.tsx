@@ -151,12 +151,16 @@ export default async function DashboardPage({
   const session = await requireSession();
   const { queue, q } = await searchParams;
 
-  // Product Evolution M4 — the one shared route branches into a completely
-  // different dashboard for a one-time-workflow organization. Everything
-  // below this point (queues, business-type suggestions, pending
-  // confirmations) is Workflow-A-only vocabulary that doesn't apply.
+  // Product Evolution M4/M9 — the one shared route branches into a
+  // completely different dashboard for an organization whose primary
+  // focus is On-Demand collections. Everything below this point (queues,
+  // business-type suggestions, pending confirmations) is recurring-only
+  // vocabulary that doesn't apply there. An organization that chose "both"
+  // during onboarding defaults to this fuller recurring view — both nav
+  // areas remain fully available either way (see Sidebar.tsx), this only
+  // picks which dashboard renders by default.
   const organization = await getOrganization(session.organizationId);
-  if (organization?.workflowType === "one_time") {
+  if (organization?.workflowType === "one_time" || organization?.workflowType === "on_demand") {
     return <OneTimeDashboard organizationId={session.organizationId} />;
   }
 

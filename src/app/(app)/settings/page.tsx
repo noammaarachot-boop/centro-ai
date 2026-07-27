@@ -3,6 +3,10 @@ import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
 import { updateBusinessHours } from "./actions";
 import { activateAutomation, deactivateAutomation } from "../../onboarding/actions";
+import {
+  GoogleDriveConnectionRow,
+  WhatsAppConnectionRow,
+} from "../../onboarding/steps/Step3Connect";
 import { RunSchedulerButton } from "./RunSchedulerButton";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
@@ -14,6 +18,15 @@ import { fieldClass } from "@/components/app/FormField";
 import { DevToolsPanel } from "@/components/app/DevToolsPanel";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
+
+const SETTINGS_ERROR_MESSAGES: Record<string, string> = {
+  "integrations-required": "לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.",
+  "google-denied": "החיבור לחשבון Google בוטל.",
+  "google-invalid-state": "אימות החיבור לחשבון Google נכשל. נסו לחבר שוב.",
+  "google-oauth-failed": "החיבור לחשבון Google נכשל. נסו שוב בעוד רגע.",
+  "google-not-configured": "חיבור Google אינו זמין כרגע. פנו לתמיכה.",
+  "google-folder-failed": "בחירת/יצירת התיקייה ב-Drive נכשלה. נסו שוב.",
+};
 
 export default async function SettingsPage({
   searchParams,
@@ -36,12 +49,12 @@ export default async function SettingsPage({
         description="שעות פעילות וימי עבודה קובעים מתי Centro שולח הודעות אוטומטיות."
       />
 
-      {error === "integrations-required" && (
+      {error && SETTINGS_ERROR_MESSAGES[error] && (
         <p
           role="alert"
           className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
-          לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business (עמוד הקמת המערכת).
+          {SETTINGS_ERROR_MESSAGES[error]}
         </p>
       )}
 
@@ -55,6 +68,27 @@ export default async function SettingsPage({
         />
       </Card>
 
+      <Card className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-text-primary">חיבורים</h2>
+          <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+            שני החיבורים הבאים הכרחיים כדי ש-Centro יוכל לפעול: WhatsApp משמש לתקשורת עם
+            הלקוחות — פנייה ראשונית, תזכורות וקבלת מסמכים; Google Drive הוא יעד האחסון של
+            המסמכים שהתקבלו. בלי שניהם מחוברים, לא ניתן להתחיל איסוף חדש.
+          </p>
+        </div>
+        <GoogleDriveConnectionRow
+          googleConnectedAt={organization.googleConnectedAt}
+          googleDriveFolderId={organization.googleDriveFolderId}
+          googleDriveFolderName={organization.googleDriveFolderName}
+          connectReturnTo="/settings"
+        />
+        <WhatsAppConnectionRow
+          whatsappConnectedAt={organization.whatsappConnectedAt}
+          whatsappDisplayPhoneNumber={organization.whatsappDisplayPhoneNumber}
+        />
+      </Card>
+
       <Card>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -64,7 +98,22 @@ export default async function SettingsPage({
               <Circle className="h-5 w-5 shrink-0 text-text-muted" />
             )}
             <div>
-              <p className="text-sm font-semibold text-text-primary">אוטומציה</p>
+              <div className="flex items-center gap-1">
+                <p className="text-sm font-semibold text-text-primary">אוטומציה</p>
+                <HelpTip label="מה זה עושה?">
+                  זו עצירת חירום שמכבה את כל הפעילות האוטומטית של Centro בבת אחת: לא ייפתחו
+                  מחזורי איסוף חדשים, ולא יישלחו הודעות או תזכורות אוטומטיות ללקוחות.
+                  <br />
+                  <br />
+                  שום מידע לא נמחק — לקוחות, מסמכים והיסטוריה נשארים בדיוק כפי שהם.
+                  <br />
+                  <br />
+                  עובדים עדיין יכולים לשלוח הודעות ידנית ולנהל בקשות איסוף קיימות.
+                  <br />
+                  <br />
+                  בלחיצה על &quot;הפעלה&quot; הכול חוזר לפעול בדיוק כפי שהיה.
+                </HelpTip>
+              </div>
               <p className="text-xs text-text-muted">
                 {isAutomationActive
                   ? "האוטומציה פעילה — Centro פונה ללקוחות ומעבד מסמכים אוטומטית."
@@ -183,9 +232,12 @@ export default async function SettingsPage({
             </div>
           </div>
 
-          {organization.workflowType === "recurring" && (
-            <CollectionDayField defaultValue={organization.collectionDayOfMonth} />
-          )}
+          {/* Product Evolution M9 — every organization can create a
+              Recurring Collection at any time now (not gated by the
+              initial onboarding choice), so this default anchor day is
+              always relevant, not just for orgs that started as
+              "recurring". */}
+          <CollectionDayField defaultValue={organization.collectionDayOfMonth} />
 
           <button type="submit" className={buttonVariants({ variant: "primary", size: "lg" })}>
             שמירת הגדרות

@@ -26,6 +26,11 @@ import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
 import {
+  checkIntegrationStatus,
+  DRIVE_NOT_READY_MESSAGE,
+  WHATSAPP_NOT_READY_MESSAGE,
+} from "@/lib/integrationRequirements";
+import {
   ensureConversation,
   evaluateAndPrompt,
   recordInboundMessage,
@@ -55,12 +60,27 @@ async function getCollectionRequestOrRedirect(
 // Ch.10 step 1: the initial outbound request. Also moves a still-draft
 // request into `active`, since sending it is what actually starts the
 // cycle.
+//
+// Product Evolution M9 ("WhatsApp and Google Drive are mandatory") — this
+// is the actual "start the collection" moment (createCollectionRequest
+// only ever prepares a draft), so it's the one place blocked with a clear,
+// specific explanation rather than letting a send silently no-op the way
+// sendOutboundMessage's own "not_connected" delivery status would
+// otherwise produce.
 export async function initiateConversation(collectionRequestId: string) {
   const session = await requireSession();
   const current = await getCollectionRequestOrRedirect(
     session.organizationId,
     collectionRequestId
   );
+
+  const status = await checkIntegrationStatus(session.organizationId);
+  if (!status.whatsappReady) {
+    redirect(`/collections/${collectionRequestId}?error=${encodeURIComponent(WHATSAPP_NOT_READY_MESSAGE)}`);
+  }
+  if (!status.driveReady) {
+    redirect(`/collections/${collectionRequestId}?error=${encodeURIComponent(DRIVE_NOT_READY_MESSAGE)}`);
+  }
 
   await startConversation(session.organizationId, collectionRequestId, current.clientId);
 
@@ -294,15 +314,16 @@ export async function processInboundAttachment(
       requirementId,
       fileName,
       status,
-      // Only held when the document *isn't* auto-approved (BR-11.5: only
-      // validated documents are stored in Drive, so an approved document
-      // uploads immediately below instead and never needs this). Without
-      // this, a document landing as needs_review would lose its real
-      // bytes forever by the time an employee later approves it through
-      // reviewDocument (collections/actions.ts), which has no other way
-      // to get them back — WhatsApp never re-sends media, and Meta's own
-      // media URLs expire long before a human gets around to reviewing.
-      ...(status !== "approved" && fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
+      // Held whenever real bytes exist, regardless of status — a
+      // needs_review document has no other way to get its bytes back later
+      // (WhatsApp never re-sends media, and Meta's own media URLs expire
+      // long before a human gets around to reviewing), and Product
+      // Evolution M9 ("Never Lose a Document") means an approved document
+      // needs this too: uploadDocumentResiliently below is the only place
+      // that ever clears it, and only once the Drive upload actually
+      // succeeds, so a failure right after auto-approval can never
+      // silently lose the file.
+      ...(fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
     })
     .returning();
 

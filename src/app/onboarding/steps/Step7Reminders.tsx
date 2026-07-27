@@ -4,6 +4,7 @@ import { AlarmClock } from "lucide-react";
 import { resolveScheduleConfig } from "@/lib/businessHours";
 import { advanceOnboardingStep } from "../actions";
 import { ServiceScheduleOverrideCard } from "@/components/app/ServiceScheduleOverrideCard";
+import { ServiceFrequencyCard } from "@/components/app/ServiceFrequencyCard";
 
 interface ServiceRow {
   id: string;
@@ -13,6 +14,7 @@ interface ServiceRow {
   reminderIntervalDaysOverride: number | null;
   inactivityTimeoutMinutesOverride: number | null;
   collectionDayOfMonthOverride: number | null;
+  collectionFrequencyIntervalMonths: number | null;
 }
 
 interface OrganizationDefaults {
@@ -53,19 +55,25 @@ export function Step7Reminders({
           );
           const effective = resolveScheduleConfig(organization, service);
           return (
-            <ServiceScheduleOverrideCard
-              key={businessType.id}
-              serviceId={service!.id}
-              name={businessType.name}
-              hasOverrides={hasOverrides}
-              businessHoursStart={effective.businessHoursStart}
-              businessHoursEnd={effective.businessHoursEnd}
-              businessDays={effective.businessDays}
-              reminderIntervalDays={effective.reminderIntervalDays}
-              inactivityTimeoutMinutes={effective.inactivityTimeoutMinutes}
-              collectionDayOfMonth={effective.collectionDayOfMonth}
-              returnTo="/onboarding?step=9"
-            />
+            <div key={businessType.id} className="space-y-3">
+              <p className="text-xs font-semibold text-text-muted">{businessType.name}</p>
+              <ServiceFrequencyCard
+                serviceId={service!.id}
+                collectionFrequencyIntervalMonths={service!.collectionFrequencyIntervalMonths}
+              />
+              <ServiceScheduleOverrideCard
+                serviceId={service!.id}
+                name="כללי תזכורות"
+                hasOverrides={hasOverrides}
+                businessHoursStart={effective.businessHoursStart}
+                businessHoursEnd={effective.businessHoursEnd}
+                businessDays={effective.businessDays}
+                reminderIntervalDays={effective.reminderIntervalDays}
+                inactivityTimeoutMinutes={effective.inactivityTimeoutMinutes}
+                collectionDayOfMonth={effective.collectionDayOfMonth}
+                returnTo="/onboarding?step=9"
+              />
+            </div>
           );
         })
       )}

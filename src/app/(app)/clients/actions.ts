@@ -20,6 +20,8 @@ import {
   getSuggestedRequirements,
   seedStarterBusinessTypes,
 } from "@/lib/businessTypes";
+import { resolveScheduleConfig } from "@/lib/businessHours";
+import { computeInitialCollectionRunAt } from "@/lib/recurringScheduler";
 
 // Milestone 1 ("Manual-Entry Classification Parity"): a client created
 // outside the onboarding wizard's bulk import gets the exact same
@@ -52,8 +54,13 @@ async function classifyAndAssignBusinessType(
     return classification;
   }
 
+  // Product Evolution M9 — same automatic-classifier boundary as the
+  // onboarding import: a suggestion only, never authoritative until a
+  // human confirms it (see the client detail page's pending-suggestion
+  // banner / setClientBusinessType).
   await assignClientsToBusinessType(organizationId, [clientId], classification.businessTypeId, {
     confidence: classification.confidence,
+    confirmed: false,
   });
   return classification;
 }
@@ -251,23 +258,34 @@ export async function assignService(clientId: string, formData: FormData) {
   if (!client) redirect("/clients");
 
   const [service] = await db
-    .select({ id: services.id })
+    .select()
     .from(services)
     .where(and(eq(services.id, serviceId), eq(services.organizationId, session.organizationId)))
     .limit(1);
   if (!service) redirect(`/clients/${clientId}`);
 
+  const organization = await getOrganization(session.organizationId);
+
+  // Product Evolution M9 — a client manually assigned to a Recurring
+  // Service with a configured frequency gets its first automatic-cycle
+  // date scheduled right away here too, exactly like a business-type-
+  // driven assignment (assignClientsToBusinessType) — the manual "assign
+  // a service directly" path must not silently skip automation.
+  let nextCollectionRunAt: Date | null = null;
+  if (service.collectionMode === "recurring" && service.collectionFrequencyIntervalMonths && organization) {
+    const anchorDay = resolveScheduleConfig(organization, service).collectionDayOfMonth;
+    nextCollectionRunAt = computeInitialCollectionRunAt(anchorDay);
+  }
+
   await db
     .insert(clientServices)
-    .values({ clientId, serviceId })
+    .values({ clientId, serviceId, nextCollectionRunAt })
     .onConflictDoNothing();
 
-  const organization = await getOrganization(session.organizationId);
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "client.service_assigned",
-    description:
-      organization?.workflowType === "one_time" ? "תבנית שויכה ללקוח" : "שירות שויך ללקוח",
+    description: service.collectionMode === "on_demand" ? "תבנית שויכה ללקוח" : "איסוף מחזורי שויך ללקוח",
     actorType: "employee",
     actorUserId: session.userId,
     clientId,

@@ -12,7 +12,7 @@ import { clients, collectionRequests, organizations, users } from "@/db/schema";
 export interface OwnerOrganizationListRow {
   id: string;
   name: string;
-  workflowType: "recurring" | "one_time";
+  workflowType: "recurring" | "one_time" | "on_demand" | "both";
   onboardingCompletedAt: Date | null;
   whatsappConnectedAt: Date | null;
   googleConnectedAt: Date | null;
@@ -63,7 +63,7 @@ export async function listOrganizations(query?: string): Promise<OwnerOrganizati
 export interface OwnerOrganizationOverview {
   id: string;
   name: string;
-  workflowType: "recurring" | "one_time";
+  workflowType: "recurring" | "one_time" | "on_demand" | "both";
   businessCategory: string;
   businessCategoryCustomLabel: string | null;
   onboardingCompletedAt: Date | null;

@@ -27,11 +27,11 @@ export function ServiceForm({
       <TextField
         id="name"
         name="name"
-        label="שם התבנית"
+        label="שם"
         type="text"
         required
         defaultValue={defaultValues?.name}
-        placeholder="לדוגמה: דוח מע״מ חודשי"
+        placeholder="לדוגמה: עוסק מורשה"
         error={state.fieldErrors?.name}
       />
 

@@ -56,7 +56,12 @@ export async function createTemplate(
   const db = await getDb();
   const [template] = await db
     .insert(services)
-    .values({ organizationId: session.organizationId, name, description: description || null })
+    .values({
+      organizationId: session.organizationId,
+      name,
+      description: description || null,
+      collectionMode: "on_demand",
+    })
     .returning();
 
   await recordAuditEvent({
@@ -149,6 +154,7 @@ export async function duplicateTemplate(templateId: string) {
       organizationId: session.organizationId,
       name: `${original.name} (העתק)`,
       description: original.description,
+      collectionMode: "on_demand",
     })
     .returning();
 
@@ -345,7 +351,7 @@ export async function createTemplateFromLibrary(formData: FormData) {
   const db = await getDb();
   const [template] = await db
     .insert(services)
-    .values({ organizationId: session.organizationId, name: chosen.name })
+    .values({ organizationId: session.organizationId, name: chosen.name, collectionMode: "on_demand" })
     .returning();
 
   if (chosen.suggestedRequirements.length > 0) {
@@ -379,10 +385,16 @@ export async function createTemplateFromLibrary(formData: FormData) {
 // column for.
 export async function seedExampleTemplates(organizationId: string) {
   const db = await getDb();
+  // Product Evolution M9 — scoped to on_demand Services specifically: an
+  // organization can now also have Recurring Services (Business Types),
+  // and their existence must never suppress seeding this organization's
+  // very first on-demand sample Templates.
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(services)
-    .where(eq(services.organizationId, organizationId));
+    .where(
+      and(eq(services.organizationId, organizationId), eq(services.collectionMode, "on_demand"))
+    );
   if (count > 0) return;
 
   const organization = await getOrganization(organizationId);
@@ -397,7 +409,7 @@ export async function seedExampleTemplates(organizationId: string) {
   for (const entry of toSeed) {
     const [template] = await db
       .insert(services)
-      .values({ organizationId, name: entry.name, isSampleTemplate: true })
+      .values({ organizationId, name: entry.name, isSampleTemplate: true, collectionMode: "on_demand" })
       .returning();
     if (entry.suggestedRequirements.length > 0) {
       await db.insert(serviceDocumentRequirements).values(

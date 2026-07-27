@@ -160,6 +160,16 @@ async function sendViaWhatsApp(
 // which is recorded separately on the message row's own deliveryStatus
 // (see sendViaWhatsApp above) so a real send failure never changes this
 // function's return shape or crashes a caller that only checks `sent`.
+//
+// Product Evolution M9 ("Disable automation must really disable
+// automation") — the same non-throwing "held, not sent" pattern now also
+// covers the organization's automationActivatedAt (the "Deactivate
+// automation" toggle in Settings) and, when this conversation's Collection
+// Request belongs to one, that Service's own automationPausedAt (the
+// per-template pause). Both gates apply only to "ai" (automated) sends —
+// an employee's own free-text message inside an already-open conversation
+// is a deliberate human action, never "automation," and is never held by
+// either gate.
 export async function sendOutboundMessage(
   organizationId: string,
   conversationId: string,
@@ -170,7 +180,13 @@ export async function sendOutboundMessage(
   const organization = await getOrganizationConfig(organizationId);
 
   if (senderType === "ai") {
+    if (!organization.automationActivatedAt) {
+      return { sent: false };
+    }
     const service = await getServiceForConversation(conversationId);
+    if (service?.automationPausedAt) {
+      return { sent: false };
+    }
     const effectiveConfig = resolveScheduleConfig(organization, service);
     if (!isWithinBusinessHours(effectiveConfig)) {
       return { sent: false };

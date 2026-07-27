@@ -9,6 +9,7 @@ import {
   getSuggestedRequirements,
   listBusinessTypes,
   listClientsByBusinessType,
+  listPendingClassificationSuggestions,
   listUnclassifiedClients,
 } from "@/lib/businessTypes";
 import { getLatestAuditEventByType } from "@/lib/data/auditLog";
@@ -50,14 +51,14 @@ const SHARED_STEP_META: Record<number, StepMeta> = {
     help: "המידע הזה משמש להתאמה אישית של סביבת העבודה שלכם. תמיד ניתן לשנות זאת מאוחר יותר מתוך ההגדרות.",
   },
   3: {
-    title: "סוג העסק",
-    description: "איזה סוג עסק אתם מנהלים? זה עוזר ל-Centro להתאים את חוויית ההקמה עבורכם.",
-    help: "המידע משמש להתאמה אישית של ההקמה, לשיפור המוצר, ולהצעות מסמכים חכמות — גם אם מעולם לא נתקלנו בסוג העסק שלכם, Centro תמיד יציע נקודת התחלה שימושית.",
+    title: "תחום הפעילות שלכם",
+    description: "מה תחום הפעילות שלכם? Centro משתמש בכך כדי להציע לכם מראש רשימת התחלה מתאימה — לא את אותה רשימה לכולם.",
+    help: "זה תחום הפעילות של המשרד שלכם עצמו (למשל רואה חשבון, יועץ משכנתאות) — לא סוג הלקוחות שלכם, שאותו נגדיר בהמשך. גם אם מעולם לא נתקלנו בתחום שלכם, Centro תמיד יציע נקודת התחלה שימושית שאפשר לערוך באופן מלא.",
   },
   4: {
     title: "אופן איסוף המסמכים",
     description: "איך אתם בדרך כלל אוספים מסמכים מהלקוחות שלכם?",
-    help: "הבחירה כאן קובעת את כל חוויית העבודה עם Centro מכאן ואילך.",
+    help: "הבחירה כאן קובעת רק את שלבי ההקמה הבאים — אחרי ההקמה, כל משרד יכול להשתמש גם באיסוף מחזורי וגם באיסוף לפי צורך, בכל עת.",
   },
   5: {
     title: "חיבור שירותים",
@@ -83,9 +84,9 @@ const RECURRING_STEP_META: Record<number, StepMeta> = {
     help: "Centro משתמש ברשימות האלו כדי לדעת בדיוק אילו מסמכים לבקש מכל לקוח, לפי סוג העסק שלו.",
   },
   9: {
-    title: "כללי תזכורות",
-    description: "קבעו מתי ובאיזו תדירות Centro יפנה ללקוחות עבור כל סוג עסק.",
-    help: "Centro פונה ללקוחות רק בשעות הפעילות שהגדרתם, ולעולם לא מחוץ להן.",
+    title: "תדירות ותזכורות",
+    description: "עבור כל סוג עסק: כל כמה זמן נפתח מחזור איסוף חדש, וכיצד Centro פונה ללקוחות בתוך מחזור פתוח.",
+    help: "אלו שני דברים נפרדים: התדירות קובעת מתי מתחיל מחזור חדש; כללי התזכורות קובעים מה קורה בתוך מחזור שכבר פתוח וממתין למסמכים. Centro פונה ללקוחות רק בשעות הפעילות שהגדרתם, ולעולם לא מחוץ להן.",
   },
   10: {
     title: "סיכום",
@@ -115,9 +116,19 @@ const ONE_TIME_STEP_META: Record<number, StepMeta> = {
 const RECURRING_TOTAL_STEPS = 11;
 const ONE_TIME_TOTAL_STEPS = 9;
 
+// Product Evolution M9 — "recurring" and "both" both get the fuller
+// (recurring) wizard path, since post-onboarding on-demand needs no setup
+// steps of its own (see Step4CollectionStyle.tsx's own help text: "the
+// On-Demand option is available right after, from the menu, with no
+// further setup"). "on_demand" is the current value; "one_time" is the
+// pre-M9 value, kept meaning exactly the same thing.
+function isShortWizardFlow(workflowType: string): boolean {
+  return workflowType === "one_time" || workflowType === "on_demand";
+}
+
 function stepMetaFor(workflowType: string, step: number): StepMeta {
   if (step <= 5) return SHARED_STEP_META[step];
-  return (workflowType === "one_time" ? ONE_TIME_STEP_META : RECURRING_STEP_META)[step];
+  return (isShortWizardFlow(workflowType) ? ONE_TIME_STEP_META : RECURRING_STEP_META)[step];
 }
 
 function stepTitleFor(workflowType: string, totalSteps: number): string[] {
@@ -141,6 +152,9 @@ const STEP5_ERROR_MESSAGES: Record<string, string> = {
   "google-oauth-failed": "החיבור לחשבון Google נכשל. נסו שוב בעוד רגע.",
   "google-not-configured": "חיבור Google אינו זמין כרגע. פנו לתמיכה.",
   "google-folder-failed": "בחירת/יצירת התיקייה ב-Drive נכשלה. נסו שוב.",
+  "both-required": "כדי להשלים את ההקמה, יש לחבר גם WhatsApp Business וגם Google Drive — שניהם הכרחיים כדי ש-Centro יוכל לתקשר עם לקוחות ולשמור מסמכים.",
+  "whatsapp-required": "כדי להשלים את ההקמה, יש לחבר את WhatsApp Business — כך Centro פונה ללקוחות ומקבל מהם מסמכים.",
+  "drive-required": "כדי להשלים את ההקמה, יש לחבר את Google Drive ולבחור תיקייה — כך Centro שומר את המסמכים המאושרים.",
 };
 
 export default async function OnboardingPage({
@@ -155,17 +169,21 @@ export default async function OnboardingPage({
   if (!organization) return null;
 
   // M8 hardening — the mirror image of the (app) layout's own guard. Without
-  // this, a fully onboarded organization could navigate straight back to
-  // e.g. /onboarding?step=4 and resubmit updateWorkflowType, silently
-  // flipping a live organization between the recurring and one-time
-  // workflows post-onboarding — exactly what the product model treats as a
-  // permanent, set-once decision (see ARCHITECTURE.md).
+  // this, a fully onboarded organization could navigate straight back into
+  // the wizard and resubmit its one-time setup steps (re-running the
+  // import/seeding logic, etc.) by accident. Product Evolution M9:
+  // updateWorkflowType itself is no longer a permanent lock on runtime
+  // behavior (see its own comment) — this guard is purely about not
+  // letting a completed wizard run its setup actions again, not about
+  // preventing a mode change (there is none to prevent; every organization
+  // can use both collection modes once onboarded).
   if (!needsOnboarding(organization)) {
     redirect("/dashboard");
   }
 
-  const totalSteps =
-    organization.workflowType === "one_time" ? ONE_TIME_TOTAL_STEPS : RECURRING_TOTAL_STEPS;
+  const totalSteps = isShortWizardFlow(organization.workflowType)
+    ? ONE_TIME_TOTAL_STEPS
+    : RECURRING_TOTAL_STEPS;
   const step = clampStep(Number(stepParam ?? organization.onboardingStep ?? 1) || 1, totalSteps);
   const meta = stepMetaFor(organization.workflowType, step);
   const stepTitles = stepTitleFor(organization.workflowType, totalSteps);
@@ -208,7 +226,7 @@ export default async function OnboardingPage({
         break;
       }
     }
-  } else if (organization.workflowType === "one_time") {
+  } else if (isShortWizardFlow(organization.workflowType)) {
     switch (step) {
       case 6: {
         const clientList = await listClients(session.organizationId);
@@ -247,6 +265,7 @@ export default async function OnboardingPage({
       case 7: {
         const businessTypeList = await listBusinessTypes(session.organizationId);
         const unclassified = await listUnclassifiedClients(session.organizationId);
+        const pendingSuggestions = await listPendingClassificationSuggestions(session.organizationId);
         const clientsByType = await Promise.all(
           businessTypeList.map((type) =>
             listClientsByBusinessType(session.organizationId, type.id)
@@ -261,6 +280,7 @@ export default async function OnboardingPage({
             businessTypes={businessTypeList}
             clientsByType={clientsByType}
             unclassifiedClients={unclassified}
+            pendingSuggestions={pendingSuggestions}
             importSummary={latestAnalysis?.metadata as ImportAnalysisSummary | undefined}
           />
         );
@@ -292,7 +312,7 @@ export default async function OnboardingPage({
       case 10: {
         const businessTypeList = await listBusinessTypes(session.organizationId);
         const clientList = await listClients(session.organizationId);
-        const classifiedCount = clientList.filter((c) => c.businessTypeId).length;
+        const classifiedCount = clientList.filter((c) => c.classificationConfirmedAt).length;
         const requirementCounts = await Promise.all(
           businessTypeList.map((t) => listServiceRequirements(t.serviceId))
         );

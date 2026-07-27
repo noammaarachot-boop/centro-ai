@@ -14,6 +14,7 @@ const PRESETS: Array<{ value: Exclude<BusinessCategory, "other">; label: string 
   { value: "lawyer", label: "עורך דין" },
   { value: "real_estate", label: "נדל״ן" },
   { value: "mortgage_advisor", label: "יועץ משכנתאות" },
+  { value: "business_consultant", label: "ייעוץ עסקי" },
   { value: "insurance", label: "ביטוח" },
   { value: "hr", label: "משאבי אנוש" },
   { value: "finance", label: "ייעוץ פיננסי" },

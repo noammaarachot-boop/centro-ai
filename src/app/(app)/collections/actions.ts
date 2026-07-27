@@ -193,6 +193,8 @@ export async function addManualDocument(
   }
 
   const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
+  const fileBytes = attachedFile ? Buffer.from(await attachedFile.arrayBuffer()) : undefined;
+  const mimeType = attachedFile?.type || undefined;
 
   const db = await getDb();
   const [document] = await db
@@ -203,11 +205,16 @@ export async function addManualDocument(
       requirementId,
       fileName,
       status: status as "approved" | "rejected" | "needs_review",
+      // Product Evolution M9 ("Never Lose a Document") — held here even for
+      // an immediately-approved document now, so a Drive failure right
+      // after this insert still has real bytes to retry from
+      // (uploadDocumentResiliently is the only place that ever clears
+      // this, and only once the upload actually succeeds).
+      ...(status === "approved" && fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
     })
     .returning();
 
   if (status === "approved") {
-    const fileBytes = attachedFile ? Buffer.from(await attachedFile.arrayBuffer()) : undefined;
     await uploadDocumentResiliently(
       session.organizationId,
       current.clientId,
@@ -215,7 +222,7 @@ export async function addManualDocument(
       document.fileName,
       collectionRequestId,
       fileBytes,
-      attachedFile?.type || undefined
+      mimeType
     );
   }
 
@@ -250,12 +257,14 @@ export async function reviewDocument(
   const scoped = await getScopedDocument(session.organizationId, collectionRequestId, documentId);
 
   const db = await getDb();
-  // Cleared on any decision that reaches a final state — approved uses
-  // them once below, rejected no longer needs them; only a repeated
-  // needs_review decision leaves them in place for a possible later
-  // approval. See documents.pendingFileContent's own comment for why
-  // this exists at all.
-  const clearPending = decision !== "needs_review";
+  // Product Evolution M9 ("Never Lose a Document") — only "rejected" clears
+  // the held bytes immediately here (never needed again); "needs_review"
+  // already left them in place for a possible later approval. "approved"
+  // no longer clears them itself — uploadDocumentResiliently below is now
+  // the only place that clears pendingFileContent, and only once the
+  // upload has actually succeeded, so a Drive failure right after approval
+  // can never silently lose the file (it stays held for automatic retry).
+  const clearPending = decision === "rejected";
   const [document] = await db
     .update(documents)
     .set({

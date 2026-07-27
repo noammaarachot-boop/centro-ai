@@ -2,10 +2,11 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   collectionRequestRequirements,
+  collectionRequests,
   documentLearnedPatterns,
 } from "@/db/schema";
 import type { LearnedDocumentPattern } from "@/lib/ai/documentClassifier";
-import { isOneTimeWorkflowOrganization } from "@/lib/data/organizations";
+import { isOnDemandService } from "@/lib/data/organizations";
 
 /**
  * Milestone 3 ("Document Classification Learning") — the read/write seam
@@ -53,20 +54,29 @@ export async function recordLearnedDocumentPattern(
   collectionRequestRequirementId: string,
   fileName: string
 ): Promise<void> {
-  // Product Evolution M7 — same boundary as clientDocumentProfile.ts's
-  // guards. A one-time-workflow client's document naming is never learned
-  // from; the Template it came from is the single source of truth, edited
-  // explicitly by the office.
-  if (await isOneTimeWorkflowOrganization(organizationId)) return;
-
   const db = await getDb();
   const [requirement] = await db
-    .select({ sourceRequirementId: collectionRequestRequirements.sourceRequirementId })
+    .select({
+      sourceRequirementId: collectionRequestRequirements.sourceRequirementId,
+      serviceId: collectionRequests.serviceId,
+    })
     .from(collectionRequestRequirements)
+    .innerJoin(
+      collectionRequests,
+      eq(collectionRequestRequirements.collectionRequestId, collectionRequests.id)
+    )
     .where(eq(collectionRequestRequirements.id, collectionRequestRequirementId))
     .limit(1);
 
   if (!requirement?.sourceRequirementId) return;
+
+  // Product Evolution M9 — same per-Service boundary as
+  // clientDocumentProfile.ts's guards. An On-Demand client's document
+  // naming is never learned from; the Template it came from is the single
+  // source of truth, edited explicitly by the office. Resolved per-Service
+  // (not per-organization) since the same organization can also have
+  // Recurring Services whose learning must be unaffected.
+  if (await isOnDemandService(requirement.serviceId)) return;
 
   await db.insert(documentLearnedPatterns).values({
     organizationId,

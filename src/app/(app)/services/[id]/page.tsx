@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, FileText, Trash2, Users, X } from "lucide-react";
+import { ArrowLeft, FileText, Pause, Play, Trash2, Users, X } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import {
   getService,
@@ -10,16 +10,21 @@ import {
 import {
   addRequirement,
   deleteService,
+  pauseServiceAutomation,
   removeRequirement,
+  resumeServiceAutomation,
   updateService,
 } from "../actions";
 import { ServiceForm } from "../ServiceForm";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
+import { Badge } from "@/components/app/Badge";
 import { buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ServiceScheduleOverrideCard } from "@/components/app/ServiceScheduleOverrideCard";
+import { ServiceFrequencyCard } from "@/components/app/ServiceFrequencyCard";
 import { ConfirmDialog } from "@/components/app/ConfirmDialog";
+import { HelpTip } from "@/components/app/HelpTip";
 import { fieldClass } from "@/components/app/FormField";
 import { resolveScheduleConfig } from "@/lib/businessHours";
 import { getOrganization } from "@/lib/data/organizations";
@@ -37,10 +42,13 @@ export default async function ServiceDetailPage({
 
   const organization = await getOrganization(session.organizationId);
   if (!organization) notFound();
-  if (organization.workflowType === "one_time") notFound();
 
   const service = await getService(session.organizationId, id);
   if (!service) notFound();
+  // Product Evolution M9 — gated on this specific Service's own mode, not
+  // the organization's (an org can have both kinds now); a Template lives
+  // at /templates/[id], not here.
+  if (service.collectionMode !== "recurring") notFound();
 
   const [requirements, assignedClients] = await Promise.all([
     listServiceRequirements(id),
@@ -60,6 +68,7 @@ export default async function ServiceDetailPage({
   const boundUpdate = updateService.bind(null, service.id);
   const boundDelete = deleteService.bind(null, service.id);
   const boundAddRequirement = addRequirement.bind(null, service.id);
+  const isPaused = !!service.automationPausedAt;
 
   return (
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -69,9 +78,12 @@ export default async function ServiceDetailPage({
           className="mb-3 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
-          חזרה לתבניות
+          חזרה לאיסוף מחזורי
         </Link>
-        <PageHeader title={service.name} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PageHeader title={service.name} />
+          {isPaused && <Badge tone="warning">מושהה</Badge>}
+        </div>
       </div>
 
       {error === "has-history" && (
@@ -79,12 +91,61 @@ export default async function ServiceDetailPage({
           role="alert"
           className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
-          לא ניתן למחוק תבנית שיש לה היסטוריית בקשות איסוף.
+          לא ניתן למחוק איסוף מחזורי שיש לו היסטוריית בקשות.
         </p>
       )}
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי תבנית</h2>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            {isPaused ? (
+              <Pause className="h-5 w-5 shrink-0 text-warning" />
+            ) : (
+              <Play className="h-5 w-5 shrink-0 text-brand-emerald" />
+            )}
+            <div>
+              <div className="flex items-center gap-1">
+                <p className="text-sm font-semibold text-text-primary">
+                  {isPaused ? "האיסוף המחזורי הזה מושהה" : "האיסוף המחזורי הזה פעיל"}
+                </p>
+                <HelpTip label="מה זה עושה?">
+                  {isPaused ? (
+                    <>
+                      כרגע לא ייפתחים מחזורים חדשים ולא נשלחות הודעות אוטומטיות ללקוחות
+                      המשויכים לאיסוף המחזורי הזה — איסופים מחזוריים אחרים ממשיכים לפעול
+                      כרגיל.
+                      <br />
+                      <br />
+                      שום מידע לא נמחק. בלחיצה על &quot;חידוש&quot; הכול חוזר לפעול.
+                    </>
+                  ) : (
+                    <>
+                      השהיה תפסיק לפתוח מחזורים חדשים ולשלוח הודעות אוטומטיות ללקוחות
+                      המשויכים לאיסוף המחזורי הזה בלבד — איסופים מחזוריים אחרים לא יושפעו.
+                      <br />
+                      <br />
+                      שום מידע לא יימחק, ואפשר לחדש בכל רגע.
+                    </>
+                  )}
+                </HelpTip>
+              </div>
+              <p className="text-xs text-text-muted">
+                {isPaused
+                  ? "לא ייפתחו מחזורים חדשים ולא יישלחו הודעות אוטומטיות עבור לקוחות המשויכים."
+                  : "מחזורים חדשים נפתחים אוטומטית, והודעות/תזכורות נשלחות ללקוחות כרגיל."}
+              </p>
+            </div>
+          </div>
+          <form action={isPaused ? resumeServiceAutomation.bind(null, service.id) : pauseServiceAutomation.bind(null, service.id)}>
+            <button type="submit" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+              {isPaused ? "חידוש" : "השהיה"}
+            </button>
+          </form>
+        </div>
+      </Card>
+
+      <Card>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי האיסוף המחזורי</h2>
         <ServiceForm
           action={boundUpdate}
           submitLabel="שמירת שינויים"
@@ -98,7 +159,7 @@ export default async function ServiceDetailPage({
       <Card>
         <h2 className="mb-1 text-lg font-semibold text-text-primary">דרישות מסמכים</h2>
         <p className="mb-4 text-sm text-text-muted">
-          המסמכים שיתבקשו מכל לקוח המשויך לתבנית זו בכל מחזור איסוף.
+          המסמכים שיתבקשו מכל לקוח המשויך לאיסוף המחזורי הזה, בכל מחזור.
         </p>
 
         {requirements.length === 0 ? (
@@ -152,6 +213,11 @@ export default async function ServiceDetailPage({
         </form>
       </Card>
 
+      <ServiceFrequencyCard
+        serviceId={service.id}
+        collectionFrequencyIntervalMonths={service.collectionFrequencyIntervalMonths}
+      />
+
       <ServiceScheduleOverrideCard
         serviceId={service.id}
         name="כללי תזכורות"
@@ -171,7 +237,7 @@ export default async function ServiceDetailPage({
           <EmptyState
             icon={Users}
             title="אין לקוחות משויכים"
-            description="שייכו תבנית ללקוח מתוך עמוד הלקוח כדי לראות אותו כאן."
+            description="שייכו איסוף מחזורי ללקוח מתוך עמוד הלקוח כדי לראות אותו כאן."
           />
         ) : (
           <ul className="space-y-2">
@@ -190,15 +256,15 @@ export default async function ServiceDetailPage({
       </Card>
 
       <ConfirmDialog
-        title="מחיקת תבנית"
-        description={`למחוק את "${service.name}"? פעולה זו אינה הפיכה. אם לתבנית יש היסטוריית בקשות איסוף, המחיקה תיחסם.`}
-        confirmLabel="מחיקת תבנית"
+        title="מחיקת איסוף מחזורי"
+        description={`למחוק את "${service.name}"? פעולה זו אינה הפיכה. אם יש לו היסטוריית בקשות איסוף, המחיקה תיחסם.`}
+        confirmLabel="מחיקה"
         formAction={boundDelete}
         triggerClassName="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
         trigger={
           <>
             <Trash2 className="h-4 w-4" />
-            מחיקת תבנית
+            מחיקה
           </>
         }
       />

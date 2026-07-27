@@ -11,6 +11,7 @@ export const BUSINESS_CATEGORIES = [
   "lawyer",
   "real_estate",
   "mortgage_advisor",
+  "business_consultant",
   "insurance",
   "hr",
   "finance",

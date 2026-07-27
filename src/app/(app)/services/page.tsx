@@ -1,30 +1,28 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { Layers, Plus } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { listServices } from "@/lib/data/services";
-import { getOrganization } from "@/lib/data/organizations";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
 import { buttonVariants } from "@/components/app/Button";
 
+// Product Evolution M9 — every organization can create Recurring
+// Collections regardless of how it started onboarding; the old
+// workflowType-based notFound() gate is gone (see services.collectionMode).
 export default async function ServicesPage() {
   const session = await requireSession();
-  const organization = await getOrganization(session.organizationId);
-  if (organization?.workflowType === "one_time") notFound();
-
-  const services = await listServices(session.organizationId);
+  const services = await listServices(session.organizationId, "recurring");
 
   return (
     <div className="mx-auto max-w-4xl animate-fade-in-up px-6 py-10 lg:px-10">
       <PageHeader
-        title="תבניות"
-        description="תבניות מגדירות אילו מסמכים נדרשים מהלקוחות בכל מחזור איסוף."
+        title="איסוף מחזורי"
+        description="כל שורה כאן היא סוג לקוח שמקבל מחזורי איסוף אוטומטיים — Centro פותח את המחזור הבא לבד, לפי התדירות שתגדירו."
         actions={
           <Link href="/services/new" className={buttonVariants({ variant: "primary" })}>
             <Plus className="h-4 w-4" />
-            תבנית חדשה
+            איסוף מחזורי חדש
           </Link>
         }
       />
@@ -32,12 +30,12 @@ export default async function ServicesPage() {
       {services.length === 0 ? (
         <EmptyState
           icon={Layers}
-          title="עדיין אין תבניות"
-          description="הגדירו את התבנית הראשונה כדי לקבוע אילו מסמכים נדרשים מהלקוחות בכל מחזור איסוף."
+          title="עדיין אין איסוף מחזורי"
+          description="הגדירו את הראשון כדי לקבוע אילו מסמכים נדרשים מהלקוחות ובאיזו תדירות."
           action={
             <Link href="/services/new" className={buttonVariants({ variant: "primary" })}>
               <Plus className="h-4 w-4" />
-              הוספת תבנית ראשונה
+              הוספת איסוף מחזורי ראשון
             </Link>
           }
         />

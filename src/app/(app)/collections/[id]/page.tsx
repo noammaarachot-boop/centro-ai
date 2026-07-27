@@ -30,7 +30,10 @@ import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { listAuditLog } from "@/lib/data/auditLog";
 import { listOpenConfirmationsForCollectionRequest } from "@/lib/pendingConfirmations";
-import { getOrganization } from "@/lib/data/organizations";
+import {
+  DRIVE_NOT_READY_MESSAGE,
+  WHATSAPP_NOT_READY_MESSAGE,
+} from "@/lib/integrationRequirements";
 import { StatusBadge } from "../StatusBadge";
 import {
   addManualDocument,
@@ -104,9 +107,6 @@ export default async function CollectionRequestDetailPage({
   const collectionRequest = await getCollectionRequest(session.organizationId, id);
   if (!collectionRequest) notFound();
 
-  const organization = await getOrganization(session.organizationId);
-  const serviceWord = organization?.workflowType === "one_time" ? "לתבנית זו" : "לשירות זה";
-
   const requirements = await listRequirementsWithDocuments(id);
   const unmatchedDocuments = await listUnmatchedDocuments(id);
   const options = nextStatusOptions(collectionRequest.status);
@@ -139,12 +139,18 @@ export default async function CollectionRequestDetailPage({
       </div>
 
       {error && (
-        <p
+        <div
           role="alert"
           className="animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
         >
-          {decodeURIComponent(error)}
-        </p>
+          <p>{decodeURIComponent(error)}</p>
+          {(decodeURIComponent(error) === WHATSAPP_NOT_READY_MESSAGE ||
+            decodeURIComponent(error) === DRIVE_NOT_READY_MESSAGE) && (
+            <Link href="/settings" className="mt-1.5 inline-block text-sm font-semibold underline">
+              מעבר להגדרות לחיבור מחדש
+            </Link>
+          )}
+        </div>
       )}
 
       <Card>
@@ -169,7 +175,7 @@ export default async function CollectionRequestDetailPage({
       <Card>
         <h2 className="mb-4 text-lg font-semibold text-text-primary">דרישות מסמכים</h2>
         {requirements.length === 0 ? (
-          <p className="text-sm text-text-muted">אין דרישות מסמכים מוגדרות {serviceWord}.</p>
+          <p className="text-sm text-text-muted">אין דרישות מסמכים מוגדרות לאיסוף זה.</p>
         ) : (
           <ul className="space-y-4">
             {requirements.map((requirement) => (
