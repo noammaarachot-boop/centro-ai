@@ -122,7 +122,7 @@ export function OfficeInfoForm({
         type="text"
         required
         defaultValue={name}
-        placeholder="לדוגמה: משרד רואי חשבון כהן ושות׳"
+        placeholder="לדוגמה: כהן ושות׳"
         error={state.fieldErrors?.name}
       />
 

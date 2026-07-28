@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { HelpTip } from "@/components/app/HelpTip";
 import { CentroMarkGlow } from "@/components/app/CentroMarkGlow";
+import { Badge } from "@/components/app/Badge";
 
 // Shared chrome around every wizard step — progress bar, title/description,
 // an optional "why is this important?" tip, and a Previous link back to the
@@ -49,10 +50,10 @@ export function WizardShell({
       <div className="w-full max-w-xl">
         {businessCategoryLabel && (
           <div className="mb-3 flex justify-center">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted/60 px-3 py-1 text-xs font-medium text-text-secondary">
+            <Badge tone="purple">
               <span aria-hidden="true">{businessCategoryIcon ?? "🏢"}</span>
               {businessCategoryLabel}
-            </span>
+            </Badge>
           </div>
         )}
         <div className="mb-8">

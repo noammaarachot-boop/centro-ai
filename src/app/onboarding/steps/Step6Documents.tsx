@@ -1,6 +1,7 @@
-import { Check, Plus, X } from "lucide-react";
+import { Check, FileText, Plus, X } from "lucide-react";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
+import { EmptyState } from "@/components/app/EmptyState";
 import { fieldClass } from "@/components/app/FormField";
 import { advanceOnboardingStep } from "../actions";
 import { addRequirement, removeRequirement } from "@/app/(app)/services/actions";
@@ -22,10 +23,11 @@ export function Step6Documents({ entries }: { entries: Entry[] }) {
   if (entries.length === 0) {
     return (
       <div className="space-y-5">
-        <p className="text-sm text-text-secondary">
-          עדיין אין סוגי עסק מוגדרים — הם נוצרים אוטומטית ברגע שיש לקוחות מסווגים בשלב
-          הקודם. אפשר תמיד להגדיר מסמכים נדרשים מאוחר יותר מעמוד התבניות.
-        </p>
+        <EmptyState
+          icon={FileText}
+          title="עדיין אין סוגי עסק מוגדרים"
+          description="סוגי עסק נוצרים אוטומטית ברגע שיש לקוחות מסווגים, או שאפשר להגדיר אותם בעצמכם בשלב הקודם. תמיד ניתן להוסיף ולערוך מסמכים נדרשים מאוחר יותר מעמוד איסוף מחזורי."
+        />
         <form action={goToStep7}>
           <button
             type="submit"

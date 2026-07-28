@@ -233,13 +233,8 @@ export function Step3Connect({
           <button
             type="button"
             disabled
-            aria-disabled="true"
             title="יש לחבר את שני השירותים כדי להמשיך"
-            className={buttonVariants({
-              variant: "primary",
-              size: "lg",
-              className: "w-full cursor-not-allowed opacity-50",
-            })}
+            className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}
           >
             המשך
           </button>

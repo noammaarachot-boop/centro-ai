@@ -40,7 +40,7 @@ export function ManualTemplateCreator({
           className="inline-flex items-center gap-1 text-xs font-medium text-brand-purple hover:underline"
         >
           <Plus className="h-3.5 w-3.5" />
-          צור תבנית משלכם
+          צור סוג עסק משלכם
         </button>
       ) : (
         <form action={createManualTemplate} className="flex flex-wrap items-center gap-2">
@@ -49,7 +49,7 @@ export function ManualTemplateCreator({
             type="text"
             required
             autoFocus
-            placeholder="שם התבנית, לדוגמה: לקוח VIP"
+            placeholder="שם סוג העסק, לדוגמה: לקוח VIP"
             className={fieldClass("sm", "flex-1")}
           />
           <button type="submit" className={buttonVariants({ variant: "secondary", size: "sm" })}>

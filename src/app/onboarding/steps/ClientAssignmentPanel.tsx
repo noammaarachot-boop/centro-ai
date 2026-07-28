@@ -18,22 +18,29 @@ interface TemplateOption {
 // Smart Profession-Aware Onboarding (item 4) — the bulk client-assignment
 // UI, extracted out of Step5Analysis.tsx so the exact same
 // filter/select-all/bulk-assign interaction serves both AI-classified
-// business types and manually-created templates (Phase D's
-// ManualTemplateCreator) — they're both just entries in `templates` here,
-// so there was never a need for two separate assignment UIs, only one
-// shared component. Explicit "leave unassigned" is simply not selecting a
-// client and closing the panel — there's no separate DB state to set for
+// business types and manually-created ones (Phase D's
+// ManualTemplateCreator) — they're both just `businessTypes` rows, so
+// there was never a need for two separate assignment UIs, only one shared
+// component. Explicit "leave unassigned" is simply not selecting a client
+// and closing the panel — there's no separate DB state to set for
 // "unassigned," it's the default the moment nothing is chosen.
+//
+// Text is hardcoded to "סוג עסק" ("business type") — the term the
+// surrounding Recurring-flow screens (Step 4/5/6/7/8) already use for this
+// exact entity throughout. This is currently this component's only real
+// caller context; if a future on-demand-flow usage needs "תבנית" instead,
+// that's a real second variant to design then, not a speculative prop now.
 export function ClientAssignmentPanel({
   clients,
   templates,
   assignAction,
-  toggleLabel = "שיוך תבנית",
+  toggleLabel = "שיוך סוג עסק",
 }: {
   clients: ClientRow[];
   templates: TemplateOption[];
   assignAction: (formData: FormData) => void | Promise<void>;
   toggleLabel?: string;
+  entityLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -158,7 +165,7 @@ export function ClientAssignmentPanel({
       {!creatingNewType ? (
         <div className="flex items-center gap-2">
           <select name="businessTypeId" required className={fieldClass("sm", "flex-1")}>
-            <option value="">— בחירת תבנית —</option>
+            <option value="">— בחירת סוג עסק —</option>
             {templates.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name}
@@ -170,7 +177,7 @@ export function ClientAssignmentPanel({
             onClick={() => setCreatingNewType(true)}
             className="whitespace-nowrap text-xs font-medium text-brand-purple hover:underline"
           >
-            + תבנית חדשה
+            + סוג עסק חדש
           </button>
         </div>
       ) : (
@@ -178,7 +185,7 @@ export function ClientAssignmentPanel({
           name="newTypeName"
           type="text"
           required
-          placeholder="שם התבנית החדשה"
+          placeholder="שם סוג העסק החדש"
           className={fieldClass("sm")}
         />
       )}

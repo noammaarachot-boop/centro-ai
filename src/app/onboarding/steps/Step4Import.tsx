@@ -17,7 +17,7 @@ export function Step4Import({
 
       <div className="rounded-xl border border-dashed border-border px-3 py-3">
         <p className="mb-2 text-xs text-text-secondary">
-          מעדיפים לא להסתמך על AI? אפשר גם לבנות תבניות בעצמכם, בלי לייבא קובץ בכלל.
+          מעדיפים לא להסתמך על סיווג אוטומטי? אפשר גם להגדיר סוגי עסק בעצמכם, בלי לייבא קובץ בכלל.
         </p>
         <ManualTemplateCreator existingTypes={existingTypes} />
       </div>

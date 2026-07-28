@@ -124,7 +124,7 @@ export function Step5Analysis({
         <ImportUploader mode="add" submitLabel="ייבוא Excel / CSV" />
         <div className="rounded-xl border border-dashed border-border px-3 py-3">
           <p className="mb-2 text-xs text-text-secondary">
-            אפשר גם לבנות תבניות בעצמכם, בלי לייבא קובץ.
+            אפשר גם להגדיר סוגי עסק בעצמכם, בלי לייבא קובץ.
           </p>
           <ManualTemplateCreator existingTypes={businessTypes} />
         </div>
@@ -279,7 +279,7 @@ export function Step5Analysis({
           already shows every existing type (manual or AI-suggested). */}
       <div className="rounded-xl border border-dashed border-border px-3 py-3">
         <p className="mb-2 text-xs text-text-secondary">
-          מעדיפים לבנות תבנית בעצמכם, בלי להסתמך על סיווג אוטומטי?
+          מעדיפים להגדיר סוג עסק בעצמכם, בלי להסתמך על סיווג אוטומטי?
         </p>
         <ManualTemplateCreator existingTypes={[]} />
       </div>
