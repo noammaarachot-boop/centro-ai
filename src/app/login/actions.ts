@@ -134,9 +134,17 @@ export async function register(
   // name (see src/lib/onboarding.ts). Collecting the real name is planned as
   // onboarding wizard step 1 in the next epic; nothing downstream treats
   // this value as final.
+  //
+  // First-Send Journey — every new self-service signup starts on-demand.
+  // The onboarding wizard is now a single, unbranched flow with no
+  // "Collection Style" choice screen (see onboarding/page.tsx's own
+  // comment), so this is the one place that decision gets made — the
+  // schema's own default is "recurring" (Ch.9's original, still-accurate
+  // default for any other path that creates an organization), which would
+  // be wrong here if left unset.
   const [organization] = await db
     .insert(organizations)
-    .values({ name: fullName })
+    .values({ name: fullName, workflowType: "on_demand" })
     .returning({ id: organizations.id });
 
   const passwordHash = await hashPassword(password);

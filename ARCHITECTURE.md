@@ -673,18 +673,49 @@ return to a fixed path with no draft id in the query string — the OAuth callba
 on `/collections/new?step=connect` and the page re-resolves "the org's one in-progress
 draft" itself, the same way the Dashboard does.
 
-### 12.4 Onboarding and the Dashboard, On-Demand Only
+### 12.4 Onboarding Is Now a Single, Unbranched Flow
 
-WhatsApp/Drive connection moved out of onboarding for the on-demand flow specifically —
-connected for the first time inside the wizard's own Connect step, in-context, right
-before the first send, matching the locked design exactly. `finishOnboarding()` is now
-workflow-aware: an on-demand organization's wizard completes with zero integrations
-connected; a recurring organization keeps M9's exact hard gate, since
-`recurringScheduler.ts` runs unattended with no per-send human checkpoint to enforce a
-connection at otherwise. Removing Connect from the on-demand flow's step sequence
-shortened it by one (`ONE_TIME_STEP_META` renumbered 5–8, was 6–9); the recurring
-flow's numbering is completely unchanged — Connect simply moved from a step both flows
-shared into `RECURRING_STEP_META` alone, still at position 5.
+The first pass of this chapter only removed the Connect step from the on-demand
+branch and left the rest of the pre-existing onboarding architecture — the "Collection
+Style" (Recurring/On-Demand/Both) picker, Working Hours, Summary, and Completion
+screens — in place. A live QA pass caught that this didn't actually match the approved
+design or its own "a single user journey" requirement: a new signup that picked
+Recurring or Both at that picker never saw any of this chapter's work at all, and even
+the on-demand path still routed through four screens (Collection Style, Working Hours,
+Summary, Completion) that don't exist anywhere in the design. Corrected as a follow-up
+pass, not a second redesign:
+
+- **Registration decides on-demand automatically.** `login/actions.ts`'s `register()`
+  now creates every new organization with `workflowType: "on_demand"` directly — the
+  schema's own default ("recurring," Ch.9's still-accurate default for any other org
+  creation path) would have been wrong here if left unset. There is no longer a
+  Collection Style *choice* for a new signup to make.
+- **Onboarding itself collapsed to four steps**, all in `onboarding/page.tsx`: Welcome,
+  Business Details, Business Type, Import Clients (optional) — then straight to the
+  Dashboard. Working Hours and Summary were removed outright rather than kept and
+  skipped: `organizations.businessHoursStart/End/businessDays` already have sensible
+  NOT NULL defaults (09:00–18:00, Sun–Thu), adjustable later in Settings, so asking
+  during onboarding was exactly the kind of "can Centro automate it instead of asking"
+  question Chapter 11's original product audit was built to catch. The Completion
+  ("Centro מוכן!") screen was removed too — the Dashboard's own new focal card (below)
+  is the arrival moment now, not a separate celebration screen before it.
+- **`finishOnboarding()`'s hard integration gate is gone entirely**, not merely made
+  conditional — with no Connect step reachable anywhere in onboarding for any
+  organization anymore, a gate that could redirect back into onboarding on failure
+  would only ever be a dead end. `tryActivateAutomation` still independently re-checks
+  the real connection columns and simply never activates automation until they're
+  genuinely connected — the same behavior this already relied on for QA Mode, now the
+  ordinary case for every organization rather than an exception.
+- **The recurring-workflow onboarding wizard (Ch.9–11's Connect/Import/Analysis/
+  Documents/Reminders/Summary/Completion, and the Collection Style picker itself) was
+  not deleted** — it remains in this directory's step components and actions, simply
+  unrouted: `onboarding/page.tsx` no longer imports or renders any of it. An
+  organization that completed that flow in the past is gated out of `/onboarding`
+  entirely by `needsOnboarding` regardless, so nothing about its experience changed.
+  Deleting that code outright, versus leaving it unreachable, was judged the more
+  reversible choice for a decision with real product-surface consequences (no new
+  signup can become "recurring" through self-service registration anymore); revisit if
+  that call turns out to be wrong.
 
 `OneTimeDashboard` replaced its one-time "Sample Template" promo card with the design's
 two-state focal card: "צרו את בקשת האיסוף הראשונה שלכם" before any definition exists,
@@ -695,7 +726,9 @@ its existing KPI view — redesigning that returning-user view was explicitly ou
 project's scope, per the original design brief's own boundary.
 
 The `workflowType === "both"` dashboard (the full recurring queue view) and everything
-under `/services` remain exactly as Chapters 9–10 left them.
+under `/services` remain exactly as Chapters 9–10 left them — reachable today only by
+an organization that already has that workflow type from before this chapter, since
+self-service registration can no longer produce one.
 
 ---
 
@@ -733,4 +766,5 @@ under `/services` remain exactly as Chapters 9–10 left them.
 | Product Evolution M9 — Recurring vs. On-Demand Collection | See Chapter 10 for the full rationale. Summary: the permanent, organization-wide "recurring vs one-time" lock (Chapter 9) became a per-Service choice (`services.collectionMode`) so one organization can run both at once; onboarding's Collection Style step gained a third "Both" option; a real automatic cycle-creation engine (`src/lib/recurringScheduler.ts`) was built from scratch (`services.collectionFrequencyIntervalMonths` + `client_services.nextCollectionRunAt`, driven by a new cron pass), closing a gap this document had explicitly flagged since Chapter 9 — On-Demand Services remain structurally unable to auto-recur (a hard `WHERE collectionMode = 'recurring'` clause, not a convention); frequency and reminder cadence are now modeled and surfaced as explicitly separate settings; automatic classification is a suggestion only (`clients.classificationConfirmedAt`) until a human confirms it, closing a real trust gap where a guess could become authoritative before anyone saw it; WhatsApp and Google Drive became a hard-blocking, live-verified onboarding requirement (`src/lib/integrationRequirements.ts`) instead of best-effort, with a Settings-based reconnect path added since one now genuinely needs to exist; a Drive upload failure right after approval no longer risks losing the document (bytes are held and automatically retried, up to 8 attempts, before escalating); and the "Deactivate automation" toggle, which already behaved like a live switch in the database, is now actually consulted by the send/scheduling pipeline, joined by a narrower per-Service pause. Verified live end-to-end: full registration → onboarding → hard-block-without-integrations flow; classification-suggestion → confirm flow (pending count provably decreasing per confirmation); industry-specific document personalization (a business-consultant category correctly never offered the accounting-specific starter types, and vice versa); pause/resume on a live Service; the global automation toggle; a live-triggered blocked-send showing the exact required reconnect message and a working Settings link; and, most importantly, the automatic engine itself against a real due schedule — a cycle was created for the recurring pairing, the schedule advanced (confirmed non-repeating on an immediate second run), and zero cycles were ever created for the on-demand pairing across the same run. |
 | Smart Profession-Aware Onboarding | See Chapter 11. A read-audit-first pass (not a rebuild — most of the wizard was already profession-generic) that closed six specific gaps: the classifier now reports a cross-profession "conflict" instead of silently discarding an out-of-profession dictionary hit; onboarding gained a persistent "create your own template" path reusing the existing manual Template/Business Type CRUD, never a fork replacing the Excel/AI path; the bulk client-assignment interaction was extracted into one shared component (`ClientAssignmentPanel`) instead of building a second one; Excel-imported rows now get a full row-level review-and-deselect screen before a single row is written to `clients`, closing the one part of "Excel is context, never final truth" the classification-suggestion gate didn't already cover; the Connect step (Step 5) itself now withholds "Continue" until both WhatsApp and Google Drive are verified, instead of the only enforcement being Step 11's final bounce-back; and the chosen profession stays visible in the wizard header from Step 4 onward. No database migration — every change reuses existing schema (`businessTypes`, `clientServices`, `organizations.businessCategory`). |
 | Smart Profession-Aware Onboarding — Final QA Pass | See Chapter 11 §11.7. A dedicated end-to-end review (reading rendered screens, not just source) before closing the project, catching what the original code-only pass missed: Step 5's help text still said connecting was optional, directly contradicting the new hard checkpoint; Step 4's collection-style tooltip and `OfficeInfoForm`'s placeholder both defaulted to accounting examples regardless of profession; the new manual-template UI said "template" while every surrounding screen already said "business type" for the same entity; the disabled Continue button and the profession badge each used one-off styling instead of the app's existing disabled-button and Badge patterns; Step 6's empty state was a bare paragraph pointing to the wrong page name. All text/consistency fixes, no new behavior — re-verified live across all three flows afterward. |
-| The First-Send Journey | See Chapter 12. Implements the frozen, approved First-Send design end to end, scoped explicitly to the on-demand path (Chapter 9/10's Recurring/Services nav, cadence, and classification are untouched, resolving a direct conflict with M9's own "teach the distinction" nav decision). Retires `/templates` from routing and navigation, folding its create/manage functionality into `/collections` as a first-class wizard (`/collections/new`) reusing every existing action from Chapters 9–10 unchanged, plus one new combined create-and-seed-documents action. Moves WhatsApp/Drive connection out of on-demand onboarding entirely — connected for the first time in-context, inside the wizard's own Connect step, right before the first send — while recurring keeps its exact M9 hard gate. Replaces the one-time Dashboard's sample-template promo with a two-state "create/continue your first Collection Request" focal card, its resume signal derived from existing data (a definition with zero sends yet) rather than a new schema column. No database migration. |
+| The First-Send Journey | See Chapter 12. Implements the frozen, approved First-Send design end to end, scoped to the on-demand path (Chapter 9/10's Recurring/Services nav, cadence, and classification are untouched). Retires `/templates` from routing and navigation, folding its create/manage functionality into `/collections` as a first-class wizard (`/collections/new`) reusing every existing action from Chapters 9–10 unchanged, plus one new combined create-and-seed-documents action. Replaces the one-time Dashboard's sample-template promo with a two-state "create/continue your first Collection Request" focal card, its resume signal derived from existing data rather than a new schema column. No database migration. |
+| The First-Send Journey — Onboarding Integration Fix | Follow-up pass, see Chapter 12 §12.4. A live QA pass found the first pass's wizard was unreachable through normal use: onboarding still branched on a "Collection Style" (Recurring/On-Demand/Both) picker the design never included, and only the On-Demand branch — one of three — led anywhere near the new wizard. Corrected by making registration itself decide on-demand automatically (`workflowType` set at signup, no more upfront choice) and collapsing onboarding to a single four-step flow (Welcome, Business Details, Business Type, Import Clients) straight into the Dashboard, removing the Collection Style, Working Hours, Summary, and Completion screens outright rather than leaving them in place unused. The recurring-workflow onboarding wizard and its Collection Style picker were not deleted, only unrouted — an already-onboarded organization never touches any of this regardless. No database migration. |

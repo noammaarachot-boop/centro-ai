@@ -21,7 +21,6 @@ import { buildClientRowsFromMapping } from "@/lib/csv";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { markOnboardingComplete } from "@/lib/onboarding";
-import { getOrganization } from "@/lib/data/organizations";
 import { clampCollectionDay } from "@/lib/businessHours";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import { BUSINESS_CATEGORIES, type BusinessCategory } from "@/lib/businessCategories";
@@ -475,46 +474,24 @@ export async function deactivateAutomation() {
 // office back to the Connect step with a specific, honest error instead of
 // letting onboarding complete in a state where Centro can't actually do
 // anything yet.
-// First-Send Journey — the hard integration gate below is now
-// recurring-only. An on-demand ("one_time"/"on_demand") organization's
-// onboarding completes with zero integrations connected: WhatsApp/Drive
-// are connected for the first time inside the Collection Requests wizard,
-// in-context, right before its first send — that wizard's own Connect step
-// is the real (and only) enforcement point for that flow now. Recurring
-// keeps this gate exactly as before, since its automation runs unattended
-// with no per-send human checkpoint to enforce it at otherwise.
+// First-Send Journey — onboarding's own hard integration gate is gone.
+// Every new organization's onboarding is now the single, unbranched
+// Welcome/Business-Details/Business-Type/Import flow (see page.tsx), with
+// no Connect step anywhere in it — WhatsApp/Drive connect for the first
+// time inside the Collection Requests wizard's own Connect step, in
+// context, right before the first send. A gate that redirected back into
+// onboarding on failure would now be a dead end, since there is no longer
+// any step in onboarding that could ever satisfy it. tryActivateAutomation
+// below still independently re-checks the real whatsappConnectedAt/
+// googleConnectedAt/googleDriveFolderId columns and simply never activates
+// automation until they're genuinely connected — the same "stays inactive
+// until Settings/the wizard connects it" behavior this already relied on
+// for QA Mode, now the normal case for every organization, not an
+// exception.
 export async function finishOnboarding() {
   const session = await requireSession();
-  const organization = await getOrganization(session.organizationId);
-  const isShortWizardFlow =
-    organization?.workflowType === "one_time" || organization?.workflowType === "on_demand";
-
   const status = await checkIntegrationStatus(session.organizationId);
-  // Internal QA Mode — owner-only flag (src/app/owner/(dashboard)/
-  // organizations/[id]/actions.ts), read straight off the authenticated
-  // session/DB, never from anything the client could influence. Bypasses
-  // both WhatsApp and Drive for completing the *wizard* only (product
-  // owner correction — QA testing needs to work with zero integrations
-  // connected, not just WhatsApp). checkIntegrationStatus itself stays
-  // completely unaware of this flag on purpose — it's also what gates
-  // every real message send (initiateConversation,
-  // attemptScheduledDelivery), and a QA-completed org must still be
-  // refused there until real accounts are connected. tryActivateAutomation
-  // below independently re-checks the real whatsappConnectedAt/
-  // googleConnectedAt/googleDriveFolderId columns too, so a QA-bypassed
-  // org's automation correctly never activates either, for the same
-  // reason.
   const isQaMode = !!session.organizationQaModeEnabledAt;
-  const whatsappOk = status.whatsappReady || isQaMode;
-  const driveOk = status.driveReady || isQaMode;
-  if (!isShortWizardFlow && (!whatsappOk || !driveOk)) {
-    const errorCode = !whatsappOk && !driveOk
-      ? "both-required"
-      : !whatsappOk
-        ? "whatsapp-required"
-        : "drive-required";
-    redirect(`/onboarding?step=5&error=${errorCode}`);
-  }
 
   await tryActivateAutomation(session);
   await markOnboardingComplete(session.organizationId);
@@ -525,7 +502,7 @@ export async function finishOnboarding() {
     description:
       isQaMode && (!status.whatsappReady || !status.driveReady)
         ? "אשף ההקמה הושלם במצב בדיקה (ללא חיבורים אמיתיים מלאים)"
-        : isShortWizardFlow && (!status.whatsappReady || !status.driveReady)
+        : !status.whatsappReady || !status.driveReady
           ? "אשף ההקמה הושלם — WhatsApp ו-Google Drive יחוברו בבקשת האיסוף הראשונה"
           : "אשף ההקמה הושלם",
     actorType: "employee",
@@ -1302,8 +1279,8 @@ export async function importClientsSimple(
     metadata: { imported, skipped },
   });
 
-  await setOnboardingStep(session.organizationId, 5);
-  redirect("/onboarding?step=5");
+  await setOnboardingStep(session.organizationId, 4);
+  redirect("/onboarding?step=4");
 }
 
 // Workflow B's own Step 7 ("Working Hours"). Unlike the recurring path's

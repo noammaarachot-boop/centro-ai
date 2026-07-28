@@ -4,7 +4,7 @@ import { useActionState, useState } from "react";
 import { FileSpreadsheet, FileUp, RefreshCcw, Sparkles, Upload } from "lucide-react";
 import { buttonVariants } from "@/components/app/Button";
 import { AnimatedCheckBadge } from "@/components/app/AnimatedCheckBadge";
-import { advanceOnboardingStep, importClientsSimple, type OneTimeImportState } from "../actions";
+import { finishOnboarding, importClientsSimple, type OneTimeImportState } from "../actions";
 
 const initialState: OneTimeImportState = {};
 
@@ -92,10 +92,13 @@ function OneTimeUploadForm({
   );
 }
 
+// First-Send Journey — this is now onboarding's last step: both the "skip"
+// and "continue" actions call finishOnboarding() directly, landing on the
+// Dashboard, instead of advancing to a further onboarding step. There is
+// no completion/celebration screen after this one anymore — the Dashboard
+// itself (its new focal card) is the arrival moment.
 export function Step6OneTimeImport({ totalClients }: { totalClients: number }) {
   const [activeUploader, setActiveUploader] = useState<"replace" | "add" | null>(null);
-  const goToStep7 = advanceOnboardingStep.bind(null, 6);
-  const skipStep = advanceOnboardingStep.bind(null, 6);
 
   // Nothing imported yet — the original single upload-or-skip screen,
   // unchanged.
@@ -107,7 +110,7 @@ export function Step6OneTimeImport({ totalClients }: { totalClients: number }) {
           submitLabel="ייבוא Excel / CSV"
           helperText="רק שם וטלפון יישמרו — ללא סיווג או ניתוח נוסף."
         />
-        <form action={skipStep}>
+        <form action={finishOnboarding}>
           <button
             type="submit"
             className="w-full text-center text-sm text-text-muted transition-colors hover:text-brand-purple"
@@ -166,12 +169,12 @@ export function Step6OneTimeImport({ totalClients }: { totalClients: number }) {
       )}
 
       {!activeUploader && (
-        <form action={goToStep7}>
+        <form action={finishOnboarding}>
           <button
             type="submit"
             className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}
           >
-            המשך
+            מעבר ללוח הבקרה
           </button>
         </form>
       )}
