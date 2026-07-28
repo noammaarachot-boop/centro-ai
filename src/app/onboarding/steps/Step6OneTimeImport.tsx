@@ -94,8 +94,8 @@ function OneTimeUploadForm({
 
 export function Step6OneTimeImport({ totalClients }: { totalClients: number }) {
   const [activeUploader, setActiveUploader] = useState<"replace" | "add" | null>(null);
-  const goToStep7 = advanceOnboardingStep.bind(null, 7);
-  const skipStep = advanceOnboardingStep.bind(null, 7);
+  const goToStep7 = advanceOnboardingStep.bind(null, 6);
+  const skipStep = advanceOnboardingStep.bind(null, 6);
 
   // Nothing imported yet — the original single upload-or-skip screen,
   // unchanged.

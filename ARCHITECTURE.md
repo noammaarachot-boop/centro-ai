@@ -589,6 +589,116 @@ confirm the corrected empty state.
 
 ---
 
+## Chapter 12 — The First-Send Journey
+
+A product-design engagement (Advertisement → Landing → Registration → Business Type →
+Dashboard → first successful send) produced a frozen, approved design
+(`docs/design/first-send-final-source-of-truth.html`) built around one central
+decision: "Collection Request" becomes the only new user-facing noun for this journey.
+Templates, Customer Classification, Workflow, One-Time, and Recurring were deliberately
+never to appear in user-facing copy again — the product should read as "you're sending
+document requests," never as "you're configuring a system with internal categories."
+
+### 12.1 A Direct Conflict With Product Evolution M9, Resolved by Scope
+
+Chapter 9/10's nav decision made Templates and Services two permanent, distinctly
+labeled links specifically so the sidebar itself would teach the recurring/on-demand
+distinction — the opposite instinct from this design's "hide the distinction entirely."
+Rather than silently override M9 or silently ignore the new design, this was resolved
+explicitly before implementation began: **this project scopes to the on-demand path
+only.** Recurring/Services — its nav label, its cadence UI, its business-type
+classification, its onboarding branch — is untouched by everything below. Where the two
+decisions actually collide (the nav, the Dashboard, onboarding's Connect step) the
+on-demand side changes and the recurring side does not.
+
+### 12.2 "Collection Request" Maps Onto `/collections`, Not a Renamed `/templates`
+
+The one non-obvious architectural finding driving this chapter: `/collections` was
+already mode-neutral by design (Ch.9) and already listed `collectionRequests` rows —
+the sent/scheduled instances — under the exact nav label the new design wants,
+"בקשות איסוף." `/templates` held the *creation* UI for the same underlying `services`
+row (`collectionMode: "on_demand"`) under a different label, "איסוף לפי צורך." Rather
+than rename `/templates` into the target name — which would have left two links racing
+for the same phrase — the Templates creation/management UI was folded directly into
+`/collections` as a first-class "+ New" entry point (`/collections/new`), and
+`/templates` was retired from routing and navigation entirely. A "Template" stops being
+a browsable library a user has to notice and clean up; it becomes just the reusable
+definition created inline, in the wizard's own "What will be sent?" step, with any
+prior definitions offered as suggestions rather than a separate page. Every action this
+relies on (`createTemplate`, `addTemplateRequirement`, `assignClientsToTemplate`,
+`sendTemplateRequest`, and the rest, still in `src/app/(app)/templates/actions.ts` —
+that directory is no longer itself routed, kept in place only to minimize diff) is
+reused exactly as Chapters 9–10 built it; only redirect targets and a small amount of
+user-facing copy changed. One genuinely new server action was added,
+`createCollectionRequestDraft`, because the design's "What" step asks for a name and a
+pre-checked document list in one submit — a shape neither `createTemplate` (name only)
+nor `addTemplateRequirement` (one document, to an already-existing definition) covered
+on its own. The former one-click "start from library" flow and the auto-seeded sample
+templates were removed rather than kept dead: showing a user their own real first
+Collection Request beats a sample they have to notice and delete.
+
+`/collections/manage/[id]` (moved from `/templates/[id]`) is where a returning user
+edits an existing definition and sends more later — same components
+(`TemplateForm`/`TemplateRequirementRow`/`TemplateClientAssignment`/`TemplateSendRequest`),
+same actions, new route and copy only. `/collections/[id]` — the mode-neutral instance
+tracking/document-review/WhatsApp-thread workspace Ch.9 already built — is untouched;
+this chapter only ever added a creation front door in front of it, never redesigned it.
+
+### 12.3 The Wizard Itself
+
+`/collections/new` is one Server Component page driven entirely by `?draft=` (which
+`services` row) and `?step=` (what — who — when — connect — review — success), so every
+step always renders fresh server data rather than trusting client-only state that could
+go stale after a mutation. "What" (no draft yet) creates the definition and its initial
+document list together via `createCollectionRequestDraft`. "Who" offers the design's
+All-clients/Selected-clients choice for a returning org, or a single-client inline form
+for a genuine first-run org with zero clients anywhere — reusing
+`assignClientsToTemplate`/`createAndAssignClientToTemplate` unchanged. "When" (now vs.
+schedule) needs no persistence of its own and is carried forward purely as query
+parameters. "Connect" reuses `WhatsAppConnectionRow`/`GoogleDriveConnectionRow` — the
+same two components Ch.9's Step 3 and Settings already share — a third time, gated on
+`checkIntegrationStatus()`, the same helper `finishOnboarding` and Settings already
+call. "Review" is the design's receipt component, and its final submit is
+`sendTemplateRequest` itself, given a new optional `redirectTo` field so the wizard can
+land on its own Success screen (singular vs. plural copy, by assigned-client count)
+while `/collections/manage/[id]`'s own re-send flow keeps landing on itself unchanged.
+
+"Resume where you left off" (the Dashboard's own two-state focal card, §12.4) needed no
+new schema column: a Collection Request definition counts as "in progress" for exactly
+as long as it has zero `collectionRequests` rows pointing at it — i.e., it was created
+but never actually sent — a fact `src/lib/data/collectionRequestDrafts.ts` derives
+directly from existing tables. The same lookup resolves the wizard's own Connect step
+after a Google OAuth round trip, since `/api/auth/google/start`'s allowlist can only
+return to a fixed path with no draft id in the query string — the OAuth callback lands
+on `/collections/new?step=connect` and the page re-resolves "the org's one in-progress
+draft" itself, the same way the Dashboard does.
+
+### 12.4 Onboarding and the Dashboard, On-Demand Only
+
+WhatsApp/Drive connection moved out of onboarding for the on-demand flow specifically —
+connected for the first time inside the wizard's own Connect step, in-context, right
+before the first send, matching the locked design exactly. `finishOnboarding()` is now
+workflow-aware: an on-demand organization's wizard completes with zero integrations
+connected; a recurring organization keeps M9's exact hard gate, since
+`recurringScheduler.ts` runs unattended with no per-send human checkpoint to enforce a
+connection at otherwise. Removing Connect from the on-demand flow's step sequence
+shortened it by one (`ONE_TIME_STEP_META` renumbered 5–8, was 6–9); the recurring
+flow's numbering is completely unchanged — Connect simply moved from a step both flows
+shared into `RECURRING_STEP_META` alone, still at position 5.
+
+`OneTimeDashboard` replaced its one-time "Sample Template" promo card with the design's
+two-state focal card: "צרו את בקשת האיסוף הראשונה שלכם" before any definition exists,
+"השלימו את בקשת האיסוף הראשונה שלכם" once one exists but was never sent, driven by the
+same draft-resolution helper as §12.3. Once an on-demand organization has sent at least
+one Collection Request, the card disappears permanently and the dashboard reverts to
+its existing KPI view — redesigning that returning-user view was explicitly out of this
+project's scope, per the original design brief's own boundary.
+
+The `workflowType === "both"` dashboard (the full recurring queue view) and everything
+under `/services` remain exactly as Chapters 9–10 left them.
+
+---
+
 ## Document History
 
 | Date | Change |
@@ -623,3 +733,4 @@ confirm the corrected empty state.
 | Product Evolution M9 — Recurring vs. On-Demand Collection | See Chapter 10 for the full rationale. Summary: the permanent, organization-wide "recurring vs one-time" lock (Chapter 9) became a per-Service choice (`services.collectionMode`) so one organization can run both at once; onboarding's Collection Style step gained a third "Both" option; a real automatic cycle-creation engine (`src/lib/recurringScheduler.ts`) was built from scratch (`services.collectionFrequencyIntervalMonths` + `client_services.nextCollectionRunAt`, driven by a new cron pass), closing a gap this document had explicitly flagged since Chapter 9 — On-Demand Services remain structurally unable to auto-recur (a hard `WHERE collectionMode = 'recurring'` clause, not a convention); frequency and reminder cadence are now modeled and surfaced as explicitly separate settings; automatic classification is a suggestion only (`clients.classificationConfirmedAt`) until a human confirms it, closing a real trust gap where a guess could become authoritative before anyone saw it; WhatsApp and Google Drive became a hard-blocking, live-verified onboarding requirement (`src/lib/integrationRequirements.ts`) instead of best-effort, with a Settings-based reconnect path added since one now genuinely needs to exist; a Drive upload failure right after approval no longer risks losing the document (bytes are held and automatically retried, up to 8 attempts, before escalating); and the "Deactivate automation" toggle, which already behaved like a live switch in the database, is now actually consulted by the send/scheduling pipeline, joined by a narrower per-Service pause. Verified live end-to-end: full registration → onboarding → hard-block-without-integrations flow; classification-suggestion → confirm flow (pending count provably decreasing per confirmation); industry-specific document personalization (a business-consultant category correctly never offered the accounting-specific starter types, and vice versa); pause/resume on a live Service; the global automation toggle; a live-triggered blocked-send showing the exact required reconnect message and a working Settings link; and, most importantly, the automatic engine itself against a real due schedule — a cycle was created for the recurring pairing, the schedule advanced (confirmed non-repeating on an immediate second run), and zero cycles were ever created for the on-demand pairing across the same run. |
 | Smart Profession-Aware Onboarding | See Chapter 11. A read-audit-first pass (not a rebuild — most of the wizard was already profession-generic) that closed six specific gaps: the classifier now reports a cross-profession "conflict" instead of silently discarding an out-of-profession dictionary hit; onboarding gained a persistent "create your own template" path reusing the existing manual Template/Business Type CRUD, never a fork replacing the Excel/AI path; the bulk client-assignment interaction was extracted into one shared component (`ClientAssignmentPanel`) instead of building a second one; Excel-imported rows now get a full row-level review-and-deselect screen before a single row is written to `clients`, closing the one part of "Excel is context, never final truth" the classification-suggestion gate didn't already cover; the Connect step (Step 5) itself now withholds "Continue" until both WhatsApp and Google Drive are verified, instead of the only enforcement being Step 11's final bounce-back; and the chosen profession stays visible in the wizard header from Step 4 onward. No database migration — every change reuses existing schema (`businessTypes`, `clientServices`, `organizations.businessCategory`). |
 | Smart Profession-Aware Onboarding — Final QA Pass | See Chapter 11 §11.7. A dedicated end-to-end review (reading rendered screens, not just source) before closing the project, catching what the original code-only pass missed: Step 5's help text still said connecting was optional, directly contradicting the new hard checkpoint; Step 4's collection-style tooltip and `OfficeInfoForm`'s placeholder both defaulted to accounting examples regardless of profession; the new manual-template UI said "template" while every surrounding screen already said "business type" for the same entity; the disabled Continue button and the profession badge each used one-off styling instead of the app's existing disabled-button and Badge patterns; Step 6's empty state was a bare paragraph pointing to the wrong page name. All text/consistency fixes, no new behavior — re-verified live across all three flows afterward. |
+| The First-Send Journey | See Chapter 12. Implements the frozen, approved First-Send design end to end, scoped explicitly to the on-demand path (Chapter 9/10's Recurring/Services nav, cadence, and classification are untouched, resolving a direct conflict with M9's own "teach the distinction" nav decision). Retires `/templates` from routing and navigation, folding its create/manage functionality into `/collections` as a first-class wizard (`/collections/new`) reusing every existing action from Chapters 9–10 unchanged, plus one new combined create-and-seed-documents action. Moves WhatsApp/Drive connection out of on-demand onboarding entirely — connected for the first time in-context, inside the wizard's own Connect step, right before the first send — while recurring keeps its exact M9 hard gate. Replaces the one-time Dashboard's sample-template promo with a two-state "create/continue your first Collection Request" focal card, its resume signal derived from existing data (a definition with zero sends yet) rather than a new schema column. No database migration. |

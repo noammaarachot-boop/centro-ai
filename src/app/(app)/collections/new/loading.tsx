@@ -1,5 +1,5 @@
 import { SkeletonDetail } from "@/components/app/Skeleton";
 
-export default function NewTemplateLoading() {
+export default function NewCollectionRequestLoading() {
   return <SkeletonDetail sections={1} />;
 }

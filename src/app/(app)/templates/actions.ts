@@ -1,6 +1,6 @@
 "use server";
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { getDb } from "@/db";
@@ -13,8 +13,6 @@ import {
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
-import { suggestTemplateLibrary } from "@/lib/ai/businessCategorySuggestions";
-import { getOrganization } from "@/lib/data/organizations";
 import { snapshotServiceRequirements } from "@/lib/collectionRequestStateMachine";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 
@@ -22,10 +20,16 @@ import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 // one-time-workflow organization (see ARCHITECTURE.md); these actions are
 // thin, Template-branded wrappers around the exact same DB operations
 // src/app/(app)/services/actions.ts already has, differing only in audit
-// copy and redirect targets (a Template's "home" is /templates/[id], not
-// /services/[id]) — kept as their own file rather than literally calling
-// into services/actions.ts so each domain's audit trail reads clearly on
-// its own.
+// copy and redirect targets — kept as their own file rather than literally
+// calling into services/actions.ts so each domain's audit trail reads
+// clearly on its own.
+//
+// First-Send Journey rework — this file (and its sibling Template* components
+// in this same directory) is no longer routed at /templates: that route is
+// retired. The functions here are reused as-is by the Collection Requests
+// wizard (/collections/new) and management page (/collections/manage/[id]),
+// which is now the definition's "home" — only the redirect targets changed.
+// Kept in place rather than moved, to keep this rework's diff minimal.
 
 export interface TemplateFormState {
   error?: string;
@@ -39,7 +43,7 @@ async function getOrgScopedTemplate(organizationId: string, templateId: string) 
     .from(services)
     .where(and(eq(services.id, templateId), eq(services.organizationId, organizationId)))
     .limit(1);
-  if (!template) redirect("/templates");
+  if (!template) redirect("/collections");
   return template;
 }
 
@@ -67,12 +71,69 @@ export async function createTemplate(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "template.created",
-    description: `התבנית "${template.name}" נוצרה`,
+    description: `בקשת האיסוף "${template.name}" נוצרה`,
     actorType: "employee",
     actorUserId: session.userId,
   });
 
-  redirect(`/templates/${template.id}`);
+  // First-Send Journey — continues the Collection Requests wizard rather
+  // than landing on the management page; this action now only ever runs
+  // from the wizard's "What" step (see createCollectionRequestDraft below
+  // for the combined create+seed-documents path used there instead).
+  redirect(`/collections/new?draft=${template.id}`);
+}
+
+// First-Send Journey — the Collection Requests wizard's "What will be
+// sent?" step needs to create the definition AND its initial document list
+// in one submit (the design shows suggested documents pre-checked
+// alongside the name field, not as a separate step). createTemplate above
+// only ever took a name/description, and addTemplateRequirement below only
+// ever adds one document to an *existing* definition — neither fit this
+// specific first-run shape, so this combines them rather than forcing the
+// wizard into two round-trips for what the user experiences as one step.
+export interface CollectionRequestDraftState {
+  error?: string;
+  fieldErrors?: { name?: string };
+}
+
+export async function createCollectionRequestDraft(
+  _prevState: CollectionRequestDraftState,
+  formData: FormData
+): Promise<CollectionRequestDraftState> {
+  const session = await requireSession();
+  const name = String(formData.get("name") ?? "").trim();
+  const requirementNames = formData
+    .getAll("requirementName")
+    .map((v) => String(v).trim())
+    .filter(Boolean);
+
+  if (!name) return { fieldErrors: { name: "נא להזין שם לבקשת האיסוף." } };
+
+  const db = await getDb();
+  const [draft] = await db
+    .insert(services)
+    .values({ organizationId: session.organizationId, name, collectionMode: "on_demand" })
+    .returning();
+
+  if (requirementNames.length > 0) {
+    await db.insert(serviceDocumentRequirements).values(
+      requirementNames.map((reqName, index) => ({
+        serviceId: draft.id,
+        name: reqName,
+        position: index,
+      }))
+    );
+  }
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "template.created",
+    description: `בקשת האיסוף "${draft.name}" נוצרה`,
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  redirect(`/collections/new?draft=${draft.id}&step=who`);
 }
 
 export async function updateTemplate(
@@ -98,12 +159,12 @@ export async function updateTemplate(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "template.updated",
-    description: `פרטי התבנית "${template.name}" עודכנו`,
+    description: `פרטי בקשת האיסוף "${template.name}" עודכנו`,
     actorType: "employee",
     actorUserId: session.userId,
   });
 
-  redirect(`/templates/${template.id}`);
+  redirect(`/collections/manage/${template.id}`);
 }
 
 export async function deleteTemplate(templateId: string) {
@@ -120,16 +181,16 @@ export async function deleteTemplate(templateId: string) {
       await recordAuditEvent({
         organizationId: session.organizationId,
         eventType: "template.deleted",
-        description: `התבנית "${template.name}" נמחקה`,
+        description: `בקשת האיסוף "${template.name}" נמחקה`,
         actorType: "employee",
         actorUserId: session.userId,
       });
     }
   } catch {
-    redirect(`/templates/${templateId}?error=has-history`);
+    redirect(`/collections/manage/${templateId}?error=has-history`);
   }
 
-  redirect("/templates");
+  redirect("/collections");
 }
 
 // Duplicates a template's name/description and every one of its document
@@ -146,7 +207,7 @@ export async function duplicateTemplate(templateId: string) {
     .from(services)
     .where(and(eq(services.id, templateId), eq(services.organizationId, session.organizationId)))
     .limit(1);
-  if (!original) redirect("/templates");
+  if (!original) redirect("/collections");
 
   const [copy] = await db
     .insert(services)
@@ -178,19 +239,19 @@ export async function duplicateTemplate(templateId: string) {
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "template.duplicated",
-    description: `התבנית "${original.name}" שוכפלה ל"${copy.name}"`,
+    description: `בקשת האיסוף "${original.name}" שוכפלה ל"${copy.name}"`,
     actorType: "employee",
     actorUserId: session.userId,
   });
 
-  redirect(`/templates/${copy.id}`);
+  redirect(`/collections/manage/${copy.id}`);
 }
 
 export async function addTemplateRequirement(templateId: string, formData: FormData) {
   const session = await requireSession();
   const name = String(formData.get("name") ?? "").trim();
   if (!name) {
-    redirect(`/templates/${templateId}?error=requirement-name`);
+    redirect(`/collections/manage/${templateId}?error=requirement-name`);
   }
 
   await getOrgScopedTemplate(session.organizationId, templateId);
@@ -201,7 +262,7 @@ export async function addTemplateRequirement(templateId: string, formData: FormD
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "template.requirement_added",
-    description: `מסמך "${name}" נוסף לתבנית`,
+    description: `מסמך "${name}" נוסף לבקשת האיסוף`,
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -330,105 +391,15 @@ export async function moveRequirementDown(templateId: string, requirementId: str
   await moveRequirement(templateId, requirementId, 1);
 }
 
-// The Template Library — one-click starter templates from
-// suggestTemplateLibrary, keyed by canonicalKey (re-derived server-side
-// from the organization's own declared category, never trusted from the
-// client) so the actual document list can't be tampered with via the form.
-export async function createTemplateFromLibrary(formData: FormData) {
-  const session = await requireSession();
-  const canonicalKey = String(formData.get("canonicalKey") ?? "");
-
-  const organization = await getOrganization(session.organizationId);
-  if (!organization) redirect("/templates");
-
-  const library = await suggestTemplateLibrary(
-    organization.businessCategory,
-    organization.businessCategoryCustomLabel
-  );
-  const chosen = library.find((entry) => entry.canonicalKey === canonicalKey);
-  if (!chosen) redirect("/templates");
-
-  const db = await getDb();
-  const [template] = await db
-    .insert(services)
-    .values({ organizationId: session.organizationId, name: chosen.name, collectionMode: "on_demand" })
-    .returning();
-
-  if (chosen.suggestedRequirements.length > 0) {
-    await db.insert(serviceDocumentRequirements).values(
-      chosen.suggestedRequirements.map((r, index) => ({
-        serviceId: template.id,
-        name: r.name,
-        position: index,
-      }))
-    );
-  }
-
-  await recordAuditEvent({
-    organizationId: session.organizationId,
-    eventType: "template.created_from_library",
-    description: `התבנית "${template.name}" נוצרה מספריית התבניות`,
-    actorType: "employee",
-    actorUserId: session.userId,
-  });
-
-  redirect(`/templates/${template.id}`);
-}
-
-// Idempotent-ish first-run seeding, mirroring
-// src/lib/businessTypes.ts's seedStarterBusinessTypes pattern: called every
-// time the Templates page loads, only actually creates anything when the
-// organization has zero templates. Deliberately checks emptiness rather
-// than a persisted "already seeded" flag — simpler, and the one edge case
-// it accepts (a user deletes all 3 examples, then a later visit reseeds
-// them) is low-stakes and easily deleted again, not worth a new schema
-// column for.
-export async function seedExampleTemplates(organizationId: string) {
-  const db = await getDb();
-  // Product Evolution M9 — scoped to on_demand Services specifically: an
-  // organization can now also have Recurring Services (Business Types),
-  // and their existence must never suppress seeding this organization's
-  // very first on-demand sample Templates.
-  const [{ count }] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(services)
-    .where(
-      and(eq(services.organizationId, organizationId), eq(services.collectionMode, "on_demand"))
-    );
-  if (count > 0) return;
-
-  const organization = await getOrganization(organizationId);
-  if (!organization) return;
-
-  const library = await suggestTemplateLibrary(
-    organization.businessCategory,
-    organization.businessCategoryCustomLabel
-  );
-  const toSeed = library.slice(0, 3);
-
-  for (const entry of toSeed) {
-    const [template] = await db
-      .insert(services)
-      .values({ organizationId, name: entry.name, isSampleTemplate: true, collectionMode: "on_demand" })
-      .returning();
-    if (entry.suggestedRequirements.length > 0) {
-      await db.insert(serviceDocumentRequirements).values(
-        entry.suggestedRequirements.map((r, index) => ({
-          serviceId: template.id,
-          name: r.name,
-          position: index,
-        }))
-      );
-    }
-  }
-
-  await recordAuditEvent({
-    organizationId,
-    eventType: "template.examples_seeded",
-    description: `${toSeed.length} תבניות לדוגמה נוצרו אוטומטית`,
-    actorType: "system",
-  });
-}
+// First-Send Journey — the one-click "start from library" flow
+// (createTemplateFromLibrary) and the auto-seeded sample templates
+// (seedExampleTemplates) both lived on the retired /templates list page.
+// Removed rather than kept dead: the wizard's "What will be sent?" step
+// now shows the same suggestTemplateLibrary suggestions inline, pre-checked,
+// as part of creating the user's own first real Collection Request (see
+// createCollectionRequestDraft above and /collections/new) — a seeded
+// sample a user has to notice and delete works against "guide them to
+// their own real first send as fast as possible."
 
 // Product Evolution M6 — client assignment. Reuses `client_services`
 // directly (the same join table clients/actions.ts's assignService already
@@ -458,7 +429,7 @@ export async function assignClientsToTemplate(templateId: string, formData: Form
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "template.clients_assigned",
-    description: `${clientIds.length} לקוחות שויכו לתבנית`,
+    description: `${clientIds.length} לקוחות שויכו לבקשת האיסוף`,
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -481,7 +452,7 @@ export async function createAndAssignClientToTemplate(templateId: string, formDa
   const phone = String(formData.get("phone") ?? "").trim();
   const notes = String(formData.get("notes") ?? "").trim();
   if (!name || !phone) {
-    redirect(`/templates/${templateId}?error=client-fields`);
+    redirect(`/collections/manage/${templateId}?error=client-fields`);
   }
 
   const db = await getDb();
@@ -509,7 +480,7 @@ export async function createAndAssignClientToTemplate(templateId: string, formDa
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "clients.created",
-      description: `הלקוח/ה "${name}" נוצר/ה מתוך תבנית`,
+      description: `הלקוח/ה "${name}" נוצר/ה מתוך בקשת איסוף`,
       actorType: "employee",
       actorUserId: session.userId,
       clientId,
@@ -521,7 +492,7 @@ export async function createAndAssignClientToTemplate(templateId: string, formDa
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "template.clients_assigned",
-    description: `הלקוח/ה "${name}" שויך/ה לתבנית`,
+    description: `הלקוח/ה "${name}" שויך/ה לבקשת האיסוף`,
     actorType: "employee",
     actorUserId: session.userId,
     clientId,
@@ -561,7 +532,7 @@ export async function removeClientFromTemplate(templateId: string, assignmentId:
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "template.client_removed",
-    description: "לקוח הוסר מהתבנית",
+    description: "לקוח הוסר מבקשת האיסוף",
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -581,15 +552,24 @@ export async function removeClientFromTemplate(templateId: string, assignmentId:
 // Either way, delivery itself is the one shared function
 // (attemptScheduledDelivery) — there is no separate "send immediately"
 // code path to keep in sync with the scheduled one.
+// First-Send Journey — `redirectTo` lets the Collection Requests wizard's
+// Review step land on its own Success screen (/collections/new?draft=...
+// &step=success) after sending, while the manage page (/collections/manage/
+// [id]) keeps landing back on itself with a "sent" banner, same as before —
+// same action, same DB effect, just a different place to report the result.
+// Defaults to the manage page so every existing call site keeps working
+// unchanged.
 export async function sendTemplateRequest(templateId: string, formData: FormData) {
   const session = await requireSession();
   await getOrgScopedTemplate(session.organizationId, templateId);
 
   const clientIds = formData.getAll("clientId").map(String).filter(Boolean);
   const sendMode = String(formData.get("sendMode") ?? "now");
+  const redirectTo = formData.get("redirectTo")?.toString() || `/collections/manage/${templateId}`;
+  const sep = redirectTo.includes("?") ? "&" : "?";
 
   if (clientIds.length === 0) {
-    redirect(`/templates/${templateId}?error=no-clients-selected`);
+    redirect(`${redirectTo}${sep}error=no-clients-selected`);
   }
 
   let scheduledAt = new Date();
@@ -597,7 +577,7 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     const raw = String(formData.get("scheduledFor") ?? "");
     const parsed = raw ? new Date(raw) : null;
     if (!parsed || Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {
-      redirect(`/templates/${templateId}?error=invalid-schedule`);
+      redirect(`${redirectTo}${sep}error=invalid-schedule`);
     }
     scheduledAt = parsed;
   }
@@ -608,7 +588,7 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     .from(services)
     .where(and(eq(services.id, templateId), eq(services.organizationId, session.organizationId)))
     .limit(1);
-  if (!template) redirect("/templates");
+  if (!template) redirect("/collections");
 
   const periodLabel = `${template.name} — ${new Date().toLocaleDateString("he-IL")}`;
   let sentCount = 0;
@@ -639,7 +619,7 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "collection_request.created",
-      description: `נפתחה בקשת איסוף מתבנית "${template.name}"`,
+      description: `נפתחה בקשת איסוף "${template.name}"`,
       actorType: "employee",
       actorUserId: session.userId,
       clientId,
@@ -655,5 +635,5 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     }
   }
 
-  redirect(`/templates/${templateId}?sent=${sentCount}&scheduled=${scheduledCount}`);
+  redirect(`${redirectTo}${sep}sent=${sentCount}&scheduled=${scheduledCount}`);
 }

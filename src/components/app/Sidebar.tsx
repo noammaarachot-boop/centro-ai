@@ -8,7 +8,6 @@ import {
   LayoutDashboard,
   Users,
   Layers,
-  LayoutTemplate,
   FolderKanban,
   ScrollText,
   Settings,
@@ -34,19 +33,21 @@ const SUPPORT_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURI
 // (see the `external` branch in the nav .map() below).
 //
 // Product Evolution M9 — a single nav for every organization, regardless
-// of which collection mode it started onboarding with. "שירותים"/
-// "תבניות" used to be two mutually-exclusive, workflow-gated labels for
-// what was structurally the same underlying page family (services vs.
-// templates, both just Service rows — see ARCHITECTURE.md); now that any
-// organization can use both modes, they're two permanent, always-visible
-// links using the approved product terminology directly, so the nav itself
-// teaches the distinction rather than hiding one side of it.
+// of which collection mode it started onboarding with. "שירותים" stays its
+// own permanent, always-visible link for Recurring Services — untouched by
+// the First-Send Journey rework below.
+//
+// First-Send Journey — "תבניות" (On-Demand Templates, /templates) is
+// retired: its create/manage functionality now lives inside "בקשות איסוף"
+// itself (/collections — see that page's own "+ New" entry point and
+// /collections/new), so a separate nav link for it would just duplicate
+// this one. Recurring's own nav entry and terminology are deliberately
+// untouched — this only changes the on-demand side.
 const NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
   { href: "/assistant", label: "עוזר AI", icon: Sparkles, hidden: true },
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/services", label: "איסוף מחזורי", icon: Layers },
-  { href: "/templates", label: "איסוף לפי צורך", icon: LayoutTemplate },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
   { href: "/audit", label: "פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },

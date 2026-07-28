@@ -38,12 +38,22 @@ export const metadata: Metadata = {
 
 type StepMeta = { title: string; description?: string; help?: string };
 
-// Steps 1-5 are identical for both workflows — the fork (Collection Style,
-// Step 4) only changes what step 6 onward looks like. Step component
+// Steps 1-4 are identical for both workflows — the fork (Collection Style,
+// Step 4) only changes what step 5 onward looks like. Step component
 // filenames keep their original (pre-M1) numbers where reused
 // (Step3Connect, Step4Import, ...) — renaming them for a cosmetic match to
 // their current wizard position is pure churn. STEP_META's keys are the
 // one source of truth for actual wizard position.
+//
+// First-Send Journey — Step3Connect (Connect Google Drive + WhatsApp) used
+// to be shared step 5 for both flows. It's now recurring-only (moved into
+// RECURRING_STEP_META below, still key 5, so recurring's numbering is
+// completely unchanged): the on-demand flow connects for the first time
+// inside the Collection Requests wizard, in-context, right before its
+// first send — recurring keeps connecting during onboarding because its
+// automation runs unattended, with no per-send human checkpoint to enforce
+// it at otherwise. This is why on-demand's own steps below start at 5, not
+// 6 — one step shorter than before.
 const SHARED_STEP_META: Record<number, StepMeta> = {
   1: { title: "ברוכים הבאים ל-Centro" },
   2: {
@@ -61,14 +71,14 @@ const SHARED_STEP_META: Record<number, StepMeta> = {
     description: "איך אתם בדרך כלל אוספים מסמכים מהלקוחות שלכם?",
     help: "הבחירה כאן קובעת רק את שלבי ההקמה הבאים — אחרי ההקמה, כל משרד יכול להשתמש גם באיסוף מחזורי וגם באיסוף לפי צורך, בכל עת.",
   },
+};
+
+const RECURRING_STEP_META: Record<number, StepMeta> = {
   5: {
     title: "חיבור שירותים",
     description: "יש לחבר את Google Drive ואת WhatsApp Business כדי להמשיך — שני החיבורים הכרחיים להמשך ההקמה.",
     help: "לא ניתן להמשיך לשלב הבא לפני ששני השירותים מחוברים: Centro פונה ללקוחות ומקבל מהם מסמכים דרך WhatsApp, ושומר כל מסמך מאושר ב-Drive שלכם — בלעדיהם אין מה לאסוף ואיפה לשמור. ניתן תמיד לנתק ולהתחבר מחדש בהמשך, מתוך ההגדרות.",
   },
-};
-
-const RECURRING_STEP_META: Record<number, StepMeta> = {
   6: {
     title: "ייבוא לקוחות",
     description: "העלו את רשימת הלקוחות שלכם. Centro יארגן ויסווג אותם אוטומטית.",
@@ -96,26 +106,29 @@ const RECURRING_STEP_META: Record<number, StepMeta> = {
   11: { title: "Centro מוכן!" },
 };
 
+// First-Send Journey — renumbered 5-8 (was 6-9): no Connect step in this
+// flow anymore, so every later step moved down by one. See the comment
+// above RECURRING_STEP_META for why.
 const ONE_TIME_STEP_META: Record<number, StepMeta> = {
-  6: {
+  5: {
     title: "ייבוא לקוחות (אופציונלי)",
     description: "אפשר לייבא כבר עכשיו רשימת לקוחות, או לדלג ולהוסיף מאוחר יותר.",
     help: "בתהליך העבודה החד-פעמי נשמרים רק שם וטלפון — ללא סיווג או ניתוח נוסף. ייבוא הוא תמיד אופציונלי.",
   },
-  7: {
+  6: {
     title: "שעות פעילות",
     description: "באילו ימים ושעות Centro רשאי לפנות ללקוחות?",
     help: "Centro פונה ללקוחות רק בשעות הפעילות שהגדרתם, ולעולם לא מחוץ להן — גם בתהליך עבודה חד-פעמי.",
   },
-  8: {
+  7: {
     title: "סיכום",
     description: "בדקו שהכול מוגדר נכון לפני שמתחילים.",
   },
-  9: { title: "Centro מוכן!" },
+  8: { title: "Centro מוכן!" },
 };
 
 const RECURRING_TOTAL_STEPS = 11;
-const ONE_TIME_TOTAL_STEPS = 9;
+const ONE_TIME_TOTAL_STEPS = 8;
 
 // Product Evolution M9 — "recurring" and "both" both get the fuller
 // (recurring) wizard path, since post-onboarding on-demand needs no setup
@@ -128,7 +141,7 @@ function isShortWizardFlow(workflowType: string): boolean {
 }
 
 function stepMetaFor(workflowType: string, step: number): StepMeta {
-  if (step <= 5) return SHARED_STEP_META[step];
+  if (step <= 4) return SHARED_STEP_META[step];
   return (isShortWizardFlow(workflowType) ? ONE_TIME_STEP_META : RECURRING_STEP_META)[step];
 }
 
@@ -191,7 +204,7 @@ export default async function OnboardingPage({
 
   let body: React.ReactNode;
 
-  if (step <= 5) {
+  if (step <= 4) {
     switch (step) {
       case 1: {
         body = <Step1Welcome displayName={session.fullName || organization.name} />;
@@ -214,6 +227,39 @@ export default async function OnboardingPage({
         body = <Step4CollectionStyle />;
         break;
       }
+    }
+  } else if (isShortWizardFlow(organization.workflowType)) {
+    switch (step) {
+      case 5: {
+        const clientList = await listClients(session.organizationId);
+        body = <Step6OneTimeImport totalClients={clientList.length} />;
+        break;
+      }
+      case 6: {
+        body = (
+          <Step7WorkingHours
+            businessHoursStart={organization.businessHoursStart}
+            businessHoursEnd={organization.businessHoursEnd}
+            businessDays={organization.businessDays}
+          />
+        );
+        break;
+      }
+      case 7: {
+        const clientList = await listClients(session.organizationId);
+        body = <Step8OneTimeSummary organization={organization} totalClients={clientList.length} />;
+        break;
+      }
+      case 8: {
+        body = <Step9OneTimeCompletion />;
+        break;
+      }
+      default: {
+        body = null;
+      }
+    }
+  } else {
+    switch (step) {
       case 5: {
         body = (
           <Step3Connect
@@ -227,39 +273,6 @@ export default async function OnboardingPage({
         );
         break;
       }
-    }
-  } else if (isShortWizardFlow(organization.workflowType)) {
-    switch (step) {
-      case 6: {
-        const clientList = await listClients(session.organizationId);
-        body = <Step6OneTimeImport totalClients={clientList.length} />;
-        break;
-      }
-      case 7: {
-        body = (
-          <Step7WorkingHours
-            businessHoursStart={organization.businessHoursStart}
-            businessHoursEnd={organization.businessHoursEnd}
-            businessDays={organization.businessDays}
-          />
-        );
-        break;
-      }
-      case 8: {
-        const clientList = await listClients(session.organizationId);
-        body = <Step8OneTimeSummary organization={organization} totalClients={clientList.length} />;
-        break;
-      }
-      case 9: {
-        body = <Step9OneTimeCompletion />;
-        break;
-      }
-      default: {
-        body = null;
-      }
-    }
-  } else {
-    switch (step) {
       case 6: {
         const existingTypes = await listBusinessTypes(session.organizationId);
         body = <Step4Import existingTypes={existingTypes} />;
@@ -360,7 +373,7 @@ export default async function OnboardingPage({
       businessCategoryLabel={businessCategoryLabel}
       businessCategoryIcon={businessCategoryIcon}
     >
-      {error && step === 5 && STEP5_ERROR_MESSAGES[error] && (
+      {error && step === 5 && !isShortWizardFlow(organization.workflowType) && STEP5_ERROR_MESSAGES[error] && (
         <p
           role="alert"
           className="mb-4 animate-fade-in-up rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"

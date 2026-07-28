@@ -14,11 +14,11 @@ import {
   deleteTemplate,
   duplicateTemplate,
   updateTemplate,
-} from "../actions";
-import { TemplateForm } from "../TemplateForm";
-import { TemplateRequirementRow } from "../TemplateRequirementRow";
-import { TemplateClientAssignment } from "../TemplateClientAssignment";
-import { TemplateSendRequest } from "../TemplateSendRequest";
+} from "../../../templates/actions";
+import { TemplateForm } from "../../../templates/TemplateForm";
+import { TemplateRequirementRow } from "../../../templates/TemplateRequirementRow";
+import { TemplateClientAssignment } from "../../../templates/TemplateClientAssignment";
+import { TemplateSendRequest } from "../../../templates/TemplateSendRequest";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
@@ -26,19 +26,21 @@ import { EmptyState } from "@/components/app/EmptyState";
 import { ConfirmDialog } from "@/components/app/ConfirmDialog";
 import { fieldClass } from "@/components/app/FormField";
 
-// M8 hardening — every redirect-with-?error= from actions.ts needs a real
-// message here; before this, only "has-history" was ever displayed, so a
-// rejected action (e.g. scheduling a send in the past) redirected the user
-// right back to the page with no visible feedback at all.
+// First-Send Journey — this is the retired /templates/[id] page, moved
+// here so its route matches the new "בקשות איסוף" nav entry / IA. Nothing
+// about its actual behavior changed: same components, same actions (still
+// living in src/app/(app)/templates/, which is no longer itself a routed
+// folder — see that directory's actions.ts header comment), just the
+// route and the user-facing copy.
 const ERROR_MESSAGES: Record<string, string> = {
-  "has-history": "לא ניתן למחוק תבנית שיש לה היסטוריית בקשות איסוף.",
+  "has-history": "לא ניתן למחוק בקשת איסוף שיש לה היסטוריית שליחות.",
   "invalid-schedule": "יש לבחור מועד עתידי לתזמון השליחה.",
   "no-clients-selected": "יש לבחור לפחות לקוח אחד לשליחה.",
   "requirement-name": "יש להזין שם מסמך.",
   "client-fields": "יש למלא שם וטלפון עבור הלקוח החדש.",
 };
 
-export default async function TemplateDetailPage({
+export default async function CollectionRequestManagePage({
   params,
   searchParams,
 }: {
@@ -54,9 +56,6 @@ export default async function TemplateDetailPage({
 
   const template = await getService(session.organizationId, id);
   if (!template) notFound();
-  // Product Evolution M9 — gated on this specific Service's own mode, not
-  // the organization's (an org can have both kinds now); a Recurring
-  // Service lives at /services/[id], not here.
   if (template.collectionMode !== "on_demand") notFound();
 
   const requirements = await listServiceRequirements(id);
@@ -72,11 +71,11 @@ export default async function TemplateDetailPage({
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
       <div>
         <Link
-          href="/templates"
+          href="/collections"
           className="mb-3 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
-          חזרה לתבניות
+          חזרה לבקשות איסוף
         </Link>
         <PageHeader
           title={template.name}
@@ -111,14 +110,14 @@ export default async function TemplateDetailPage({
         <div className="flex items-start gap-2.5 rounded-xl border border-brand-purple/25 bg-brand-purple/5 px-4 py-3 text-sm text-text-secondary">
           <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-brand-purple" />
           <p>
-            זו תבנית לדוגמה. אפשר לערוך, להסיר, לשנות שם או להוסיף מסמכים ולהתאים אותה
-            באופן מלא בכל עת — זו רק נקודת התחלה.
+            זו בקשת איסוף לדוגמה שנוצרה בעבר. אפשר לערוך, להסיר, לשנות שם או להוסיף מסמכים
+            ולהתאים אותה באופן מלא בכל עת.
           </p>
         </div>
       )}
 
       <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי תבנית</h2>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">פרטי הבקשה</h2>
         <TemplateForm
           action={boundUpdate}
           submitLabel="שמירת שינויים"
@@ -129,7 +128,7 @@ export default async function TemplateDetailPage({
       <Card>
         <h2 className="mb-1 text-lg font-semibold text-text-primary">מסמכים נדרשים</h2>
         <p className="mb-4 text-sm text-text-muted">
-          המסמכים שיתבקשו מכל לקוח שהתבנית הזו תישלח אליו. אפשר לגרור את סדר התצוגה
+          המסמכים שיתבקשו מכל לקוח שהבקשה הזו תישלח אליו. אפשר לגרור את סדר התצוגה
           באמצעות החצים, לשנות שם בלחיצה על השדה, או להסיר.
         </p>
 
@@ -177,15 +176,15 @@ export default async function TemplateDetailPage({
       <TemplateSendRequest templateId={template.id} assignedClients={assignedClients} />
 
       <ConfirmDialog
-        title="מחיקת תבנית"
-        description={`למחוק את "${template.name}"? פעולה זו אינה הפיכה. אם לתבנית יש היסטוריית בקשות איסוף, המחיקה תיחסם.`}
-        confirmLabel="מחיקת תבנית"
+        title="מחיקת בקשת איסוף"
+        description={`למחוק את "${template.name}"? פעולה זו אינה הפיכה. אם לבקשה יש היסטוריית שליחות, המחיקה תיחסם.`}
+        confirmLabel="מחיקה"
         formAction={boundDelete}
         triggerClassName="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
         trigger={
           <>
             <Trash2 className="h-4 w-4" />
-            מחיקת תבנית
+            מחיקת בקשת איסוף
           </>
         }
       />

@@ -84,7 +84,7 @@ export function GoogleDriveConnectionRow({
   googleDriveFolderName: string | null;
   /** Where /api/auth/google/callback sends the user back to — see its own
    * allowlist. Defaults to onboarding's own Step 5. */
-  connectReturnTo?: "/settings";
+  connectReturnTo?: "/settings" | "/collections/new?step=connect";
 }) {
   const isConnected = !!googleConnectedAt;
   const hasFolder = isConnected && !!googleDriveFolderId;

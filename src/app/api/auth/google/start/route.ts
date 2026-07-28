@@ -15,8 +15,19 @@ export const GOOGLE_OAUTH_RETURN_TO_COOKIE = "google_oauth_return_to";
 // RETURN_PATH_ALLOWLIST). An allowlist, not an arbitrary redirect target,
 // so this can never become an open-redirect vector via a crafted
 // `?returnTo=`.
+//
+// First-Send Journey — also reachable from the Collection Requests wizard's
+// Connect step. No draft id is carried through the OAuth round trip: the
+// wizard page re-resolves "the org's one in-progress draft, if any" itself
+// (see resolveDraftCollectionRequest in collections/new/page.tsx), the same
+// lookup its own dashboard focal card uses — so a fixed, allowlisted target
+// works here exactly like every other entry in this set.
 const DEFAULT_RETURN_TO = "/onboarding?step=5";
-const RETURN_TO_ALLOWLIST = new Set([DEFAULT_RETURN_TO, "/settings"]);
+const RETURN_TO_ALLOWLIST = new Set([
+  DEFAULT_RETURN_TO,
+  "/settings",
+  "/collections/new?step=connect",
+]);
 
 // Entry point for the "Connect Google Drive" button (Step3Connect.tsx /
 // Settings) — a plain link to here, not a server action, since this has to

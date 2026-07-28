@@ -21,6 +21,7 @@ import { buildClientRowsFromMapping } from "@/lib/csv";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { markOnboardingComplete } from "@/lib/onboarding";
+import { getOrganization } from "@/lib/data/organizations";
 import { clampCollectionDay } from "@/lib/businessHours";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import { BUSINESS_CATEGORIES, type BusinessCategory } from "@/lib/businessCategories";
@@ -474,8 +475,19 @@ export async function deactivateAutomation() {
 // office back to the Connect step with a specific, honest error instead of
 // letting onboarding complete in a state where Centro can't actually do
 // anything yet.
+// First-Send Journey — the hard integration gate below is now
+// recurring-only. An on-demand ("one_time"/"on_demand") organization's
+// onboarding completes with zero integrations connected: WhatsApp/Drive
+// are connected for the first time inside the Collection Requests wizard,
+// in-context, right before its first send — that wizard's own Connect step
+// is the real (and only) enforcement point for that flow now. Recurring
+// keeps this gate exactly as before, since its automation runs unattended
+// with no per-send human checkpoint to enforce it at otherwise.
 export async function finishOnboarding() {
   const session = await requireSession();
+  const organization = await getOrganization(session.organizationId);
+  const isShortWizardFlow =
+    organization?.workflowType === "one_time" || organization?.workflowType === "on_demand";
 
   const status = await checkIntegrationStatus(session.organizationId);
   // Internal QA Mode — owner-only flag (src/app/owner/(dashboard)/
@@ -495,7 +507,7 @@ export async function finishOnboarding() {
   const isQaMode = !!session.organizationQaModeEnabledAt;
   const whatsappOk = status.whatsappReady || isQaMode;
   const driveOk = status.driveReady || isQaMode;
-  if (!whatsappOk || !driveOk) {
+  if (!isShortWizardFlow && (!whatsappOk || !driveOk)) {
     const errorCode = !whatsappOk && !driveOk
       ? "both-required"
       : !whatsappOk
@@ -513,7 +525,9 @@ export async function finishOnboarding() {
     description:
       isQaMode && (!status.whatsappReady || !status.driveReady)
         ? "אשף ההקמה הושלם במצב בדיקה (ללא חיבורים אמיתיים מלאים)"
-        : "אשף ההקמה הושלם",
+        : isShortWizardFlow && (!status.whatsappReady || !status.driveReady)
+          ? "אשף ההקמה הושלם — WhatsApp ו-Google Drive יחוברו בבקשת האיסוף הראשונה"
+          : "אשף ההקמה הושלם",
     actorType: "employee",
     actorUserId: session.userId,
   });
@@ -1288,8 +1302,8 @@ export async function importClientsSimple(
     metadata: { imported, skipped },
   });
 
-  await setOnboardingStep(session.organizationId, 6);
-  redirect("/onboarding?step=6");
+  await setOnboardingStep(session.organizationId, 5);
+  redirect("/onboarding?step=5");
 }
 
 // Workflow B's own Step 7 ("Working Hours"). Unlike the recurring path's
@@ -1313,7 +1327,7 @@ export async function updateWorkingHours(formData: FormData) {
       businessHoursStart,
       businessHoursEnd,
       businessDays: businessDays || "0,1,2,3,4",
-      onboardingStep: 8,
+      onboardingStep: 7,
       updatedAt: new Date(),
     })
     .where(eq(organizations.id, session.organizationId));
@@ -1326,5 +1340,5 @@ export async function updateWorkingHours(formData: FormData) {
     actorUserId: session.userId,
   });
 
-  redirect("/onboarding?step=8");
+  redirect("/onboarding?step=7");
 }
