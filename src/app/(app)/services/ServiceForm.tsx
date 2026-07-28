@@ -31,7 +31,7 @@ export function ServiceForm({
         type="text"
         required
         defaultValue={defaultValues?.name}
-        placeholder="לדוגמה: עוסק מורשה"
+        placeholder="לדוגמה: סוג הלקוחות שלכם"
         error={state.fieldErrors?.name}
       />
 

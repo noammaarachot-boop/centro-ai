@@ -13,6 +13,7 @@ import {
   listUnclassifiedClients,
 } from "@/lib/businessTypes";
 import { getLatestAuditEventByType } from "@/lib/data/auditLog";
+import { getBusinessCategoryIcon, getBusinessCategoryLabel } from "@/lib/businessCategories";
 import type { ImportAnalysisSummary } from "./actions";
 import { WizardShell } from "./WizardShell";
 import { Step1Welcome } from "./steps/Step1Welcome";
@@ -74,9 +75,9 @@ const RECURRING_STEP_META: Record<number, StepMeta> = {
     help: "הייבוא מתבצע פעם אחת באשף ההקמה, אך תמיד תוכלו להוסיף, לערוך או לייבא עוד לקוחות מאוחר יותר מעמוד הלקוחות.",
   },
   7: {
-    title: "ניתוח AI של הלקוחות",
-    description: "Centro ניתח את הקובץ שהעליתם וסיווג את הלקוחות לפי סוג עסק.",
-    help: "הסיווג מתבצע אוטומטית על ידי Centro על סמך שם העסק. תמיד ניתן לתקן ידנית — בלי לגעת בקובץ המקורי.",
+    title: "סיווג הלקוחות שלכם",
+    description: "Centro הציע סיווג לכל לקוח שיובא, לפי סוג העסק. בדקו ואשרו לפני שממשיכים.",
+    help: "ההצעה מבוססת על שם העסק ופרטים נוספים מהקובץ שהעליתם. תמיד ניתן לתקן ידנית — בלי לגעת בקובץ המקורי.",
   },
   8: {
     title: "מסמכים נדרשים",
@@ -259,7 +260,8 @@ export default async function OnboardingPage({
   } else {
     switch (step) {
       case 6: {
-        body = <Step4Import />;
+        const existingTypes = await listBusinessTypes(session.organizationId);
+        body = <Step4Import existingTypes={existingTypes} />;
         break;
       }
       case 7: {
@@ -337,6 +339,14 @@ export default async function OnboardingPage({
     }
   }
 
+  // Item 6 — visible from step 4 onward only (step 3 is where it's chosen;
+  // showing it there too would just echo the picker back at itself).
+  const businessCategoryLabel =
+    step >= 4
+      ? getBusinessCategoryLabel(organization.businessCategory, organization.businessCategoryCustomLabel)
+      : undefined;
+  const businessCategoryIcon = step >= 4 ? getBusinessCategoryIcon(organization.businessCategory) : undefined;
+
   return (
     <WizardShell
       step={step}
@@ -346,6 +356,8 @@ export default async function OnboardingPage({
       description={meta.description}
       help={meta.help}
       hidePrevious={step === 1}
+      businessCategoryLabel={businessCategoryLabel}
+      businessCategoryIcon={businessCategoryIcon}
     >
       {error && step === 5 && STEP5_ERROR_MESSAGES[error] && (
         <p

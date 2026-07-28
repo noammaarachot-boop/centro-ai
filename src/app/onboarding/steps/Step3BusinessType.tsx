@@ -4,21 +4,15 @@ import { useActionState, useState } from "react";
 import { buttonVariants } from "@/components/app/Button";
 import { fieldClass } from "@/components/app/FormField";
 import { updateBusinessCategory, type BusinessCategoryState } from "../actions";
-import type { BusinessCategory } from "@/lib/businessCategories";
+import { BUSINESS_CATEGORY_LABELS, type BusinessCategory } from "@/lib/businessCategories";
 
 const initialState: BusinessCategoryState = {};
 
-const PRESETS: Array<{ value: Exclude<BusinessCategory, "other">; label: string }> = [
-  { value: "accountant", label: "רואה חשבון" },
-  { value: "tax_advisor", label: "יועץ מס" },
-  { value: "lawyer", label: "עורך דין" },
-  { value: "real_estate", label: "נדל״ן" },
-  { value: "mortgage_advisor", label: "יועץ משכנתאות" },
-  { value: "business_consultant", label: "ייעוץ עסקי" },
-  { value: "insurance", label: "ביטוח" },
-  { value: "hr", label: "משאבי אנוש" },
-  { value: "finance", label: "ייעוץ פיננסי" },
-];
+const PRESETS: Array<{ value: Exclude<BusinessCategory, "other">; label: string }> = (
+  Object.entries(BUSINESS_CATEGORY_LABELS) as Array<
+    [Exclude<BusinessCategory, "other">, string]
+  >
+).map(([value, label]) => ({ value, label }));
 
 export function Step3BusinessType({
   businessCategory,

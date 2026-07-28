@@ -8,6 +8,7 @@ import {
   Layers,
   RefreshCcw,
   Sparkles,
+  TriangleAlert,
   UserRoundX,
 } from "lucide-react";
 import { clsx } from "clsx";
@@ -15,7 +16,6 @@ import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
 import { buttonVariants, Button } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
-import { fieldClass } from "@/components/app/FormField";
 import { CentroMarkGlow } from "@/components/app/CentroMarkGlow";
 import {
   advanceOnboardingStep,
@@ -25,6 +25,8 @@ import {
   type ImportAnalysisSummary,
 } from "../actions";
 import { ImportUploader } from "./ImportUploader";
+import { ManualTemplateCreator } from "./ManualTemplateCreator";
+import { ClientAssignmentPanel } from "./ClientAssignmentPanel";
 
 // Mirrors KpiCard's useCountUp, but starts after a fixed delay so the
 // number only starts climbing once the summary card itself has finished
@@ -86,17 +88,7 @@ export function Step5Analysis({
   importSummary?: ImportAnalysisSummary;
 }) {
   const [expandedTypeId, setExpandedTypeId] = useState<string | null>(null);
-  const [showAssignPanel, setShowAssignPanel] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [creatingNewType, setCreatingNewType] = useState(false);
   const [activeUploader, setActiveUploader] = useState<"replace" | "add" | null>(null);
-  // Product Evolution M9 ("fast and non-exhausting for hundreds of
-  // clients") — a filter narrows a long list down to find specific
-  // clients quickly, and "select all" always means "every currently
-  // filtered client," so an office can divide hundreds of clients into
-  // groups in a few passes (filter -> select all -> assign -> repeat)
-  // instead of hunting through one long scrollable list.
-  const [unclassifiedFilter, setUnclassifiedFilter] = useState("");
 
   const totalClassified = businessTypes.reduce((sum, t) => sum + t.clientCount, 0);
   const total = totalClassified + pendingSuggestions.length + unclassifiedClients.length;
@@ -121,37 +113,6 @@ export function Step5Analysis({
   const classifiedDisplay = useRevealCountUp(totalClassified, 1720);
   const unclassifiedDisplay = useRevealCountUp(unclassifiedClients.length, 1890);
 
-  function toggleSelected(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  const normalizedFilter = unclassifiedFilter.trim().toLowerCase();
-  const filteredUnclassifiedClients = normalizedFilter
-    ? unclassifiedClients.filter(
-        (c) => c.name.toLowerCase().includes(normalizedFilter) || c.phone.includes(normalizedFilter)
-      )
-    : unclassifiedClients;
-  const allFilteredSelected =
-    filteredUnclassifiedClients.length > 0 &&
-    filteredUnclassifiedClients.every((c) => selectedIds.has(c.id));
-
-  function toggleSelectAllFiltered() {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (allFilteredSelected) {
-        for (const c of filteredUnclassifiedClients) next.delete(c.id);
-      } else {
-        for (const c of filteredUnclassifiedClients) next.add(c.id);
-      }
-      return next;
-    });
-  }
-
   if (total === 0) {
     return (
       <div className="space-y-5">
@@ -161,6 +122,12 @@ export function Step5Analysis({
           description="דילגתם על ייבוא לקוחות בשלב הקודם. תמיד תוכלו לייבא ולסווג לקוחות מאוחר יותר מעמוד הלקוחות."
         />
         <ImportUploader mode="add" submitLabel="ייבוא Excel / CSV" />
+        <div className="rounded-xl border border-dashed border-border px-3 py-3">
+          <p className="mb-2 text-xs text-text-secondary">
+            אפשר גם לבנות תבניות בעצמכם, בלי לייבא קובץ.
+          </p>
+          <ManualTemplateCreator existingTypes={businessTypes} />
+        </div>
         <form action={goToStep6}>
           <button
             type="submit"
@@ -178,7 +145,7 @@ export function Step5Analysis({
       <div className="centro-reveal-title flex items-center gap-2">
         <CentroMarkGlow size={22} breathe glow />
         <span className="text-[11px] font-extrabold tracking-wide text-text-muted uppercase">
-          CENTRO פעיל — מנתח כעת
+          CENTRO פעיל — מארגן את הלקוחות שלכם
         </span>
       </div>
 
@@ -244,7 +211,7 @@ export function Step5Analysis({
             <div>
               <p className="text-base font-bold text-text-primary">הייבוא הושלם בהצלחה!</p>
               <p className="centro-reveal-text text-xs text-text-secondary">
-                Centro ניתח וסיווג את הלקוחות אוטומטית
+                Centro סידר וסיווג את הלקוחות עבורכם
               </p>
             </div>
           </div>
@@ -307,6 +274,15 @@ export function Step5Analysis({
           />
         </Card>
       )}
+
+      {/* No name chips here — the full business-type grid right below
+          already shows every existing type (manual or AI-suggested). */}
+      <div className="rounded-xl border border-dashed border-border px-3 py-3">
+        <p className="mb-2 text-xs text-text-secondary">
+          מעדיפים לבנות תבנית בעצמכם, בלי להסתמך על סיווג אוטומטי?
+        </p>
+        <ManualTemplateCreator existingTypes={[]} />
+      </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {businessTypes.map((type, index) => {
@@ -451,6 +427,38 @@ export function Step5Analysis({
         </Card>
       )}
 
+      {/* Smart Profession-Aware Onboarding — Excel is context, never final
+          truth: a row whose raw text matched a real business-type term
+          (e.g. "עוסק מורשה") that doesn't exist in this org's own profession
+          is never silently left as a plain "unclassified" — it's called out
+          here explicitly so the office can review it and decide (create a
+          matching type manually, or leave it unassigned). These clients
+          also appear in the unclassified panel below for actual assignment;
+          this card is purely the "here's what looked odd" explanation. */}
+      {(importSummary?.conflicts?.length ?? 0) > 0 && (
+        <Card className="border-warning/40 bg-warning/10">
+          <div className="flex items-start gap-3">
+            <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-text-primary">
+                {importSummary!.conflicts!.length} לקוחות מכילים סימון שלא מתאים לתחום הפעילות שלכם
+              </p>
+              <p className="mt-1 text-xs text-text-secondary">
+                Centro לא מיישם סיווג כזה באופן אוטומטי — בדקו אותם ידנית בפאנל השיוך למטה.
+              </p>
+              <ul className="mt-2 space-y-1 text-xs text-text-secondary">
+                {importSummary!.conflicts!.map((c) => (
+                  <li key={c.clientId}>
+                    <span className="font-medium text-text-primary">{c.clientName}</span> — נמצא
+                    הערך &quot;{c.matchedText}&quot;, המתאים ל&quot;{c.typeLabel}&quot;
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {unclassifiedClients.length > 0 && (
         <Card className="border-warning/30 bg-warning/5">
           <div className="flex items-start gap-3">
@@ -465,16 +473,13 @@ export function Step5Analysis({
                 יכול להתחיל לעבוד גם כך, וימשיך ללמוד אילו מסמכים כל לקוח שולח באופן קבוע
                 וישפר את איסוף המסמכים העתידי אוטומטית.
               </p>
-              <div className="mt-3 flex flex-wrap gap-3">
-                {!showAssignPanel ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowAssignPanel(true)}
-                    className={buttonVariants({ variant: "secondary", size: "sm" })}
-                  >
-                    שיוך סוג עסק
-                  </button>
-                ) : null}
+              <div className="mt-3 flex flex-wrap items-start gap-3">
+                <ClientAssignmentPanel
+                  clients={unclassifiedClients}
+                  templates={businessTypes}
+                  assignAction={assignBusinessTypeAction}
+                  toggleLabel="שיוך סוג עסק"
+                />
                 <form action={goToStep6}>
                   <button
                     type="submit"
@@ -484,116 +489,6 @@ export function Step5Analysis({
                   </button>
                 </form>
               </div>
-              {showAssignPanel && (
-                <form
-                  action={assignBusinessTypeAction}
-                  className="animate-fade-in-up mt-3 space-y-3 rounded-xl border border-border bg-surface p-3"
-                >
-                  {unclassifiedClients.length > 8 && (
-                    <input
-                      type="text"
-                      value={unclassifiedFilter}
-                      onChange={(e) => setUnclassifiedFilter(e.target.value)}
-                      placeholder="חיפוש לפי שם או טלפון..."
-                      className={fieldClass("sm")}
-                    />
-                  )}
-
-                  <div className="flex items-center justify-between">
-                    <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
-                      <input
-                        type="checkbox"
-                        checked={allFilteredSelected}
-                        onChange={toggleSelectAllFiltered}
-                        className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
-                      />
-                      {normalizedFilter
-                        ? `בחירת כל התוצאות המסוננות (${filteredUnclassifiedClients.length})`
-                        : `בחירת הכל (${filteredUnclassifiedClients.length})`}
-                    </label>
-                    {selectedIds.size > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedIds(new Set())}
-                        className="text-xs font-medium text-text-muted hover:underline"
-                      >
-                        ביטול בחירה
-                      </button>
-                    )}
-                  </div>
-
-                  <ul className="max-h-60 space-y-1.5 overflow-y-auto">
-                    {filteredUnclassifiedClients.map((c) => (
-                      <li key={c.id}>
-                        <label className="flex items-center gap-2 text-xs text-text-primary">
-                          <input
-                            type="checkbox"
-                            name="clientId"
-                            value={c.id}
-                            checked={selectedIds.has(c.id)}
-                            onChange={() => toggleSelected(c.id)}
-                            className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
-                          />
-                          {c.name}{" "}
-                          <span dir="ltr" className="text-text-muted">
-                            ({c.phone})
-                          </span>
-                        </label>
-                      </li>
-                    ))}
-                    {filteredUnclassifiedClients.length === 0 && (
-                      <li className="text-xs text-text-muted">אין לקוחות תואמים לחיפוש.</li>
-                    )}
-                  </ul>
-
-                  {/* Selected clients outside the current filter must still
-                      submit — the checkboxes above only render the
-                      filtered subset, so their hidden values here keep any
-                      previously-selected-then-filtered-out client in the
-                      submitted form data too. */}
-                  {[...selectedIds]
-                    .filter((id) => !filteredUnclassifiedClients.some((c) => c.id === id))
-                    .map((id) => (
-                      <input key={id} type="hidden" name="clientId" value={id} />
-                    ))}
-
-                  {!creatingNewType ? (
-                    <div className="flex items-center gap-2">
-                      <select
-                        name="businessTypeId"
-                        required
-                        className={fieldClass("sm", "flex-1")}
-                      >
-                        <option value="">— בחירת סוג עסק —</option>
-                        {businessTypes.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => setCreatingNewType(true)}
-                        className="whitespace-nowrap text-xs font-medium text-brand-purple hover:underline"
-                      >
-                        + סוג חדש
-                      </button>
-                    </div>
-                  ) : (
-                    <input
-                      name="newTypeName"
-                      type="text"
-                      required
-                      placeholder="שם סוג העסק החדש"
-                      className={fieldClass("sm")}
-                    />
-                  )}
-
-                  <Button type="submit" variant="primary" size="sm" disabled={selectedIds.size === 0}>
-                    שיוך {selectedIds.size > 0 ? `(${selectedIds.size})` : ""}
-                  </Button>
-                </form>
-              )}
             </div>
           </div>
         </Card>

@@ -165,6 +165,20 @@ export function GoogleDriveConnectionRow({
   );
 }
 
+// Smart Profession-Aware Onboarding (item 8) — Step 5 used to let anyone
+// through to Step 6 regardless of connection status, with the only real
+// check living all the way at Step 11's "Go to Dashboard" (finishOnboarding
+// in actions.ts), which then bounced the user all the way back here. Now
+// Step 5 itself is the checkpoint: "Continue" simply doesn't render as a
+// working submit button until both are ready. No client-side polling is
+// needed for this to react live — both connection paths already force a
+// fresh server render of this exact Server Component (WhatsAppConnectButton
+// calls router.refresh() on success; the Google OAuth callback and the
+// folder-create/pick actions land back on this same page URL, and Step3Connect's
+// own actions.ts handlers already call refresh()/redirect() here too), so
+// these props are never stale by the time the user looks at the button
+// again. finishOnboarding's own check stays in place as defense-in-depth —
+// this only closes the *UX* gap, not the only real enforcement.
 export function Step3Connect({
   googleConnectedAt,
   googleDriveFolderId,
@@ -179,6 +193,9 @@ export function Step3Connect({
   whatsappDisplayPhoneNumber: string | null;
 }) {
   const goToStep4 = advanceOnboardingStep.bind(null, 6);
+  const driveReady = !!googleConnectedAt && !!googleDriveFolderId;
+  const whatsappReady = !!whatsappConnectedAt;
+  const bothReady = driveReady && whatsappReady;
 
   return (
     <div className="space-y-4">
@@ -192,14 +209,42 @@ export function Step3Connect({
         whatsappDisplayPhoneNumber={whatsappDisplayPhoneNumber}
       />
 
-      <form action={goToStep4} className="pt-2">
-        <button
-          type="submit"
-          className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}
-        >
-          המשך
-        </button>
-      </form>
+      {!bothReady && (
+        <p className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-xs leading-relaxed text-text-secondary">
+          {!driveReady && !whatsappReady
+            ? "יש לחבר גם את Google Drive וגם את WhatsApp Business כדי להמשיך — שניהם הכרחיים כדי ש-Centro יוכל לתקשר עם לקוחות ולשמור מסמכים."
+            : !whatsappReady
+              ? "יש לחבר את WhatsApp Business כדי להמשיך."
+              : "יש לחבר את Google Drive ולבחור תיקייה כדי להמשיך."}
+        </p>
+      )}
+
+      {bothReady ? (
+        <form action={goToStep4} className="pt-2">
+          <button
+            type="submit"
+            className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}
+          >
+            המשך
+          </button>
+        </form>
+      ) : (
+        <div className="pt-2">
+          <button
+            type="button"
+            disabled
+            aria-disabled="true"
+            title="יש לחבר את שני השירותים כדי להמשיך"
+            className={buttonVariants({
+              variant: "primary",
+              size: "lg",
+              className: "w-full cursor-not-allowed opacity-50",
+            })}
+          >
+            המשך
+          </button>
+        </div>
+      )}
     </div>
   );
 }

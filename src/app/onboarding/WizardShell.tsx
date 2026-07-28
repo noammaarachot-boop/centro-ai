@@ -24,6 +24,8 @@ export function WizardShell({
   help,
   hidePrevious,
   children,
+  businessCategoryLabel,
+  businessCategoryIcon,
 }: {
   step: number;
   totalSteps: number;
@@ -33,12 +35,26 @@ export function WizardShell({
   help?: React.ReactNode;
   hidePrevious?: boolean;
   children: React.ReactNode;
+  // Smart Profession-Aware Onboarding (item 6) — passed from step 4 onward
+  // (once a profession has actually been chosen at Step 3) so the office
+  // never loses track of which profession Centro is being configured for,
+  // no matter how deep into the wizard they are.
+  businessCategoryLabel?: string;
+  businessCategoryIcon?: string;
 }) {
   const progressPercent = Math.round((step / totalSteps) * 100);
 
   return (
     <main className="centro-app-ambient flex min-h-screen justify-center px-4 py-10 sm:py-16">
       <div className="w-full max-w-xl">
+        {businessCategoryLabel && (
+          <div className="mb-3 flex justify-center">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted/60 px-3 py-1 text-xs font-medium text-text-secondary">
+              <span aria-hidden="true">{businessCategoryIcon ?? "🏢"}</span>
+              {businessCategoryLabel}
+            </span>
+          </div>
+        )}
         <div className="mb-8">
           <div className="mb-2 flex items-center justify-between text-xs font-medium text-text-muted">
             <span>
@@ -74,7 +90,7 @@ export function WizardShell({
 
           <div className="mb-6 flex flex-wrap items-start justify-between gap-2">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-text-primary">{title}</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-text-primary text-balance">{title}</h1>
               {description && (
                 <p className="mt-1.5 max-w-md text-sm leading-relaxed text-text-secondary">
                   {description}

@@ -439,6 +439,96 @@ button itself, not just in this document.
 
 ---
 
+## Chapter 11 — Smart Profession-Aware Onboarding
+
+Centro's onboarding wizard was originally built accounting-firm-first. This chapter
+records a read-audit-first redesign that closed the specific gaps between that origin
+and the multi-profession product Centro has become — deliberately not a rebuild, since
+the audit found most of the wizard (starter document suggestions per business category,
+manual Template/Business Type CRUD, the AI-suggests/human-confirms classification gate)
+was already generic. What follows is what was actually missing.
+
+### 11.1 A Classifier With No Opinion About What "Its Own" Candidates Are
+
+`classifyClientBusinessType` (`src/lib/ai/businessTypeClassifier.ts`) matches imported
+row text against `BUSINESS_TYPE_SYNONYMS`, a dictionary of Israeli accounting terms
+(`עוסק מורשה`, `בע"מ`, …), unconditionally — it has no parameter for "which profession is
+this organization." Before this chapter, that was safe only by construction: an
+insurance organization's own `candidates` list (seeded per its `businessCategory`, Ch.10
+§10.5/M2) never contains an accounting `canonicalKey`, so a dictionary hit for
+"עוסק מורשה" always fell through to a plain, unexplained "unclassified." The classifier
+now reports this case explicitly — `BusinessTypeClassification.conflict` — instead of
+silently discarding the signal. `importParsedRows` collects these into
+`ImportAnalysisSummary.conflicts` and Step 5 shows them by name: which client, what text
+matched, which (out-of-profession) type it resembles. Nothing is auto-applied from a
+conflict; it exists purely so the office can look, not so Centro can guess harder.
+
+### 11.2 Templates Without Excel or AI
+
+The manual Template/Business Type CRUD at `/templates` and `/services` already let an
+office build a checklist by hand — Chapter 9/10's own text is explicit that this was
+never Excel-only. What onboarding itself never offered was a way to reach that same
+CRUD *from inside the wizard*, without first uploading a file. `createManualTemplate`
+(`src/app/onboarding/actions.ts`) is a thin wrapper over the same `createBusinessType`
+call the classifier's own inline "+ new type" affordance already used — deliberately no
+`seedRequirements`, since the entire point is bypassing AI-suggested defaults, not
+receiving a different set of them. It's offered as a persistent, secondary action on
+Steps 4 and 5 (`ManualTemplateCreator`), never a fork that replaces the Excel/AI path —
+an office can mix both in the same session, and every later step (Documents, Reminders,
+Summary) already treated all `businessTypes` rows identically regardless of origin, so
+nothing downstream needed to change.
+
+### 11.3 One Bulk-Assignment Component, Not Two
+
+Because a manually-created template is just another row in the same `businessTypes`
+list the classifier's suggestions already populate, Step 5's existing bulk
+filter/select-all/assign panel needed no new *logic* to cover both — only extraction
+into its own component (`ClientAssignmentPanel`) so the interaction (search a long
+client list, select-all-filtered, assign, or leave unassigned by simply not selecting)
+is defined once rather than copied if a future screen outside onboarding needs the same
+pattern.
+
+### 11.4 Excel Rows Get One More Look Before They're `clients`
+
+Column-mapping confirmation already existed as a review step, but only for *how columns
+map to roles* — the parsed rows themselves went straight into `clients` the moment
+mapping was resolved, whether resolved automatically or by hand. `importAndClassifyClients`
+and `confirmImportMapping` now both return a `needsRowReview` preview instead of writing;
+`confirmRowImport` is the only path that actually calls `importParsedRows`, after the
+office has seen every parsed row (name/phone/email/business-type column) and could
+deselect any of them. This is the concrete form of "Excel is context, never final
+truth" for row data, the same principle §10.5 already established for classification.
+
+### 11.5 The Connect Step Becomes a Real Checkpoint
+
+§10.6 described `finishOnboarding`'s hard-block check (`checkIntegrationStatus`) as the
+enforcement point for "both WhatsApp and Google Drive before automation can start" — true,
+but it was also the *only* enforcement point: nothing stopped a user from clicking
+through Steps 6–10 with neither connected, discovering the requirement only at Step 11's
+final submit, then being bounced all the way back to re-answer nothing (every prior
+step's data survives) but re-navigate the whole wizard regardless. `Step3Connect` (Step
+5) now computes the same readiness (`driveReady`/`whatsappReady`) the finishOnboarding
+check does and simply doesn't render a working "Continue" until both are true, with a
+plain-language reason shown inline. No client-side polling was needed: every path that
+changes connection state (the Google OAuth callback, the WhatsApp Embedded Signup
+popup's completion handler, folder pick/create, disconnect) already forced a fresh
+server render of this exact page before this chapter, so the same server-computed
+`bothReady` value the button now gates on was already correct on every render — the
+change is entirely in what the button does with it. `finishOnboarding`'s own check is
+untouched and still runs — this closes the UX gap, not the only real enforcement, which
+remains server-side per this document's standing rule that client-side state is never
+trusted alone.
+
+### 11.6 Staying Oriented: Which Profession Is This, Again?
+
+`organizations.businessCategory` was chosen once, at Step 3, and never referenced again
+by any later step or by `WizardShell` — a real, if minor, way to lose track of what's
+being configured deep into an eleven-step wizard. `WizardShell` now accepts an optional
+profession badge (label + icon, `src/lib/businessCategories.ts`), shown from Step 4
+onward — never at Step 3 itself, which is where it's still being chosen.
+
+---
+
 ## Document History
 
 | Date | Change |
@@ -471,3 +561,4 @@ button itself, not just in this document.
 | Real WhatsApp Integration — M-WA-1 (Schema) | The start of a five-milestone plan (approved in advance, not built ad hoc) to replace WhatsApp's 100%-mocked integration with a real one, across three goals: Centro auto-messaging every landing-page lead, each organization connecting its own WhatsApp Business Account, and that connection running the existing, already-real conversation/document-collection engine for real. Architecture decision: unlike Google Drive's necessarily per-organization OAuth tokens, WhatsApp uses the Meta Tech Provider model — one shared System User access token sends/receives for every connected organization's number, scoped per call by that organization's `phone_number_id`; no per-org token to store, encrypt, or refresh. This milestone is schema only, purely additive, and changes no behavior: four new `organizations` columns (`whatsappBusinessAccountId`, `whatsappPhoneNumberId`, `whatsappDisplayPhoneNumber`, `whatsappVerifiedName` — the pre-existing `whatsappConnectedAt` is reused as-is) and a new, deliberately organization-unscoped `leads` table (Centro's own sales leads, not a customer organization's data) for the not-yet-built Feature 1 lead-welcome flow. Verified as a true no-op: every existing WhatsApp-touching flow (the mocked connect/disconnect buttons, the conversation engine, the scheduler) confirmed unchanged. |
 | Real WhatsApp Integration — M-WA-2 (Real Per-Org Connect) | WhatsApp's "Connect" button (Step3Connect, onboarding step 5) is real for the first time, via Meta Embedded Signup rather than an OAuth redirect — the flow stays inside a popup the whole time (`WhatsAppConnectButton.tsx` loads the Facebook JS SDK and calls `FB.login()` with the app's Embedded Signup Configuration), so the result reaches Centro two ways at once: Meta posts a `WA_EMBEDDED_SIGNUP` `postMessage` (checked against Meta's own origin) carrying the new WABA id and phone_number_id, while `FB.login()`'s own callback returns a short-lived authorization `code`. Both are sent together to a new `POST /api/auth/whatsapp/callback` (a JSON-returning POST, not a redirect — Google's callback is a redirect only because its flow ends in a real page navigation back from accounts.google.com, which Embedded Signup never does). The route exchanges the code (`src/lib/whatsapp/embeddedSignup.ts`'s `exchangeSignupCode` — this confirms the signup completed on Meta's side; the resulting token itself is discarded, since Centro sends/receives through the one shared System User token, not a per-org one), subscribes Centro's app to that WABA's webhooks (`subscribeToWabaWebhooks`, required separately — Embedded Signup connects the number but doesn't implicitly wire up webhook delivery), and resolves the phone number's real display/verified name from the Graph API rather than trusting anything the client reported (`src/lib/whatsapp/phoneNumbers.ts`'s `getPhoneNumberDetails`) before storing the connection (`src/lib/whatsapp/wabaTokens.ts`). `WhatsAppConnectionRow` (replacing the old generic mock `ConnectionRow` for this one integration) shows the real connected number once linked, mirroring `GoogleDriveConnectionRow`'s existing precedent for "a connection that needs more than a plain form action." Disconnecting clears all four new columns plus `whatsappConnectedAt`. Every other consumer of `whatsappConnectedAt` — `tryActivateAutomation`'s BR-001 gate, Settings' `integrationsReady`, Step 8's Setup Summary — needed no changes, since the column they already read didn't move, only what writes it did. `tsc`/lint/build/tests all clean; live verification against a real Meta test WABA is pending the account owner's Meta App credentials (App ID/Secret, System User token, Embedded Signup Configuration ID). |
 | Product Evolution M9 — Recurring vs. On-Demand Collection | See Chapter 10 for the full rationale. Summary: the permanent, organization-wide "recurring vs one-time" lock (Chapter 9) became a per-Service choice (`services.collectionMode`) so one organization can run both at once; onboarding's Collection Style step gained a third "Both" option; a real automatic cycle-creation engine (`src/lib/recurringScheduler.ts`) was built from scratch (`services.collectionFrequencyIntervalMonths` + `client_services.nextCollectionRunAt`, driven by a new cron pass), closing a gap this document had explicitly flagged since Chapter 9 — On-Demand Services remain structurally unable to auto-recur (a hard `WHERE collectionMode = 'recurring'` clause, not a convention); frequency and reminder cadence are now modeled and surfaced as explicitly separate settings; automatic classification is a suggestion only (`clients.classificationConfirmedAt`) until a human confirms it, closing a real trust gap where a guess could become authoritative before anyone saw it; WhatsApp and Google Drive became a hard-blocking, live-verified onboarding requirement (`src/lib/integrationRequirements.ts`) instead of best-effort, with a Settings-based reconnect path added since one now genuinely needs to exist; a Drive upload failure right after approval no longer risks losing the document (bytes are held and automatically retried, up to 8 attempts, before escalating); and the "Deactivate automation" toggle, which already behaved like a live switch in the database, is now actually consulted by the send/scheduling pipeline, joined by a narrower per-Service pause. Verified live end-to-end: full registration → onboarding → hard-block-without-integrations flow; classification-suggestion → confirm flow (pending count provably decreasing per confirmation); industry-specific document personalization (a business-consultant category correctly never offered the accounting-specific starter types, and vice versa); pause/resume on a live Service; the global automation toggle; a live-triggered blocked-send showing the exact required reconnect message and a working Settings link; and, most importantly, the automatic engine itself against a real due schedule — a cycle was created for the recurring pairing, the schedule advanced (confirmed non-repeating on an immediate second run), and zero cycles were ever created for the on-demand pairing across the same run. |
+| Smart Profession-Aware Onboarding | See Chapter 11. A read-audit-first pass (not a rebuild — most of the wizard was already profession-generic) that closed six specific gaps: the classifier now reports a cross-profession "conflict" instead of silently discarding an out-of-profession dictionary hit; onboarding gained a persistent "create your own template" path reusing the existing manual Template/Business Type CRUD, never a fork replacing the Excel/AI path; the bulk client-assignment interaction was extracted into one shared component (`ClientAssignmentPanel`) instead of building a second one; Excel-imported rows now get a full row-level review-and-deselect screen before a single row is written to `clients`, closing the one part of "Excel is context, never final truth" the classification-suggestion gate didn't already cover; the Connect step (Step 5) itself now withholds "Continue" until both WhatsApp and Google Drive are verified, instead of the only enforcement being Step 11's final bounce-back; and the chosen profession stays visible in the wizard header from Step 4 onward. No database migration — every change reuses existing schema (`businessTypes`, `clientServices`, `organizations.businessCategory`). |

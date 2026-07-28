@@ -72,6 +72,18 @@ export interface BusinessTypeClassification {
   method: "learned-synonym" | "explicit-dictionary" | "context-inference" | "ai" | "unclassified";
   /** Human-readable, surfaced in the UI/audit trail for transparency. */
   reason: string;
+  /**
+   * Set only when method === "unclassified": the raw text matched a known
+   * business-type dictionary entry (BUSINESS_TYPE_SYNONYMS is a global
+   * dictionary, not scoped to this org's own candidates), but this
+   * organization has no business type for that key — e.g. an Excel cell
+   * says "עוסק מורשה" for an org whose profession is insurance, not
+   * accounting. Smart Profession-Aware Onboarding — surfaced so the wizard
+   * can show this as a conflict for the office to review, instead of
+   * silently falling through to plain "unclassified" as if no signal was
+   * found at all.
+   */
+  conflict?: { canonicalKey: CanonicalBusinessTypeKey; matchedText: string };
 }
 
 // Canonical keys — must match src/lib/businessTypes.ts's
@@ -181,6 +193,14 @@ function findCandidateByName(
   return candidates.find((c) => c.name.trim().toLowerCase() === target);
 }
 
+interface DeterministicMatchResult {
+  candidate?: BusinessTypeCandidate;
+  /** The dictionary recognized this text as a real business-type term, but
+   * none of this org's own candidates carry that canonical key — a
+   * cross-profession conflict signal, not a plain miss. */
+  conflictCanonicalKey?: CanonicalBusinessTypeKey;
+}
+
 // Deterministic match (dictionary + exact-name fallback) against one piece
 // of text — shared by layer 1 (explicit column) and layer 2 (row context),
 // which differ only in *which* text they check, never in how matching
@@ -188,13 +208,15 @@ function findCandidateByName(
 function matchDeterministic(
   text: string,
   candidates: BusinessTypeCandidate[]
-): BusinessTypeCandidate | undefined {
+): DeterministicMatchResult {
   const canonicalKey = matchSynonym(text);
   if (canonicalKey) {
     const candidate = findCandidateByCanonicalKey(candidates, canonicalKey);
-    if (candidate) return candidate;
+    if (candidate) return { candidate };
+    return { conflictCanonicalKey: canonicalKey };
   }
-  return findCandidateByName(candidates, text);
+  const byName = findCandidateByName(candidates, text);
+  return byName ? { candidate: byName } : {};
 }
 
 // Stub — see the module doc comment above. Deliberately never called
@@ -216,6 +238,10 @@ export async function classifyClientBusinessType(
   learnedSynonyms?: Map<string, string>
 ): Promise<BusinessTypeClassification> {
   const explicitText = row.explicitBusinessType?.trim();
+  // First cross-profession dictionary hit seen with no matching candidate
+  // for this org, kept in case nothing else classifies — reported as
+  // `conflict` on the final unclassified result rather than dropped.
+  let firstConflict: { canonicalKey: CanonicalBusinessTypeKey; matchedText: string } | undefined;
 
   // 1a. Learned synonym on the explicit column — this organization's own
   // past correction, the single strongest signal available.
@@ -237,7 +263,7 @@ export async function classifyClientBusinessType(
 
   // 1b. Global deterministic dictionary on the explicit column.
   if (explicitText) {
-    const candidate = matchDeterministic(explicitText, candidates);
+    const { candidate, conflictCanonicalKey } = matchDeterministic(explicitText, candidates);
     if (candidate) {
       return {
         businessTypeId: candidate.id,
@@ -246,6 +272,9 @@ export async function classifyClientBusinessType(
         method: "explicit-dictionary",
         reason: `הערך "${explicitText}" בעמודת סוג העסק תואם ל"${candidate.name}"`,
       };
+    }
+    if (conflictCanonicalKey && !firstConflict) {
+      firstConflict = { canonicalKey: conflictCanonicalKey, matchedText: explicitText };
     }
   }
 
@@ -267,7 +296,7 @@ export async function classifyClientBusinessType(
         };
       }
     }
-    const candidate = matchDeterministic(piece, candidates);
+    const { candidate, conflictCanonicalKey } = matchDeterministic(piece, candidates);
     if (candidate) {
       return {
         businessTypeId: candidate.id,
@@ -276,6 +305,9 @@ export async function classifyClientBusinessType(
         method: "context-inference",
         reason: `זוהה מתוך "${piece}" בשורת הלקוח (לא מעמודת סוג עסק ייעודית)`,
       };
+    }
+    if (conflictCanonicalKey && !firstConflict) {
+      firstConflict = { canonicalKey: conflictCanonicalKey, matchedText: piece };
     }
   }
 
@@ -288,6 +320,17 @@ export async function classifyClientBusinessType(
       confidence: aiMatch.confidence,
       method: "ai",
       reason: aiMatch.reason,
+    };
+  }
+
+  if (firstConflict) {
+    return {
+      businessTypeId: null,
+      canonicalKey: null,
+      confidence: 0,
+      method: "unclassified",
+      reason: `הערך "${firstConflict.matchedText}" תואם לסוג עסק שאינו קיים בתחום הפעילות שלכם`,
+      conflict: firstConflict,
     };
   }
 

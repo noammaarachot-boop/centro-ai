@@ -61,13 +61,18 @@ beyond local development:
 
 Behind `/login`, a registered organization gets:
 
-- **Onboarding** (`/onboarding`) — a multi-step wizard: business info,
-  business type, a permanent choice between the **recurring** workflow
-  (Centro learns what to collect from each client over time) and the
-  **one-time** workflow (reusable Templates, no learning — see
-  `ARCHITECTURE.md` Chapter 9), Google Drive/WhatsApp connection, an
-  optional Excel/CSV client import with AI-assisted column detection, a
-  Setup Summary, and a completion screen.
+- **Onboarding** (`/onboarding`) — a multi-step wizard, adapted per the
+  office's declared profession (`ARCHITECTURE.md` Chapter 11): business
+  info, business type/profession, a choice between **Recurring** (Centro
+  learns what to collect from each client over time), **On-Demand**
+  (reusable Templates, no learning), or **Both** — personalization only,
+  never a permanent lock (Chapter 10). Google Drive + WhatsApp connection is
+  a hard checkpoint: "Continue" stays disabled until both are verified. An
+  optional Excel/CSV client import (content-based column detection, a
+  row-level review before anything is saved, and manual "build your own
+  template" always available as an alternative to import) feeds a
+  classification step where every suggestion requires human confirmation,
+  a Setup Summary, and a completion screen.
 - **Dashboard** (`/dashboard`) — a different screen per workflow: the
   recurring dashboard surfaces queues (needs review, waiting on client,
   processing, business-type suggestions, pending confirmations); the
@@ -124,7 +129,7 @@ shared hover mechanic where a card's glow appears *behind* it (never
 inside), colored to match its own icon — extremely subtle, never bright.
 Motion is restrained by default (one-time entrance animations, hover/click
 micro-interactions) with a few deliberate exceptions for genuine moments:
-a progressive reveal on the AI-analysis onboarding step, an animated
+a progressive reveal on the classification-review onboarding step, an animated
 circle-to-checkmark for connection/completion states, and a real canvas
 confetti burst (blue/purple/teal/white/gold) the first time onboarding
 completes. The official Centro "C" brand mark (`src/components/landing/icons/CentroMark.tsx`)

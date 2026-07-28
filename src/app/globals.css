@@ -691,7 +691,7 @@ body {
   }
 }
 
-/* AI Analysis progressive reveal — title, then the summary card, then its
+/* Step 5 classification reveal — title, then the summary card, then its
    text, then each stat number (delay set per-instance inline since the
    real screen has a variable number of stats/branches). See
    Step5Analysis.tsx. */

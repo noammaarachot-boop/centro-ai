@@ -26,6 +26,7 @@ import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import { BUSINESS_CATEGORIES, type BusinessCategory } from "@/lib/businessCategories";
 import {
   assignClientsToBusinessType,
+  CANONICAL_BUSINESS_TYPE_LABELS,
   confirmPendingClassifications,
   createBusinessType,
   getLearnedSynonyms,
@@ -525,6 +526,13 @@ export interface ImportAnalysisSummary {
   suggested: number;
   /** Confidence < 70, or no signal at all — left Unclassified. */
   needsReview: number;
+  // Smart Profession-Aware Onboarding — rows whose raw text matched a real
+  // business-type term (BUSINESS_TYPE_SYNONYMS) that this org has no
+  // candidate for, e.g. "עוסק מורשה" imported into an insurance office.
+  // A subset of `needsReview` (never classified, never counted twice) —
+  // surfaced separately so Step 5 can show it as a conflict to resolve
+  // rather than a plain "nothing found."
+  conflicts?: Array<{ clientId: string; clientName: string; matchedText: string; typeLabel: string }>;
   // STEP 1 structural findings, XLSX only.
   sheetsFound?: string[];
   sheetUsed?: string;
@@ -555,6 +563,19 @@ export interface ImportClientsState {
     tableBounds: TableBounds;
     xlsxMeta?: XlsxStructureMeta;
     mode: ImportMode;
+  };
+  // Smart Profession-Aware Onboarding (item 5) — "Excel is only an input,
+  // never final truth": once column mapping is resolved (automatically or
+  // via needsMapping above), the parsed rows are shown back to the office
+  // for a last look — deselect anything wrong — before a single row is
+  // written to `clients`. confirmRowImport below is what actually writes
+  // them; nothing is ever saved between the upload and this screen.
+  needsRowReview?: {
+    rows: ParsedClientRow[];
+    mode: ImportMode;
+    analysis: AnalyzeColumnsResult;
+    tableBounds: TableBounds;
+    xlsxMeta?: XlsxStructureMeta;
   };
 }
 
@@ -706,6 +727,7 @@ async function importParsedRows(
 
   let autoClassified = 0;
   let suggested = 0;
+  const conflicts: NonNullable<ImportAnalysisSummary["conflicts"]> = [];
   if (importedRows.length > 0) {
     const learnedSynonyms = await getLearnedSynonyms(session.organizationId);
     const businessTypeList = await seedStarterBusinessTypes(session.organizationId);
@@ -726,6 +748,14 @@ async function importParsedRows(
         candidates,
         learnedSynonyms
       );
+      if (classification.conflict) {
+        conflicts.push({
+          clientId: row.id,
+          clientName: row.name,
+          matchedText: classification.conflict.matchedText,
+          typeLabel: CANONICAL_BUSINESS_TYPE_LABELS[classification.conflict.canonicalKey],
+        });
+      }
       if (!classification.businessTypeId || classification.confidence < SUGGESTED_THRESHOLD) continue;
 
       if (classification.confidence >= AUTO_CLASSIFY_THRESHOLD) autoClassified += 1;
@@ -763,6 +793,7 @@ async function importParsedRows(
         autoClassified,
         suggested,
         unclassified: importedRows.length - autoClassified - suggested,
+        conflicts: conflicts.length,
       },
     });
   }
@@ -781,6 +812,7 @@ async function importParsedRows(
       autoClassified,
       suggested,
       needsReview,
+      conflicts,
       sheetsFound: structure.xlsxMeta?.sheetNames,
       sheetUsed: structure.xlsxMeta?.sheetUsed,
       hadMergedCells: structure.xlsxMeta?.hadMergedCells,
@@ -794,7 +826,7 @@ async function importParsedRows(
   redirect("/onboarding?step=7");
 }
 
-// Step 4 ("Import Excel / CSV") + Step 5 ("AI Client Analysis") in one
+// Step 4 ("Import Excel / CSV") + Step 5 ("Classification") in one
 // action. STEP 1: parses the file and resolves its real structure — which
 // worksheet holds the data, where the table actually starts/ends
 // (src/lib/import/clientImportAdapter.ts's analyzeImportFileStructure).
@@ -809,7 +841,10 @@ export async function importAndClassifyClients(
   _prevState: ImportClientsState,
   formData: FormData
 ): Promise<ImportClientsState> {
-  const session = await requireSession();
+  // Auth guard only — this action just parses the file and hands back a
+  // preview; nothing is written to the DB yet, so there's no organizationId
+  // to scope a write to (confirmRowImport below re-authenticates for that).
+  await requireSession();
   const file = formData.get("file");
   const mode = readImportMode(formData);
 
@@ -848,13 +883,15 @@ export async function importAndClassifyClients(
 
   const dataRows = analysis.hasHeaderRow ? rawRows.slice(1) : rawRows;
   const parsedRows = buildClientRowsFromMapping(dataRows, analysis.mapping);
-  return importParsedRows(
-    session,
-    parsedRows,
-    analysis,
-    { tableBounds: structure.tableBounds, xlsxMeta: structure.xlsxMeta },
-    mode
-  );
+  return {
+    needsRowReview: {
+      rows: parsedRows,
+      mode,
+      analysis,
+      tableBounds: structure.tableBounds,
+      xlsxMeta: structure.xlsxMeta,
+    },
+  };
 }
 
 // The mapping-confirmation screen's submit action — same shared import
@@ -866,7 +903,9 @@ export async function confirmImportMapping(
   _prevState: ImportClientsState,
   formData: FormData
 ): Promise<ImportClientsState> {
-  const session = await requireSession();
+  // Auth guard only — see importAndClassifyClients's identical comment;
+  // this still only produces a row-review preview, not a write.
+  await requireSession();
   const mode = readImportMode(formData);
 
   let rows: string[][];
@@ -911,11 +950,11 @@ export async function confirmImportMapping(
       : [];
   const parsedRows = buildClientRowsFromMapping(dataRows, mapping);
 
-  return importParsedRows(
-    session,
-    parsedRows,
-    { hasHeaderRow, headers, columns: [], mapping, confidence: "high" },
-    {
+  return {
+    needsRowReview: {
+      rows: parsedRows,
+      mode,
+      analysis: { hasHeaderRow, headers, columns: [], mapping, confidence: "high" },
       tableBounds: {
         startIndex: 0,
         endIndex: rows.length - 1,
@@ -924,8 +963,48 @@ export async function confirmImportMapping(
       },
       xlsxMeta,
     },
-    mode
-  );
+  };
+}
+
+// Smart Profession-Aware Onboarding (item 5) — the row-review screen's
+// submit action: the office's last look at exactly what will be saved,
+// with any deselected rows dropped before importParsedRows ever runs. This
+// is the only path that actually writes imported rows to `clients` — every
+// upstream step (importAndClassifyClients, confirmImportMapping) only ever
+// returns a preview.
+export async function confirmRowImport(
+  _prevState: ImportClientsState,
+  formData: FormData
+): Promise<ImportClientsState> {
+  const session = await requireSession();
+  const mode = readImportMode(formData);
+
+  let rows: ParsedClientRow[];
+  let analysis: AnalyzeColumnsResult;
+  let tableBounds: TableBounds;
+  try {
+    rows = JSON.parse(String(formData.get("rows") ?? "[]"));
+    analysis = JSON.parse(String(formData.get("analysis") ?? "{}"));
+    tableBounds = JSON.parse(String(formData.get("tableBounds") ?? "{}"));
+  } catch {
+    return { error: "אירעה שגיאה בטעינת הנתונים. נא להעלות את הקובץ שוב." };
+  }
+  let xlsxMeta: XlsxStructureMeta | undefined;
+  try {
+    const raw = formData.get("xlsxMeta");
+    xlsxMeta = raw ? JSON.parse(String(raw)) : undefined;
+  } catch {
+    xlsxMeta = undefined;
+  }
+
+  const includedIndexes = new Set(formData.getAll("include").map(String));
+  const selectedRows = rows.filter((_, i) => includedIndexes.has(String(i)));
+
+  if (selectedRows.length === 0) {
+    return { error: "לא נבחרו לקוחות לייבוא. סמנו לפחות שורה אחת, או בטלו את הייבוא." };
+  }
+
+  return importParsedRows(session, selectedRows, analysis, { tableBounds, xlsxMeta }, mode);
 }
 
 // Step 5's "Assign Business Type" bulk action — covers both picking an
@@ -967,6 +1046,38 @@ export async function assignBusinessTypeAction(formData: FormData) {
   }
 
   // Always submitted from Step 5 itself — refresh() alone, no redirect().
+  refresh();
+}
+
+// Smart Profession-Aware Onboarding (item 3) — "I want to create my own
+// templates," a persistent secondary option alongside the Excel/AI path
+// (Step 4 Import, Step 5 Analysis), not a fork that replaces it. Reuses
+// createBusinessType exactly as assignBusinessTypeAction's inline
+// "+ סוג חדש" already does above — the only difference is this one is
+// reachable with zero clients selected yet (a blank template the office
+// builds by hand: add documents on Step 6, assign clients on Step 5). No
+// seedRequirements — deliberately blank, since the whole point is
+// bypassing AI-suggested defaults, not getting a different set of them.
+export async function createManualTemplate(formData: FormData) {
+  const session = await requireSession();
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) {
+    refresh();
+    return;
+  }
+
+  await createBusinessType(session.organizationId, name, { isCustom: true });
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "business_type.created",
+    description: `תבנית "${name}" נוצרה ידנית`,
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  // Reachable from both Step 4 (Import) and Step 5 (Analysis) — always a
+  // same-page submission, refresh() alone, no redirect().
   refresh();
 }
 

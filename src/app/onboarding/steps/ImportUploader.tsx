@@ -6,6 +6,7 @@ import { buttonVariants } from "@/components/app/Button";
 import { fieldClass } from "@/components/app/FormField";
 import {
   confirmImportMapping,
+  confirmRowImport,
   importAndClassifyClients,
   type ImportClientsState,
   type ImportMode,
@@ -44,11 +45,23 @@ export function ImportUploader({
     confirmImportMapping,
     initialState
   );
+  const [rowReviewState, rowReviewFormAction, rowReviewPending] = useActionState(
+    confirmRowImport,
+    initialState
+  );
   const [fileName, setFileName] = useState<string | null>(null);
   const [dismissedMapping, setDismissedMapping] = useState(false);
+  const [dismissedRowReview, setDismissedRowReview] = useState(false);
 
-  const isPending = importPending || confirmPending;
+  const isPending = importPending || confirmPending || rowReviewPending;
   const mapping = dismissedMapping ? undefined : importState.needsMapping;
+  // Smart Profession-Aware Onboarding (item 5) — set by either
+  // importAndClassifyClients (confident auto-detection) or
+  // confirmImportMapping (after a manual mapping fix); either way, nothing
+  // has been written to `clients` yet at this point.
+  const rowReview = dismissedRowReview
+    ? undefined
+    : (importState.needsRowReview ?? confirmState.needsRowReview);
   const error = confirmState.error ?? importState.error;
 
   if (isPending) {
@@ -68,6 +81,109 @@ export function ImportUploader({
         <div className="h-1.5 w-48 overflow-hidden rounded-full bg-surface-muted">
           <div className="centro-ai-gradient h-full w-1/2 animate-pulse rounded-full" />
         </div>
+      </div>
+    );
+  }
+
+  if (rowReview) {
+    return (
+      <div className="space-y-5">
+        <div className="animate-fade-in-up rounded-2xl border border-brand-purple/25 bg-brand-purple/5 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <FileSpreadsheet className="mt-0.5 h-5 w-5 shrink-0 text-brand-purple" />
+            <div>
+              <p className="text-sm font-bold text-text-primary">
+                {rowReview.rows.length} לקוחות זוהו בקובץ — בדקו לפני שמייבאים
+              </p>
+              <p className="mt-1 text-xs text-text-secondary">
+                שום דבר עדיין לא נשמר. בטלו את הסימון עבור כל שורה שלא רוצים לייבא.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <form action={rowReviewFormAction} className="space-y-4">
+          <input type="hidden" name="mode" value={rowReview.mode} />
+          <input type="hidden" name="rows" value={JSON.stringify(rowReview.rows)} />
+          <input type="hidden" name="analysis" value={JSON.stringify(rowReview.analysis)} />
+          <input type="hidden" name="tableBounds" value={JSON.stringify(rowReview.tableBounds)} />
+          <input
+            type="hidden"
+            name="xlsxMeta"
+            value={rowReview.xlsxMeta ? JSON.stringify(rowReview.xlsxMeta) : ""}
+          />
+
+          <div className="max-h-80 overflow-y-auto rounded-xl border border-border">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-surface-muted/90">
+                <tr>
+                  <th className="px-2 py-2" />
+                  <th className="whitespace-nowrap px-3 py-2 text-start font-semibold text-text-secondary">
+                    שם
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-2 text-start font-semibold text-text-secondary">
+                    טלפון
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-2 text-start font-semibold text-text-secondary">
+                    אימייל
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-2 text-start font-semibold text-text-secondary">
+                    סוג עסק
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {rowReview.rows.map((row, i) => (
+                  <tr key={i} className="border-t border-border">
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="checkbox"
+                        name="include"
+                        value={i}
+                        defaultChecked
+                        aria-label={`ייבוא ${row.name || "שורה " + (i + 1)}`}
+                        className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
+                      />
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-text-primary">
+                      {row.name || "—"}
+                    </td>
+                    <td dir="ltr" className="whitespace-nowrap px-3 py-1.5 text-text-muted">
+                      {row.phone || "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-text-muted">
+                      {row.email || "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-text-muted">
+                      {row.businessType || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {rowReviewState.error && (
+            <p role="alert" className="animate-fade-in-up text-sm font-medium text-danger">
+              {rowReviewState.error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}
+          >
+            ייבוא {rowReview.rows.length} לקוחות
+          </button>
+        </form>
+
+        <button
+          type="button"
+          onClick={() => (onCancel ? onCancel() : setDismissedRowReview(true))}
+          className="w-full text-center text-sm text-text-muted transition-colors hover:text-brand-purple"
+        >
+          ביטול — בחירת קובץ אחר
+        </button>
       </div>
     );
   }
@@ -236,6 +352,7 @@ export function ImportUploader({
             onChange={(e) => {
               setFileName(e.currentTarget.files?.[0]?.name ?? null);
               setDismissedMapping(false);
+              setDismissedRowReview(false);
             }}
           />
         </label>

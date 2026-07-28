@@ -131,6 +131,16 @@ export function getSuggestedRequirements(typeName: string): SuggestedRequirement
   );
 }
 
+// Smart Profession-Aware Onboarding — Hebrew display label for a
+// cross-profession classifier conflict (src/lib/ai/businessTypeClassifier.ts's
+// BusinessTypeClassification.conflict), e.g. showing "עוסק מורשה" instead of
+// the raw "authorized_dealer" key when telling an insurance office that an
+// imported row looked like an accounting client type they don't have.
+export const CANONICAL_BUSINESS_TYPE_LABELS: Record<CanonicalBusinessTypeKey, string> =
+  Object.fromEntries(
+    STARTER_BUSINESS_TYPES.map((t) => [t.canonicalKey as CanonicalBusinessTypeKey, t.name])
+  ) as Record<CanonicalBusinessTypeKey, string>;
+
 export async function listBusinessTypes(organizationId: string) {
   const db = await getDb();
   const rows = await db
