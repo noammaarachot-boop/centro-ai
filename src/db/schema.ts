@@ -180,6 +180,17 @@ export const organizations = pgTable("organizations", {
   // read as part of getSession()'s existing organizations join, so
   // checking it costs zero extra queries on the app's hottest read path.
   suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  // Internal QA Mode — platform-owner-only, toggled from the same
+  // organizations list as suspend/reactivate
+  // (src/app/owner/(dashboard)/organizations/[id]/actions.ts). Lets one
+  // marked organization finish onboarding without a real WhatsApp
+  // connection, for manual testing while Meta's WhatsApp approval is
+  // pending. Google Drive is never bypassed. Read as part of
+  // getSession()'s existing organizations join (src/lib/auth/session.ts),
+  // same zero-extra-query pattern as suspendedAt — every real enforcement
+  // point (finishOnboarding, tryActivateAutomation) re-reads this from the
+  // authenticated session/DB itself, never trusts a client-supplied value.
+  qaModeEnabledAt: timestamp("qa_mode_enabled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

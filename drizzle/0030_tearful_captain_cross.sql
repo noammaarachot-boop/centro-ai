@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "qa_mode_enabled_at" timestamp with time zone;

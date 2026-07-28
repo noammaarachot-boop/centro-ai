@@ -185,17 +185,30 @@ export function Step3Connect({
   googleDriveFolderName,
   whatsappConnectedAt,
   whatsappDisplayPhoneNumber,
+  isQaMode = false,
 }: {
   googleConnectedAt: Date | null;
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   whatsappConnectedAt: Date | null;
   whatsappDisplayPhoneNumber: string | null;
+  // Internal QA Mode — true only for the specific organization the owner
+  // marked from the Owner Panel (src/app/owner/(dashboard)/organizations/
+  // page.tsx). False for every other organization, so none of the branches
+  // below it ever render for a normal user — this prop is the only thing
+  // that changes about this component for this feature. Google Drive is
+  // never bypassed, only WhatsApp; the real WhatsAppConnectionRow above
+  // still honestly shows "not connected" either way. The actual
+  // enforcement is server-side in finishOnboarding (actions.ts), which
+  // re-reads the flag itself — this UI only decides what to show, never
+  // what to allow.
+  isQaMode?: boolean;
 }) {
   const goToStep4 = advanceOnboardingStep.bind(null, 6);
   const driveReady = !!googleConnectedAt && !!googleDriveFolderId;
   const whatsappReady = !!whatsappConnectedAt;
   const bothReady = driveReady && whatsappReady;
+  const qaBypassAvailable = isQaMode && driveReady && !whatsappReady;
 
   return (
     <div className="space-y-4">
@@ -219,6 +232,13 @@ export function Step3Connect({
         </p>
       )}
 
+      {qaBypassAvailable && (
+        <p className="rounded-xl border border-dashed border-warning/40 bg-warning/5 px-4 py-3 text-xs leading-relaxed text-text-secondary">
+          מצב בדיקה פעיל עבור המשתמש הזה. אפשר להמשיך בלי חיבור WhatsApp אמיתי, לצורך בדיקות בלבד —
+          האוטומציה לא תופעל, ולא יישלחו הודעות אמיתיות, עד שיחובר WhatsApp אמיתי.
+        </p>
+      )}
+
       {bothReady ? (
         <form action={goToStep4} className="pt-2">
           <button
@@ -226,6 +246,19 @@ export function Step3Connect({
             className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}
           >
             המשך
+          </button>
+        </form>
+      ) : qaBypassAvailable ? (
+        <form action={goToStep4} className="pt-2">
+          <button
+            type="submit"
+            className={buttonVariants({
+              variant: "secondary",
+              size: "lg",
+              className: "w-full border-dashed border-warning/50 text-warning hover:border-warning",
+            })}
+          >
+            המשך במצב בדיקה
           </button>
         </form>
       ) : (

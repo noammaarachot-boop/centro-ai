@@ -9,6 +9,7 @@ import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { formatOwnerDate } from "@/lib/owner/formatDate";
 import { t } from "@/lib/owner/i18n/t";
+import { disableQaModeAction, enableQaModeAction } from "./[id]/actions";
 
 export const metadata: Metadata = { title: "ארגונים — מסוף בעלים" };
 
@@ -65,7 +66,7 @@ export default async function OwnerOrganizationsPage({
                   </div>
                 </TableCell>
                 <TableCell>
-                  <div className="flex flex-col gap-1 text-xs text-text-secondary">
+                  <div className="flex flex-col items-start gap-1 text-xs text-text-secondary">
                     {org.userEmail && (
                       <span className="flex items-center gap-1.5">
                         <Mail className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -77,6 +78,27 @@ export default async function OwnerOrganizationsPage({
                         <Phone className="h-3 w-3 shrink-0" aria-hidden="true" />
                         {org.userPhone}
                       </span>
+                    )}
+                    {org.qaModeEnabledAt ? (
+                      <form action={disableQaModeAction}>
+                        <input type="hidden" name="organizationId" value={org.id} />
+                        <button
+                          type="submit"
+                          className="mt-0.5 inline-flex items-center rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning transition-colors hover:border-warning/50 hover:bg-warning/20"
+                        >
+                          {t("owner.organizations.qaMode.badge")}
+                        </button>
+                      </form>
+                    ) : (
+                      <form action={enableQaModeAction}>
+                        <input type="hidden" name="organizationId" value={org.id} />
+                        <button
+                          type="submit"
+                          className="mt-0.5 inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-text-muted transition-colors hover:border-brand-purple/40 hover:text-brand-purple"
+                        >
+                          {t("owner.organizations.qaMode.enable")}
+                        </button>
+                      </form>
                     )}
                   </div>
                 </TableCell>

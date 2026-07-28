@@ -26,6 +26,15 @@ export interface Session {
   // redirectAfterAuth(), so a suspended org still gets a real Session
   // object back from getSession() itself.
   organizationSuspendedAt: Date | null;
+  // Internal QA Mode — null unless the platform owner has marked this
+  // organization for QA testing (src/app/owner/(dashboard)/organizations/
+  // [id]/actions.ts). Not enforced here — it's a permission grant, not a
+  // lockout, so it never blocks a request the way organizationSuspendedAt
+  // does. Callers that need to honor it (onboarding's finishOnboarding)
+  // read it straight off the session, which is exactly as trustworthy as
+  // organizationSuspendedAt already is: sourced from this same DB join,
+  // never from client-supplied input.
+  organizationQaModeEnabledAt: Date | null;
 }
 
 // `rememberMe` defaults to true so every existing caller (register(), and
@@ -74,6 +83,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
       organizationId: organizations.id,
       organizationName: organizations.name,
       organizationSuspendedAt: organizations.suspendedAt,
+      organizationQaModeEnabledAt: organizations.qaModeEnabledAt,
     })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
@@ -96,6 +106,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
     organizationId: row.organizationId,
     organizationName: row.organizationName,
     organizationSuspendedAt: row.organizationSuspendedAt,
+    organizationQaModeEnabledAt: row.organizationQaModeEnabledAt,
   };
 });
 

@@ -211,6 +211,13 @@
       "when": 1785131587890,
       "tag": "0029_great_madame_masque",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1785232702852,
+      "tag": "0030_tearful_captain_cross",
+      "breakpoints": true
     }
   ]
 }

@@ -17,6 +17,7 @@ export interface OwnerOrganizationListRow {
   whatsappConnectedAt: Date | null;
   googleConnectedAt: Date | null;
   suspendedAt: Date | null;
+  qaModeEnabledAt: Date | null;
   createdAt: Date;
   userEmail: string | null;
   userPhone: string | null;
@@ -42,6 +43,7 @@ export async function listOrganizations(query?: string): Promise<OwnerOrganizati
       whatsappConnectedAt: organizations.whatsappConnectedAt,
       googleConnectedAt: organizations.googleConnectedAt,
       suspendedAt: organizations.suspendedAt,
+      qaModeEnabledAt: organizations.qaModeEnabledAt,
       createdAt: organizations.createdAt,
       userEmail: users.email,
       userPhone: users.phone,

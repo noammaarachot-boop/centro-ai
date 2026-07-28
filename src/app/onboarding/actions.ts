@@ -478,10 +478,22 @@ export async function finishOnboarding() {
   const session = await requireSession();
 
   const status = await checkIntegrationStatus(session.organizationId);
-  if (!status.whatsappReady || !status.driveReady) {
-    const errorCode = !status.whatsappReady && !status.driveReady
+  // Internal QA Mode — owner-only flag (src/app/owner/(dashboard)/
+  // organizations/[id]/actions.ts), read straight off the authenticated
+  // session/DB, never from anything the client could influence. Bypasses
+  // WhatsApp only; Drive is never bypassed. checkIntegrationStatus itself
+  // stays unaware of this flag on purpose — it's also what gates every
+  // real message send (initiateConversation, attemptScheduledDelivery),
+  // and a QA-completed org must still be refused there until a real
+  // WhatsApp account is connected. tryActivateAutomation below
+  // independently re-checks the real whatsappConnectedAt column too, so a
+  // QA-bypassed org's automation correctly never activates either.
+  const isQaMode = !!session.organizationQaModeEnabledAt;
+  const whatsappOk = status.whatsappReady || isQaMode;
+  if (!whatsappOk || !status.driveReady) {
+    const errorCode = !whatsappOk && !status.driveReady
       ? "both-required"
-      : !status.whatsappReady
+      : !whatsappOk
         ? "whatsapp-required"
         : "drive-required";
     redirect(`/onboarding?step=5&error=${errorCode}`);
@@ -493,7 +505,10 @@ export async function finishOnboarding() {
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "onboarding.completed",
-    description: "אשף ההקמה הושלם",
+    description:
+      isQaMode && !status.whatsappReady
+        ? "אשף ההקמה הושלם במצב בדיקה (ללא חיבור WhatsApp אמיתי)"
+        : "אשף ההקמה הושלם",
     actorType: "employee",
     actorUserId: session.userId,
   });
