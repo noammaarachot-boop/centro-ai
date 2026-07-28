@@ -523,18 +523,23 @@ trusted alone.
 onboarding testing while Meta's WhatsApp Business app review is pending. One narrow,
 owner-controlled exception to §11.5's checkpoint: `organizations.qaModeEnabledAt`
 (nullable timestamp, same convention as `suspendedAt`), toggled only from the Owner
-Panel's own organizations list. When set, `finishOnboarding` treats a real WhatsApp
-connection as satisfied for that one organization; Google Drive is never bypassed —
-`checkIntegrationStatus` itself stays completely unaware this flag exists, on purpose,
-since it's also the same function gating every real message send
-(`initiateConversation`, `attemptScheduledDelivery`). A QA-completed organization's
-`whatsappConnectedAt` is still genuinely null, so `tryActivateAutomation` — which
-independently re-reads that column, not this flag — correctly never activates
-automation for it, and any later attempt to actually start a collection is correctly
-refused with the same reconnect message every other disconnected organization gets.
-The flag only ever widens what a wizard *screen* shows; it never widens what the send
-pipeline will do. `Step3Connect` surfaces a distinctly-labeled "Continue in test mode"
-action only when this flag is set, never altering anything a normal organization sees.
+Panel's own organizations list. When set, `finishOnboarding` treats *both* a real
+WhatsApp connection and a real Drive connection as satisfied for that one
+organization, letting the wizard complete with zero integrations connected — the
+point is testing the rest of onboarding and the app without depending on either
+external service. (First shipped WhatsApp-only; corrected once live testing showed
+still requiring a real Drive connection defeated the purpose.) `checkIntegrationStatus`
+itself stays completely unaware this flag exists, on purpose, since it's also the same
+function gating every real message send (`initiateConversation`,
+`attemptScheduledDelivery`). A QA-completed organization's `whatsappConnectedAt`/
+`googleConnectedAt`/`googleDriveFolderId` are still genuinely null, so
+`tryActivateAutomation` — which independently re-reads those columns, not this flag —
+correctly never activates automation for it, and any later attempt to actually start a
+collection or store a document is correctly refused with the same reconnect messages
+every other disconnected organization gets. The flag only ever widens what a wizard
+*screen* shows; it never widens what the send/storage pipeline will do. `Step3Connect`
+surfaces a distinctly-labeled "Continue in test mode" action only when this flag is
+set, never altering anything a normal organization sees.
 
 ### 11.6 Staying Oriented: Which Profession Is This, Again?
 

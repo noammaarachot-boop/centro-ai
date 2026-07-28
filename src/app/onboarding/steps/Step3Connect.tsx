@@ -208,7 +208,14 @@ export function Step3Connect({
   const driveReady = !!googleConnectedAt && !!googleDriveFolderId;
   const whatsappReady = !!whatsappConnectedAt;
   const bothReady = driveReady && whatsappReady;
-  const qaBypassAvailable = isQaMode && driveReady && !whatsappReady;
+  // Covers either or both missing — QA testing needs to work with zero
+  // integrations connected (product owner correction: the initial build
+  // only bypassed WhatsApp, requiring a real Drive connection anyway,
+  // which defeated the point of testing without external dependencies).
+  // This only widens what this wizard screen shows; see finishOnboarding's
+  // matching comment in actions.ts for what still genuinely enforces real
+  // connections regardless of this flag.
+  const qaBypassAvailable = isQaMode && !bothReady;
 
   return (
     <div className="space-y-4">
@@ -234,8 +241,9 @@ export function Step3Connect({
 
       {qaBypassAvailable && (
         <p className="rounded-xl border border-dashed border-warning/40 bg-warning/5 px-4 py-3 text-xs leading-relaxed text-text-secondary">
-          מצב בדיקה פעיל עבור המשתמש הזה. אפשר להמשיך בלי חיבור WhatsApp אמיתי, לצורך בדיקות בלבד —
-          האוטומציה לא תופעל, ולא יישלחו הודעות אמיתיות, עד שיחובר WhatsApp אמיתי.
+          מצב בדיקה פעיל עבור המשתמש הזה. אפשר להמשיך בלי חיבור WhatsApp ו/או Google Drive אמיתיים,
+          לצורך בדיקות בלבד — האוטומציה לא תופעל, ולא יישלחו הודעות אמיתיות ולא יישמרו מסמכים
+          אמיתיים, עד שהחיבורים האמיתיים יבוצעו.
         </p>
       )}
 

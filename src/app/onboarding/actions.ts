@@ -481,17 +481,22 @@ export async function finishOnboarding() {
   // Internal QA Mode — owner-only flag (src/app/owner/(dashboard)/
   // organizations/[id]/actions.ts), read straight off the authenticated
   // session/DB, never from anything the client could influence. Bypasses
-  // WhatsApp only; Drive is never bypassed. checkIntegrationStatus itself
-  // stays unaware of this flag on purpose — it's also what gates every
-  // real message send (initiateConversation, attemptScheduledDelivery),
-  // and a QA-completed org must still be refused there until a real
-  // WhatsApp account is connected. tryActivateAutomation below
-  // independently re-checks the real whatsappConnectedAt column too, so a
-  // QA-bypassed org's automation correctly never activates either.
+  // both WhatsApp and Drive for completing the *wizard* only (product
+  // owner correction — QA testing needs to work with zero integrations
+  // connected, not just WhatsApp). checkIntegrationStatus itself stays
+  // completely unaware of this flag on purpose — it's also what gates
+  // every real message send (initiateConversation,
+  // attemptScheduledDelivery), and a QA-completed org must still be
+  // refused there until real accounts are connected. tryActivateAutomation
+  // below independently re-checks the real whatsappConnectedAt/
+  // googleConnectedAt/googleDriveFolderId columns too, so a QA-bypassed
+  // org's automation correctly never activates either, for the same
+  // reason.
   const isQaMode = !!session.organizationQaModeEnabledAt;
   const whatsappOk = status.whatsappReady || isQaMode;
-  if (!whatsappOk || !status.driveReady) {
-    const errorCode = !whatsappOk && !status.driveReady
+  const driveOk = status.driveReady || isQaMode;
+  if (!whatsappOk || !driveOk) {
+    const errorCode = !whatsappOk && !driveOk
       ? "both-required"
       : !whatsappOk
         ? "whatsapp-required"
@@ -506,8 +511,8 @@ export async function finishOnboarding() {
     organizationId: session.organizationId,
     eventType: "onboarding.completed",
     description:
-      isQaMode && !status.whatsappReady
-        ? "אשף ההקמה הושלם במצב בדיקה (ללא חיבור WhatsApp אמיתי)"
+      isQaMode && (!status.whatsappReady || !status.driveReady)
+        ? "אשף ההקמה הושלם במצב בדיקה (ללא חיבורים אמיתיים מלאים)"
         : "אשף ההקמה הושלם",
     actorType: "employee",
     actorUserId: session.userId,
