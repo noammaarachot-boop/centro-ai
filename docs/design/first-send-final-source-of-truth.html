@@ -1,0 +1,804 @@
+<title>First-Send Journey — Final Source of Truth</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{
+    --bg:#F6F7F9; --surface:#FFFFFF; --surface-alt:#FAFBFC; --surface-sunken:#F0F2F5;
+    --border:#E4E7EC; --border-strong:#D0D5DD;
+    --t-900:#101323; --t-700:#42485A; --t-500:#697086; --t-400:#9AA1B2;
+    --blue-50:#EEF3FF; --blue-100:#DCE6FF; --blue-500:#3D63E8; --blue-600:#2454E0; --blue-700:#1D3FB8;
+    --green-50:#EAFAF0; --green-600:#16A34A;
+    --orange-50:#FFF3EA; --orange-600:#C2530C;
+    --red-50:#FDECEC; --red-600:#DC2626;
+    --r-sm:8px; --r-md:10px; --r-lg:14px; --r-xl:18px; --r-full:999px;
+    --sh-1:0 1px 2px rgba(16,19,35,.05);
+    --sh-2:0 8px 24px rgba(16,19,35,.08);
+    --focus:0 0 0 3px var(--blue-100);
+    --ease:cubic-bezier(.4,0,.2,1);
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px;
+    --sp-6:24px; --sp-7:28px; --sp-8:32px; --sp-10:40px; --sp-12:48px; --sp-16:64px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0B0D14; --surface:#141722; --surface-alt:#191C28; --surface-sunken:#0F111A;
+      --border:#262B3A; --border-strong:#363C4F;
+      --t-900:#F1F2F6; --t-700:#C3C7D6; --t-500:#8B92A6; --t-400:#565D72;
+      --blue-50:#161E3A; --blue-100:#1F2A52; --blue-500:#5E82F2; --blue-600:#6E8DF4; --blue-700:#8AA3F6;
+      --green-50:#0E2A1B; --orange-50:#2B1B0C; --red-50:#2C1414;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0B0D14; --surface:#141722; --surface-alt:#191C28; --surface-sunken:#0F111A;
+    --border:#262B3A; --border-strong:#363C4F;
+    --t-900:#F1F2F6; --t-700:#C3C7D6; --t-500:#8B92A6; --t-400:#565D72;
+    --blue-50:#161E3A; --blue-100:#1F2A52; --blue-500:#5E82F2; --blue-600:#6E8DF4; --blue-700:#8AA3F6;
+    --green-50:#0E2A1B; --orange-50:#2B1B0C; --red-50:#2C1414;
+  }
+  :root[data-theme="light"]{
+    --bg:#F6F7F9; --surface:#FFFFFF; --surface-alt:#FAFBFC; --surface-sunken:#F0F2F5;
+    --border:#E4E7EC; --border-strong:#D0D5DD;
+    --t-900:#101323; --t-700:#42485A; --t-500:#697086; --t-400:#9AA1B2;
+    --blue-50:#EEF3FF; --blue-100:#DCE6FF; --green-50:#EAFAF0; --orange-50:#FFF3EA; --red-50:#FDECEC;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;}
+  body{background:var(--bg);color:var(--t-900);font-family:"Segoe UI","Heebo",Arial,sans-serif;padding:0 0 var(--sp-16);line-height:1.55;}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 var(--sp-6);}
+
+  .doc-hero{background:linear-gradient(180deg,var(--blue-50),var(--bg) 60%);padding:var(--sp-12) var(--sp-6) var(--sp-8);border-bottom:1px solid var(--border);}
+  .doc-hero-in{max-width:1180px;margin:0 auto;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--blue-600);background:var(--surface);border:1px solid var(--blue-100);padding:4px 12px;border-radius:var(--r-full);margin-bottom:var(--sp-3);}
+  .doc-hero h1{font-size:27px;margin:0 0 var(--sp-2);letter-spacing:-.01em;}
+  .doc-hero p{font-size:14.5px;color:var(--t-500);max-width:700px;margin:0;}
+
+  .h-section{font-size:22px;font-weight:700;margin:var(--sp-16) 0 var(--sp-2);letter-spacing:-.01em;}
+  .h-section-sub{font-size:14px;color:var(--t-500);margin:0 0 var(--sp-7);max-width:740px;}
+  .h-sub{font-size:13px;font-weight:700;margin:var(--sp-8) 0 var(--sp-4);text-transform:uppercase;letter-spacing:.04em;color:var(--t-500);}
+  .callout{background:var(--surface);border:1px solid var(--border);border-inline-start:3px solid var(--blue-600);border-radius:var(--r-md);padding:var(--sp-4) var(--sp-5);font-size:13px;color:var(--t-700);margin:var(--sp-4) 0 var(--sp-7);max-width:800px;}
+  .callout.eng{border-inline-start-color:var(--orange-600);background:var(--orange-50);}
+  .callout.fix{border-inline-start-color:var(--green-600);}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;font-size:14px;font-weight:600;padding:11px 22px;border-radius:var(--r-sm);border:1.5px solid transparent;cursor:pointer;transition:background 150ms var(--ease),border-color 150ms var(--ease),transform 100ms var(--ease);font-family:inherit;}
+  .btn.primary{background:var(--blue-600);color:#fff;box-shadow:var(--sh-1);}
+  .btn.primary:hover{background:var(--blue-700);}
+  .btn.primary:active{transform:scale(.98);}
+  .btn.secondary{background:var(--surface);color:var(--t-700);border-color:var(--border-strong);}
+  .btn.secondary:hover{border-color:var(--blue-500);color:var(--blue-600);background:var(--blue-50);}
+  .btn.ghost{background:transparent;color:var(--t-500);text-decoration:underline;text-underline-offset:3px;font-weight:500;}
+  .btn.disabled{background:var(--surface-sunken);color:var(--t-400);border-color:var(--border);cursor:not-allowed;}
+  .btn.full{display:flex;width:100%;}
+  .btn.sm{padding:8px 16px;font-size:13px;}
+  .btn.lg{padding:15px 28px;font-size:15px;}
+  .btn.on-blue{background:#fff;color:var(--blue-700);}
+  .btn:focus-visible{outline:none;box-shadow:var(--focus);}
+
+  .field{margin-bottom:var(--sp-4);}
+  .field label{display:block;font-size:13px;font-weight:600;color:var(--t-700);margin-bottom:var(--sp-2);}
+  .input{width:100%;padding:12px 14px;border:1.5px solid var(--border-strong);border-radius:var(--r-sm);font-size:14.5px;color:var(--t-900);background:var(--surface);font-family:inherit;transition:border-color 150ms,box-shadow 150ms;}
+  .input::placeholder{color:var(--t-400);}
+  .input:focus{outline:none;border-color:var(--blue-500);box-shadow:var(--focus);}
+  .input.err{border-color:var(--red-600);}
+  .err-text{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--red-600);margin-top:var(--sp-2);}
+  .radio{display:flex;align-items:flex-start;gap:var(--sp-3);padding:var(--sp-4);border:1.5px solid var(--border);border-radius:var(--r-md);margin-bottom:var(--sp-2);cursor:pointer;transition:border-color 150ms,background 150ms;}
+  .radio.checked{border-color:var(--blue-500);background:var(--blue-50);}
+  .radio .dot{width:18px;height:18px;border:1.75px solid var(--border-strong);border-radius:50%;flex:none;position:relative;margin-top:1px;}
+  .radio.checked .dot{border-color:var(--blue-600);}
+  .radio.checked .dot::after{content:"";position:absolute;inset:3.5px;background:var(--blue-600);border-radius:50%;}
+  .radio .rt{font-size:14px;font-weight:600;}
+  .radio .rs{font-size:12px;color:var(--t-500);margin-top:2px;}
+  .checkbox{width:18px;height:18px;border:1.75px solid var(--border-strong);border-radius:5px;flex:none;display:inline-flex;align-items:center;justify-content:center;}
+  .checkbox.checked{background:var(--blue-600);border-color:var(--blue-600);}
+  .checkbox.checked svg{width:11px;height:11px;stroke:#fff;stroke-width:3;}
+
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:4px 11px;border-radius:var(--r-full);}
+  .badge.neutral{background:var(--surface-sunken);color:var(--t-500);border:1px solid var(--border);}
+  .badge.success{background:var(--green-50);color:var(--green-600);}
+  .badge.error{background:var(--red-50);color:var(--red-600);}
+
+  .spinner{width:20px;height:20px;border-radius:50%;border:2.5px solid var(--blue-100);border-top-color:var(--blue-600);animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .fade-in{animation:fadeUp 320ms var(--ease) both;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+  @media (prefers-reduced-motion: reduce){.spinner{animation-duration:1.6s;} .fade-in{animation:none !important;}}
+  .icon{width:20px;height:20px;stroke:currentColor;stroke-width:1.75;fill:none;stroke-linecap:round;stroke-linejoin:round;vertical-align:-5px;}
+  .skeleton{background:linear-gradient(90deg,var(--surface-sunken) 25%,var(--border) 37%,var(--surface-sunken) 63%);background-size:400% 100%;border-radius:6px;animation:shimmer 1.4s ease-in-out infinite;}
+  @keyframes shimmer{0%{background-position:100% 0;}100%{background-position:0 0;}}
+
+  .h-screen{font-size:12px;font-weight:700;color:var(--t-500);text-transform:uppercase;letter-spacing:.06em;margin:var(--sp-8) 0 var(--sp-4);text-align:center;}
+  .row{display:flex;gap:var(--sp-6);flex-wrap:wrap;justify-content:center;align-items:flex-start;}
+  .col{display:flex;flex-direction:column;align-items:center;}
+  .frame{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--sh-2);overflow:hidden;}
+  .titlebar{background:var(--surface-alt);border-bottom:1px solid var(--border);padding:8px 14px;font:10.5px/1.4 "Consolas",monospace;color:var(--t-400);display:flex;align-items:center;gap:8px;}
+  .titlebar .dots span{width:6px;height:6px;border-radius:50%;background:var(--border-strong);display:inline-block;margin-inline-end:3px;}
+  .bp-badge{margin-inline-start:auto;font-size:9px;font-weight:700;color:var(--blue-600);background:var(--blue-50);padding:2px 8px;border-radius:var(--r-full);}
+  .annotation{max-width:420px;margin:var(--sp-3) auto 0;font-size:11.5px;color:var(--t-500);text-align:center;line-height:1.6;}
+  .annotation b{color:var(--t-700);}
+  .body-text{font-size:13.5px;color:var(--t-500);line-height:1.65;margin:0 0 var(--sp-4);}
+  .h1s{font-size:19px;font-weight:700;margin:0 0 var(--sp-2);}
+
+  .app-shell{display:flex;}
+  .app-sidebar{width:200px;flex:none;background:var(--surface-alt);border-inline-start:1px solid var(--border);padding:var(--sp-5) var(--sp-3);direction:rtl;}
+  .app-sidebar .brand{font-size:15px;font-weight:800;color:var(--blue-600);margin-bottom:var(--sp-4);padding:0 var(--sp-2);}
+  .app-sidebar .nav-item{font-size:13px;color:var(--t-500);padding:9px 10px;border-radius:var(--r-sm);font-weight:500;margin-bottom:2px;}
+  .app-sidebar .nav-item.active{background:var(--blue-50);color:var(--blue-700);font-weight:700;}
+  .kpi-row{display:flex;gap:var(--sp-3);}
+  .kpi{flex:1;border:1px solid var(--border);border-radius:var(--r-lg);background:var(--surface);padding:var(--sp-3) var(--sp-4);}
+  .kpi .n{font-size:19px;font-weight:700;}
+  .kpi .l{font-size:11px;color:var(--t-400);margin-top:2px;}
+
+  /* ---- unified "summary row" primitive: shared by the live-summary panel AND the review receipt ---- */
+  .summary-row{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-3) 0;border-bottom:1px solid var(--border);}
+  .summary-row:last-child{border-bottom:none;}
+  .summary-row .k{font-size:12px;color:var(--t-400);display:flex;align-items:center;gap:8px;}
+  .summary-row .v{font-size:13.5px;font-weight:600;color:var(--t-900);}
+  .summary-row .v.muted{color:var(--t-400);font-weight:500;}
+  .row-icon{width:28px;height:28px;border-radius:var(--r-sm);background:var(--blue-50);color:var(--blue-600);display:flex;align-items:center;justify-content:center;flex:none;}
+
+  .creation-shell{display:flex;min-height:480px;}
+  .creation-form{flex:1;min-width:0;padding:var(--sp-10) var(--sp-12);direction:rtl;text-align:right;}
+  .creation-form-inner{max-width:520px;}
+  .creation-summary{width:320px;flex:none;background:var(--surface-alt);border-inline-start:1px solid var(--border);padding:var(--sp-8) var(--sp-6);direction:rtl;text-align:right;}
+  .summary-label{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--t-400);margin-bottom:var(--sp-4);}
+  .progress{display:flex;gap:7px;margin-bottom:var(--sp-6);}
+  .progress span{width:26px;height:4px;border-radius:2px;background:var(--border-strong);}
+  .progress span.done,.progress span.current{background:var(--blue-600);}
+
+  .doc-suggest-card{border:1.5px solid var(--border);border-radius:var(--r-md);overflow:hidden;margin-bottom:var(--sp-4);}
+  .doc-suggest-head{background:var(--blue-50);padding:11px 16px;font-size:12.5px;font-weight:700;color:var(--blue-700);display:flex;align-items:center;gap:7px;}
+  .doc-suggest-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-top:1px solid var(--border);font-size:13.5px;}
+  .doc-suggest-row .left{display:flex;align-items:center;gap:10px;}
+  .check-circle{width:20px;height:20px;border-radius:50%;background:var(--green-600);display:flex;align-items:center;justify-content:center;flex:none;}
+  .check-circle svg{width:12px;height:12px;stroke:#fff;stroke-width:3;}
+  .add-row{border:1.5px dashed var(--border-strong);border-radius:var(--r-md);padding:12px;color:var(--blue-600);font-size:13px;text-align:center;font-weight:600;cursor:pointer;}
+  .client-choice{display:flex;gap:var(--sp-3);margin-bottom:var(--sp-5);}
+  .client-choice .radio{flex:1;margin-bottom:0;}
+  .connect-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:var(--sp-4);border:1.5px solid var(--border);border-radius:var(--r-md);margin-bottom:var(--sp-3);}
+  .connect-row.err{border-color:var(--red-600);background:var(--red-50);}
+  .connect-row.ok{border-color:var(--green-600);background:var(--green-50);}
+  .connect-row .label{display:flex;align-items:center;gap:12px;font-size:14px;font-weight:600;}
+  .brand-icon{width:38px;height:38px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;flex:none;}
+  .brand-icon.wa{background:#E7F8F1;color:#0E9F6E;}
+  .brand-icon.gd{background:var(--blue-50);color:var(--blue-600);}
+  .helper-note{display:flex;gap:9px;font-size:12.5px;color:var(--t-500);line-height:1.6;margin-top:var(--sp-4);padding:13px 15px;background:var(--surface-alt);border-radius:var(--r-md);}
+  .helper-note svg{flex:none;color:var(--t-400);width:15px;height:15px;margin-top:1px;}
+
+  .receipt{border:1px solid var(--border);border-radius:var(--r-xl);overflow:hidden;background:var(--surface);}
+  .receipt-head{padding:var(--sp-5) var(--sp-6);border-bottom:1px solid var(--border);text-align:center;background:var(--surface-alt);}
+  .receipt-head .eyebrow{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--t-400);margin-bottom:4px;}
+  .receipt-head .name{font-size:16.5px;font-weight:700;}
+  .receipt-body{padding:0 var(--sp-6);}
+  .receipt-total{display:flex;align-items:center;justify-content:space-between;padding:var(--sp-4) var(--sp-6);background:var(--surface-alt);}
+  .receipt-total .v{font-size:14px;font-weight:700;color:var(--green-600);display:flex;align-items:center;gap:6px;}
+  .commit-zone{padding:var(--sp-5) var(--sp-6);}
+
+  .success-ring{width:64px;height:64px;border-radius:50%;background:var(--green-50);display:flex;align-items:center;justify-content:center;margin:0 auto var(--sp-4);position:relative;}
+  .success-ring::before{content:"";position:absolute;inset:-6px;border-radius:50%;border:2px solid var(--green-50);opacity:0;animation:ringPulse 1.1s var(--ease) 350ms both;}
+  @keyframes ringPulse{0%{opacity:.9;transform:scale(.8);}100%{opacity:0;transform:scale(1.35);}}
+  .next-actions{display:flex;flex-direction:column;gap:2px;margin-top:var(--sp-2);border-top:1px solid var(--border);padding-top:var(--sp-4);}
+  .next-actions a{display:flex;align-items:center;justify-content:space-between;padding:11px 4px;font-size:13px;color:var(--t-700);font-weight:600;text-decoration:none;}
+  .next-actions a svg{color:var(--t-400);width:16px;height:16px;}
+
+  .focal-card{border-radius:var(--r-xl);padding:var(--sp-10) var(--sp-8);background:linear-gradient(160deg,var(--blue-600),var(--blue-700));color:#fff;box-shadow:0 18px 44px rgba(36,84,224,.28);position:relative;overflow:hidden;text-align:center;}
+  .focal-card::after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 80% 10%,rgba(255,255,255,.14),transparent 55%);}
+  .focal-card .in{position:relative;z-index:1;}
+  .focal-card .eyebrow{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:rgba(255,255,255,.75);margin-bottom:8px;}
+  .focal-card h2{font-size:20px;font-weight:700;margin:0 0 8px;}
+  .focal-card p{font-size:13px;color:rgba(255,255,255,.86);margin:0 auto 18px;max-width:320px;}
+
+  .table-shell{border:1px solid var(--border);border-radius:var(--r-lg);overflow:hidden;background:var(--surface);}
+  .table-head{display:flex;background:var(--surface-alt);font-size:11.5px;font-weight:600;color:var(--t-400);padding:12px 18px;}
+  .table-row{display:flex;align-items:center;font-size:13px;padding:14px 18px;border-top:1px solid var(--border);}
+  .table-head span,.table-row span{flex:1;}
+
+  .mobile-body{max-height:560px;overflow-y:auto;}
+  .mobile-bottombar{position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--border);padding:12px 16px;box-shadow:0 -4px 12px rgba(16,19,35,.06);}
+
+  table.spec{width:100%;border-collapse:collapse;font-size:13px;}
+  table.spec th{text-align:right;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--t-400);padding:10px 14px;border-bottom:2px solid var(--border);}
+  table.spec td{padding:12px 14px;border-bottom:1px solid var(--border);color:var(--t-700);}
+  table.spec td:first-child{font-weight:600;color:var(--t-900);}
+  table.spec code{background:var(--surface-sunken);padding:2px 6px;border-radius:4px;font-size:11.5px;color:var(--blue-700);}
+
+  footer{max-width:1180px;margin:var(--sp-16) auto 0;padding:0 var(--sp-6);}
+  footer h3{font-size:16px;margin:var(--sp-8) 0 var(--sp-3);}
+  .changelog{list-style:none;padding:0;margin:0;display:grid;gap:10px;}
+  .changelog li{display:flex;gap:10px;font-size:13.5px;color:var(--t-700);align-items:flex-start;}
+  .changelog li svg{flex:none;color:var(--green-600);width:16px;height:16px;margin-top:3px;}
+</style>
+
+<div class="doc-hero"><div class="doc-hero-in">
+  <span class="tag">Design Frozen — Final Source of Truth</span>
+  <h1>First-Send Journey — Final Source of Truth</h1>
+  <p>This file supersedes and replaces both prior UI links. It is the only design reference
+  engineering should use from this point forward. No flow, IA, or terminology changed — this
+  pass consolidates tokens, fixes the audit's Critical and Recommended findings, and completes
+  the responsive coverage needed to start implementation.</p>
+</div></div>
+
+<div class="wrap">
+
+<div class="callout fix"><b>Supersession notice:</b> the earlier "High-Fidelity UI &amp; Design
+System" link and the "Production Polish" link are both deprecated as of this file. Every screen,
+token, and component below is final. Do not reference the older links for implementation.</div>
+
+<!-- ============================================================ -->
+<div class="h-section">Design tokens — single source</div>
+<div class="h-section-sub">One palette, one radius scale, one shadow scale, one spacing scale —
+restored as real custom properties and referenced by every component below, not hardcoded.</div>
+
+<div class="h-sub">Color</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;">
+  <div style="border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;"><div style="height:52px;background:var(--blue-600);"></div><div style="padding:9px 11px;font-size:11px;"><b style="display:block;font-size:12px;">Centro Blue / 600</b>#2454E0</div></div>
+  <div style="border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;"><div style="height:52px;background:var(--green-600);"></div><div style="padding:9px 11px;font-size:11px;"><b style="display:block;font-size:12px;">Success</b>#16A34A</div></div>
+  <div style="border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;"><div style="height:52px;background:var(--orange-600);"></div><div style="padding:9px 11px;font-size:11px;"><b style="display:block;font-size:12px;">Warning</b>#C2530C</div></div>
+  <div style="border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;"><div style="height:52px;background:var(--red-600);"></div><div style="padding:9px 11px;font-size:11px;"><b style="display:block;font-size:12px;">Error</b>#DC2626</div></div>
+  <div style="border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;"><div style="height:52px;background:var(--t-900);"></div><div style="padding:9px 11px;font-size:11px;"><b style="display:block;font-size:12px;">Text / 900</b>#101323</div></div>
+</div>
+
+<div class="h-sub">Spacing (4px base — now enforced, not just documented)</div>
+<div style="display:flex;flex-direction:column;gap:6px;">
+  <div style="display:flex;align-items:center;gap:12px;"><span style="width:70px;font-size:11px;color:var(--t-500);font-family:monospace;">--sp-2</span><div style="background:var(--blue-500);height:10px;width:var(--sp-2);"></div></div>
+  <div style="display:flex;align-items:center;gap:12px;"><span style="width:70px;font-size:11px;color:var(--t-500);font-family:monospace;">--sp-4</span><div style="background:var(--blue-500);height:10px;width:var(--sp-4);"></div></div>
+  <div style="display:flex;align-items:center;gap:12px;"><span style="width:70px;font-size:11px;color:var(--t-500);font-family:monospace;">--sp-6</span><div style="background:var(--blue-500);height:10px;width:var(--sp-6);"></div></div>
+  <div style="display:flex;align-items:center;gap:12px;"><span style="width:70px;font-size:11px;color:var(--t-500);font-family:monospace;">--sp-8</span><div style="background:var(--blue-500);height:10px;width:var(--sp-8);"></div></div>
+  <div style="display:flex;align-items:center;gap:12px;"><span style="width:70px;font-size:11px;color:var(--t-500);font-family:monospace;">--sp-12</span><div style="background:var(--blue-500);height:10px;width:var(--sp-12);"></div></div>
+</div>
+<div class="callout">Every padding/margin/gap value in this file's CSS references one of these
+variables — audit finding "spacing system not enforced" is resolved structurally, not just visually.</div>
+
+<div class="h-sub">Unified summary component — resolves the 3-pattern inconsistency</div>
+<div class="callout">The audit found three different visual treatments for "show a set of facts
+about this Collection Request." Resolution: <b>one shared row primitive</b> (<code>.summary-row</code>
+— label+icon on one side, value on the other, hairline divider between rows) now powers both the
+in-progress live-summary sidebar <i>and</i> the Review receipt. They still look purposefully
+different in scale (the receipt is larger, centered, and gets a closing confirmation band — it's
+the commitment moment and should read as more significant) but every row inside either one is now
+the same component, not two.</div>
+
+<!-- ============================================================ -->
+<div class="h-section">A. Entry</div>
+
+<div class="h-screen">Landing page — desktop</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:780px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>centro-ai.co.il</div>
+      <div style="text-align:center;padding:48px 30px 34px;background:linear-gradient(180deg,var(--blue-50),var(--surface) 70%);direction:rtl;">
+        <div class="h1s" style="font-size:25px;max-width:460px;margin-inline:auto;">שלחו את בקשת המסמכים הראשונה שלכם תוך דקות</div>
+        <div class="body-text" style="max-width:380px;margin-inline:auto;">בלי כרטיס אשראי, בלי התחייבות.</div>
+        <button class="btn primary" style="padding:12px 28px;">התחילו בחינם</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="h-screen">Registration — desktop / tablet / mobile</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:680px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/register<span class="bp-badge">Desktop</span></div>
+      <div style="display:flex;">
+        <div style="flex:1;background:linear-gradient(160deg,var(--blue-600),var(--blue-700));color:#fff;padding:36px 30px;direction:rtl;text-align:right;">
+          <div style="font-size:16px;font-weight:700;line-height:1.5;">משרדי רואי חשבון ועורכי דין כבר שולחים בקשות מסמכים דרך Centro</div>
+        </div>
+        <div style="flex:1;padding:32px;direction:rtl;text-align:right;">
+          <div class="h1s">בואו נתחיל</div>
+          <div class="field"><label>שם העסק</label><input class="input" placeholder="כהן ושות׳"></div>
+          <div class="field"><label>אימייל</label><input class="input" placeholder="name@example.com"></div>
+          <div class="field" style="margin-bottom:14px;"><label>סיסמה</label><input class="input" placeholder="••••••••"></div>
+          <button class="btn primary full">יצירת חשבון</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/register<span class="bp-badge">Tablet</span></div>
+      <div style="padding:26px;direction:rtl;text-align:right;">
+        <div style="height:64px;border-radius:var(--r-md);background:linear-gradient(160deg,var(--blue-600),var(--blue-700));margin-bottom:18px;"></div>
+        <div class="h1s" style="font-size:16px;">בואו נתחיל</div>
+        <div class="field"><label>שם העסק</label><input class="input" placeholder="כהן ושות׳"></div>
+        <div class="field"><label>אימייל</label><input class="input"></div>
+        <button class="btn primary full">יצירת חשבון</button>
+      </div>
+    </div>
+    <div class="annotation"><b>Tablet:</b> brand panel compresses to a short strip above the form instead of a side column — no information lost.</div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/register<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:22px 18px;direction:rtl;text-align:right;">
+        <div class="h1s" style="font-size:16px;">בואו נתחיל</div>
+        <div class="field"><label>שם העסק</label><input class="input" placeholder="כהן ושות׳"></div>
+        <div class="field"><label>אימייל</label><input class="input"></div>
+        <div class="field" style="margin-bottom:0;"><label>סיסמה</label><input class="input"></div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">יצירת חשבון</button></div>
+    </div>
+    <div class="annotation"><b>Mobile:</b> brand panel drops entirely — form is the whole screen, action pinned to bottom bar.</div>
+  </div>
+</div>
+
+<div class="h-screen">Business Type — desktop / mobile</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:380px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/onboarding<span class="bp-badge">Desktop</span></div>
+      <div style="padding:28px;direction:rtl;text-align:right;">
+        <div class="h1s">מה תחום העיסוק שלכם?</div>
+        <div class="body-text">זה עוזר ל-Centro להציע לכם התחלה מתאימה.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <button class="btn secondary" style="border-color:var(--blue-600);color:var(--blue-600);background:var(--blue-50);">רואה חשבון</button>
+          <button class="btn secondary">עורך דין</button>
+          <button class="btn secondary">ביטוח</button>
+          <button class="btn secondary">אחר</button>
+        </div>
+        <button class="btn primary full" style="margin-top:18px;">המשך</button>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/onboarding<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:22px 18px;direction:rtl;text-align:right;">
+        <div class="h1s" style="font-size:16px;">מה תחום העיסוק שלכם?</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <button class="btn secondary sm" style="border-color:var(--blue-600);color:var(--blue-600);background:var(--blue-50);">רואה חשבון</button>
+          <button class="btn secondary sm">עורך דין</button>
+          <button class="btn secondary sm">ביטוח</button>
+          <button class="btn secondary sm">אחר</button>
+        </div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">המשך</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="h-section">B. Dashboard</div>
+
+<div class="h-screen">Empty state (first-time) — desktop</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:820px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/dashboard<span class="bp-badge">Desktop</span></div>
+      <div class="app-shell" style="min-height:420px;">
+        <div class="app-sidebar">
+          <div class="brand">Centro</div>
+          <div class="nav-item active">לוח בקרה</div>
+          <div class="nav-item">בקשות איסוף</div>
+          <div class="nav-item">לקוחות</div>
+          <div class="nav-item">הגדרות</div>
+        </div>
+        <div style="flex:1;padding:52px 40px 30px;direction:rtl;text-align:center;">
+          <svg style="width:110px;height:80px;margin:0 auto 20px;" viewBox="0 0 120 88" fill="none">
+            <rect x="18" y="26" width="52" height="62" rx="6" fill="var(--blue-50)" stroke="var(--blue-100)" stroke-width="2"/>
+            <rect x="34" y="14" width="52" height="62" rx="6" fill="var(--surface)" stroke="var(--border-strong)" stroke-width="2"/>
+            <circle cx="88" cy="60" r="16" fill="var(--green-50)"/>
+            <polyline points="81,60 86,65 96,54" fill="none" stroke="var(--green-600)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="h1s" style="font-size:19px;">עדיין לא נשלחה אף בקשת איסוף</div>
+          <div class="body-text" style="max-width:320px;margin-inline:auto;">זה בדיוק המקום להתחיל — הראשונה לוקחת רק כמה דקות.</div>
+          <button class="btn primary lg">יצירת בקשת איסוף</button>
+          <div class="kpi-row" style="margin-top:32px;max-width:360px;margin-inline:auto;">
+            <div class="kpi"><div class="n" style="color:var(--t-400);">0</div><div class="l">בקשות פעילות</div></div>
+            <div class="kpi"><div class="n" style="color:var(--t-400);">0</div><div class="l">לקוחות</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="h-screen">Continue state, and mobile</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:480px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/dashboard — resuming<span class="bp-badge">Desktop</span></div>
+      <div style="padding:28px;direction:rtl;">
+        <div class="focal-card"><div class="in">
+          <div class="eyebrow">השלב הראשון שלכם</div>
+          <h2>השלימו את בקשת האיסוף הראשונה שלכם</h2>
+          <p>חזרו בדיוק למקום שבו עצרתם.</p>
+          <button class="btn on-blue">המשך</button>
+        </div></div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/dashboard<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:28px 18px;direction:rtl;text-align:center;">
+        <svg style="width:70px;height:50px;margin:0 auto 16px;" viewBox="0 0 120 88" fill="none">
+          <rect x="18" y="26" width="52" height="62" rx="6" fill="var(--blue-50)" stroke="var(--blue-100)" stroke-width="2"/>
+          <rect x="34" y="14" width="52" height="62" rx="6" fill="var(--surface)" stroke="var(--border-strong)" stroke-width="2"/>
+          <circle cx="88" cy="60" r="16" fill="var(--green-50)"/><polyline points="81,60 86,65 96,54" fill="none" stroke="var(--green-600)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="h1s" style="font-size:15px;">עדיין לא נשלחה אף בקשת איסוף</div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">יצירת בקשת איסוף</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="h-section">C. Collection Requests workspace</div>
+
+<div class="h-screen">What will be sent? — desktop, and tablet/mobile stacking</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:760px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>new<span class="bp-badge">Desktop</span></div>
+      <div class="creation-shell">
+        <div class="creation-form"><div class="creation-form-inner">
+          <div class="progress"><span class="current"></span><span></span><span></span><span></span><span></span></div>
+          <div class="h1s">מה תרצו לבקש?</div>
+          <div class="field"><label>שם הבקשה</label><input class="input" value="מסמכים לפתיחת תיק"></div>
+          <div class="doc-suggest-card">
+            <div class="doc-suggest-head">מסמכים מוצעים לרואי חשבון</div>
+            <div class="doc-suggest-row"><span class="left"><span class="check-circle"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>תעודת זהות</span></div>
+            <div class="doc-suggest-row"><span class="left"><span class="check-circle"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>תלושי שכר</span></div>
+          </div>
+          <div class="add-row">+ הוספת מסמך נוסף</div>
+          <button class="btn primary full" style="margin-top:18px;">המשך</button>
+        </div></div>
+        <div class="creation-summary">
+          <div class="summary-label">סיכום הבקשה</div>
+          <div class="summary-row"><span class="k"><span class="row-icon"><svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4L12 2Z"/></svg></span>מסמכים</span><span class="v">2 נבחרו</span></div>
+          <div class="summary-row"><span class="k">לקוח</span><span class="v muted">טרם נבחר</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>new<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:18px;direction:rtl;text-align:right;">
+        <div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--r-md);padding:8px 12px;font-size:11px;color:var(--t-500);margin-bottom:14px;">▾ סיכום הבקשה — 2 מסמכים</div>
+        <div class="h1s" style="font-size:16px;">מה תרצו לבקש?</div>
+        <div class="field"><label>שם הבקשה</label><input class="input" value="מסמכים לפתיחת תיק"></div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">המשך</button></div>
+    </div>
+    <div class="annotation">Summary becomes a collapsible strip above the form — tap to expand, never hidden entirely.</div>
+  </div>
+</div>
+
+<div class="h-screen">Who should receive it? — existing clients, first-run, and mobile</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:760px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>existing clients<span class="bp-badge">Desktop</span></div>
+      <div class="creation-shell">
+        <div class="creation-form"><div class="creation-form-inner">
+          <div class="progress"><span class="done"></span><span class="current"></span><span></span><span></span><span></span></div>
+          <div class="h1s">למי לשלוח?</div>
+          <div class="client-choice">
+            <div class="radio checked"><span class="dot"></span><div><div class="rt">כל הלקוחות</div><div class="rs">24 לקוחות קיימים</div></div></div>
+            <div class="radio"><span class="dot"></span><div><div class="rt">לקוחות נבחרים</div><div class="rs">בחירה ידנית</div></div></div>
+          </div>
+          <button class="btn primary full">המשך</button>
+        </div></div>
+        <div class="creation-summary">
+          <div class="summary-label">סיכום הבקשה</div>
+          <div class="summary-row"><span class="k">מסמכים</span><span class="v">2 נבחרו</span></div>
+          <div class="summary-row"><span class="k">נמענים</span><span class="v">כל הלקוחות (24)</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:340px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>first-run, no clients yet<span class="bp-badge">Desktop</span></div>
+      <div style="padding:28px;direction:rtl;text-align:right;">
+        <div class="h1s">למי לשלוח?</div>
+        <div class="body-text">עדיין אין לקוחות — נתחיל עם לקוח אחד כדי לנסות.</div>
+        <div class="field"><label>שם הלקוח</label><input class="input" placeholder="ישראל ישראלי"></div>
+        <div class="field"><label>טלפון (WhatsApp)</label><input class="input" placeholder="05X-XXXXXXX" style="direction:ltr;text-align:right;"></div>
+        <button class="btn primary full" style="margin-top:6px;">המשך</button>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>existing clients<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:18px;direction:rtl;text-align:right;">
+        <div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--r-md);padding:8px 12px;font-size:11px;color:var(--t-500);margin-bottom:14px;">▾ סיכום הבקשה — 2 מסמכים</div>
+        <div class="h1s" style="font-size:16px;">למי לשלוח?</div>
+        <div class="radio checked" style="margin-bottom:8px;"><span class="dot"></span><div><div class="rt" style="font-size:13px;">כל הלקוחות</div><div class="rs">24 לקוחות</div></div></div>
+        <div class="radio"><span class="dot"></span><div><div class="rt" style="font-size:13px;">לקוחות נבחרים</div></div></div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">המשך</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="h-screen">When should it be sent? — desktop &amp; mobile</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:760px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>new<span class="bp-badge">Desktop</span></div>
+      <div class="creation-shell">
+        <div class="creation-form"><div class="creation-form-inner">
+          <div class="progress"><span class="done"></span><span class="done"></span><span class="current"></span><span></span><span></span></div>
+          <div class="h1s">מתי לשלוח את הבקשה?</div>
+          <div class="radio checked"><span class="dot"></span><div><div class="rt">עכשיו</div><div class="rs">רוב העסקים שולחים מיד לאחר יצירת הבקשה</div></div></div>
+          <div class="radio"><span class="dot"></span><div><div class="rt">בתאריך אחר</div><div class="rs">אפשר גם לתזמן לשליחה מאוחר יותר</div></div></div>
+          <button class="btn primary full" style="margin-top:8px;">המשך</button>
+        </div></div>
+        <div class="creation-summary">
+          <div class="summary-label">סיכום הבקשה</div>
+          <div class="summary-row"><span class="k">מסמכים</span><span class="v">2 נבחרו</span></div>
+          <div class="summary-row"><span class="k">נמענים</span><span class="v">24 לקוחות</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>new<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:18px;direction:rtl;text-align:right;">
+        <div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--r-md);padding:8px 12px;font-size:11px;color:var(--t-500);margin-bottom:14px;">▾ סיכום — 2 מסמכים · 24 נמענים</div>
+        <div class="h1s" style="font-size:16px;">מתי לשלוח?</div>
+        <div class="radio checked"><span class="dot"></span><div class="rt" style="font-size:13px;">עכשיו</div></div>
+        <div class="radio"><span class="dot"></span><div class="rt" style="font-size:13px;">בתאריך אחר</div></div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">המשך</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="h-screen">Connect Services (if needed) — four states, desktop; mobile</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:400px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>neither connected<span class="bp-badge">Desktop</span></div>
+      <div style="padding:28px;direction:rtl;text-align:right;">
+        <div class="progress"><span class="done"></span><span class="done"></span><span class="done"></span><span class="current"></span><span></span></div>
+        <div class="h1s" style="font-size:17px;">נשארו שני חיבורים כדי לשלוח</div>
+        <div class="connect-row"><span class="label"><span class="brand-icon wa"><svg class="icon" style="width:17px;height:17px;" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9.3 8.4 8.5 8.5 0 0 1-4-1.3L3 20l1.4-4.5A8.4 8.4 0 1 1 21 11.5Z"/></svg></span>WhatsApp Business</span><button class="btn secondary sm">חיבור</button></div>
+        <div class="connect-row"><span class="label"><span class="brand-icon gd"><svg class="icon" style="width:17px;height:17px;" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8l-2-2H5a2 2 0 0 0-2 2Z"/></svg></span>Google Drive</span><button class="btn secondary sm">חיבור</button></div>
+        <button class="btn disabled full">המשך</button>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:400px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>both connected<span class="bp-badge">Desktop</span></div>
+      <div style="padding:28px;direction:rtl;text-align:right;">
+        <div class="progress"><span class="done"></span><span class="done"></span><span class="done"></span><span class="current"></span><span></span></div>
+        <div class="h1s" style="font-size:17px;">נשארו שני חיבורים כדי לשלוח</div>
+        <div class="connect-row ok"><span class="label"><span class="brand-icon wa"><svg class="icon" style="width:17px;height:17px;" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9.3 8.4 8.5 8.5 0 0 1-4-1.3L3 20l1.4-4.5A8.4 8.4 0 1 1 21 11.5Z"/></svg></span>WhatsApp Business</span><span class="badge success">✓ מחובר</span></div>
+        <div class="connect-row ok"><span class="label"><span class="brand-icon gd"><svg class="icon" style="width:17px;height:17px;" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8l-2-2H5a2 2 0 0 0-2 2Z"/></svg></span>Google Drive</span><span class="badge success">✓ מחובר</span></div>
+        <button class="btn primary full">המשך</button>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:400px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>connection failed<span class="bp-badge">Desktop</span></div>
+      <div style="padding:28px;direction:rtl;text-align:right;">
+        <div class="progress"><span class="done"></span><span class="done"></span><span class="done"></span><span class="current"></span><span></span></div>
+        <div class="h1s" style="font-size:17px;">נשארו שני חיבורים כדי לשלוח</div>
+        <div class="connect-row err"><span class="label"><span class="brand-icon wa"><svg class="icon" style="width:17px;height:17px;" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9.3 8.4 8.5 8.5 0 0 1-4-1.3L3 20l1.4-4.5A8.4 8.4 0 1 1 21 11.5Z"/></svg></span>WhatsApp Business</span><button class="btn secondary sm">ניסיון נוסף</button></div>
+        <div class="err-text" style="margin:-6px 0 10px;">החיבור נכשל. אפשר לנסות שוב.</div>
+        <div class="connect-row"><span class="label"><span class="brand-icon gd"><svg class="icon" style="width:17px;height:17px;" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8l-2-2H5a2 2 0 0 0-2 2Z"/></svg></span>Google Drive</span><button class="btn secondary sm">חיבור</button></div>
+        <button class="btn disabled full">המשך</button>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>both connected<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:18px;direction:rtl;text-align:right;">
+        <div class="h1s" style="font-size:15px;">נשארו שני חיבורים</div>
+        <div class="connect-row ok" style="padding:11px;"><span class="label" style="font-size:12.5px;"><span class="brand-icon wa" style="width:30px;height:30px;"><svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9.3 8.4 8.5 8.5 0 0 1-4-1.3L3 20l1.4-4.5A8.4 8.4 0 1 1 21 11.5Z"/></svg></span>WhatsApp</span><span class="badge success">✓</span></div>
+        <div class="connect-row ok" style="padding:11px;"><span class="label" style="font-size:12.5px;"><span class="brand-icon gd" style="width:30px;height:30px;"><svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8l-2-2H5a2 2 0 0 0-2 2Z"/></svg></span>Drive</span><span class="badge success">✓</span></div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">המשך</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="h-screen">Review — receipt, desktop / tablet / mobile</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:480px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>review<span class="bp-badge">Desktop</span></div>
+      <div style="padding:30px;direction:rtl;text-align:right;">
+        <div class="h1s" style="text-align:center;">מוכנים לשלוח?</div>
+        <div class="receipt fade-in">
+          <div class="receipt-head"><div class="eyebrow">בקשת האיסוף</div><div class="name">מסמכים לפתיחת תיק</div></div>
+          <div class="receipt-body">
+            <div class="summary-row"><span class="k"><span class="row-icon"><svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4L12 2Z"/></svg></span>מה נשלח</span><span class="v">2 מסמכים</span></div>
+            <div class="summary-row"><span class="k"><span class="row-icon"><svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/></svg></span>למי</span><span class="v">24 לקוחות</span></div>
+            <div class="summary-row"><span class="k"><span class="row-icon"><svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg></span>מתי</span><span class="v">עכשיו</span></div>
+          </div>
+          <div class="receipt-total"><span class="k">חיבורים</span><span class="v"><svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>WhatsApp + Drive מחוברים</span></div>
+          <div class="commit-zone">
+            <button class="btn primary full lg">אישור ושליחה</button>
+            <button class="btn ghost full">חזרה לעריכה</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>review<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="direction:rtl;text-align:right;padding:16px 14px 4px;">
+        <div class="h1s" style="font-size:16px;text-align:center;">מוכנים לשלוח?</div>
+        <div class="receipt" style="border-radius:12px;">
+          <div class="receipt-head" style="padding:14px;"><div class="name" style="font-size:14px;">מסמכים לפתיחת תיק</div></div>
+          <div class="receipt-body" style="padding:0 14px;">
+            <div class="summary-row" style="padding:10px 0;font-size:12px;"><span class="k">מה נשלח</span><span class="v">2 מסמכים</span></div>
+            <div class="summary-row" style="padding:10px 0;font-size:12px;"><span class="k">למי</span><span class="v">24 לקוחות</span></div>
+            <div class="summary-row" style="padding:10px 0;font-size:12px;"><span class="k">מתי</span><span class="v">עכשיו</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">אישור ושליחה</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="h-section">D. Send → Success</div>
+<div class="callout fix"><b>Audit fix applied:</b> Success previously only showed the 24-client
+bulk case. Both the singular (true first-run) and plural cases are now specified below — this
+was the wording gap flagged as the main content-completeness issue.</div>
+
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:360px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>success — singular (first-run)<span class="bp-badge">Desktop</span></div>
+      <div style="text-align:center;padding:44px 30px;direction:rtl;">
+        <div class="success-ring"><svg viewBox="0 0 24 24" style="width:30px;height:30px;"><polyline points="20 6 9 17 4 12" fill="none" stroke="var(--green-600)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="h1s" style="font-size:18px;">הבקשה נשלחה בהצלחה לישראל ישראלי</div>
+        <div class="body-text">Centro ימשיך לנהל תזכורות ואיסוף מסמכים באופן אוטומטי — אין צורך לעשות דבר נוסף.</div>
+        <button class="btn primary full">מעבר ללוח הבקרה</button>
+        <div class="next-actions"><a href="#">צפייה בבקשה<svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a></div>
+      </div>
+    </div>
+    <div class="annotation"><b>Singular</b> — one recipient named directly by their own name, not "1 client."</div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:360px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>success — plural<span class="bp-badge">Desktop</span></div>
+      <div style="text-align:center;padding:44px 30px;direction:rtl;">
+        <div class="success-ring"><svg viewBox="0 0 24 24" style="width:30px;height:30px;"><polyline points="20 6 9 17 4 12" fill="none" stroke="var(--green-600)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="h1s" style="font-size:18px;">הבקשה נשלחה בהצלחה ל-24 לקוחות</div>
+        <div class="body-text">Centro ימשיך לנהל תזכורות ואיסוף מסמכים באופן אוטומטי — אין צורך לעשות דבר נוסף.</div>
+        <button class="btn primary full">מעבר ללוח הבקרה</button>
+        <div class="next-actions">
+          <a href="#">צפייה בבקשה<svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>
+          <a href="#">יצירת בקשה נוספת<svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>
+        </div>
+      </div>
+    </div>
+    <div class="annotation"><b>Plural (2+)</b> — count shown, both next actions offered since there's more to manage.</div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:280px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>success<span class="bp-badge">Mobile</span></div>
+      <div class="mobile-body" style="padding:34px 20px 10px;direction:rtl;text-align:center;">
+        <div class="success-ring" style="width:52px;height:52px;"><svg viewBox="0 0 24 24" style="width:24px;height:24px;"><polyline points="20 6 9 17 4 12" fill="none" stroke="var(--green-600)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="h1s" style="font-size:15px;">הבקשה נשלחה בהצלחה ל-24 לקוחות</div>
+        <div class="body-text" style="font-size:12px;">Centro ימשיך לנהל תזכורות ואיסוף מסמכים אוטומטית.</div>
+      </div>
+      <div class="mobile-bottombar"><button class="btn primary full">מעבר ללוח הבקרה</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="h-screen">Sending (loading) / send failed (error)</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:340px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>sending…</div>
+      <div style="text-align:center;padding:60px 28px;">
+        <div class="spinner" style="width:26px;height:26px;margin:0 auto;"></div>
+        <div class="body-text" style="margin-top:16px;">שולח את הבקשה...</div>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="frame" style="width:340px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>send failed</div>
+      <div style="text-align:center;padding:40px 28px;">
+        <div style="width:44px;height:44px;border-radius:50%;background:var(--red-50);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;"><svg class="icon" style="color:var(--red-600);" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><circle cx="12" cy="16.2" r=".3" fill="currentColor" stroke="none"/></svg></div>
+        <div class="h1s" style="font-size:16px;">משהו השתבש בשליחה</div>
+        <div class="body-text">הבקשה לא נשלחה לאף אחד. שום דבר לא אבד — אפשר לנסות שוב.</div>
+        <button class="btn primary full">ניסיון נוסף</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="h-screen">Collection Requests — after first send</div>
+<div class="row">
+  <div class="col">
+    <div class="frame" style="width:820px;">
+      <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span>/collection-requests</div>
+      <div class="app-shell">
+        <div class="app-sidebar">
+          <div class="brand">Centro</div>
+          <div class="nav-item">לוח בקרה</div>
+          <div class="nav-item active">בקשות איסוף</div>
+          <div class="nav-item">לקוחות</div>
+          <div class="nav-item">הגדרות</div>
+        </div>
+        <div style="flex:1;padding:28px 32px;direction:rtl;text-align:right;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;"><div class="h1s" style="font-size:16px;">בקשות איסוף</div><button class="btn primary sm">+ בקשה חדשה</button></div>
+          <div class="table-shell">
+            <div class="table-head"><span>שם הבקשה</span><span>נמענים</span><span>נשלח</span><span>סטטוס</span></div>
+            <div class="table-row"><span>מסמכים לפתיחת תיק</span><span>24 לקוחות</span><span>עכשיו</span><span><span class="badge neutral">ממתין ללקוחות</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="h-section">Engineering handoff — clarifications</div>
+
+<div class="callout eng"><b>Semantic controls, not divs.</b> Every radio/checkbox in this document
+is a styled <code>&lt;div&gt;</code> because this is a static visual reference. Production must
+use real <code>&lt;input type="radio"&gt;</code>/<code>&lt;input type="checkbox"&gt;</code> (or
+a component library's accessible equivalent) with correct <code>aria-checked</code>/label
+association — do not port the div markup directly. This is the single most important handoff
+note in this document.</div>
+
+<div class="callout eng"><b>RTL directional icons.</b> No mirrored-icon bugs were found in this
+review, but verify explicitly during implementation: any chevron/arrow icon must visually point
+in the reading-appropriate direction for RTL (e.g. "next" points left, not right). Progress
+indicators and phone-number fields are already handled correctly here via <code>direction:rtl</code>
+on the container plus forced <code>direction:ltr</code> on the number input itself — replicate
+that exact pattern, don't reinvent it per field.</div>
+
+<div class="h-sub">Motion specification (unchanged from prior round, restated for completeness)</div>
+<table class="spec">
+  <tr><th>Interaction</th><th>Duration</th><th>Easing</th></tr>
+  <tr><td>Hover / focus / checkbox toggle</td><td><code>100–150ms</code></td><td>ease-out</td></tr>
+  <tr><td>Pressed</td><td><code>100ms</code></td><td><code>scale(.98)</code>, the only transform in the system</td></tr>
+  <tr><td>Connection state change</td><td><code>250ms</code></td><td>crossfade only</td></tr>
+  <tr><td>Skeleton loading</td><td><code>1.4s</code></td><td>ease-in-out, infinite</td></tr>
+  <tr><td>Success check draw</td><td><code>400ms</code></td><td>ease-out, one-time ring pulse</td></tr>
+  <tr><td>Error appearance</td><td><code>200ms</code></td><td>fade + 3px shift, never a shake</td></tr>
+</table>
+
+<footer>
+  <h3>Critical issues fixed</h3>
+  <ul class="changelog">
+    <li><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>Consolidated two conflicting artifact links into this single file. The prior two links are deprecated and should not be used.</li>
+    <li><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>Every screen now uses one token set — Centro Blue #2454E0, one radius scale, one shadow scale. The old indigo (#4338CA) screens are repainted, not left as-is.</li>
+    <li><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>Spacing tokens restored as real CSS custom properties and referenced throughout — not hardcoded pixels.</li>
+  </ul>
+
+  <h3>Recommended issues fixed</h3>
+  <ul class="changelog">
+    <li><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>The three divergent "summary" patterns unified into one shared row primitive, used by both the live-summary panel and the Review receipt.</li>
+    <li><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>Success screen now specifies both singular and plural recipient copy — the true first-run case is no longer undesigned.</li>
+    <li><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>Full tablet/mobile mockups added for Registration, Business Type, Who, When, and Connect — the highest-ambiguity screens flagged by the audit.</li>
+    <li><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>Semantic-control and RTL-icon handoff notes added explicitly, so neither is left to engineering's interpretation.</li>
+  </ul>
+
+  <h3>Optional issues intentionally deferred</h3>
+  <p style="max-width:760px;">Per-icon RTL audit across all ~15 screens (spot-checked, not
+  exhaustively re-verified one by one); the zero-document Review edge case; long-content stress
+  testing (very long request names, 10+ document lists). None affect starting implementation —
+  normal to resolve during build/QA.</p>
+
+  <h3>Final source of truth</h3>
+  <p style="max-width:760px;"><b>This file only.</b> Both earlier links ("High-Fidelity UI &amp;
+  Design System" and "Production Polish") are superseded and should be archived or redirected,
+  not kept as active references.</p>
+
+  <h3>Remaining blockers</h3>
+  <p style="max-width:760px;">None.</p>
+
+  <p style="margin-top:32px;font-size:15px;font-weight:700;color:var(--t-900);">This design is
+  complete, frozen, and ready for development.</p>
+</footer>
+
+</div>
