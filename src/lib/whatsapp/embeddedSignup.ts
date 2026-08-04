@@ -35,15 +35,13 @@ export class WhatsAppSignupError extends Error {
   }
 }
 
-// Production site origin — plus paths the client may capture at FB.login time
-// (pathname only, never ?query). Meta 36008 means exchange redirect_uri must
-// match the dialog; JS SDK often binds the current page path.
+// Site origin only as static fallbacks. The client always sends the exact
+// dialogRedirectUri (origin+pathname at FB.login, query stripped) first —
+// Meta 36008/191 require Valid OAuth Redirect URIs to list that same path
+// (e.g. https://www.centro-ai.co.il/collections/new) plus App Domains.
 const PREFERRED_SITE_REDIRECTS = [
   "https://www.centro-ai.co.il/",
   "https://www.centro-ai.co.il",
-  "https://www.centro-ai.co.il/collections/new",
-  "https://www.centro-ai.co.il/settings",
-  "https://www.centro-ai.co.il/onboarding",
 ] as const;
 
 // Embedded Signup's client-side FB.login() popup returns a short-lived
