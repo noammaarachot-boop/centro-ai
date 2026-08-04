@@ -1,5 +1,6 @@
 import { withRetry } from "@/lib/resilience";
 import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
+import { WHATSAPP_HARDCODE_ENABLED, WHATSAPP_HARDCODED } from "./hardcodedConfig";
 
 // Safe step ids returned to the client on failure (WA-03). Do not put
 // secrets or full Graph bodies here — those stay in server logs only.
@@ -52,11 +53,21 @@ export const WHATSAPP_OAUTH_CALLBACK_PATH = "/api/auth/whatsapp/oauth";
 export const WHATSAPP_OAUTH_CALLBACK_URI =
   "https://www.centro-ai.co.il/api/auth/whatsapp/oauth";
 
-// Fallback site roots only for older FB.login trials.
 const PREFERRED_SITE_REDIRECTS = [
   "https://www.centro-ai.co.il/",
   "https://www.centro-ai.co.il",
 ] as const;
+
+function siteRedirectCandidates(): string[] {
+  if (WHATSAPP_HARDCODE_ENABLED) {
+    return [
+      WHATSAPP_HARDCODED.siteOriginTrailing,
+      WHATSAPP_HARDCODED.siteOrigin,
+      WHATSAPP_HARDCODED.oauthRedirectUri,
+    ];
+  }
+  return [...PREFERRED_SITE_REDIRECTS];
+}
 
 // Embedded Signup returns a short-lived authorization `code`. Exchanging it
 // confirms signup on Meta's side and yields a user token for WABA/phone
@@ -103,7 +114,7 @@ export async function exchangeSignupCode(
     // it always 191s and replaces the useful Meta message.
     candidates = uniqueRedirects([
       ...safePreferred,
-      ...PREFERRED_SITE_REDIRECTS,
+      ...siteRedirectCandidates(),
       safeEnv && !/facebook\.com/i.test(safeEnv) ? safeEnv : undefined,
       null,
     ]);

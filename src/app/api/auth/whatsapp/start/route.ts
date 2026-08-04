@@ -3,6 +3,10 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/session";
 import { GRAPH_API_VERSION } from "@/lib/whatsapp/config";
+import {
+  WHATSAPP_HARDCODE_ENABLED,
+  WHATSAPP_HARDCODED,
+} from "@/lib/whatsapp/hardcodedConfig";
 import { WHATSAPP_OAUTH_CALLBACK_URI } from "@/lib/whatsapp/embeddedSignup";
 
 export const dynamic = "force-dynamic";
@@ -31,8 +35,9 @@ function resolveReturnTo(raw: string | null): string {
 }
 
 function resolveRedirectUri(): string {
-  // Whatever is set on Vercel must be listed byte-for-byte in Meta Valid
-  // OAuth Redirect URIs for App ID NEXT_PUBLIC_WHATSAPP_APP_ID.
+  if (WHATSAPP_HARDCODE_ENABLED) {
+    return WHATSAPP_HARDCODED.oauthCallbackUri;
+  }
   const fromEnv = process.env.WHATSAPP_OAUTH_REDIRECT_URI?.trim();
   if (fromEnv && /^https:\/\//i.test(fromEnv) && !fromEnv.includes("?")) {
     return fromEnv;
@@ -41,17 +46,16 @@ function resolveRedirectUri(): string {
 }
 
 // Full-page Facebook Login for Business dialog with an explicit redirect_uri
-// we control. Unlike FB.login(), Meta then requires the same URI on code
-// exchange — eliminating 36008/191 from opaque JS SDK popup redirects.
-//
-// Requires Valid OAuth Redirect URIs to include that exact redirect_uri
-// (default: https://www.centro-ai.co.il/api/auth/whatsapp/oauth)
-// under the same Meta App ID as NEXT_PUBLIC_WHATSAPP_APP_ID.
+// we control. Requires Valid OAuth Redirect URIs to include that exact URI.
 export async function GET(request: NextRequest) {
   await requireSession();
 
-  const appId = process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
-  const configId = process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
+  const appId = WHATSAPP_HARDCODE_ENABLED
+    ? WHATSAPP_HARDCODED.appId
+    : process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
+  const configId = WHATSAPP_HARDCODE_ENABLED
+    ? WHATSAPP_HARDCODED.configId
+    : process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
   const { searchParams } = new URL(request.url);
   const returnTo = resolveReturnTo(searchParams.get("returnTo"));
   const errorSeparator = returnTo.includes("?") ? "&" : "?";

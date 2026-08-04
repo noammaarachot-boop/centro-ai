@@ -4,6 +4,22 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { buttonVariants } from "./Button";
+import {
+  WHATSAPP_HARDCODE_ENABLED,
+  WHATSAPP_HARDCODED,
+  getHardcodedConfigId,
+  getHardcodedPublicAppId,
+} from "@/lib/whatsapp/hardcodedConfig";
+
+function resolvePublicAppId(): string | undefined {
+  if (WHATSAPP_HARDCODE_ENABLED) return getHardcodedPublicAppId();
+  return process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
+}
+
+function resolveConfigId(): string | undefined {
+  if (WHATSAPP_HARDCODE_ENABLED) return getHardcodedConfigId();
+  return process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
+}
 
 // Facebook JS SDK is not packaged with first-party types.
 interface FacebookLoginResponse {
@@ -137,11 +153,17 @@ export function WhatsAppConnectButton() {
   const [status, setStatus] = useState<"loading-sdk" | "idle" | "connecting" | "error">("loading-sdk");
 
   useEffect(() => {
-    const appId = process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
+    const appId = resolvePublicAppId();
+    console.log(DEBUG_PREFIX, "WhatsAppConnectButton mounted", {
+      hardcode: WHATSAPP_HARDCODE_ENABLED,
+      appId,
+      configId: resolveConfigId(),
+      oauthRedirectUri: WHATSAPP_HARDCODED.oauthRedirectUri,
+    });
     let cancelled = false;
     const load = appId
       ? loadFacebookSdk(appId)
-      : Promise.reject(new Error("NEXT_PUBLIC_WHATSAPP_APP_ID not configured"));
+      : Promise.reject(new Error("WhatsApp App ID not configured"));
     load
       .then(() => {
         if (!cancelled) setStatus("idle");
@@ -156,9 +178,10 @@ export function WhatsAppConnectButton() {
   }, []);
 
   function connect() {
-    const appId = process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
-    const configId = process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
+    const appId = resolvePublicAppId();
+    const configId = resolveConfigId();
     console.log(DEBUG_PREFIX, "connect() clicked", {
+      hardcode: WHATSAPP_HARDCODE_ENABLED,
       appId,
       configId,
       fbSdkLoaded: !!window.FB,
@@ -171,15 +194,38 @@ export function WhatsAppConnectButton() {
 
     setStatus("connecting");
 
-    // Site origin (query stripped). Meta Valid OAuth / Allowed Domains
-    // should list this origin, not the /api/auth/whatsapp/* path.
+    // Always use production site root for exchange when hardcoding — not the
+    // SPA path, not an env typo.
     const returnPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    const pageOrigin = window.location.origin;
-    const dialogRedirectUri = `${pageOrigin}/`;
-    if (window.location.pathname !== "/" || window.location.search || window.location.hash) {
+    const pageOrigin = WHATSAPP_HARDCODE_ENABLED
+      ? WHATSAPP_HARDCODED.siteOrigin
+      : window.location.origin;
+    const dialogRedirectUri = WHATSAPP_HARDCODE_ENABLED
+      ? WHATSAPP_HARDCODED.siteOriginTrailing
+      : `${pageOrigin}/`;
+    if (
+      !WHATSAPP_HARDCODE_ENABLED &&
+      (window.location.pathname !== "/" || window.location.search || window.location.hash)
+    ) {
       window.history.replaceState(window.history.state, "", dialogRedirectUri);
+    } else if (
+      WHATSAPP_HARDCODE_ENABLED &&
+      (window.location.origin !== pageOrigin ||
+        window.location.pathname !== "/" ||
+        window.location.search ||
+        window.location.hash)
+    ) {
+      // Keep FB.login on registered site root when hardcoding diagnosis.
+      try {
+        window.history.replaceState(window.history.state, "", dialogRedirectUri);
+      } catch {
+        // ignore
+      }
     }
-    console.log(DEBUG_PREFIX, "dialogRedirectUri for exchange", dialogRedirectUri);
+    console.log(DEBUG_PREFIX, "dialogRedirectUri for exchange", {
+      dialogRedirectUri,
+      hardcode: WHATSAPP_HARDCODE_ENABLED,
+    });
 
     let settled = false;
     const restorePath = () => {
@@ -231,12 +277,13 @@ export function WhatsAppConnectButton() {
     }
 
     try {
-      // Origins Meta commonly binds for the JS SDK popup (omit tried server-side too).
-      const redirectUris = [
-        dialogRedirectUri,
-        pageOrigin,
-        `${pageOrigin}/`,
-      ];
+      const redirectUris = WHATSAPP_HARDCODE_ENABLED
+        ? [
+            WHATSAPP_HARDCODED.siteOriginTrailing,
+            WHATSAPP_HARDCODED.siteOrigin,
+            WHATSAPP_HARDCODED.oauthRedirectUri,
+          ]
+        : [dialogRedirectUri, pageOrigin, `${pageOrigin}/`];
 
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
