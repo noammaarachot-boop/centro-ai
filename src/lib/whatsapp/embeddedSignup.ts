@@ -98,16 +98,14 @@ export async function exchangeSignupCode(
       );
     }
   } else {
-    // Meta Embedded Signup (FB.login) docs: often omit redirect_uri. Live
-    // 36008 means Meta bound a URI — try site origin next, then JS SDK
-    // login_success, then full-page callback path / env.
+    // FB.login binds the page origin. Live log: omit→36008, centro→191
+    // (App Domains missing). Do not try facebook.com login_success last —
+    // it always 191s and replaces the useful Meta message.
     candidates = uniqueRedirects([
-      null,
       ...safePreferred,
       ...PREFERRED_SITE_REDIRECTS,
-      safeEnv,
-      FB_JS_SDK_REDIRECT_URI,
-      WHATSAPP_OAUTH_CALLBACK_URI,
+      safeEnv && !/facebook\.com/i.test(safeEnv) ? safeEnv : undefined,
+      null,
     ]);
   }
 
@@ -119,6 +117,7 @@ export async function exchangeSignupCode(
     status: number;
     code?: number;
     error_subcode?: number;
+    message?: string;
   }> = [];
 
   for (const redirectUri of candidates) {
@@ -155,6 +154,7 @@ export async function exchangeSignupCode(
       status: lastStatus,
       code: parsedAttempt.code,
       error_subcode: parsedAttempt.error_subcode,
+      message: parsedAttempt.message,
     });
     console.error("[whatsapp-oauth] code exchange attempt failed", {
       status: lastStatus,
@@ -170,13 +170,28 @@ export async function exchangeSignupCode(
     }
   }
 
+  // Prefer the most actionable attempt (site origin 191 > obscure last try).
+  const preferredFail =
+    attemptLog.find(
+      (a) =>
+        a.code === 191 &&
+        typeof a.redirectUri === "string" &&
+        a.redirectUri.includes("centro-ai.co.il")
+    ) ??
+    attemptLog.find((a) => a.error_subcode === 36008) ??
+    attemptLog[attemptLog.length - 1];
+
   const parsed = parseGraphErrorBody(lastBody);
+  const publicMessage = preferredFail?.message ?? parsed.message;
+  const publicCode = preferredFail?.code ?? parsed.code;
+  const publicSub = preferredFail?.error_subcode ?? parsed.error_subcode;
+
   const hint =
-    parsed.code === 191 || /domain/i.test(lastBody)
-      ? " (Meta code 191: add Exact Valid OAuth Redirect URI https://www.centro-ai.co.il/api/auth/whatsapp/oauth plus https://www.centro-ai.co.il/ ; App Domains centro-ai.co.il + www; Login with JS SDK / Web OAuth ON)"
-      : parsed.error_subcode === 36008 || lastBody.includes("36008")
-        ? " (36008: exchange redirect_uri must match dialog — use full-page /api/auth/whatsapp/start flow and whitelist https://www.centro-ai.co.il/api/auth/whatsapp/oauth; also verify WHATSAPP_APP_SECRET matches App ID)"
-        : lastBody.toLowerCase().includes("secret") || parsed.code === 190
+    publicCode === 191 || /domain/i.test(publicMessage ?? lastBody)
+      ? " (Meta 191: Settings → Basic → App Domains must list centro-ai.co.il AND www.centro-ai.co.il (no https://). Add Website platform Site URL https://www.centro-ai.co.il/. Valid OAuth Redirect URIs: https://www.centro-ai.co.il/ and https://www.centro-ai.co.il. Save. Login with JavaScript SDK = Yes.)"
+      : publicSub === 36008 || lastBody.includes("36008")
+        ? " (36008: redirect_uri must match FB.login dialog — after App Domains 191 is fixed, site origin https://www.centro-ai.co.il/ should exchange; also verify WHATSAPP_APP_SECRET)"
+        : lastBody.toLowerCase().includes("secret") || publicCode === 190
           ? " (check WHATSAPP_APP_SECRET matches App ID on Vercel)"
           : "";
 
@@ -184,11 +199,16 @@ export async function exchangeSignupCode(
     `Signup code exchange failed (${lastStatus}): ${lastBody}${hint}`,
     "code-exchange",
     {
-      message: parsed.message,
-      code: parsed.code,
-      error_subcode: parsed.error_subcode,
-      tried_redirect_uri: lastTried,
-      attempts: attemptLog,
+      message: publicMessage,
+      code: publicCode,
+      error_subcode: publicSub,
+      tried_redirect_uri: preferredFail?.redirectUri ?? lastTried,
+      attempts: attemptLog.map(({ redirectUri, status, code, error_subcode }) => ({
+        redirectUri,
+        status,
+        code,
+        error_subcode,
+      })),
     }
   );
 }
