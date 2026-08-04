@@ -41,33 +41,34 @@ export class WhatsAppSignupError extends Error {
   }
 }
 
-// FB.login() (JS SDK popup) records this internal redirect during OAuth —
-// it is NOT the page origin or Valid OAuth site URL. Live attempts with
-// https://www.centro-ai.co.il/ (and omit) all returned 36008; industry
-// fix is exchanging with this exact URI (see Meta community / whatagent).
+// FB.login() may bind Meta's internal popup URI; the controlled
+// dialog/oauth redirect flow binds our own `/api/auth/whatsapp/oauth`.
 const FB_JS_SDK_REDIRECT_URI =
   "https://www.facebook.com/connect/login_success.html";
 
-// Fallback site URLs only if an older redirect-based flow was used.
+// Fixed production callback for the full-page OAuth dialog — must be
+// listed byte-for-byte in Meta Valid OAuth Redirect URIs.
+export const WHATSAPP_OAUTH_CALLBACK_PATH = "/api/auth/whatsapp/oauth";
+export const WHATSAPP_OAUTH_CALLBACK_URI =
+  "https://www.centro-ai.co.il/api/auth/whatsapp/oauth";
+
+// Fallback site roots only for older FB.login trials.
 const PREFERRED_SITE_REDIRECTS = [
   "https://www.centro-ai.co.il/",
   "https://www.centro-ai.co.il",
 ] as const;
 
-// Embedded Signup's client-side FB.login() popup returns a short-lived
-// `code` — exchanging it is what actually confirms, on Meta's side, that
-// the signup completed, and (see resolveWabaIdFromToken below) is also
-// how the connected WABA is identified. The returned token is used
-// transiently for WABA/phone discovery and best-effort webhook subscribe
-// during this request, then discarded: Centro sends/receives through the
-// one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech Provider model), never a
-// per-org token.
+// Embedded Signup returns a short-lived authorization `code`. Exchanging it
+// confirms signup on Meta's side and yields a user token for WABA/phone
+// discovery (see resolveWabaIdFromToken). The token is discarded after this
+// request; runtime Cloud API calls use WHATSAPP_SYSTEM_USER_TOKEN.
 //
-// Meta 36008: redirect_uri on exchange must match the dialog. For FB.login
-// that is FB_JS_SDK_REDIRECT_URI, not the SPA URL.
+// Meta 36008: exchange redirect_uri must match the OAuth dialog exactly.
+// Prefer onlyPreferred when the dialog used a known server redirect_uri.
 export async function exchangeSignupCode(
   code: string,
-  preferredRedirectUris?: Array<string | null | undefined>
+  preferredRedirectUris?: Array<string | null | undefined>,
+  options?: { onlyPreferred?: boolean }
 ): Promise<string> {
   const { appId, appSecret, oauthRedirectUri } = getWhatsAppConfig();
 
@@ -77,21 +78,36 @@ export async function exchangeSignupCode(
       !!uri &&
       !uri.includes("?") &&
       !uri.includes("#") &&
-      !/\/api\/auth\/whatsapp\//i.test(uri)
+      // Allow our oauth callback path (not legacy typo calback routes).
+      (!/\/api\/auth\/whatsapp\//i.test(uri) || /\/api\/auth\/whatsapp\/oauth\/?$/i.test(uri))
   );
   const safeEnv =
-    oauthRedirectUri && !/\/api\/auth\/whatsapp\//i.test(oauthRedirectUri)
+    oauthRedirectUri &&
+    (!/\/api\/auth\/whatsapp\//i.test(oauthRedirectUri) ||
+      /\/api\/auth\/whatsapp\/oauth\/?$/i.test(oauthRedirectUri))
       ? oauthRedirectUri.trim()
       : undefined;
 
-  // JS SDK popup URI first — page origin and omit both failed live 36008.
-  const candidates = uniqueRedirects([
-    FB_JS_SDK_REDIRECT_URI,
-    null,
-    safeEnv,
-    ...safePreferred,
-    ...PREFERRED_SITE_REDIRECTS,
-  ]);
+  let candidates: Array<string | null>;
+  if (options?.onlyPreferred) {
+    candidates = uniqueRedirects(safePreferred.length > 0 ? safePreferred : [safeEnv, WHATSAPP_OAUTH_CALLBACK_URI]);
+    if (candidates.length === 0) {
+      throw new WhatsAppSignupError(
+        "Signup code exchange has no redirect_uri candidates for onlyPreferred mode",
+        "code-exchange"
+      );
+    }
+  } else {
+    // Controlled callback first, then site, omit, JS SDK internal, env.
+    candidates = uniqueRedirects([
+      WHATSAPP_OAUTH_CALLBACK_URI,
+      safeEnv,
+      ...safePreferred,
+      ...PREFERRED_SITE_REDIRECTS,
+      null,
+      FB_JS_SDK_REDIRECT_URI,
+    ]);
+  }
 
   let lastStatus = 0;
   let lastBody = "";
@@ -155,9 +171,9 @@ export async function exchangeSignupCode(
   const parsed = parseGraphErrorBody(lastBody);
   const hint =
     parsed.code === 191 || /domain/i.test(lastBody)
-      ? " (Meta code 191: In Valid OAuth Redirect URIs DELETE every calback//api path; keep ONLY https://www.centro-ai.co.il/. App Domains: centro-ai.co.il + www. Website Site URL same. Vercel WHATSAPP_OAUTH_REDIRECT_URI = that origin or remove env if still pointing at /api/auth/whatsapp/*)"
+      ? " (Meta code 191: add Exact Valid OAuth Redirect URI https://www.centro-ai.co.il/api/auth/whatsapp/oauth plus https://www.centro-ai.co.il/ ; App Domains centro-ai.co.il + www; Login with JS SDK / Web OAuth ON)"
       : parsed.error_subcode === 36008 || lastBody.includes("36008")
-        ? " (36008: exchange redirect_uri != OAuth dialog — for FB.login try https://www.facebook.com/connect/login_success.html; also verify WHATSAPP_APP_SECRET matches App ID)"
+        ? " (36008: exchange redirect_uri must match dialog — use full-page /api/auth/whatsapp/start flow and whitelist https://www.centro-ai.co.il/api/auth/whatsapp/oauth; also verify WHATSAPP_APP_SECRET matches App ID)"
         : lastBody.toLowerCase().includes("secret") || parsed.code === 190
           ? " (check WHATSAPP_APP_SECRET matches App ID on Vercel)"
           : "";
