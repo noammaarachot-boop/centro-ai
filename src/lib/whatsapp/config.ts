@@ -7,14 +7,11 @@ export interface WhatsAppConfig {
   appId: string;
   appSecret: string;
   systemUserToken: string;
-  // Optional — only needed when the app's "Valid OAuth Redirect URIs" has
-  // an entry configured, which makes Meta implicitly attach it to the
-  // Embedded Signup authorization and then require it echoed back
-  // byte-for-byte on the server-side code exchange, or the exchange fails
-  // with error_subcode 36008. Meta's own base Embedded Signup sample
-  // omits redirect_uri entirely, which is why this isn't required —
-  // exchangeSignupCode only sends it when set, so setups with no
-  // redirect URI configured keep working exactly as documented.
+  // Optional fallback if using a non–JS-SDK redirect flow. For FB.login
+  // Embedded Signup, exchange uses Meta's
+  // https://www.facebook.com/connect/login_success.html (not this value).
+  // Valid OAuth Redirect URIs still need the site origin for the SDK domain
+  // checks; WHATSAPP_OAUTH_REDIRECT_URI is only a secondary exchange candidate.
   oauthRedirectUri: string | null;
   // Same value the webhook route's GET handshake checks
   // (WHATSAPP_WEBHOOK_VERIFY_TOKEN) — also needed by
