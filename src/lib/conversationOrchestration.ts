@@ -10,6 +10,7 @@ import {
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { isWithinBusinessHours, resolveScheduleConfig } from "@/lib/businessHours";
+import { evaluateAutomationGate } from "@/lib/documentCollectionGate";
 import {
   applyTransition,
   canTransition,
@@ -110,13 +111,22 @@ async function sendViaWhatsApp(
   body: string,
   senderType: "ai" | "employee"
 ): Promise<{ whatsappMessageId: string | null; deliveryStatus: string }> {
+  // [wa-diag] TEMPORARY — no logic changed, recipient number not logged (PII).
+  console.log("[wa-diag] sendViaWhatsApp ENTER", {
+    senderType,
+    phoneNumberId: organization.whatsappPhoneNumberId ?? null,
+  });
   if (!organization.whatsappPhoneNumberId) {
+    console.log("[wa-diag] BLOCKED (Level B): condition=not_connected (no whatsappPhoneNumberId) → NO Meta call");
     return { whatsappMessageId: null, deliveryStatus: "not_connected" };
   }
 
   const rawPhone = await getClientPhoneForConversation(conversationId);
   const to = rawPhone ? toE164(rawPhone) : null;
   if (!to) {
+    console.log("[wa-diag] BLOCKED (Level B): condition=invalid_phone (client phone not valid E.164) → NO Meta call", {
+      rawPhonePresent: !!rawPhone,
+    });
     return { whatsappMessageId: null, deliveryStatus: "invalid_phone" };
   }
 
@@ -124,13 +134,22 @@ async function sendViaWhatsApp(
     if (senderType === "ai") {
       const template = TEMPLATE_BY_BODY.get(body);
       if (!template) {
+        console.log("[wa-diag] BLOCKED (Level B): condition=no_template (body not mapped to an approved template) → NO Meta call");
         return { whatsappMessageId: null, deliveryStatus: "no_template" };
       }
+      console.log("[wa-diag] REACHED Meta call (template)", {
+        phoneNumberId: organization.whatsappPhoneNumberId,
+        templateName: template.name,
+        language: template.language,
+      });
       const result = await sendTemplateMessage(organization.whatsappPhoneNumberId, to, template.name, template.language);
+      console.log("[wa-diag] template send returned OK", { messageId: result.messageId });
       return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
     }
 
+    console.log("[wa-diag] REACHED Meta call (text)", { phoneNumberId: organization.whatsappPhoneNumberId });
     const result = await sendTextMessage(organization.whatsappPhoneNumberId, to, body);
+    console.log("[wa-diag] text send returned OK", { messageId: result.messageId });
     return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
   } catch (error) {
     if (!(error instanceof WhatsAppSendError) && !(error instanceof OperationFailedError)) throw error;
@@ -174,23 +193,63 @@ export async function sendOutboundMessage(
   organizationId: string,
   conversationId: string,
   body: string,
-  senderType: "ai" | "employee"
+  senderType: "ai" | "employee",
+  // "manual"  — a human explicitly triggered this from Centro (Send Now,
+  //             Initiate, an employee reply). ALWAYS allowed: never gated
+  //             by documentCollectionEnabled, automationPausedAt, or
+  //             business hours.
+  // "automated" (default) — an autonomous action (scheduler/cron, follow-up
+  //             prompt, reminder, auto-confirmation). Runs only while the
+  //             org's documentCollectionEnabled gate (and the narrower
+  //             per-service pause / business-hours gates) allow it.
+  // senderType is an orthogonal WhatsApp-transport concern (template vs
+  //             free text), deliberately separate from this trigger.
+  trigger: "manual" | "automated" = "automated"
 ): Promise<{ sent: boolean }> {
   const db = await getDb();
   const organization = await getOrganizationConfig(organizationId);
 
-  if (senderType === "ai") {
-    if (!organization.automationActivatedAt) {
-      return { sent: false };
-    }
+  console.log("[document-collection] document_collection_send_started", {
+    organizationId,
+    conversationId,
+    senderType,
+    trigger,
+  });
+
+  // [wa-diag] TEMPORARY diagnostic logging — kept only until one more live
+  // end-to-end test confirms the new flow; removed in Phase 3.
+  console.log("[wa-diag] sendOutboundMessage ENTER", {
+    organizationId,
+    conversationId,
+    senderType,
+    trigger,
+    phoneNumberIdPresent: !!organization.whatsappPhoneNumberId,
+  });
+
+  // Automation gates apply ONLY to autonomous template sends. A manual
+  // (human-initiated) send, and any employee free-text send, bypass every
+  // gate here and always proceed. The rule itself lives in the pure,
+  // unit-tested evaluateAutomationGate.
+  if (senderType === "ai" && trigger === "automated") {
     const service = await getServiceForConversation(conversationId);
-    if (service?.automationPausedAt) {
-      return { sent: false };
-    }
     const effectiveConfig = resolveScheduleConfig(organization, service);
-    if (!isWithinBusinessHours(effectiveConfig)) {
+    const decision = evaluateAutomationGate({
+      senderType,
+      trigger,
+      documentCollectionEnabled: organization.documentCollectionEnabled,
+      automationPaused: !!service?.automationPausedAt,
+      withinBusinessHours: isWithinBusinessHours(effectiveConfig),
+    });
+    if (!decision.allowed) {
+      console.log("[document-collection] document_collection_send_blocked", {
+        organizationId,
+        conversationId,
+        reason: decision.reason,
+      });
+      console.log("[wa-diag] BLOCKED (automated gate):", decision.reason, "→ sent:false, NO Meta call");
       return { sent: false };
     }
+    console.log("[wa-diag] automated gates PASSED → calling sendViaWhatsApp");
   }
 
   const { whatsappMessageId, deliveryStatus } = await sendViaWhatsApp(
@@ -199,6 +258,20 @@ export async function sendOutboundMessage(
     body,
     senderType
   );
+
+  if (deliveryStatus === "sent") {
+    console.log("[document-collection] document_collection_send_accepted", {
+      organizationId,
+      conversationId,
+      whatsappMessageId,
+    });
+  } else {
+    console.log("[document-collection] document_collection_send_failed", {
+      organizationId,
+      conversationId,
+      deliveryStatus,
+    });
+  }
 
   await db.insert(messages).values({
     organizationId,
@@ -248,7 +321,12 @@ export async function recordInboundMessage(
 export async function startConversation(
   organizationId: string,
   collectionRequestId: string,
-  clientId: string
+  clientId: string,
+  // Forwarded to sendOutboundMessage: "manual" for a human-initiated send
+  // (Send Now / Initiate), "automated" for scheduler/cron. Defaults to
+  // "automated" so the autonomous schedulers keep their gated behavior
+  // without any change.
+  trigger: "manual" | "automated" = "automated"
 ): Promise<{ conversation: Awaited<ReturnType<typeof ensureConversation>>; sent: boolean }> {
   const conversation = await ensureConversation(
     organizationId,
@@ -259,7 +337,8 @@ export async function startConversation(
     organizationId,
     conversation.id,
     INITIAL_REQUEST_TEMPLATE,
-    "ai"
+    "ai",
+    trigger
   );
   return { conversation, sent };
 }

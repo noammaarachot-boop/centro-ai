@@ -590,6 +590,26 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     .limit(1);
   if (!template) redirect("/collections");
 
+  // Never send a generic "please send the required documents" message: a
+  // Collection Request must carry a concrete, user-defined requirement
+  // list. If this service has no document requirements defined at all,
+  // block the whole send and tell the user to define documents first
+  // (surfaced in the UI via ?error=no_active_document_requirements). The
+  // requirement list itself is org-scoped (serviceId belongs to this org's
+  // template, already verified above), never a hardcoded default.
+  const definedRequirements = await db
+    .select({ id: serviceDocumentRequirements.id })
+    .from(serviceDocumentRequirements)
+    .where(eq(serviceDocumentRequirements.serviceId, templateId));
+  if (definedRequirements.length === 0) {
+    console.log("[document-collection] document_collection_send_blocked", {
+      organizationId: session.organizationId,
+      serviceId: templateId,
+      reason: "no_active_document_requirements",
+    });
+    redirect(`${redirectTo}${sep}error=no_active_document_requirements`);
+  }
+
   const periodLabel = `${template.name} — ${new Date().toLocaleDateString("he-IL")}`;
   let sentCount = 0;
   let scheduledCount = 0;
@@ -627,7 +647,15 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     });
 
     if (sendMode === "now") {
-      const delivered = await attemptScheduledDelivery(session.organizationId, collectionRequest.id, clientId);
+      // "Send Now" is a human-initiated (manual) action — always delivers,
+      // never gated by documentCollectionEnabled. (A future-scheduled send
+      // is delivered later by the cron, which stays "automated".)
+      const delivered = await attemptScheduledDelivery(
+        session.organizationId,
+        collectionRequest.id,
+        clientId,
+        "manual"
+      );
       if (delivered) sentCount += 1;
       else scheduledCount += 1; // outside business hours - queued for the next tick
     } else {

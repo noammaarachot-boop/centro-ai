@@ -26,9 +26,13 @@ import { recordAuditEvent } from "@/lib/audit";
 export async function attemptScheduledDelivery(
   organizationId: string,
   collectionRequestId: string,
-  clientId: string
+  clientId: string,
+  // "manual" when a human clicked Send Now (always delivers, regardless of
+  // the documentCollectionEnabled gate); "automated" (default) for the
+  // cron/scheduler path, which stays gated.
+  trigger: "manual" | "automated" = "automated"
 ): Promise<boolean> {
-  const { sent } = await startConversation(organizationId, collectionRequestId, clientId);
+  const { sent } = await startConversation(organizationId, collectionRequestId, clientId, trigger);
   if (!sent) return false;
 
   const db = await getDb();

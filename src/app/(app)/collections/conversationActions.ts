@@ -82,7 +82,9 @@ export async function initiateConversation(collectionRequestId: string) {
     redirect(`/collections/${collectionRequestId}?error=${encodeURIComponent(DRIVE_NOT_READY_MESSAGE)}`);
   }
 
-  await startConversation(session.organizationId, collectionRequestId, current.clientId);
+  // Human-initiated "Initiate" action — always delivers, never gated by
+  // documentCollectionEnabled.
+  await startConversation(session.organizationId, collectionRequestId, current.clientId, "manual");
 
   if (current.status === "draft") {
     const db = await getDb();

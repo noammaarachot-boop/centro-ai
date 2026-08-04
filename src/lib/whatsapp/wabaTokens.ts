@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { getDb } from "@/db";
+import { getDb, type Database } from "@/db";
 import { organizations } from "@/db/schema";
 
 export interface WabaConnection {
@@ -16,9 +16,11 @@ export interface WabaConnection {
 // identifiers live on the organization row.
 export async function storeWabaConnection(
   organizationId: string,
-  connection: WabaConnection
+  connection: WabaConnection,
+  // Optional injection point for tests (in-memory PGlite).
+  dbOverride?: Database
 ): Promise<void> {
-  const db = await getDb();
+  const db = dbOverride ?? (await getDb());
   await db
     .update(organizations)
     .set({
@@ -27,6 +29,10 @@ export async function storeWabaConnection(
       whatsappDisplayPhoneNumber: connection.displayPhoneNumber,
       whatsappVerifiedName: connection.verifiedName,
       whatsappConnectedAt: new Date(),
+      // Automated document collection is on by default the moment WhatsApp
+      // finishes connecting (product decision) — no separate activation
+      // step, and the user can still turn it off from Settings.
+      documentCollectionEnabled: true,
       updatedAt: new Date(),
     })
     .where(eq(organizations.id, organizationId));
@@ -46,6 +52,9 @@ export async function clearWabaConnection(organizationId: string): Promise<void>
       whatsappDisplayPhoneNumber: null,
       whatsappVerifiedName: null,
       whatsappConnectedAt: null,
+      // No connected WhatsApp ⇒ automated document collection cannot run;
+      // clear the gate so a later reconnect re-enables it deliberately.
+      documentCollectionEnabled: false,
       updatedAt: new Date(),
     })
     .where(eq(organizations.id, organizationId));
