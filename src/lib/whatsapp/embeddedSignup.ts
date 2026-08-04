@@ -98,14 +98,16 @@ export async function exchangeSignupCode(
       );
     }
   } else {
-    // Controlled callback first, then site, omit, JS SDK internal, env.
+    // Meta Embedded Signup (FB.login) docs: often omit redirect_uri. Live
+    // 36008 means Meta bound a URI — try site origin next, then JS SDK
+    // login_success, then full-page callback path / env.
     candidates = uniqueRedirects([
-      WHATSAPP_OAUTH_CALLBACK_URI,
-      safeEnv,
+      null,
       ...safePreferred,
       ...PREFERRED_SITE_REDIRECTS,
-      null,
+      safeEnv,
       FB_JS_SDK_REDIRECT_URI,
+      WHATSAPP_OAUTH_CALLBACK_URI,
     ]);
   }
 
