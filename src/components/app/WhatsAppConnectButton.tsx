@@ -69,43 +69,100 @@ function loadFacebookSdk(appId: string): Promise<void> {
   console.log(DEBUG_PREFIX, "loadFacebookSdk() starting", { appId, sdkVersion: FB_SDK_VERSION });
 
   const promise: Promise<void> = new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+
     const timeout = setTimeout(() => {
-      console.error(DEBUG_PREFIX, "SDK load timed out after", SDK_LOAD_TIMEOUT_MS, "ms");
-      reject(new Error("Facebook SDK load timed out"));
+      settle(() => {
+        clearInterval(pollForFb);
+        console.error(DEBUG_PREFIX, "SDK load timed out after", SDK_LOAD_TIMEOUT_MS, "ms");
+        reject(new Error("Facebook SDK load timed out"));
+      });
     }, SDK_LOAD_TIMEOUT_MS);
 
-    window.fbAsyncInit = () => {
-      clearTimeout(timeout);
-      // Matches Meta's own Embedded Signup sample init call exactly
-      // (cookie/xfbml/autoLogAppEvents included even though this button
-      // uses none of the page-parsing or cookie-session features they
-      // enable, for full parity with the documented shape).
-      const initParams = { appId, cookie: true, xfbml: true, autoLogAppEvents: true, version: FB_SDK_VERSION };
-      console.log(DEBUG_PREFIX, "fbAsyncInit fired, calling FB.init()", initParams);
-      window.FB!.init(initParams);
-      console.log(DEBUG_PREFIX, "FB.init() complete, window.FB =", window.FB);
-      resolve();
+    // WA-08: poll briefly in case the script tag exists and fbAsyncInit
+    // already fired before we assigned our handler (otherwise we hang
+    // until the 15s timeout with window.FB already usable).
+    const pollForFb = setInterval(() => {
+      if (window.FB) {
+        console.log(DEBUG_PREFIX, "poll found window.FB — init");
+        finishInit();
+      }
+    }, 100);
+
+    const finishInit = () => {
+      settle(() => {
+        clearTimeout(timeout);
+        clearInterval(pollForFb);
+        // Matches Meta's own Embedded Signup sample init call exactly
+        // (cookie/xfbml/autoLogAppEvents included even though this button
+        // uses none of the page-parsing or cookie-session features they
+        // enable, for full parity with the documented shape).
+        if (!window.FB) {
+          console.error(DEBUG_PREFIX, "finishInit called but window.FB is missing");
+          reject(new Error("Facebook SDK loaded without FB global"));
+          return;
+        }
+        const initParams = {
+          appId,
+          cookie: true,
+          xfbml: true,
+          autoLogAppEvents: true,
+          version: FB_SDK_VERSION,
+        };
+        console.log(DEBUG_PREFIX, "calling FB.init()", initParams);
+        window.FB.init(initParams);
+        console.log(DEBUG_PREFIX, "FB.init() complete, window.FB =", window.FB);
+        resolve();
+      });
     };
+
+    window.fbAsyncInit = finishInit;
 
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${FB_SDK_SRC}"]`);
     if (existing) {
-      console.log(DEBUG_PREFIX, "SDK script tag already present, waiting for fbAsyncInit");
+      console.log(DEBUG_PREFIX, "SDK script tag already present");
+      if (window.FB) {
+        console.log(DEBUG_PREFIX, "window.FB already available — init immediately");
+        finishInit();
+        return;
+      }
       existing.addEventListener("error", () => {
-        clearTimeout(timeout);
-        console.error(DEBUG_PREFIX, "existing SDK script tag errored");
-        reject(new Error("Failed to load Facebook SDK"));
+        settle(() => {
+          clearTimeout(timeout);
+          clearInterval(pollForFb);
+          console.error(DEBUG_PREFIX, "existing SDK script tag errored");
+          reject(new Error("Failed to load Facebook SDK"));
+        });
       });
+      existing.addEventListener("load", () => {
+        if (window.FB) {
+          console.log(DEBUG_PREFIX, "existing SDK script load event — FB ready");
+          finishInit();
+        }
+      });
+      if (window.FB) {
+        finishInit();
+      }
       return;
     }
+
     console.log(DEBUG_PREFIX, "appending SDK script tag", FB_SDK_SRC);
     const script = document.createElement("script");
     script.src = FB_SDK_SRC;
     script.async = true;
     script.defer = true;
     script.onerror = () => {
-      clearTimeout(timeout);
-      console.error(DEBUG_PREFIX, "SDK script tag failed to load");
-      reject(new Error("Failed to load Facebook SDK"));
+      settle(() => {
+        clearTimeout(timeout);
+        clearInterval(pollForFb);
+        console.error(DEBUG_PREFIX, "SDK script tag failed to load");
+        reject(new Error("Failed to load Facebook SDK"));
+      });
     };
     document.body.appendChild(script);
   });
@@ -237,10 +294,34 @@ export function WhatsAppConnectButton() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
       });
+      let payload: { error?: string; step?: string; ok?: boolean; webhooksSubscribed?: boolean } | null =
+        null;
+      try {
+        payload = (await result.json()) as {
+          error?: string;
+          step?: string;
+          ok?: boolean;
+          webhooksSubscribed?: boolean;
+        };
+      } catch {
+        payload = null;
+      }
+
+      // WA-03: log the safe step id from the API for live diagnosis without
+      // Vercel access. User-facing copy stays generic Hebrew.
       if (!result.ok) {
+        console.error(DEBUG_PREFIX, "callback API failed", {
+          status: result.status,
+          error: payload?.error ?? "unknown",
+          step: payload?.step ?? "unknown",
+        });
         setStatus("error");
         return;
       }
+
+      console.log(DEBUG_PREFIX, "callback API ok", {
+        webhooksSubscribed: payload?.webhooksSubscribed,
+      });
       setStatus("idle");
       router.refresh();
     } catch (error) {

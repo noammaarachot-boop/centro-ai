@@ -1,15 +1,34 @@
 import { withRetry } from "@/lib/resilience";
 import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
 
-export class WhatsAppSignupError extends Error {}
+// Safe step ids returned to the client on failure (WA-03). Do not put
+// secrets or full Graph bodies here — those stay in server logs only.
+export type WhatsAppSignupStep =
+  | "code-exchange"
+  | "waba-resolve"
+  | "webhook-subscribe"
+  | "phone-lookup"
+  | "store"
+  | "unknown";
+
+export class WhatsAppSignupError extends Error {
+  readonly step: WhatsAppSignupStep;
+
+  constructor(message: string, step: WhatsAppSignupStep = "unknown") {
+    super(message);
+    this.name = "WhatsAppSignupError";
+    this.step = step;
+  }
+}
 
 // Embedded Signup's client-side FB.login() popup returns a short-lived
 // `code` — exchanging it is what actually confirms, on Meta's side, that
 // the signup completed, and (see resolveWabaIdFromToken below) is also
-// how the connected WABA is identified. The returned token itself is
-// used only transiently for that lookup and then discarded: Centro
-// sends/receives through the one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech
-// Provider model), never a per-org token.
+// how the connected WABA is identified. The returned token is used
+// transiently for WABA/phone discovery and best-effort webhook subscribe
+// during this request, then discarded: Centro sends/receives through the
+// one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech Provider model), never a
+// per-org token.
 export async function exchangeSignupCode(code: string): Promise<string> {
   const { appId, appSecret, oauthRedirectUri } = getWhatsAppConfig();
   const params = new URLSearchParams({ client_id: appId, client_secret: appSecret, code });
@@ -17,14 +36,28 @@ export async function exchangeSignupCode(code: string): Promise<string> {
   // why this is conditional rather than always included.
   if (oauthRedirectUri) params.set("redirect_uri", oauthRedirectUri);
 
-  const response = await withRetry(() => fetch(`${GRAPH_API_BASE}/oauth/access_token?${params.toString()}`));
+  // WA-05: no withRetry — OAuth authorization codes are single-use.
+  // Retrying after Meta already consumed the code (or after a dropped
+  // response) only produces a misleading "code already used" failure.
+  const response = await fetch(`${GRAPH_API_BASE}/oauth/access_token?${params.toString()}`);
   if (!response.ok) {
     const body = await response.text();
-    throw new WhatsAppSignupError(`Signup code exchange failed (${response.status}): ${body}`);
+    // WA-06: surface the known redirect_uri class of failures clearly in
+    // server logs so operators can fix env vs Meta dashboard mismatch.
+    const hint = body.includes("36008")
+      ? " (likely WHATSAPP_OAUTH_REDIRECT_URI mismatch vs Meta Valid OAuth Redirect URIs)"
+      : "";
+    throw new WhatsAppSignupError(
+      `Signup code exchange failed (${response.status}): ${body}${hint}`,
+      "code-exchange"
+    );
   }
   const data = (await response.json()) as { access_token?: string };
   if (!data.access_token) {
-    throw new WhatsAppSignupError("Signup code exchange returned no access token");
+    throw new WhatsAppSignupError(
+      "Signup code exchange returned no access token",
+      "code-exchange"
+    );
   }
   return data.access_token;
 }
@@ -44,7 +77,10 @@ export async function resolveWabaIdFromToken(userAccessToken: string): Promise<s
   const response = await withRetry(() => fetch(`${GRAPH_API_BASE}/debug_token?${params.toString()}`));
   if (!response.ok) {
     const body = await response.text();
-    throw new WhatsAppSignupError(`Token introspection failed (${response.status}): ${body}`);
+    throw new WhatsAppSignupError(
+      `Token introspection failed (${response.status}): ${body}`,
+      "waba-resolve"
+    );
   }
   const data = (await response.json()) as {
     data?: { granular_scopes?: Array<{ scope: string; target_ids?: string[] }> };
@@ -62,8 +98,12 @@ export async function resolveWabaIdFromToken(userAccessToken: string): Promise<s
     scopes.find((scope) => scope.scope === "whatsapp_business_management")?.target_ids?.[0] ??
     scopes.find((scope) => scope.scope === "whatsapp_business_messaging")?.target_ids?.[0];
   if (!wabaId) {
+    // WA-07: explicit guidance when Config permissions/scopes are wrong.
     throw new WhatsAppSignupError(
-      "Exchanged token was not granted access to any WhatsApp Business Account (missing whatsapp_business_management/whatsapp_business_messaging granular scope)"
+      "Exchanged token was not granted access to any WhatsApp Business Account " +
+        "(missing whatsapp_business_management/whatsapp_business_messaging granular scope). " +
+        "Check the Meta Embedded Signup Configuration permissions.",
+      "waba-resolve"
     );
   }
   return wabaId;
@@ -89,31 +129,52 @@ const WEBHOOK_CALLBACK_URL = "https://www.centro-ai.co.il/api/webhooks/whatsapp"
 //   2. App -> field subscription (also below, idempotent, safe to repeat
 //      on every connection) — "this app actually wants the `messages`
 //      field." Without this, step 1 alone delivers nothing.
-// Step 1 uses the shared System User token like every other per-WABA
-// Cloud API call. Step 2 is an admin operation on the app itself, not on
-// any WABA, so it authenticates as an app access token (appId|appSecret,
-// the same shape exchangeSignupCode/resolveWabaIdFromToken already use)
-// instead — this is what actually worked when this call was first
-// confirmed live, by hand.
-export async function subscribeToWabaWebhooks(wabaId: string): Promise<void> {
+//
+// WA-01: Step 1 prefers the short-lived Embedded Signup user token (sees
+// the new WABA immediately), then falls back to WHATSAPP_SYSTEM_USER_TOKEN
+// once asset sharing has completed. Step 2 is an admin operation on the
+// app itself (appId|appSecret).
+//
+// WA-02: Returns false instead of throwing when the WABA-level link
+// cannot be established — callers store the connection so a flaky
+// subscribe does not undo a completed signup. Inbound messages may stay
+// broken until a later reconnect/retry succeeds.
+export async function subscribeToWabaWebhooks(
+  wabaId: string,
+  preferredAccessToken?: string
+): Promise<boolean> {
   const { appId, appSecret, systemUserToken, webhookVerifyToken } = getWhatsAppConfig();
+  const tokens = uniqueTokens([preferredAccessToken, systemUserToken]);
 
-  const wabaResponse = await withRetry(() =>
-    fetch(`${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${systemUserToken}` },
-    })
-  );
-  if (!wabaResponse.ok) {
-    const body = await wabaResponse.text();
-    throw new WhatsAppSignupError(`Webhook subscription failed (${wabaResponse.status}): ${body}`);
+  let subscribed = false;
+  let lastFailure: string | null = null;
+  for (const accessToken of tokens) {
+    const wabaResponse = await withRetry(() =>
+      fetch(`${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+    );
+    if (wabaResponse.ok) {
+      subscribed = true;
+      break;
+    }
+    lastFailure = await wabaResponse.text();
+  }
+
+  if (!subscribed) {
+    console.error(
+      `[whatsapp] WABA-level webhook subscription failed for ${wabaId}` +
+        (lastFailure ? `: ${lastFailure}` : "")
+    );
+    return false;
   }
 
   if (!webhookVerifyToken) {
     console.error(
       "[whatsapp] WHATSAPP_WEBHOOK_VERIFY_TOKEN not configured — skipping app-level webhook field subscription; inbound messages will not be delivered until this is set and a connection is retried"
     );
-    return;
+    return true;
   }
 
   const fieldParams = new URLSearchParams({
@@ -134,4 +195,17 @@ export async function subscribeToWabaWebhooks(wabaId: string): Promise<void> {
     const body = await fieldResponse.text();
     console.error(`[whatsapp] app-level webhook field subscription failed (${fieldResponse.status}): ${body}`);
   }
+
+  return true;
+}
+
+function uniqueTokens(tokens: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const token of tokens) {
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    result.push(token);
+  }
+  return result;
 }
