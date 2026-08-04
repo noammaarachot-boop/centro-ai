@@ -289,14 +289,22 @@ export function WhatsAppConnectButton() {
     }
 
     try {
-      // Include page origin so server can match Meta's redirect_uri on
-      // code exchange (Valid OAuth Redirect URIs must list this or the
-      // exact WHATSAPP_OAUTH_REDIRECT_URI env value).
-      const pageOrigin = `${window.location.origin}/`;
+      // Candidates Meta may have bound on FB.login() — full page, path, origin.
+      // Server tries omit (no redirect_uri) first, then these, then env / site.
+      const hrefNoHash = window.location.href.split("#")[0] ?? window.location.href;
+      const originSlash = `${window.location.origin}/`;
+      const originBare = window.location.origin;
+      const pathOnly = `${window.location.origin}${window.location.pathname}`;
+      const redirectUris = [hrefNoHash, pathOnly, originSlash, originBare];
+
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, redirectUri: pageOrigin }),
+        body: JSON.stringify({
+          code,
+          redirectUri: originSlash,
+          redirectUris,
+        }),
       });
       let payload: {
         error?: string;
@@ -352,7 +360,9 @@ export function WhatsAppConnectButton() {
             ? "(none)"
             : String(payload.meta.tried_redirect_uri),
           "pageOrigin=",
-          pageOrigin
+          originSlash,
+          "redirectUris=",
+          redirectUris.join(" | ")
         );
         setStatus("error");
         return;

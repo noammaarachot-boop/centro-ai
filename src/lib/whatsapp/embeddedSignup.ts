@@ -36,8 +36,7 @@ export class WhatsAppSignupError extends Error {
 }
 
 // Production site origin variants Meta often expects for JS SDK / Embedded
-// Signup code exchange. Prefer the clean site origin first — path callbacks
-// (including old typos) are last resorts only when Meta still lists them.
+// Signup code exchange. Prefer the clean site origin; path callbacks are last.
 const PREFERRED_SITE_REDIRECTS = [
   "https://www.centro-ai.co.il/",
   "https://www.centro-ai.co.il",
@@ -58,35 +57,37 @@ const FALLBACK_PATH_REDIRECTS = [
 // one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech Provider model), never a
 // per-org token.
 //
-// `preferredRedirectUri` comes from the browser page that ran FB.login
-// when provided (origin). Meta 36008/191 mean the redirect must match
-// Valid OAuth Redirect URIs / App Domains.
+// Meta error_subcode 36008: redirect_uri on exchange must match the OAuth
+// dialog exactly. FB.login with response_type=code often issues the dialog
+// with NO redirect_uri (or the full page URL), so we try omit-first, then
+// browser page URLs the client supplies, then configured site origins.
 export async function exchangeSignupCode(
   code: string,
-  preferredRedirectUri?: string | null
+  preferredRedirectUris?: Array<string | null | undefined>
 ): Promise<string> {
   const { appId, appSecret, oauthRedirectUri } = getWhatsAppConfig();
 
-  // Prefer site origin (page + known sites + env if env itself is origin),
-  // then omit redirect_uri, then path fallbacks, then env path last.
-  // Live failures showed env set to /api/auth/whatsapp/callback first while
-  // Meta only allowed https://www.centro-ai.co.il/ — that yielded code 191
-  // and the old loop stopped without trying the origin.
-  const envIsPath =
-    !!oauthRedirectUri && /\/api\/auth\/whatsapp\//i.test(oauthRedirectUri);
+  // Order matters for 36008: Meta Embedded Signup / JS SDK sample often
+  // exchanges WITHOUT redirect_uri. Listing the site origin first caused
+  // 36008 while never reaching the omit attempt (code 100 was wrongly treated
+  // as fatal for all Graph 100s including subcode 36008).
   const candidates = uniqueRedirects([
-    preferredRedirectUri,
-    ...PREFERRED_SITE_REDIRECTS,
-    envIsPath ? undefined : oauthRedirectUri,
     null,
+    ...(preferredRedirectUris ?? []),
+    oauthRedirectUri,
+    ...PREFERRED_SITE_REDIRECTS,
     ...FALLBACK_PATH_REDIRECTS,
-    envIsPath ? oauthRedirectUri : undefined,
   ]);
 
   let lastStatus = 0;
   let lastBody = "";
   let lastTried: string | null = null;
-  const attemptLog: Array<{ redirectUri: string; status: number; code?: number }> = [];
+  const attemptLog: Array<{
+    redirectUri: string;
+    status: number;
+    code?: number;
+    error_subcode?: number;
+  }> = [];
 
   for (const redirectUri of candidates) {
     lastTried = redirectUri;
@@ -97,7 +98,7 @@ export async function exchangeSignupCode(
     });
     if (redirectUri) params.set("redirect_uri", redirectUri);
 
-    // WA-05: no withRetry per attempt — single-use codes.
+    // Single fetch per attempt — codes are single-use on success only.
     const response = await fetch(`${GRAPH_API_BASE}/oauth/access_token?${params.toString()}`);
     if (response.ok) {
       const data = (await response.json()) as { access_token?: string };
@@ -121,6 +122,7 @@ export async function exchangeSignupCode(
       redirectUri: redirectUri ?? "(omitted)",
       status: lastStatus,
       code: parsedAttempt.code,
+      error_subcode: parsedAttempt.error_subcode,
     });
     console.error("[whatsapp-oauth] code exchange attempt failed", {
       status: lastStatus,
@@ -128,8 +130,6 @@ export async function exchangeSignupCode(
       body: lastBody.slice(0, 500),
     });
 
-    // Stop if the code is already spent or the secret is wrong — more
-    // redirect_uri retries cannot help. Domain/redirect-class errors try next.
     if (isFatalExchangeError(lastBody, parsedAttempt)) {
       break;
     }
@@ -141,9 +141,9 @@ export async function exchangeSignupCode(
   const parsed = parseGraphErrorBody(lastBody);
   const hint =
     parsed.code === 191 || /domain/i.test(lastBody)
-      ? " (Meta code 191: App Domains + Website Site URL must allow www.centro-ai.co.il; Valid OAuth Redirect URI must match the redirect we send — prefer https://www.centro-ai.co.il/)"
+      ? " (Meta code 191: App Domains + Website Site URL must allow www.centro-ai.co.il)"
       : parsed.error_subcode === 36008 || lastBody.includes("36008")
-        ? " (redirect_uri mismatch — set WHATSAPP_OAUTH_REDIRECT_URI to the exact Meta Valid OAuth Redirect URI)"
+        ? " (36008: dialog redirect_uri != exchange redirect_uri — try leaving exchange without redirect_uri, or list the exact page URL in Valid OAuth Redirect URIs)"
         : lastBody.toLowerCase().includes("secret") || parsed.code === 190
           ? " (check WHATSAPP_APP_SECRET matches App ID on Vercel)"
           : "";
@@ -164,11 +164,19 @@ function isFatalExchangeError(
   body: string,
   parsed: { message?: string; code?: number; error_subcode?: number }
 ): boolean {
-  // Invalid secret / invalid code / code already used — do not burn retries.
-  if (parsed.code === 190 || parsed.code === 100) return true;
-  if (/already been used|code has expired|invalid.*(code|secret)|app secret/i.test(body)) {
+  // 36008 arrives as Graph code 100 — that MUST remain retryable.
+  if (parsed.error_subcode === 36008 || body.includes("36008")) return false;
+  if (parsed.code === 191) return false;
+
+  // Invalid secret
+  if (parsed.code === 190) return true;
+  if (/app secret|invalid client secret/i.test(body)) return true;
+
+  // Code already consumed or expired — further redirect attempts are useless.
+  if (/already been used|code has expired|verification code has expired/i.test(body)) {
     return true;
   }
+
   return false;
 }
 
@@ -179,7 +187,13 @@ function isRetryableRedirectClassError(
 ): boolean {
   if (parsed.code === 191) return true;
   if (parsed.error_subcode === 36008 || body.includes("36008")) return true;
-  if (/redirect_uri|can't load url|domain of this url|app domains/i.test(body)) return true;
+  if (
+    /redirect_uri|can't load url|domain of this url|app domains|identical to the one you used/i.test(
+      body
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 

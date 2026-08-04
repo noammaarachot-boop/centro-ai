@@ -46,22 +46,33 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid-request" }, { status: 400 });
   }
 
-  const { code, redirectUri } = body as { code?: unknown; redirectUri?: unknown };
+  const { code, redirectUri, redirectUris } = body as {
+    code?: unknown;
+    redirectUri?: unknown;
+    redirectUris?: unknown;
+  };
   if (typeof code !== "string" || !code) {
     return NextResponse.json({ error: "invalid-request" }, { status: 400 });
   }
-  // Optional: page origin from the browser that ran FB.login() — Meta may
-  // require this exact redirect_uri on exchange when Valid OAuth Redirect
-  // URIs is set. Must match a listed URI byte-for-byte when used.
-  const preferredRedirectUri =
-    typeof redirectUri === "string" && redirectUri.trim() ? redirectUri.trim() : null;
+
+  // Page URLs from the browser that launched FB.login — Meta may bind the
+  // dialog to the full href or origin. Server tries these plus omit/env.
+  const preferredRedirectUris: string[] = [];
+  if (typeof redirectUri === "string" && redirectUri.trim()) {
+    preferredRedirectUris.push(redirectUri.trim());
+  }
+  if (Array.isArray(redirectUris)) {
+    for (const item of redirectUris) {
+      if (typeof item === "string" && item.trim()) preferredRedirectUris.push(item.trim());
+    }
+  }
 
   // Tracks the furthest step for WA-03 error responses / logs.
   let step: WhatsAppSignupStep = "code-exchange";
 
   try {
     step = "code-exchange";
-    const userAccessToken = await exchangeSignupCode(code, preferredRedirectUri);
+    const userAccessToken = await exchangeSignupCode(code, preferredRedirectUris);
 
     step = "waba-resolve";
     const wabaId = await resolveWabaIdFromToken(userAccessToken);
