@@ -105,6 +105,8 @@ Permanent structured events (no secrets, no tokens, no document content, no full
 
 Temporary `[wa-diag]` console logs remain **only until one more end-to-end test passes**, then are removed (Phase 3), leaving the four structured events plus the existing `[whatsapp] send failed` line.
 
+This E2E test confirms the Phase 1 gate logic (`documentCollectionEnabled` / manual-vs-automated) over a real send using the already-approved static `centro_initial_request` template — it does **not** require `centro_initial_request_v2` or Meta's approval of it. It is unrelated to the Phase 2 dependency below. It has not been run: it requires deliberately sending a real WhatsApp message from a connected org, so it is a manual/QA action, not something automated tooling (including an agent) should trigger on its own initiative.
+
 ## 13. Tenant isolation
 
 Every requirement/list read is organization-scoped: `getRequestRequirementNames(organizationId, collectionRequestId)` joins through `collectionRequests` and filters by `organizationId`, so one tenant can never read another's requirements (covered by an integration test). Classification candidates are always the specific request's own requirements.
@@ -133,4 +135,8 @@ Every requirement/list read is organization-scoped: `getRequestRequirementNames(
 
 - **Phase 1 (done):** column + migration + backfill; manual/automated split; block-when-no-requirements; settings toggle; dynamic list builder; structured logging; tests.
 - **Phase 2 (plumbing done, flag OFF pending Meta):** the full v2 dynamic-list send path is built, wired, and tested behind `INITIAL_REQUEST_V2_ENABLED = false`. Remaining once Meta approves `centro_initial_request_v2`: flip the flag to `true`, run one E2E, update the PDF book, deploy.
-- **Phase 3 (after one E2E pass):** remove temporary `[wa-diag]` logs, keep the four structured events.
+- **Phase 3 (blocked on a manual live-send QA pass, not on Meta):** remove temporary `[wa-diag]` logs, keep the four structured events. Gated on the E2E pass described in §12 — a deliberate, human-triggered real send against the *existing approved* template, independent of the Meta v2 approval in Phase 2.
+
+### Status as of 2026-08-05
+
+All code for Phase 1 and Phase 2 is merged to `main` (PR #1, `b16b0f6`). Nothing further is buildable right now without either (a) Meta approving `centro_initial_request_v2`, or (b) a human deliberately running the live send described in §12. Both are external/manual gates, not open development work.
