@@ -16,10 +16,11 @@ export const WHATSAPP_HARDCODE_ENABLED = true;
 export const WHATSAPP_HARDCODED = {
   appId: "1043370264820423",
   configId: "2531621403952088",
-  // Prefer site origin for FB.login code exchange (Valid OAuth list).
+  // Site origins (App Domains / Valid OAuth).
   oauthRedirectUri: "https://www.centro-ai.co.il/",
   siteOrigin: "https://www.centro-ai.co.il",
   siteOriginTrailing: "https://www.centro-ai.co.il/",
+  // Full-page dialog/oauth redirect — must be in Valid OAuth Redirect URIs.
   oauthCallbackUri: "https://www.centro-ai.co.il/api/auth/whatsapp/oauth",
   // Optional: paste only for local diagnosis, then clear before commit/push.
   appSecret: "",

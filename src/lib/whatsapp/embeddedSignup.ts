@@ -109,13 +109,17 @@ export async function exchangeSignupCode(
       );
     }
   } else {
-    // FB.login binds the page origin. Live log: omit→36008, centro→191
-    // (App Domains missing). Do not try facebook.com login_success last —
-    // it always 191s and replaces the useful Meta message.
+    // Live after App Domains fixed: site + omit all return pure 36008.
+    // FB.login often binds login_success.html (try it once domains allow).
+    // Also try full-page oauth callback URI.
     candidates = uniqueRedirects([
       ...safePreferred,
+      FB_JS_SDK_REDIRECT_URI,
+      WHATSAPP_HARDCODE_ENABLED
+        ? WHATSAPP_HARDCODED.oauthCallbackUri
+        : WHATSAPP_OAUTH_CALLBACK_URI,
       ...siteRedirectCandidates(),
-      safeEnv && !/facebook\.com/i.test(safeEnv) ? safeEnv : undefined,
+      safeEnv,
       null,
     ]);
   }
@@ -137,11 +141,17 @@ export async function exchangeSignupCode(
       client_id: appId,
       client_secret: appSecret,
       code,
+      // Some Meta samples include this; harmless for Graph.
+      grant_type: "authorization_code",
     });
     if (redirectUri) params.set("redirect_uri", redirectUri);
 
-    // Single fetch per attempt — codes are single-use on success only.
-    const response = await fetch(`${GRAPH_API_BASE}/oauth/access_token?${params.toString()}`);
+    // POST body exchange (GET query also works; POST is preferred for long codes).
+    const response = await fetch(`${GRAPH_API_BASE}/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    });
     if (response.ok) {
       const data = (await response.json()) as { access_token?: string };
       if (!data.access_token) {
@@ -181,6 +191,17 @@ export async function exchangeSignupCode(
     }
   }
 
+  // If every try is 36008 with our exact site URI, secret mismatch is common.
+  let secretMatchesApp: boolean | null = null;
+  try {
+    const probe = await fetch(
+      `${GRAPH_API_BASE}/${encodeURIComponent(appId)}?fields=id&access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`
+    );
+    secretMatchesApp = probe.ok;
+  } catch {
+    secretMatchesApp = null;
+  }
+
   // Prefer the most actionable attempt (site origin 191 > obscure last try).
   const preferredFail =
     attemptLog.find(
@@ -198,13 +219,15 @@ export async function exchangeSignupCode(
   const publicSub = preferredFail?.error_subcode ?? parsed.error_subcode;
 
   const hint =
-    publicCode === 191 || /domain/i.test(publicMessage ?? lastBody)
-      ? " (Meta 191: Settings → Basic → App Domains must list centro-ai.co.il AND www.centro-ai.co.il (no https://). Add Website platform Site URL https://www.centro-ai.co.il/. Valid OAuth Redirect URIs: https://www.centro-ai.co.il/ and https://www.centro-ai.co.il. Save. Login with JavaScript SDK = Yes.)"
-      : publicSub === 36008 || lastBody.includes("36008")
-        ? " (36008: redirect_uri must match FB.login dialog — after App Domains 191 is fixed, site origin https://www.centro-ai.co.il/ should exchange; also verify WHATSAPP_APP_SECRET)"
-        : lastBody.toLowerCase().includes("secret") || publicCode === 190
-          ? " (check WHATSAPP_APP_SECRET matches App ID on Vercel)"
-          : "";
+    secretMatchesApp === false
+      ? " (WHATSAPP_APP_SECRET does not match App ID — re-copy App Secret from Meta Basic settings into Vercel for this exact App ID)"
+      : publicCode === 191 || /domain/i.test(publicMessage ?? lastBody)
+        ? " (Meta 191: Settings → Basic → App Domains must list centro-ai.co.il AND www.centro-ai.co.il (no https://). Add Website platform Site URL https://www.centro-ai.co.il/. Valid OAuth Redirect URIs: https://www.centro-ai.co.il/ and https://www.centro-ai.co.il. Save. Login with JavaScript SDK = Yes.)"
+        : publicSub === 36008 || lastBody.includes("36008")
+          ? " (36008: dialog redirect_uri != exchange. Add https://www.facebook.com/connect/login_success.html AND https://www.centro-ai.co.il/ to Valid OAuth Redirect URIs. Prefer full-page connect if popup keeps failing.)"
+          : lastBody.toLowerCase().includes("secret") || publicCode === 190
+            ? " (check WHATSAPP_APP_SECRET matches App ID on Vercel)"
+            : "";
 
   throw new WhatsAppSignupError(
     `Signup code exchange failed (${lastStatus}): ${lastBody}${hint}`,
