@@ -289,13 +289,10 @@ export function WhatsAppConnectButton() {
     }
 
     try {
-      // Candidates Meta may have bound on FB.login() — full page, path, origin.
-      // Server tries omit (no redirect_uri) first, then these, then env / site.
-      const hrefNoHash = window.location.href.split("#")[0] ?? window.location.href;
+      // Stable origins only — never full draft querystrings (Meta cannot list them).
       const originSlash = `${window.location.origin}/`;
       const originBare = window.location.origin;
-      const pathOnly = `${window.location.origin}${window.location.pathname}`;
-      const redirectUris = [hrefNoHash, pathOnly, originSlash, originBare];
+      const redirectUris = [originSlash, originBare];
 
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
@@ -360,9 +357,7 @@ export function WhatsAppConnectButton() {
             ? "(none)"
             : String(payload.meta.tried_redirect_uri),
           "pageOrigin=",
-          originSlash,
-          "redirectUris=",
-          redirectUris.join(" | ")
+          originSlash
         );
         setStatus("error");
         return;
