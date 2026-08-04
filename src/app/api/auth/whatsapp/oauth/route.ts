@@ -6,6 +6,7 @@ import {
   WHATSAPP_OAUTH_REDIRECT_URI_COOKIE,
   WHATSAPP_OAUTH_RETURN_TO_COOKIE,
   WHATSAPP_OAUTH_STATE_COOKIE,
+  buildPopupResultHtml,
   buildReturnRedirect,
   decodeWhatsAppOAuthState,
 } from "@/lib/whatsapp/oauthState";
@@ -13,11 +14,8 @@ import {
 export const dynamic = "force-dynamic";
 
 const DEFAULT_RETURN_TO = "/settings";
+const POPUP_COOKIE = "whatsapp_oauth_popup";
 
-// Meta redirects here after dialog/oauth with ?code=&state=.
-// State is a signed payload (returnTo + redirectUri + csrf) so the
-// exchange works even if browser cookies are dropped on the way back
-// from Facebook. Cookie csrf is an extra defense when present.
 export async function GET(request: NextRequest) {
   const session = await getSession();
   const { searchParams } = new URL(request.url);
@@ -25,6 +23,7 @@ export async function GET(request: NextRequest) {
   const cookieCsrf = request.cookies.get(WHATSAPP_OAUTH_STATE_COOKIE)?.value;
   const cookieReturnTo = request.cookies.get(WHATSAPP_OAUTH_RETURN_TO_COOKIE)?.value;
   const cookieRedirectUri = request.cookies.get(WHATSAPP_OAUTH_REDIRECT_URI_COOKIE)?.value;
+  const popupCookie = request.cookies.get(POPUP_COOKIE)?.value === "1";
 
   const returnedState = searchParams.get("state") ?? "";
   const signed = decodeWhatsAppOAuthState(returnedState);
@@ -32,21 +31,41 @@ export async function GET(request: NextRequest) {
   const returnTo = signed?.returnTo || cookieReturnTo || DEFAULT_RETURN_TO;
   const redirectUri =
     signed?.redirectUri || cookieRedirectUri || WHATSAPP_OAUTH_CALLBACK_URI;
+  const popup = signed?.popup === true || popupCookie;
 
   const clearAuthCookies = (res: NextResponse) => {
     res.cookies.delete(WHATSAPP_OAUTH_STATE_COOKIE);
     res.cookies.delete(WHATSAPP_OAUTH_RETURN_TO_COOKIE);
     res.cookies.delete(WHATSAPP_OAUTH_REDIRECT_URI_COOKIE);
+    res.cookies.delete(POPUP_COOKIE);
     return res;
   };
 
-  const redirectTo = (path: string) =>
-    clearAuthCookies(NextResponse.redirect(new URL(path, request.url)));
+  const finish = (opts: { ok: boolean; error?: string }) => {
+    if (popup) {
+      const html = buildPopupResultHtml({
+        ok: opts.ok,
+        error: opts.error,
+        returnTo,
+      });
+      return clearAuthCookies(
+        new NextResponse(html, {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        })
+      );
+    }
+    const path = opts.ok
+      ? buildReturnRedirect(returnTo, { whatsapp: "connected" })
+      : buildReturnRedirect(returnTo, {
+          error: opts.error ?? "whatsapp-oauth-failed",
+        });
+    return clearAuthCookies(NextResponse.redirect(new URL(path, request.url)));
+  };
 
   if (!session) {
     console.error("[whatsapp-oauth] oauth callback without session");
-    // Code expires in ~30s — cannot recover after login. Ask user to retry.
-    return redirectTo(buildReturnRedirect("/login", { error: "whatsapp-session-lost" }));
+    return finish({ ok: false, error: "whatsapp-session-lost" });
   }
 
   const metaError = searchParams.get("error");
@@ -56,13 +75,10 @@ export async function GET(request: NextRequest) {
       metaError,
       searchParams.get("error_description")
     );
-    return redirectTo(buildReturnRedirect(returnTo, { error: "whatsapp-denied" }));
+    return finish({ ok: false, error: "whatsapp-denied" });
   }
 
   const code = searchParams.get("code");
-
-  // Prefer signed state (survives missing cookies). Cookie csrf is optional
-  // extra match when the browser kept cookies.
   const signedOk = !!signed;
   const cookieOk = !cookieCsrf || !signed || cookieCsrf === signed.csrf;
   if (!code || !signedOk || !cookieOk) {
@@ -71,14 +87,13 @@ export async function GET(request: NextRequest) {
       signedOk,
       cookieOk,
       hasCookieCsrf: !!cookieCsrf,
+      popup,
     });
-    // Facebook often hits the callback twice; if connection succeeded on the
-    // first hit, a bare second hit without cookies should not flash failure.
-    // If we have no code (repeat #_=_ navigation), send a neutral return.
     if (!code) {
-      return redirectTo(buildReturnRedirect(returnTo, {}));
+      // Duplicate Facebook hit without code — quiet close for popup.
+      return finish({ ok: true });
     }
-    return redirectTo(buildReturnRedirect(returnTo, { error: "whatsapp-invalid-state" }));
+    return finish({ ok: false, error: "whatsapp-invalid-state" });
   }
 
   try {
@@ -93,16 +108,15 @@ export async function GET(request: NextRequest) {
       wabaId: result.wabaId,
       webhooksSubscribed: result.webhooksSubscribed,
       displayPhoneNumber: result.displayPhoneNumber,
+      popup,
     });
+    return finish({ ok: true });
   } catch (error) {
     console.error("[whatsapp-oauth] dialog/oauth signup failed", error);
-    // Code already used / consumed often means first callback already stored.
     const msg = error instanceof Error ? error.message : String(error);
     if (/already been used|code has expired|verification code has expired/i.test(msg)) {
-      return redirectTo(buildReturnRedirect(returnTo, { whatsapp: "connected" }));
+      return finish({ ok: true });
     }
-    return redirectTo(buildReturnRedirect(returnTo, { error: "whatsapp-oauth-failed" }));
+    return finish({ ok: false, error: "whatsapp-oauth-failed" });
   }
-
-  return redirectTo(buildReturnRedirect(returnTo, { whatsapp: "connected" }));
 }

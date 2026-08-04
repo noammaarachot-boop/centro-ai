@@ -17,7 +17,6 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// Re-export cookie names so oauth callback can import from a stable module.
 export {
   WHATSAPP_OAUTH_STATE_COOKIE,
   WHATSAPP_OAUTH_RETURN_TO_COOKIE,
@@ -25,6 +24,7 @@ export {
 } from "@/lib/whatsapp/oauthState";
 
 const DEFAULT_RETURN_TO = "/settings";
+const POPUP_COOKIE = "whatsapp_oauth_popup";
 
 function resolveReturnTo(raw: string | null): string {
   if (!raw) return DEFAULT_RETURN_TO;
@@ -50,7 +50,8 @@ function resolveRedirectUri(): string {
   return WHATSAPP_OAUTH_CALLBACK_URI;
 }
 
-// Full-page Facebook Login for Business dialog with an explicit redirect_uri.
+// Full-page or popup Facebook Login for Business dialog with fixed redirect_uri.
+// Popup mode: ?popup=1 — opened via window.open from WhatsAppConnectButton.
 export async function GET(request: NextRequest) {
   await requireSession();
 
@@ -62,6 +63,7 @@ export async function GET(request: NextRequest) {
     : process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
   const { searchParams } = new URL(request.url);
   const returnTo = resolveReturnTo(searchParams.get("returnTo"));
+  const popup = searchParams.get("popup") === "1";
   const errorPath = buildFailRedirect(returnTo, "whatsapp-not-configured");
   const redirectUri = resolveRedirectUri();
 
@@ -77,6 +79,7 @@ export async function GET(request: NextRequest) {
       redirectUri,
       mustMatchExactlyInMeta: redirectUri,
       returnTo,
+      popup,
     });
   }
 
@@ -86,6 +89,7 @@ export async function GET(request: NextRequest) {
     returnTo,
     redirectUri,
     exp: Date.now() + 10 * 60 * 1000,
+    popup,
   });
 
   const extras = JSON.stringify({
@@ -110,10 +114,9 @@ export async function GET(request: NextRequest) {
     redirectUri,
     returnTo,
     configId,
+    popup,
   });
 
-  // Cookies must be attached to the redirect Response — next/headers cookies()
-  // alone is not always committed on external redirects.
   const response = NextResponse.redirect(dialogUrl);
   const cookieBase = {
     httpOnly: true,
@@ -125,6 +128,11 @@ export async function GET(request: NextRequest) {
   response.cookies.set(WHATSAPP_OAUTH_STATE_COOKIE, csrf, cookieBase);
   response.cookies.set(WHATSAPP_OAUTH_RETURN_TO_COOKIE, returnTo, cookieBase);
   response.cookies.set(WHATSAPP_OAUTH_REDIRECT_URI_COOKIE, redirectUri, cookieBase);
+  if (popup) {
+    response.cookies.set(POPUP_COOKIE, "1", cookieBase);
+  } else {
+    response.cookies.delete(POPUP_COOKIE);
+  }
   return response;
 }
 

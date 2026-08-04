@@ -9,6 +9,8 @@ export interface WhatsAppOAuthStatePayload {
   returnTo: string;
   redirectUri: string;
   exp: number;
+  // When true, oauth callback returns HTML that closes the popup window.
+  popup?: boolean;
 }
 
 function b64urlEncode(value: string): string {
@@ -64,6 +66,39 @@ export function decodeWhatsAppOAuthState(state: string): WhatsAppOAuthStatePaylo
   } catch {
     return null;
   }
+}
+
+export function buildPopupResultHtml(result: {
+  ok: boolean;
+  error?: string;
+  returnTo: string;
+}): string {
+  const payload = JSON.stringify({
+    type: "centro-whatsapp-oauth",
+    ok: result.ok,
+    error: result.error ?? null,
+    returnTo: result.returnTo,
+  });
+  // Closes popup and notifies opener so the main wizard can refresh.
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>WhatsApp</title></head>
+<body>
+<script>
+(function () {
+  var msg = ${payload};
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(msg, window.location.origin);
+    }
+  } catch (e) {}
+  try { window.close(); } catch (e) {}
+  // If the browser blocks window.close(), show a short status.
+  document.body.innerHTML = msg.ok
+    ? '<p style="font-family:system-ui;padding:24px">WhatsApp connected. You can close this window.</p>'
+    : '<p style="font-family:system-ui;padding:24px">Connection failed. You can close this window.</p>';
+})();
+</script>
+</body></html>`;
 }
 
 // Strip OAuth result flags so retries/doubles don't pile error= / whatsapp=.
