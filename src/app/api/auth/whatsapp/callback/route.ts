@@ -46,17 +46,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid-request" }, { status: 400 });
   }
 
-  const { code } = body as { code?: unknown };
+  const { code, redirectUri } = body as { code?: unknown; redirectUri?: unknown };
   if (typeof code !== "string" || !code) {
     return NextResponse.json({ error: "invalid-request" }, { status: 400 });
   }
+  // Optional: page origin from the browser that ran FB.login() — Meta may
+  // require this exact redirect_uri on exchange when Valid OAuth Redirect
+  // URIs is set. Must match a listed URI byte-for-byte when used.
+  const preferredRedirectUri =
+    typeof redirectUri === "string" && redirectUri.trim() ? redirectUri.trim() : null;
 
   // Tracks the furthest step for WA-03 error responses / logs.
   let step: WhatsAppSignupStep = "code-exchange";
 
   try {
     step = "code-exchange";
-    const userAccessToken = await exchangeSignupCode(code);
+    const userAccessToken = await exchangeSignupCode(code, preferredRedirectUri);
 
     step = "waba-resolve";
     const wabaId = await resolveWabaIdFromToken(userAccessToken);
@@ -114,12 +119,14 @@ export async function POST(request: NextRequest) {
       error
     );
 
-    // WA-03: return a safe step id for browser diagnostics. Full Meta
-    // error bodies stay server-side only (secrets / noisy Graph JSON).
+    // WA-03: return a safe step id + Meta error fields (no secrets) so
+    // live diagnosis works from the browser when Vercel logs are unavailable.
+    const publicMeta = error instanceof WhatsAppSignupError ? error.publicMeta : undefined;
     return NextResponse.json(
       {
         error: knownFailure ? "whatsapp-signup-failed" : "whatsapp-unknown-error",
         step: knownStep,
+        ...(publicMeta ? { meta: publicMeta } : {}),
       },
       { status: 502 }
     );

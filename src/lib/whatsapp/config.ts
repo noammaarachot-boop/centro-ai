@@ -45,7 +45,9 @@ export function getWhatsAppConfig(): WhatsAppConfig {
     appId,
     appSecret,
     systemUserToken,
-    oauthRedirectUri: process.env.WHATSAPP_OAUTH_REDIRECT_URI || null,
+    // Trim: Vercel UI pastes sometimes leave trailing spaces/newlines that
+  // make Meta reject redirect_uri as a mismatch (error_subcode 36008).
+  oauthRedirectUri: process.env.WHATSAPP_OAUTH_REDIRECT_URI?.trim() || null,
     webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || null,
   };
 }

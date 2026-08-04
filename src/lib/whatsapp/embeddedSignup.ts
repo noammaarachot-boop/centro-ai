@@ -11,15 +11,42 @@ export type WhatsAppSignupStep =
   | "store"
   | "unknown";
 
+export interface WhatsAppSignupPublicMeta {
+  message?: string;
+  code?: number;
+  error_subcode?: number;
+  // Which redirect_uri value was tried last (never includes secrets).
+  tried_redirect_uri?: string | null;
+}
+
 export class WhatsAppSignupError extends Error {
   readonly step: WhatsAppSignupStep;
+  readonly publicMeta?: WhatsAppSignupPublicMeta;
 
-  constructor(message: string, step: WhatsAppSignupStep = "unknown") {
+  constructor(
+    message: string,
+    step: WhatsAppSignupStep = "unknown",
+    publicMeta?: WhatsAppSignupPublicMeta
+  ) {
     super(message);
     this.name = "WhatsAppSignupError";
     this.step = step;
+    this.publicMeta = publicMeta;
   }
 }
+
+// Production site origin variants Meta often expects for JS SDK / Embedded
+// Signup code exchange. Order is tried only until one succeeds (or a
+// non-redirect error appears, e.g. invalid secret / code already used).
+const KNOWN_REDIRECT_CANDIDATES = [
+  "https://www.centro-ai.co.il/",
+  "https://www.centro-ai.co.il",
+  // Correct spelling of Centro's WhatsApp callback route
+  "https://www.centro-ai.co.il/api/auth/whatsapp/callback",
+  // Common typo still present in some Meta dashboards (must match byte-for-byte)
+  "https://www.centro-ai.co.il/api/auth/whatsapp/calback",
+  "https://www.centro-ai.co.il//api/auth/whatsapp/calback",
+] as const;
 
 // Embedded Signup's client-side FB.login() popup returns a short-lived
 // `code` — exchanging it is what actually confirms, on Meta's side, that
@@ -29,37 +56,137 @@ export class WhatsAppSignupError extends Error {
 // during this request, then discarded: Centro sends/receives through the
 // one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech Provider model), never a
 // per-org token.
-export async function exchangeSignupCode(code: string): Promise<string> {
+//
+// `preferredRedirectUri` comes from the browser page that ran FB.login
+// when provided (origin or configured). Meta error_subcode 36008 means
+// the value must match Valid OAuth Redirect URIs / the dialog exactly.
+export async function exchangeSignupCode(
+  code: string,
+  preferredRedirectUri?: string | null
+): Promise<string> {
   const { appId, appSecret, oauthRedirectUri } = getWhatsAppConfig();
-  const params = new URLSearchParams({ client_id: appId, client_secret: appSecret, code });
-  // Only sent when configured — see WhatsAppConfig.oauthRedirectUri for
-  // why this is conditional rather than always included.
-  if (oauthRedirectUri) params.set("redirect_uri", oauthRedirectUri);
 
-  // WA-05: no withRetry — OAuth authorization codes are single-use.
-  // Retrying after Meta already consumed the code (or after a dropped
-  // response) only produces a misleading "code already used" failure.
-  const response = await fetch(`${GRAPH_API_BASE}/oauth/access_token?${params.toString()}`);
-  if (!response.ok) {
-    const body = await response.text();
-    // WA-06: surface the known redirect_uri class of failures clearly in
-    // server logs so operators can fix env vs Meta dashboard mismatch.
-    const hint = body.includes("36008")
-      ? " (likely WHATSAPP_OAUTH_REDIRECT_URI mismatch vs Meta Valid OAuth Redirect URIs)"
+  // Candidates: env first (if set), then client page URI, then known
+  // production variants, then "omit redirect_uri entirely" (null).
+  // Failed redirects (36008) allow the next candidate — codes are only
+  // consumed on a *successful* exchange, not on redirect mismatch.
+  const candidates = uniqueRedirects([
+    oauthRedirectUri,
+    preferredRedirectUri,
+    ...KNOWN_REDIRECT_CANDIDATES,
+    null,
+  ]);
+
+  let lastStatus = 0;
+  let lastBody = "";
+  let lastTried: string | null = null;
+
+  for (const redirectUri of candidates) {
+    lastTried = redirectUri;
+    const params = new URLSearchParams({
+      client_id: appId,
+      client_secret: appSecret,
+      code,
+    });
+    if (redirectUri) params.set("redirect_uri", redirectUri);
+
+    // WA-05: no withRetry per attempt — single-use codes.
+    const response = await fetch(`${GRAPH_API_BASE}/oauth/access_token?${params.toString()}`);
+    if (response.ok) {
+      const data = (await response.json()) as { access_token?: string };
+      if (!data.access_token) {
+        throw new WhatsAppSignupError(
+          "Signup code exchange returned no access token",
+          "code-exchange"
+        );
+      }
+      console.log("[whatsapp-oauth] code exchange succeeded", {
+        redirectUri: redirectUri ?? "(omitted)",
+      });
+      return data.access_token;
+    }
+
+    lastStatus = response.status;
+    lastBody = await response.text();
+    console.error("[whatsapp-oauth] code exchange attempt failed", {
+      status: lastStatus,
+      redirectUri: redirectUri ?? "(omitted)",
+      body: lastBody.slice(0, 500),
+    });
+
+    // Non-redirect failures should stop the loop — more attempts would only
+    // confuse (e.g. code already used after a near-success).
+    if (!isRedirectMismatchError(lastBody) && !isRetryableExchangeError(lastBody)) {
+      break;
+    }
+  }
+
+  const parsed = parseGraphErrorBody(lastBody);
+  const hint = parsed.error_subcode === 36008 || lastBody.includes("36008")
+    ? " (redirect_uri mismatch — set WHATSAPP_OAUTH_REDIRECT_URI to the exact Meta Valid OAuth Redirect URI)"
+    : lastBody.toLowerCase().includes("secret") || lastBody.includes("190")
+      ? " (check WHATSAPP_APP_SECRET matches App ID on Vercel)"
       : "";
-    throw new WhatsAppSignupError(
-      `Signup code exchange failed (${response.status}): ${body}${hint}`,
-      "code-exchange"
-    );
+
+  throw new WhatsAppSignupError(
+    `Signup code exchange failed (${lastStatus}): ${lastBody}${hint}`,
+    "code-exchange",
+    {
+      message: parsed.message,
+      code: parsed.code,
+      error_subcode: parsed.error_subcode,
+      tried_redirect_uri: lastTried,
+    }
+  );
+}
+
+function isRedirectMismatchError(body: string): boolean {
+  return body.includes("36008") || /redirect_uri/i.test(body);
+}
+
+// Soft network-ish Graph failures that are still worth trying next URI.
+function isRetryableExchangeError(body: string): boolean {
+  return /redirect/i.test(body);
+}
+
+function parseGraphErrorBody(body: string): {
+  message?: string;
+  code?: number;
+  error_subcode?: number;
+} {
+  try {
+    const json = JSON.parse(body) as {
+      error?: { message?: string; code?: number; error_subcode?: number };
+      error_description?: string;
+    };
+    return {
+      message: json.error?.message ?? json.error_description,
+      code: json.error?.code,
+      error_subcode: json.error?.error_subcode,
+    };
+  } catch {
+    return { message: body.slice(0, 240) };
   }
-  const data = (await response.json()) as { access_token?: string };
-  if (!data.access_token) {
-    throw new WhatsAppSignupError(
-      "Signup code exchange returned no access token",
-      "code-exchange"
-    );
+}
+
+function uniqueRedirects(values: Array<string | null | undefined>): Array<string | null> {
+  const result: Array<string | null> = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (value === undefined) continue;
+    if (value === null) {
+      if (!seen.has("__null__")) {
+        seen.add("__null__");
+        result.push(null);
+      }
+      continue;
+    }
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
   }
-  return data.access_token;
+  return result;
 }
 
 // Server-side substitute for Meta's WA_EMBEDDED_SIGNUP postMessage —

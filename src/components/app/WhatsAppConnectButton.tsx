@@ -289,31 +289,53 @@ export function WhatsAppConnectButton() {
     }
 
     try {
+      // Include page origin so server can match Meta's redirect_uri on
+      // code exchange (Valid OAuth Redirect URIs must list this or the
+      // exact WHATSAPP_OAUTH_REDIRECT_URI env value).
+      const pageOrigin = `${window.location.origin}/`;
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, redirectUri: pageOrigin }),
       });
-      let payload: { error?: string; step?: string; ok?: boolean; webhooksSubscribed?: boolean } | null =
-        null;
+      let payload: {
+        error?: string;
+        step?: string;
+        ok?: boolean;
+        webhooksSubscribed?: boolean;
+        meta?: {
+          message?: string;
+          code?: number;
+          error_subcode?: number;
+          tried_redirect_uri?: string | null;
+        };
+      } | null = null;
       try {
         payload = (await result.json()) as {
           error?: string;
           step?: string;
           ok?: boolean;
           webhooksSubscribed?: boolean;
+          meta?: {
+            message?: string;
+            code?: number;
+            error_subcode?: number;
+            tried_redirect_uri?: string | null;
+          };
         };
       } catch {
         payload = null;
       }
 
-      // WA-03: log the safe step id from the API for live diagnosis without
-      // Vercel access. User-facing copy stays generic Hebrew.
+      // WA-03: log step + Meta fields for live diagnosis without Vercel access.
+      // User-facing copy stays generic Hebrew.
       if (!result.ok) {
         console.error(DEBUG_PREFIX, "callback API failed", {
           status: result.status,
           error: payload?.error ?? "unknown",
           step: payload?.step ?? "unknown",
+          meta: payload?.meta ?? null,
+          pageOrigin,
         });
         setStatus("error");
         return;
