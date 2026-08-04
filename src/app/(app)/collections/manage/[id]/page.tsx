@@ -36,6 +36,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   "has-history": "לא ניתן למחוק בקשת איסוף שיש לה היסטוריית שליחות.",
   "invalid-schedule": "יש לבחור מועד עתידי לתזמון השליחה.",
   "no-clients-selected": "יש לבחור לפחות לקוח אחד לשליחה.",
+  no_active_document_requirements:
+    "לא הוגדרו מסמכים לבקשה זו. יש להגדיר לפחות מסמך אחד לפני השליחה — Centro לעולם לא שולח בקשה כללית ללא רשימת מסמכים.",
   "requirement-name": "יש להזין שם מסמך.",
   "client-fields": "יש למלא שם וטלפון עבור הלקוח החדש.",
 };

@@ -178,11 +178,13 @@ export async function runRecurringCycleCreation(organizationId?: string): Promis
 
   let created = 0;
   for (const organization of allOrganizations) {
-    // Product Evolution M9 ("Disable automation must really disable
-    // automation") — the exact same org-wide gate sendOutboundMessage
-    // checks; a paused/never-activated organization never gets an
-    // automatically-created cycle, full stop.
-    if (!organization.automationActivatedAt) continue;
+    // The same org-wide gate sendOutboundMessage now enforces: an
+    // organization with automated document collection disabled never gets
+    // an automatically-created recurring cycle. documentCollectionEnabled
+    // is the source of truth (backfilled true for connected orgs);
+    // automationActivatedAt is retained elsewhere only for transitional
+    // compatibility and is no longer consulted here.
+    if (!organization.documentCollectionEnabled) continue;
 
     const dueRows = await db
       .select({

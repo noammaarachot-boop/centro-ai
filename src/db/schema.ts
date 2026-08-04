@@ -98,6 +98,19 @@ export const organizations = pgTable("organizations", {
   // confirm which number is connected.
   whatsappDisplayPhoneNumber: text("whatsapp_display_phone_number"),
   whatsappVerifiedName: text("whatsapp_verified_name"),
+  // Explicit, dedicated gate for the automated document-collection
+  // pipeline — the long-term source of truth that supersedes
+  // automationActivatedAt for this purpose (which is kept only for
+  // backward compatibility during the transition). Governs ONLY autonomous
+  // ("automated"-trigger) sends: the initial document request when it's
+  // fired by a scheduler/cron, follow-up prompts, reminders, and
+  // auto-confirmations. A human-initiated ("manual"-trigger) send is never
+  // gated by this. Default false; set true automatically the moment
+  // WhatsApp finishes connecting (storeWabaConnection), and toggleable from
+  // Settings. An org with no connected WhatsApp stays false.
+  documentCollectionEnabled: boolean("document_collection_enabled")
+    .notNull()
+    .default(false),
   // Product Evolution M9 ("Disable automation must really disable
   // automation") — this column already behaved as a live on/off toggle
   // (activateAutomation/deactivateAutomation in onboarding/actions.ts set

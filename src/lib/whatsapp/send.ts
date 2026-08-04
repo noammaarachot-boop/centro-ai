@@ -1,5 +1,5 @@
 import { withRetry } from "@/lib/resilience";
-import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
+import { getWhatsAppConfig, GRAPH_API_BASE, GRAPH_API_VERSION } from "./config";
 
 export class WhatsAppSendError extends Error {}
 
@@ -13,6 +13,14 @@ interface SendMessagesResponse {
 
 async function postMessage(phoneNumberId: string, payload: Record<string, unknown>): Promise<SendResult> {
   const { systemUserToken } = getWhatsAppConfig();
+  // [wa-diag] TEMPORARY — logs endpoint/version/type/status/body only.
+  // The access token is NEVER logged. Remove after diagnosis.
+  console.log("[wa-diag] postMessage → issuing HTTP request to Meta", {
+    endpoint: `${GRAPH_API_BASE}/${encodeURIComponent(phoneNumberId)}/messages`,
+    graphVersion: GRAPH_API_VERSION,
+    type: payload.type,
+    tokenSource: "WHATSAPP_SYSTEM_USER_TOKEN (env / hardcode-off → env)",
+  });
   const response = await withRetry(() =>
     fetch(`${GRAPH_API_BASE}/${encodeURIComponent(phoneNumberId)}/messages`, {
       method: "POST",
@@ -25,8 +33,10 @@ async function postMessage(phoneNumberId: string, payload: Record<string, unknow
   );
   if (!response.ok) {
     const body = await response.text();
+    console.error("[wa-diag] Meta response NOT OK", { httpStatus: response.status, body });
     throw new WhatsAppSendError(`WhatsApp send failed (${response.status}): ${body}`);
   }
+  console.log("[wa-diag] Meta response OK", { httpStatus: response.status });
   const data = (await response.json()) as SendMessagesResponse;
   const messageId = data.messages?.[0]?.id;
   if (!messageId) throw new WhatsAppSendError("WhatsApp send returned no message id");

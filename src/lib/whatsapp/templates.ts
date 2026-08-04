@@ -26,6 +26,23 @@ export interface TemplateDefinition {
 // TEMPLATE_BY_BODY looks up.
 export const INITIAL_REQUEST_BODY =
   "שלום! זהו סנטרו, העוזר הדיגיטלי של המשרד. נשמח לקבל את המסמכים הנדרשים לתקופה הנוכחית.";
+// Phase 2 replacement for the static initial request: a parameterized
+// template whose {{1}} carries the actual, per-request document list (built
+// dynamically from collectionRequestRequirements). Submitted to Meta for
+// approval now (it's in REQUIRED_TEMPLATES below), but the live send path is
+// NOT switched to it until the WABA's copy is APPROVED — the exchange still
+// uses centro_initial_request until then. {{1}} is a single-line,
+// comma-separated list (Meta forbids newlines in body parameters).
+export const INITIAL_REQUEST_V2_BODY =
+  "שלום! זהו סנטרו, העוזר הדיגיטלי של המשרד. כדי שנוכל להמשיך בטיפול בבקשה, נא שלחו את המסמכים הבאים: {{1}}";
+export const INITIAL_REQUEST_V2_TEMPLATE_NAME = "centro_initial_request_v2";
+// Master switch for actually SENDING the parameterized v2 template over
+// WhatsApp. Stays false until centro_initial_request_v2 is APPROVED on the
+// WABA. While false, the initial request is sent with the static
+// centro_initial_request (no parameters) exactly as before — every piece of
+// the dynamic-list plumbing is still built, wired, and tested, only the live
+// send does not switch templates yet. Approval → flip this to true (one line).
+export const INITIAL_REQUEST_V2_ENABLED = false;
 export const THANK_YOU_BODY =
   "תודה, קיבלנו את המסמכים! האם סיימתם לשלוח את כל המסמכים? השיבו 'סיימתי' או 'יש עוד מסמכים'.";
 export const REMINDER_BODY = "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";
@@ -39,6 +56,16 @@ export const DUPLICATE_BODY = "קיבלנו מסמך זה כבר, תודה.";
 // so they don't require marketing opt-in and get faster review.
 export const REQUIRED_TEMPLATES: TemplateDefinition[] = [
   { name: "centro_initial_request", language: "he", category: "UTILITY", bodyText: INITIAL_REQUEST_BODY },
+  // Phase 2 — provisioned for approval now, activated in code only once
+  // approved on the WABA. exampleParams satisfies Meta's requirement that a
+  // {{1}} template ship one example value per placeholder.
+  {
+    name: "centro_initial_request_v2",
+    language: "he",
+    category: "UTILITY",
+    bodyText: INITIAL_REQUEST_V2_BODY,
+    exampleParams: ["תעודת זהות, דפי חשבון בנק, דו״ח תיק השקעות"],
+  },
   { name: "centro_thank_you_confirm", language: "he", category: "UTILITY", bodyText: THANK_YOU_BODY },
   { name: "centro_reminder", language: "he", category: "UTILITY", bodyText: REMINDER_BODY },
   { name: "centro_duplicate_document", language: "he", category: "UTILITY", bodyText: DUPLICATE_BODY },

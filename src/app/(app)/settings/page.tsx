@@ -2,7 +2,10 @@ import { CheckCircle2, Circle } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
 import { updateBusinessHours } from "./actions";
-import { activateAutomation, deactivateAutomation } from "../../onboarding/actions";
+import {
+  enableDocumentCollection,
+  disableDocumentCollection,
+} from "../../onboarding/actions";
 import {
   GoogleDriveConnectionRow,
   WhatsAppConnectionRow,
@@ -21,6 +24,7 @@ const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
 
 const SETTINGS_ERROR_MESSAGES: Record<string, string> = {
   "integrations-required": "לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.",
+  "whatsapp-required": "יש לחבר WhatsApp Business כדי להפעיל איסוף מסמכים אוטומטי.",
   "google-denied": "החיבור לחשבון Google בוטל.",
   "google-invalid-state": "אימות החיבור לחשבון Google נכשל. נסו לחבר שוב.",
   "google-oauth-failed": "החיבור לחשבון Google נכשל. נסו שוב בעוד רגע.",
@@ -39,8 +43,8 @@ export default async function SettingsPage({
   if (!organization) return null;
 
   const activeDays = new Set(organization.businessDays.split(",").map(Number));
-  const isAutomationActive = !!organization.automationActivatedAt;
-  const integrationsReady = !!organization.googleConnectedAt && !!organization.whatsappConnectedAt;
+  const isDocumentCollectionActive = organization.documentCollectionEnabled;
+  const whatsappConnected = !!organization.whatsappConnectedAt;
 
   return (
     <div className="mx-auto max-w-lg animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -92,42 +96,42 @@ export default async function SettingsPage({
       <Card>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            {isAutomationActive ? (
+            {isDocumentCollectionActive ? (
               <CheckCircle2 className="h-5 w-5 shrink-0 text-brand-emerald" />
             ) : (
               <Circle className="h-5 w-5 shrink-0 text-text-muted" />
             )}
             <div>
               <div className="flex items-center gap-1">
-                <p className="text-sm font-semibold text-text-primary">אוטומציה</p>
+                <p className="text-sm font-semibold text-text-primary">איסוף מסמכים אוטומטי</p>
                 <HelpTip label="מה זה עושה?">
-                  זו עצירת חירום שמכבה את כל הפעילות האוטומטית של Centro בבת אחת: לא ייפתחו
-                  מחזורי איסוף חדשים, ולא יישלחו הודעות או תזכורות אוטומטיות ללקוחות.
+                  כאשר מופעל, Centro פונה ללקוחות ומעבד את המסמכים הנכנסים אוטומטית: שולח את
+                  בקשת המסמכים, מזהה ומשייך כל מסמך שמתקבל, ומעדכן מה עוד חסר.
                   <br />
                   <br />
-                  שום מידע לא נמחק — לקוחות, מסמכים והיסטוריה נשארים בדיוק כפי שהם.
+                  כיבוי עוצר רק את הפעילות האוטומטית — לא ייפתחו מחזורי איסוף חדשים ולא יישלחו
+                  הודעות או תזכורות אוטומטיות.
                   <br />
                   <br />
-                  עובדים עדיין יכולים לשלוח הודעות ידנית ולנהל בקשות איסוף קיימות.
-                  <br />
-                  <br />
-                  בלחיצה על &quot;הפעלה&quot; הכול חוזר לפעול בדיוק כפי שהיה.
+                  שליחה ידנית תמיד ממשיכה לעבוד, בין אם זה מופעל ובין אם לא. שום מידע לא נמחק.
                 </HelpTip>
               </div>
               <p className="text-xs text-text-muted">
-                {isAutomationActive
-                  ? "האוטומציה פעילה — Centro פונה ללקוחות ומעבד מסמכים אוטומטית."
-                  : "האוטומציה כבויה. יש לחבר Google ו-WhatsApp Business כדי להפעיל."}
+                {isDocumentCollectionActive
+                  ? "איסוף המסמכים האוטומטי פעיל — Centro פונה ללקוחות ומעבד מסמכים אוטומטית."
+                  : whatsappConnected
+                    ? "איסוף המסמכים האוטומטי כבוי. שליחה ידנית עדיין עובדת."
+                    : "יש לחבר WhatsApp Business כדי להפעיל איסוף מסמכים אוטומטי."}
               </p>
             </div>
           </div>
-          <form action={isAutomationActive ? deactivateAutomation : activateAutomation}>
+          <form action={isDocumentCollectionActive ? disableDocumentCollection : enableDocumentCollection}>
             <button
               type="submit"
-              disabled={!integrationsReady && !isAutomationActive}
+              disabled={!whatsappConnected && !isDocumentCollectionActive}
               className={buttonVariants({ variant: "secondary", size: "sm" })}
             >
-              {isAutomationActive ? "השבתה" : "הפעלה"}
+              {isDocumentCollectionActive ? "השבתה" : "הפעלה"}
             </button>
           </form>
         </div>

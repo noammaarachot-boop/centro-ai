@@ -466,6 +466,60 @@ export async function deactivateAutomation() {
   refresh();
 }
 
+// Settings toggle for the automated document-collection pipeline
+// (documentCollectionEnabled). This is the explicit, dedicated source of
+// truth — separate from the legacy automationActivatedAt. Enabling requires
+// only a connected WhatsApp (the transport document collection actually
+// needs); Google Drive is not required to turn the gate on, only to store
+// documents later. Manual sends are never affected by this either way.
+export async function enableDocumentCollection() {
+  const session = await requireSession();
+  const db = await getDb();
+  const [organization] = await db
+    .select()
+    .from(organizations)
+    .where(eq(organizations.id, session.organizationId))
+    .limit(1);
+
+  if (!organization?.whatsappConnectedAt) {
+    redirect("/settings?error=whatsapp-required");
+  }
+
+  await db
+    .update(organizations)
+    .set({ documentCollectionEnabled: true, updatedAt: new Date() })
+    .where(eq(organizations.id, session.organizationId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "document_collection.enabled",
+    description: "איסוף המסמכים האוטומטי הופעל",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  refresh();
+}
+
+export async function disableDocumentCollection() {
+  const session = await requireSession();
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({ documentCollectionEnabled: false, updatedAt: new Date() })
+    .where(eq(organizations.id, session.organizationId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "document_collection.disabled",
+    description: "איסוף המסמכים האוטומטי כובה",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  refresh();
+}
+
 // Step 9's "Go to Dashboard" — the wizard's real completion action.
 // Product Evolution M9 ("WhatsApp and Google Drive are mandatory"): this
 // used to be best-effort (silently skip activation, never block

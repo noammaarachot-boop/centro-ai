@@ -218,6 +218,13 @@
       "when": 1785232702852,
       "tag": "0030_tearful_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785856646564,
+      "tag": "0031_handy_retro_girl",
+      "breakpoints": true
     }
   ]
 }
