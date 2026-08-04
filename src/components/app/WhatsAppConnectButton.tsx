@@ -330,13 +330,30 @@ export function WhatsAppConnectButton() {
       // WA-03: log step + Meta fields for live diagnosis without Vercel access.
       // User-facing copy stays generic Hebrew.
       if (!result.ok) {
-        console.error(DEBUG_PREFIX, "callback API failed", {
-          status: result.status,
-          error: payload?.error ?? "unknown",
-          step: payload?.step ?? "unknown",
-          meta: payload?.meta ?? null,
-          pageOrigin,
-        });
+        // Log as separate strings so DevTools never hides Meta fields inside
+        // a collapsed `meta: {…}` object (operators need these copy-pasteable).
+        console.error(
+          DEBUG_PREFIX,
+          "callback API failed",
+          "status=",
+          result.status,
+          "error=",
+          payload?.error ?? "unknown",
+          "step=",
+          payload?.step ?? "unknown",
+          "meta.message=",
+          payload?.meta?.message ?? "(none)",
+          "meta.code=",
+          payload?.meta?.code ?? "(none)",
+          "meta.error_subcode=",
+          payload?.meta?.error_subcode ?? "(none)",
+          "meta.tried_redirect_uri=",
+          payload?.meta?.tried_redirect_uri === undefined
+            ? "(none)"
+            : String(payload.meta.tried_redirect_uri),
+          "pageOrigin=",
+          pageOrigin
+        );
         setStatus("error");
         return;
       }
