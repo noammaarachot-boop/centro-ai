@@ -248,24 +248,37 @@ export function WhatsAppConnectButton() {
 
     setStatus("connecting");
 
-    // FB.login often binds redirect_uri to the current page URL. Draft query
-    // strings cannot be listed in Meta Valid OAuth Redirect URIs, which
-    // causes 36008 on exchange. Strip ?query/# before opening the popup so
-    // dialog + exchange can share a stable origin+pathname URI.
-    const dialogRedirectUri = `${window.location.origin}${window.location.pathname}`;
-    if (window.location.search || window.location.hash) {
-      console.log(DEBUG_PREFIX, "stripping query/hash before FB.login()", {
+    // Force address bar to site root before FB.login so the OAuth dialog
+    // and code exchange both use the registered Valid OAuth Redirect URI
+    // https://www.centro-ai.co.il/ — live 36008 showed Meta does not bind
+    // /collections/new even after listing it. Restore path after popup settles.
+    const returnPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const dialogRedirectUri = `${window.location.origin}/`;
+    if (window.location.pathname !== "/" || window.location.search || window.location.hash) {
+      console.log(DEBUG_PREFIX, "forcing site root before FB.login()", {
         from: window.location.href,
         to: dialogRedirectUri,
+        returnPath,
       });
       window.history.replaceState(window.history.state, "", dialogRedirectUri);
     }
     console.log(DEBUG_PREFIX, "dialogRedirectUri for exchange", dialogRedirectUri);
 
     let settled = false;
+    const restorePath = () => {
+      if (returnPath && returnPath !== "/") {
+        try {
+          window.history.replaceState(window.history.state, "", returnPath);
+        } catch {
+          // ignore
+        }
+      }
+    };
+
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
+      restorePath();
       console.error(DEBUG_PREFIX, "FB.login() timed out after", LOGIN_TIMEOUT_MS, "ms — popup may have been blocked or closed without ever calling back");
       setStatus("error");
     }, LOGIN_TIMEOUT_MS);
@@ -288,6 +301,7 @@ export function WhatsAppConnectButton() {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      restorePath();
       void finishSignup(response, dialogRedirectUri);
     }, loginParams);
   }
@@ -303,10 +317,8 @@ export function WhatsAppConnectButton() {
     }
 
     try {
-      const originSlash = `${window.location.origin}/`;
-      const originBare = window.location.origin;
-      // Dialog URI first — must match what FB.login bound after query strip.
-      const redirectUris = [dialogRedirectUri, originSlash, originBare];
+      // Exchange prefers registered site root — must match Valid OAuth list.
+      const redirectUris = [dialogRedirectUri, `${window.location.origin}/`, window.location.origin];
 
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
@@ -327,6 +339,7 @@ export function WhatsAppConnectButton() {
           code?: number;
           error_subcode?: number;
           tried_redirect_uri?: string | null;
+          attempts?: Array<{ redirectUri: string; status: number; code?: number; error_subcode?: number }>;
         };
       } | null = null;
       try {
@@ -340,17 +353,14 @@ export function WhatsAppConnectButton() {
             code?: number;
             error_subcode?: number;
             tried_redirect_uri?: string | null;
+            attempts?: Array<{ redirectUri: string; status: number; code?: number; error_subcode?: number }>;
           };
         };
       } catch {
         payload = null;
       }
 
-      // WA-03: log step + Meta fields for live diagnosis without Vercel access.
-      // User-facing copy stays generic Hebrew.
       if (!result.ok) {
-        // Log as separate strings so DevTools never hides Meta fields inside
-        // a collapsed `meta: {…}` object (operators need these copy-pasteable).
         console.error(
           DEBUG_PREFIX,
           "callback API failed",
@@ -371,7 +381,9 @@ export function WhatsAppConnectButton() {
             ? "(none)"
             : String(payload.meta.tried_redirect_uri),
           "dialogRedirectUri=",
-          dialogRedirectUri
+          dialogRedirectUri,
+          "meta.attempts=",
+          JSON.stringify(payload?.meta?.attempts ?? [])
         );
         setStatus("error");
         return;

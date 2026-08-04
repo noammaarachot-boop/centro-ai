@@ -17,6 +17,12 @@ export interface WhatsAppSignupPublicMeta {
   error_subcode?: number;
   // Which redirect_uri value was tried last (never includes secrets).
   tried_redirect_uri?: string | null;
+  attempts?: Array<{
+    redirectUri: string;
+    status: number;
+    code?: number;
+    error_subcode?: number;
+  }>;
 }
 
 export class WhatsAppSignupError extends Error {
@@ -35,10 +41,8 @@ export class WhatsAppSignupError extends Error {
   }
 }
 
-// Site origin only as static fallbacks. The client always sends the exact
-// dialogRedirectUri (origin+pathname at FB.login, query stripped) first —
-// Meta 36008/191 require Valid OAuth Redirect URIs to list that same path
-// (e.g. https://www.centro-ai.co.il/collections/new) plus App Domains.
+// Prefer registered site root. Live 36008 showed Meta attaches Valid OAuth
+// entry https://www.centro-ai.co.il/, not /collections/new paths.
 const PREFERRED_SITE_REDIRECTS = [
   "https://www.centro-ai.co.il/",
   "https://www.centro-ai.co.il",
@@ -53,37 +57,42 @@ const PREFERRED_SITE_REDIRECTS = [
 // one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech Provider model), never a
 // per-org token.
 //
-// Meta 36008: redirect_uri must match the dialog. Prefer the URI captured
-// at FB.login click (stable origin+pathname, query stripped), then omit,
-// then registered site origins — never legacy /api/auth/whatsapp/* typos.
+// Meta 36008: exchange redirect_uri must match dialog. Prefer site root.
 export async function exchangeSignupCode(
   code: string,
   preferredRedirectUris?: Array<string | null | undefined>
 ): Promise<string> {
   const { appId, appSecret, oauthRedirectUri } = getWhatsAppConfig();
 
-  // Prefer client-captured dialog URI first (fixes 36008 when FB.login
-  // binds the page path). Still reject query-string and callback-path typos.
   const safePreferred = (preferredRedirectUris ?? []).filter(
     (uri): uri is string =>
       typeof uri === "string" &&
       !!uri &&
       !uri.includes("?") &&
       !uri.includes("#") &&
-      !/\/api\/auth\/whatsapp\//i.test(uri)
+      !/\/api\/auth\/whatsapp\//i.test(uri) &&
+      // Only site-root URIs (with/without trailing slash) — not SPA paths.
+      (() => {
+        try {
+          const u = new URL(uri);
+          return u.pathname === "/" || u.pathname === "";
+        } catch {
+          return false;
+        }
+      })()
   );
   const safeEnv =
     oauthRedirectUri && !/\/api\/auth\/whatsapp\//i.test(oauthRedirectUri)
-      ? oauthRedirectUri
+      ? oauthRedirectUri.trim()
       : undefined;
 
-  // Dialog-bound URI first (before omit) — live 36008 showed omit/site alone
-  // still failed when Meta had attached the page path during FB.login.
+  // Site root first (matches Meta Valid OAuth + forced FB.login address bar).
   const candidates = uniqueRedirects([
-    ...safePreferred,
-    null,
+    "https://www.centro-ai.co.il/",
     safeEnv,
+    ...safePreferred,
     ...PREFERRED_SITE_REDIRECTS,
+    null,
   ]);
 
   let lastStatus = 0;
@@ -163,6 +172,7 @@ export async function exchangeSignupCode(
       code: parsed.code,
       error_subcode: parsed.error_subcode,
       tried_redirect_uri: lastTried,
+      attempts: attemptLog,
     }
   );
 }
