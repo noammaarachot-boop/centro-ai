@@ -1,216 +1,272 @@
 # WhatsApp Connect — Implementation Record
 
-**Date:** 2026-08-04  
+**Last updated:** 2026-08-04  
 **Live URL:** https://www.centro-ai.co.il/  
-**Issues source:** `docs/whatsapp-connect-issues.md`  
-**Goal:** Fix Embedded Signup completion reliability and diagnostics without breaking Google Drive, messaging, webhooks for already-connected orgs, or successful connect paths.
+**Issues list:** [`docs/whatsapp-connect-issues.md`](./whatsapp-connect-issues.md)  
+**Goal:** Reliable per-org WhatsApp Business connect (Embedded Signup / OAuth) without per-org tokens; Tech Provider System User for send/receive.
 
 ---
 
-## Summary
+## Current production status (2026-08-04)
 
-| ID | Title | Status | Code change? |
-|----|--------|--------|--------------|
-| WA-01 | Prefer user token after signup for phone/webhooks | **Done** | Yes |
-| WA-02 | Webhook failure must not block saving connection | **Done** | Yes |
-| WA-03 | Return/log failure step to client | **Done** | Yes |
-| WA-04 | Include Meta body on phone-list errors | **Done** | Yes |
-| WA-05 | No `withRetry` on single-use OAuth code exchange | **Done** | Yes |
-| WA-06 | Detect redirect_uri / 36008 clearly in logs | **Done** | Yes (diagnostics; env still client-side) |
-| WA-07 | Clearer missing-granular-scope error | **Done** | Yes (message; Meta Config still client-side) |
-| WA-08 | Facebook SDK reload hang | **Done** | Yes |
-| WA-09 | Architecture doc vs real flow | **Done** | Docs only |
-| WA-10 | Confirm live failing step from production logs | **Open** | Needs live attempt after deploy |
+| Area | Status |
+|------|--------|
+| OAuth connect (WABA + phone ID stored) | **Working on live** — UI shows WhatsApp connected |
+| Code exchange redirect_uri match | Fixed via controlled `dialog/oauth` + fixed callback URI |
+| Meta App Domains / Valid OAuth | Required on Meta app; previously caused 191 / “URL Blocked” |
+| App secret vs App ID | Confirmed OK (`GET /api/auth/whatsapp/debug-config` → graphAppLookup.ok) |
+| Outbound first customer message | **Separate from connect** — may still fail (templates, System User rights, automation gates) |
+| Admin step-by-step audit UI | **Not built** (sparse audit events only; detailed steps in Vercel logs) |
 
 ---
 
-## What did **not** change (safety)
+## Architecture (how connect works *now*)
 
-Preserved on purpose so existing functionality stays intact:
-
-- **Tech Provider model** — still one shared `WHATSAPP_SYSTEM_USER_TOKEN` for ongoing send/receive; no per-org WhatsApp token storage
-- **DB schema** — same `organizations` WhatsApp columns; `storeWabaConnection` / `clearWabaConnection` unchanged
-- **Webhook route** — `GET/POST /api/webhooks/whatsapp` untouched (inbound path unchanged)
-- **Outbound send / templates / phone E.164** — `send.ts`, `templates.ts`, `phone.ts` untouched
-- **Facebook login params** — still `config_id`, `response_type: "code"`, `override_default_response_type`, `extras` (sessionInfoVersion `"3"`)
-- **User-facing Hebrew error** — still generic “חיבור WhatsApp נכשל. נסו שוב.” (detail only in console/`step` JSON)
-- **Session requirement** on callback — still `requireSession()`
-- **Template auto-provisioning** — still best-effort after connect
-- **Google Drive OAuth** — completely separate; untouched
-
----
-
-## New post-signup order (callback)
-
-**Before (fragile):**
-
-1. Exchange code  
-2. Resolve WABA  
-3. **Subscribe webhooks (System User only) — fatal**  
-4. **List phones (System User only) — fatal**  
-5. Store connection  
-
-**After (safer):**
-
-1. Exchange code (user access token)  
-2. Resolve WABA from user token  
-3. List phones (**user token first**, System User fallback)  
-4. **Store connection + audit**  
-5. Subscribe webhooks (**best-effort**, user token then System User)  
-6. Template provisioning (best-effort, unchanged)
-
-If step 5 fails, the org still shows as **WhatsApp connected**. Inbound webhooks may not work until reconnect or Meta asset share succeeds — logged as non-fatal.
-
----
-
-## File-by-file changes
-
-### 1. `src/lib/whatsapp/embeddedSignup.ts`
-
-| Change | Why |
-|--------|-----|
-| `WhatsAppSignupStep` type + `step` on `WhatsAppSignupError` | WA-03 safe diagnostics |
-| `exchangeSignupCode` uses single `fetch` (no `withRetry`) | WA-05 single-use codes |
-| 36008 body → extra log hint about `WHATSAPP_OAUTH_REDIRECT_URI` | WA-06 |
-| `resolveWabaIdFromToken` errors tagged `waba-resolve` + Config permission hint | WA-03, WA-07 |
-| `subscribeToWabaWebhooks(wabaId, preferredAccessToken?)` → `Promise<boolean>` | WA-01, WA-02 |
-| Tries preferred user token, then System User, never throws for WABA-level fail | WA-01, WA-02 |
-
-### 2. `src/lib/whatsapp/phoneNumbers.ts`
-
-| Change | Why |
-|--------|-----|
-| `getFirstPhoneNumberForWaba(wabaId, preferredAccessToken?)` | WA-01 |
-| Tries preferred token then System User | WA-01 |
-| Error messages include Meta response body | WA-04 |
-| `WhatsAppApiError.step = "phone-lookup"` | WA-03 |
-
-### 3. `src/app/api/auth/whatsapp/callback/route.ts`
-
-| Change | Why |
-|--------|-----|
-| Reordered flow: resolve phone → store → webhooks | WA-02 |
-| Passes `userAccessToken` into phone + webhook helpers | WA-01 |
-| Failure JSON: `{ error, step }` | WA-03 |
-| Success JSON: `{ ok: true, webhooksSubscribed: boolean }` | Visibility of soft webhook lag |
-| Server log includes `step=` | Ops without inventing new infra |
-
-### 4. `src/components/app/WhatsAppConnectButton.tsx`
-
-| Change | Why |
-|--------|-----|
-| Parses callback JSON; logs `step` / status on failure | WA-03 |
-| Logs `webhooksSubscribed` on success | Soft webhook lag visibility |
-| SDK load: settle guard, poll for `window.FB`, handle existing script load | WA-08 |
-| Click → `FB.login` remains synchronous (no await before popup) | Do not re-break popup |
-
-### 5. `ARCHITECTURE.md` (M-WA-2 row)
-
-Updated to match server-side WABA/phone derivation and best-effort webhooks (no longer describes dual postMessage + client ids).
-
-### 6. `docs/whatsapp-connect-issues.md`
-
-Statuses updated to match this implementation pass.
-
----
-
-## API contract (callback)
-
-### Success — `200`
-
-```json
-{
-  "ok": true,
-  "webhooksSubscribed": true
-}
+```
+[WhatsAppConnectButton]
+    │  window.open(.../api/auth/whatsapp/start?popup=1&returnTo=...)
+    ▼
+[GET /api/auth/whatsapp/start]
+    │  signed OAuth state (returnTo + redirectUri + csrf + popup)
+    │  Set-Cookie on redirect Response
+    ▼
+[Facebook dialog/oauth]
+    │  client_id, config_id, response_type=code, extras, redirect_uri=
+    │  https://www.centro-ai.co.il/api/auth/whatsapp/oauth
+    ▼
+[GET /api/auth/whatsapp/oauth?code=&state=]
+    │  completeWhatsAppSignup(...)
+    ▼
+[exchange code → user token] → [WABA via debug_token] → [phone via Graph]
+    → storeWabaConnection (org columns) → audit integration.whatsapp_connected
+    → webhooks best-effort → templates best-effort
+    ▼
+[popup postMessage ok → parent refresh]  or  [full-page redirect ?whatsapp=connected]
 ```
 
-`webhooksSubscribed: false` means connection **was saved**, but Meta WABA subscribe failed (check server logs). Messaging out via System User may still work later; **inbound** may not until subscribe succeeds.
+### Why not pure `FB.login` anymore?
 
-### Failure — `502`
+Early `FB.login()` returned a code, but Graph **code exchange** failed with:
 
-```json
-{
-  "error": "whatsapp-signup-failed" | "whatsapp-unknown-error",
-  "step": "code-exchange" | "waba-resolve" | "phone-lookup" | "store" | "webhook-subscribe" | "unknown"
-}
+- **36008** — `redirect_uri` on exchange ≠ URI Meta bound in the dialog  
+- **191** — domain not in Meta App Domains / redirect not owned by app  
+
+Site origin and “omit redirect_uri” both failed live. Controlled **Web OAuth** with a **fixed** callback URI makes dialog and exchange match byte-for-byte.
+
+Popup UX is restored via **`window.open` of `/api/auth/whatsapp/start`**, not opaque `FB.login`.
+
+### OAuth callback URI (must match Meta Valid OAuth Redirect URIs)
+
+```text
+https://www.centro-ai.co.il/api/auth/whatsapp/oauth
 ```
 
-### Failure — `400`
+Also list site origins on Meta as needed:
 
-```json
-{ "error": "invalid-request" }
+```text
+https://www.centro-ai.co.il/
+https://www.centro-ai.co.il
 ```
 
-**Not returned to client (security):** App Secret, tokens, raw Graph bodies. Those remain in **Vercel Function logs** under `[whatsapp-oauth]` / `[whatsapp]`.
+**App Domains** (no `https://`): `centro-ai.co.il`, `www.centro-ai.co.il`  
+**Website Site URL:** `https://www.centro-ai.co.il/`  
+**Client OAuth Login / Web OAuth Login / Login with JS SDK:** Yes  
+
+### Tokens
+
+| Token | Stored? | Used for |
+|-------|---------|----------|
+| Short-lived signup user token (from code) | **No** (request-only) | WABA resolve, phone list, best-effort webhook at connect |
+| `WHATSAPP_SYSTEM_USER_TOKEN` | Env only | All ongoing Graph send/receive |
+
+### What is saved on the organization
+
+- `whatsappBusinessAccountId` (WABA)  
+- `whatsappPhoneNumberId`  
+- `whatsappDisplayPhoneNumber`  
+- `whatsappVerifiedName`  
+- `whatsappConnectedAt`  
+
+**Not saved:** customer OAuth access token.
+
+### Post-signup order (`completeWhatsAppSignup`)
+
+1. Exchange code → user access token (`onlyPreferred` redirect for dialog flow)  
+2. Resolve WABA (`debug_token` granular scopes)  
+3. List phones (user token first, System User fallback)  
+4. **Store + audit**  
+5. Webhook subscribe (**best-effort**)  
+6. Template provision (**best-effort**)  
+
+UI “connected” only after step 4 succeeds.  
+`ok: true` / popup `ok` only after that path returns (not “dialog closed only”).
 
 ---
 
-## How to test on Vercel (live)
+## Issue tracker summary
 
-1. Deploy this branch/commits to production (git push → Vercel).  
-2. Log in as Meta **App Admin / Developer** on https://www.centro-ai.co.il/  
-3. Open Settings / Onboarding connect WhatsApp.  
-4. DevTools → Console filter `[wa-debug]`, Network → `callback`.  
-5. Complete Embedded Signup popup.
+| ID | Status | Notes |
+|----|--------|-------|
+| WA-01 … WA-09 | **Done** | Early reliability batch (user token, non-fatal webhooks, step errors, etc.) |
+| WA-10 | **Done** | Live connect confirmed connected in UI |
+| WA-11 | **Done** | Controlled dialog/oauth + fixed callback URI |
+| WA-12 | **Done** | Signed OAuth state + cookies on redirect Response |
+| WA-13 | **Done** | Popup via window.open + postMessage close |
+| WA-14 | **Open / optional** | Disable temporary hardcode config; env-only production |
+| WA-15 | **Open** | Outbound not delivering; diagnose Graph/templates/System User (not connect) |
+| WA-16 | **Open / optional** | Admin step log UI (descending) for WhatsApp pipeline |
 
-**Pass criteria:**
-
-| Check | Expected |
-|-------|----------|
-| Popup opens | Yes |
-| Network `POST /api/auth/whatsapp/callback` | `200` with `ok: true` |
-| UI shows connected number | Yes |
-| If `webhooksSubscribed: false` | Connection still shown; investigate Meta System User share / env |
-| On failure | Console shows `step` (e.g. `code-exchange`, `phone-lookup`) |
-
-**If `step` is `code-exchange` and logs mention 36008:**  
-Verify Vercel `WHATSAPP_OAUTH_REDIRECT_URI` matches Meta Valid OAuth Redirect URIs **exactly** (or clear both if unused).
-
-**If `step` is `waba-resolve`:**  
-Check Embedded Signup Configuration permissions in Meta dashboard.
-
-**If `step` is `phone-lookup`:**  
-Token cannot see phone numbers yet — permissions or Business Verification / asset sharing.
+Full detail: [`whatsapp-connect-issues.md`](./whatsapp-connect-issues.md).
 
 ---
 
-## Client env still required (not code)
+## Key files
 
-Vercel Production must have:
+| Path | Role |
+|------|------|
+| `src/components/app/WhatsAppConnectButton.tsx` | Popup `window.open` → start; listens for `centro-whatsapp-oauth` |
+| `src/app/api/auth/whatsapp/start/route.ts` | Build Meta dialog URL; signed state; set cookies on redirect |
+| `src/app/api/auth/whatsapp/oauth/route.ts` | Meta redirect target; complete signup; popup HTML or redirect |
+| `src/app/api/auth/whatsapp/callback/route.ts` | Legacy JSON POST complete (if used) |
+| `src/app/api/auth/whatsapp/debug-config/route.ts` | Session-only: App ID, redirect URIs, secret matches app (no token values) |
+| `src/lib/whatsapp/completeSignup.ts` | Shared post-code pipeline |
+| `src/lib/whatsapp/embeddedSignup.ts` | Exchange, WABA, webhooks, multi-candidate redirect diagnostics |
+| `src/lib/whatsapp/oauthState.ts` | HMAC-signed state, clean returnTo, popup result HTML |
+| `src/lib/whatsapp/hardcodedConfig.ts` | **Temporary** diagnosis switch (turn off when stable) |
+| `src/lib/whatsapp/wabaTokens.ts` | Store / clear org WhatsApp identifiers |
+| `src/lib/whatsapp/send.ts` | Outbound Graph send (**System User** + `phoneNumberId`) |
 
-- `NEXT_PUBLIC_WHATSAPP_APP_ID`
-- `NEXT_PUBLIC_WHATSAPP_CONFIG_ID`
-- `WHATSAPP_APP_SECRET`
-- `WHATSAPP_SYSTEM_USER_TOKEN`
-- `WHATSAPP_OAUTH_REDIRECT_URI` (if Meta has a redirect URI configured)
-- `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+---
 
-Webhook callback URL in code remains:
+## Early batch (WA-01 … WA-09) — still in effect
 
+| ID | Title |
+|----|--------|
+| WA-01 | Prefer signup user token for phone / webhooks before System User |
+| WA-02 | Store connection before webhook subscribe; subscribe best-effort |
+| WA-03 | API/client diagnostics: `step` + `[wa-debug]` |
+| WA-04 | Phone list errors include Meta body in server error |
+| WA-05 | No `withRetry` on code exchange (failed candidates still retried with **new redirect**, not same success path) |
+| WA-06 | 36008/191 hints in exchange errors |
+| WA-07 | Clearer missing granular-scope message |
+| WA-08 | FB SDK settle/poll (legacy path; popup OAuth less dependent) |
+| WA-09 | Docs/architecture aligned to no postMessage WABA ids |
+
+---
+
+## Diagnostics endpoints & logs
+
+### Session: `GET /api/auth/whatsapp/debug-config`
+
+Returns (no secrets):
+
+- `appId`, `configId`, oauth redirect candidates  
+- `secretPresent`, `secretFrom`  
+- `graphAppLookup` — whether `appId|appSecret` resolves Meta app name  
+
+### Browser console `[wa-debug]`
+
+Popup open / postMessage results.
+
+### Vercel Function logs
+
+| Prefix | Meaning |
+|--------|---------|
+| `[whatsapp-oauth]` | Start/callback/exchange/subscribe pipeline |
+| `[whatsapp] send failed` | Outbound Graph failure **with HTTP status + Meta body** |
+| `[whatsapp-config] HARDCODE mode` | Temporary hardcode switch is on |
+
+Audit events (sparse):
+
+- `integration.whatsapp_connected`  
+- `whatsapp.outbound_send_failed` (no full Meta JSON in audit metadata today)
+
+---
+
+## Connect vs “message not received”
+
+**Connected ≠ message delivered.**
+
+Initial automated collection message path (high level):
+
+1. Wizard / send now → `sendOutboundMessage` (ai)  
+2. Gates: automation activated, not paused, business hours  
+3. Template map → e.g. `centro_initial_request` (`he`)  
+4. `POST /{whatsappPhoneNumberId}/messages` with **System User** token  
+
+Common reasons “connected but no WhatsApp”:
+
+| Cause | deliveryStatus / behavior |
+|-------|---------------------------|
+| Template PENDING/REJECTED / not provisioned | Graph `failed` |
+| System User cannot message that WABA/phone | Graph `failed` |
+| Automation off / outside hours | Held; may look scheduled |
+| Bad client phone E.164 | `invalid_phone` |
+| Webhook subscribe failed | Usually **inbound** only; not primary for first outbound |
+
+**Exact Meta error for last send** lives in Vercel `[whatsapp] send failed…` or `messages.delivery_status` — not only UI “sent”.
+
+---
+
+## Temporary hardcode config
+
+File: `src/lib/whatsapp/hardcodedConfig.ts`
+
+- `WHATSAPP_HARDCODE_ENABLED = true` forces known production App ID / Config ID / redirect URIs for diagnosis.  
+- **Secrets stay empty** → always from Vercel env.  
+- **WA-14:** set `ENABLED = false` once env is confirmed correct and leave production on env only.
+
+Production App ID (documented for ops, not a secret): `1043370264820423` (Centro AI Messaging).  
+Config ID: `2531621403952088`.
+
+---
+
+## Required Vercel / Meta config
+
+### Vercel Production
+
+| Variable | Purpose |
+|----------|---------|
+| `NEXT_PUBLIC_WHATSAPP_APP_ID` | Meta App ID |
+| `NEXT_PUBLIC_WHATSAPP_CONFIG_ID` | Embedded Signup Configuration ID |
+| `WHATSAPP_APP_SECRET` | Code exchange + app token probe |
+| `WHATSAPP_SYSTEM_USER_TOKEN` | Ongoing send/receive |
+| `WHATSAPP_OAUTH_REDIRECT_URI` | Prefer `https://www.centro-ai.co.il/api/auth/whatsapp/oauth` (or site root if only listing that) |
+| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | Webhook GET + app subscription |
+
+Webhook callback (code constant):  
 `https://www.centro-ai.co.il/api/webhooks/whatsapp`
 
----
+### Meta checklist (App ID above)
 
-## Meta Business Verification note
-
-These fixes improve **code completion and diagnostics**.  
-They do **not** replace Meta Business Verification / WhatsApp partner approval.
-
-- **Admin/Developer** accounts may complete connect after these fixes.  
-- **All customers + production messaging** may still need verification.
+1. App Domains: `centro-ai.co.il`, `www.centro-ai.co.il`  
+2. Website Site URL: `https://www.centro-ai.co.il/`  
+3. Valid OAuth Redirect URIs: include oauth callback + site roots  
+4. Client OAuth + Web OAuth + Enforce HTTPS = Yes  
+5. System User has WABA / messaging assets for outbound after connect  
 
 ---
 
-## Double-check checklist (author)
+## How to retest connect (live)
 
-- [x] No schema / migration  
-- [x] No change to Google Drive routes  
-- [x] No change to webhook signature / GET handshake  
-- [x] System User still used as fallback + for future send/receive  
-- [x] Popup sync-click path preserved  
-- [x] Existing successful path still returns 200 + stores connection when Meta allows it  
-- [x] Existing WhatsApp unit tests still pass (phone / templates / webhookSignature)  
+1. Allow popups for `www.centro-ai.co.il`  
+2. Click חיבור → Meta dialog popup  
+3. Complete Embedded Signup  
+4. Popup closes → UI shows connected phone  
+5. Optional: `GET /api/auth/whatsapp/debug-config` while logged in  
+
+**Pass:** connected UI + org row populated.  
+**Fail codes in return URL (full page mode):** `whatsapp-invalid-state`, `whatsapp-oauth-failed`, `whatsapp-session-lost`, etc.
+
+---
+
+## What did not change (product model)
+
+- Tech Provider: one `WHATSAPP_SYSTEM_USER_TOKEN`  
+- No per-org WhatsApp OAuth token storage  
+- Webhook route shape (GET verify + POST signatures)  
+- Google Drive OAuth isolated  
+- Hebrew generic connect error for users; detail in logs/`step`
 
 ---
 
@@ -218,5 +274,8 @@ They do **not** replace Meta Business Verification / WhatsApp partner approval.
 
 | Date | Action |
 |------|--------|
-| 2026-08-03 | Issues list created; no code changes |
-| 2026-08-04 | WA-01…WA-09 implemented as above; implementation record written |
+| 2026-08-03 | Issues list created |
+| 2026-08-04 | WA-01…WA-09 implemented |
+| 2026-08-04 | WA-11–WA-13: dialog/oauth, signed state, popup restore |
+| 2026-08-04 | Live: connect OK; WA-10 done; hardcode still for diagnosis |
+| 2026-08-04 | Docs refreshed to match controlled OAuth + connect-vs-send |
