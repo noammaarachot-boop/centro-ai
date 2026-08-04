@@ -17,11 +17,12 @@ import {
   checkCompletionGate,
 } from "@/lib/collectionRequestStateMachine";
 import { OperationFailedError } from "@/lib/resilience";
+import { getRequestRequirementNames } from "@/lib/documentRequestList";
 import { toE164 } from "@/lib/whatsapp/phone";
+import { buildInitialRequestSend } from "@/lib/whatsapp/initialRequestMessage";
 import { sendTemplateMessage, sendTextMessage, WhatsAppSendError } from "@/lib/whatsapp/send";
 import {
   DUPLICATE_BODY as DUPLICATE_TEMPLATE,
-  INITIAL_REQUEST_BODY as INITIAL_REQUEST_TEMPLATE,
   TEMPLATE_BY_BODY,
   THANK_YOU_BODY as THANK_YOU_TEMPLATE,
 } from "@/lib/whatsapp/templates";
@@ -105,11 +106,23 @@ async function getClientPhoneForConversation(conversationId: string): Promise<st
 // pre-approved Template (WhatsApp platform requirement); "employee"
 // sends stay free-form text, since they only ever happen inside an
 // already-open conversation with the client.
+// An explicit, pre-resolved parameterized template send — used for the
+// dynamic initial document request (see buildInitialRequestSend). When
+// provided, it overrides the exact-body TEMPLATE_BY_BODY lookup, so a
+// rendered body that isn't itself a template key (e.g. the v2 body with the
+// document list substituted in) is still sent through the right template.
+interface TemplateSend {
+  templateName: string;
+  language: string;
+  params: string[];
+}
+
 async function sendViaWhatsApp(
   organization: typeof organizations.$inferSelect,
   conversationId: string,
   body: string,
-  senderType: "ai" | "employee"
+  senderType: "ai" | "employee",
+  templateSend?: TemplateSend
 ): Promise<{ whatsappMessageId: string | null; deliveryStatus: string }> {
   // [wa-diag] TEMPORARY — no logic changed, recipient number not logged (PII).
   console.log("[wa-diag] sendViaWhatsApp ENTER", {
@@ -132,17 +145,32 @@ async function sendViaWhatsApp(
 
   try {
     if (senderType === "ai") {
-      const template = TEMPLATE_BY_BODY.get(body);
-      if (!template) {
-        console.log("[wa-diag] BLOCKED (Level B): condition=no_template (body not mapped to an approved template) → NO Meta call");
-        return { whatsappMessageId: null, deliveryStatus: "no_template" };
+      // Prefer an explicit template descriptor (dynamic initial request);
+      // otherwise resolve the static template by its exact body text.
+      let templateName: string;
+      let language: string;
+      let params: string[];
+      if (templateSend) {
+        templateName = templateSend.templateName;
+        language = templateSend.language;
+        params = templateSend.params;
+      } else {
+        const template = TEMPLATE_BY_BODY.get(body);
+        if (!template) {
+          console.log("[wa-diag] BLOCKED (Level B): condition=no_template (body not mapped to an approved template) → NO Meta call");
+          return { whatsappMessageId: null, deliveryStatus: "no_template" };
+        }
+        templateName = template.name;
+        language = template.language;
+        params = [];
       }
       console.log("[wa-diag] REACHED Meta call (template)", {
         phoneNumberId: organization.whatsappPhoneNumberId,
-        templateName: template.name,
-        language: template.language,
+        templateName,
+        language,
+        paramCount: params.length,
       });
-      const result = await sendTemplateMessage(organization.whatsappPhoneNumberId, to, template.name, template.language);
+      const result = await sendTemplateMessage(organization.whatsappPhoneNumberId, to, templateName, language, params);
       console.log("[wa-diag] template send returned OK", { messageId: result.messageId });
       return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
     }
@@ -204,7 +232,10 @@ export async function sendOutboundMessage(
   //             per-service pause / business-hours gates) allow it.
   // senderType is an orthogonal WhatsApp-transport concern (template vs
   //             free text), deliberately separate from this trigger.
-  trigger: "manual" | "automated" = "automated"
+  trigger: "manual" | "automated" = "automated",
+  // Optional explicit template descriptor (dynamic initial request). When
+  // omitted, an "ai" send resolves its template from `body` as before.
+  templateSend?: TemplateSend
 ): Promise<{ sent: boolean }> {
   const db = await getDb();
   const organization = await getOrganizationConfig(organizationId);
@@ -256,7 +287,8 @@ export async function sendOutboundMessage(
     organization,
     conversationId,
     body,
-    senderType
+    senderType,
+    templateSend
   );
 
   if (deliveryStatus === "sent") {
@@ -333,12 +365,20 @@ export async function startConversation(
     collectionRequestId,
     clientId
   );
+  // Build the initial request from THIS request's own frozen requirement
+  // snapshot (collectionRequestRequirements) — never a hardcoded list. While
+  // v2 is not yet enabled, this resolves to the static v1 template with no
+  // params (identical to prior behavior); once approved+enabled it becomes
+  // the v2 template carrying the dynamic document list.
+  const requirementNames = await getRequestRequirementNames(organizationId, collectionRequestId);
+  const initial = buildInitialRequestSend(requirementNames);
   const { sent } = await sendOutboundMessage(
     organizationId,
     conversation.id,
-    INITIAL_REQUEST_TEMPLATE,
+    initial.renderedBody,
     "ai",
-    trigger
+    trigger,
+    { templateName: initial.templateName, language: initial.language, params: initial.params }
   );
   return { conversation, sent };
 }

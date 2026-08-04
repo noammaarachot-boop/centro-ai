@@ -35,6 +35,14 @@ export const INITIAL_REQUEST_BODY =
 // comma-separated list (Meta forbids newlines in body parameters).
 export const INITIAL_REQUEST_V2_BODY =
   "שלום! זהו סנטרו, העוזר הדיגיטלי של המשרד. כדי שנוכל להמשיך בטיפול בבקשה, נא שלחו את המסמכים הבאים: {{1}}";
+export const INITIAL_REQUEST_V2_TEMPLATE_NAME = "centro_initial_request_v2";
+// Master switch for actually SENDING the parameterized v2 template over
+// WhatsApp. Stays false until centro_initial_request_v2 is APPROVED on the
+// WABA. While false, the initial request is sent with the static
+// centro_initial_request (no parameters) exactly as before — every piece of
+// the dynamic-list plumbing is still built, wired, and tested, only the live
+// send does not switch templates yet. Approval → flip this to true (one line).
+export const INITIAL_REQUEST_V2_ENABLED = false;
 export const THANK_YOU_BODY =
   "תודה, קיבלנו את המסמכים! האם סיימתם לשלוח את כל המסמכים? השיבו 'סיימתי' או 'יש עוד מסמכים'.";
 export const REMINDER_BODY = "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";

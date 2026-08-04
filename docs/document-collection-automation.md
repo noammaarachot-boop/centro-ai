@@ -58,6 +58,16 @@ sendTemplateRequest (Send Now = manual)
 
 **v2 is provisioned for Meta approval now (it is in `REQUIRED_TEMPLATES`) but the live send path is NOT switched to it until it is APPROVED on the WABA (Phase 2).** Until then the initial send continues to use the existing static `centro_initial_request`.
 
+### Phase 2 plumbing (built, tested, flag-gated OFF)
+
+All of the dynamic-list send logic is complete and wired end to end, behind a single master switch so the live WhatsApp send does not change until Meta approves:
+
+- `INITIAL_REQUEST_V2_ENABLED` (`templates.ts`) — currently `false`. This is the **only** line to change once Meta approves the template.
+- `buildInitialRequestSend(requirementNames, v2Enabled?)` (`whatsapp/initialRequestMessage.ts`) — pure resolver. With v2 disabled it returns the static v1 template and no params (identical to current production). With v2 enabled and a non-empty list it returns `centro_initial_request_v2`, `params: [comma-separated list]`, and a `renderedBody` with `{{1}}` substituted (what the client sees / what is stored on the message row). Empty list → falls back to v1.
+- `startConversation` now reads the request's own requirement snapshot via `getRequestRequirementNames(organizationId, collectionRequestId)` and passes an explicit template descriptor down through `sendOutboundMessage` → `sendViaWhatsApp`, which sends via `sendTemplateMessage(name, language, params)`. The `TEMPLATE_BY_BODY` exact-body lookup remains the path for the other static templates (thank-you / reminder / duplicate).
+
+**When Meta approves:** flip `INITIAL_REQUEST_V2_ENABLED` to `true`, run one end-to-end test, then deploy. No other code change is required.
+
 ## 7. Requirement snapshot
 
 The per-request document list is the frozen snapshot `collectionRequestRequirements`, created at send time from `serviceDocumentRequirements` and any per-client `clientDocumentRequirements` deviations (BR-002). A later edit to the service template never changes a historical request's list. Never a hardcoded list; if a service has no requirements the send is blocked (§ below).
@@ -121,6 +131,6 @@ Every requirement/list read is organization-scoped: `getRequestRequirementNames(
 
 ## Phase plan
 
-- **Phase 1 (this change, no Meta dependency):** column + migration + backfill; manual/automated split; block-when-no-requirements; settings toggle; dynamic list builder; structured logging; tests.
-- **Phase 2 (after Meta approves v2):** switch the initial send to `centro_initial_request_v2` with the dynamic `{{1}}` list.
+- **Phase 1 (done):** column + migration + backfill; manual/automated split; block-when-no-requirements; settings toggle; dynamic list builder; structured logging; tests.
+- **Phase 2 (plumbing done, flag OFF pending Meta):** the full v2 dynamic-list send path is built, wired, and tested behind `INITIAL_REQUEST_V2_ENABLED = false`. Remaining once Meta approves `centro_initial_request_v2`: flip the flag to `true`, run one E2E, update the PDF book, deploy.
 - **Phase 3 (after one E2E pass):** remove temporary `[wa-diag]` logs, keep the four structured events.
