@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/session";
 import { GRAPH_API_VERSION } from "@/lib/whatsapp/config";
@@ -8,28 +7,34 @@ import {
   WHATSAPP_HARDCODED,
 } from "@/lib/whatsapp/hardcodedConfig";
 import { WHATSAPP_OAUTH_CALLBACK_URI } from "@/lib/whatsapp/embeddedSignup";
+import {
+  WHATSAPP_OAUTH_REDIRECT_URI_COOKIE,
+  WHATSAPP_OAUTH_RETURN_TO_COOKIE,
+  WHATSAPP_OAUTH_STATE_COOKIE,
+  cleanWhatsAppReturnTo,
+  encodeWhatsAppOAuthState,
+} from "@/lib/whatsapp/oauthState";
 
 export const dynamic = "force-dynamic";
 
-export const WHATSAPP_OAUTH_STATE_COOKIE = "whatsapp_oauth_state";
-export const WHATSAPP_OAUTH_RETURN_TO_COOKIE = "whatsapp_oauth_return_to";
-export const WHATSAPP_OAUTH_REDIRECT_URI_COOKIE = "whatsapp_oauth_redirect_uri";
+// Re-export cookie names so oauth callback can import from a stable module.
+export {
+  WHATSAPP_OAUTH_STATE_COOKIE,
+  WHATSAPP_OAUTH_RETURN_TO_COOKIE,
+  WHATSAPP_OAUTH_REDIRECT_URI_COOKIE,
+} from "@/lib/whatsapp/oauthState";
 
 const DEFAULT_RETURN_TO = "/settings";
 
-// Same-origin relative paths only — Open Redirect safe.
 function resolveReturnTo(raw: string | null): string {
   if (!raw) return DEFAULT_RETURN_TO;
-  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) {
-    return DEFAULT_RETURN_TO;
-  }
-  // Known app surfaces that host the connect button.
+  const cleaned = cleanWhatsAppReturnTo(raw);
   if (
-    raw.startsWith("/collections/") ||
-    raw.startsWith("/settings") ||
-    raw.startsWith("/onboarding")
+    cleaned.startsWith("/collections/") ||
+    cleaned.startsWith("/settings") ||
+    cleaned.startsWith("/onboarding")
   ) {
-    return raw;
+    return cleaned;
   }
   return DEFAULT_RETURN_TO;
 }
@@ -45,8 +50,7 @@ function resolveRedirectUri(): string {
   return WHATSAPP_OAUTH_CALLBACK_URI;
 }
 
-// Full-page Facebook Login for Business dialog with an explicit redirect_uri
-// we control. Requires Valid OAuth Redirect URIs to include that exact URI.
+// Full-page Facebook Login for Business dialog with an explicit redirect_uri.
 export async function GET(request: NextRequest) {
   await requireSession();
 
@@ -58,53 +62,32 @@ export async function GET(request: NextRequest) {
     : process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
   const { searchParams } = new URL(request.url);
   const returnTo = resolveReturnTo(searchParams.get("returnTo"));
-  const errorSeparator = returnTo.includes("?") ? "&" : "?";
+  const errorPath = buildFailRedirect(returnTo, "whatsapp-not-configured");
   const redirectUri = resolveRedirectUri();
 
   if (!appId || !configId) {
     console.error("[whatsapp-oauth] start missing NEXT_PUBLIC_WHATSAPP_APP_ID or CONFIG_ID");
-    return NextResponse.redirect(
-      new URL(`${returnTo}${errorSeparator}error=whatsapp-not-configured`, request.url)
-    );
+    return NextResponse.redirect(new URL(errorPath, request.url));
   }
 
-  // Compare Meta dashboard ↔ this payload. Open while logged in:
-  //   /api/auth/whatsapp/start?debug=1
   if (searchParams.get("debug") === "1") {
     return NextResponse.json({
       appId,
       configId,
       redirectUri,
       mustMatchExactlyInMeta: redirectUri,
-      checklist: [
-        "Meta App Dashboard top-left App ID must equal appId above",
-        "Products → Facebook Login for Business → Settings → Valid OAuth Redirect URIs must include redirectUri (exact, including /)",
-        "Also add the same URI under Products → Facebook Login → Settings if that product exists",
-        "Client OAuth Login = Yes, Web OAuth Login = Yes, Enforce HTTPS = Yes",
-        "App Domains include centro-ai.co.il and www.centro-ai.co.il",
-        "Settings → Basic → Website platform Site URL = https://www.centro-ai.co.il/",
-        "After Save, wait 1–2 min, hard-refresh, try Connect again",
-        "On the Facebook error page, inspect the address bar for redirect_uri= and compare to redirectUri above",
-      ],
-      vercelHint:
-        "Set WHATSAPP_OAUTH_REDIRECT_URI on Vercel to the same string you paste in Meta (or leave unset to use the default oauth callback).",
+      returnTo,
     });
   }
 
-  const state = randomUUID();
-  const cookieStore = await cookies();
-  const cookieBase = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax" as const,
-    path: "/",
-    maxAge: 600,
-  };
-  cookieStore.set(WHATSAPP_OAUTH_STATE_COOKIE, state, cookieBase);
-  cookieStore.set(WHATSAPP_OAUTH_RETURN_TO_COOKIE, returnTo, cookieBase);
-  cookieStore.set(WHATSAPP_OAUTH_REDIRECT_URI_COOKIE, redirectUri, cookieBase);
+  const csrf = randomUUID();
+  const state = encodeWhatsAppOAuthState({
+    csrf,
+    returnTo,
+    redirectUri,
+    exp: Date.now() + 10 * 60 * 1000,
+  });
 
-  // Match previous FB.login extras so Meta still treats this as Embedded Signup.
   const extras = JSON.stringify({
     setup: {},
     featureType: "",
@@ -128,5 +111,25 @@ export async function GET(request: NextRequest) {
     returnTo,
     configId,
   });
-  return NextResponse.redirect(dialogUrl);
+
+  // Cookies must be attached to the redirect Response — next/headers cookies()
+  // alone is not always committed on external redirects.
+  const response = NextResponse.redirect(dialogUrl);
+  const cookieBase = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: 600,
+  };
+  response.cookies.set(WHATSAPP_OAUTH_STATE_COOKIE, csrf, cookieBase);
+  response.cookies.set(WHATSAPP_OAUTH_RETURN_TO_COOKIE, returnTo, cookieBase);
+  response.cookies.set(WHATSAPP_OAUTH_REDIRECT_URI_COOKIE, redirectUri, cookieBase);
+  return response;
+}
+
+function buildFailRedirect(returnTo: string, code: string): string {
+  const url = new URL(cleanWhatsAppReturnTo(returnTo), "https://www.centro-ai.co.il");
+  url.searchParams.set("error", code);
+  return `${url.pathname}?${url.searchParams.toString()}`;
 }
