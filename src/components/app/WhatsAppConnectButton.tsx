@@ -248,6 +248,20 @@ export function WhatsAppConnectButton() {
 
     setStatus("connecting");
 
+    // FB.login often binds redirect_uri to the current page URL. Draft query
+    // strings cannot be listed in Meta Valid OAuth Redirect URIs, which
+    // causes 36008 on exchange. Strip ?query/# before opening the popup so
+    // dialog + exchange can share a stable origin+pathname URI.
+    const dialogRedirectUri = `${window.location.origin}${window.location.pathname}`;
+    if (window.location.search || window.location.hash) {
+      console.log(DEBUG_PREFIX, "stripping query/hash before FB.login()", {
+        from: window.location.href,
+        to: dialogRedirectUri,
+      });
+      window.history.replaceState(window.history.state, "", dialogRedirectUri);
+    }
+    console.log(DEBUG_PREFIX, "dialogRedirectUri for exchange", dialogRedirectUri);
+
     let settled = false;
     const timeout = setTimeout(() => {
       if (settled) return;
@@ -274,13 +288,13 @@ export function WhatsAppConnectButton() {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      void finishSignup(response);
+      void finishSignup(response, dialogRedirectUri);
     }, loginParams);
   }
 
-  async function finishSignup(response: FacebookLoginResponse) {
+  async function finishSignup(response: FacebookLoginResponse, dialogRedirectUri: string) {
     const code = response.authResponse?.code;
-    console.log(DEBUG_PREFIX, "finishSignup()", { hasCode: !!code });
+    console.log(DEBUG_PREFIX, "finishSignup()", { hasCode: !!code, dialogRedirectUri });
     if (!code) {
       // Popup closed or declined without completing signup — not a
       // failure state, just back to idle so the user can retry.
@@ -289,17 +303,17 @@ export function WhatsAppConnectButton() {
     }
 
     try {
-      // Stable origins only — never full draft querystrings (Meta cannot list them).
       const originSlash = `${window.location.origin}/`;
       const originBare = window.location.origin;
-      const redirectUris = [originSlash, originBare];
+      // Dialog URI first — must match what FB.login bound after query strip.
+      const redirectUris = [dialogRedirectUri, originSlash, originBare];
 
       const result = await fetch("/api/auth/whatsapp/callback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           code,
-          redirectUri: originSlash,
+          redirectUri: dialogRedirectUri,
           redirectUris,
         }),
       });
@@ -356,8 +370,8 @@ export function WhatsAppConnectButton() {
           payload?.meta?.tried_redirect_uri === undefined
             ? "(none)"
             : String(payload.meta.tried_redirect_uri),
-          "pageOrigin=",
-          originSlash
+          "dialogRedirectUri=",
+          dialogRedirectUri
         );
         setStatus("error");
         return;

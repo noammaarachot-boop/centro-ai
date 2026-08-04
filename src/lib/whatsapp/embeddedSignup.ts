@@ -35,12 +35,15 @@ export class WhatsAppSignupError extends Error {
   }
 }
 
-// Production site origin only — NEVER try /api/auth/whatsapp/calback typos
-// or /collections/new?draft=… (dynamic paths). Those produced live Meta 191
-// noise and are not valid stable OAuth redirect URIs on this product.
+// Production site origin — plus paths the client may capture at FB.login time
+// (pathname only, never ?query). Meta 36008 means exchange redirect_uri must
+// match the dialog; JS SDK often binds the current page path.
 const PREFERRED_SITE_REDIRECTS = [
   "https://www.centro-ai.co.il/",
   "https://www.centro-ai.co.il",
+  "https://www.centro-ai.co.il/collections/new",
+  "https://www.centro-ai.co.il/settings",
+  "https://www.centro-ai.co.il/onboarding",
 ] as const;
 
 // Embedded Signup's client-side FB.login() popup returns a short-lived
@@ -52,21 +55,23 @@ const PREFERRED_SITE_REDIRECTS = [
 // one shared WHATSAPP_SYSTEM_USER_TOKEN (Tech Provider model), never a
 // per-org token.
 //
-// Meta 36008: redirect_uri must match the dialog. FB.login often uses no
-// redirect_uri — try omit first, then only stable site origins / env.
+// Meta 36008: redirect_uri must match the dialog. Prefer the URI captured
+// at FB.login click (stable origin+pathname, query stripped), then omit,
+// then registered site origins — never legacy /api/auth/whatsapp/* typos.
 export async function exchangeSignupCode(
   code: string,
   preferredRedirectUris?: Array<string | null | undefined>
 ): Promise<string> {
   const { appId, appSecret, oauthRedirectUri } = getWhatsAppConfig();
 
-  // Drop dynamic paths and legacy callback-path typos the client/env may send.
+  // Prefer client-captured dialog URI first (fixes 36008 when FB.login
+  // binds the page path). Still reject query-string and callback-path typos.
   const safePreferred = (preferredRedirectUris ?? []).filter(
     (uri): uri is string =>
       typeof uri === "string" &&
       !!uri &&
       !uri.includes("?") &&
-      !uri.includes("/collections/") &&
+      !uri.includes("#") &&
       !/\/api\/auth\/whatsapp\//i.test(uri)
   );
   const safeEnv =
@@ -74,9 +79,11 @@ export async function exchangeSignupCode(
       ? oauthRedirectUri
       : undefined;
 
+  // Dialog-bound URI first (before omit) — live 36008 showed omit/site alone
+  // still failed when Meta had attached the page path during FB.login.
   const candidates = uniqueRedirects([
-    null,
     ...safePreferred,
+    null,
     safeEnv,
     ...PREFERRED_SITE_REDIRECTS,
   ]);
