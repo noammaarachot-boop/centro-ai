@@ -271,7 +271,12 @@ export async function processInboundAttachment(
     // Ch.6 layer 1: this client's own confirmed history is checked before
     // the generic heuristic — see src/lib/documentLearning.ts.
     const learnedPatterns = await getLearnedDocumentPatterns(organizationId, clientId);
-    const classification = await classifyDocumentWithLearning(fileName, requirements, learnedPatterns);
+    const classification = await classifyDocumentWithLearning(
+      fileName,
+      requirements,
+      learnedPatterns,
+      fileBytes && mimeType ? { bytes: fileBytes, mimeType } : undefined
+    );
     console.log("[wa-inbound] classification result", {
       collectionRequestId,
       fileName,

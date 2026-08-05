@@ -18,6 +18,11 @@
  * about and call directly wherever that's all that's needed.
  */
 
+import { classifyDocumentViaVisionAI } from "./documentVisionClassifier";
+import type { DocumentClassificationCandidate } from "./documentClassifierTypes";
+
+export type { DocumentClassificationCandidate } from "./documentClassifierTypes";
+
 export const SUPPORTED_EXTENSIONS = ["pdf", "jpg", "jpeg", "png", "heic"];
 
 // Confidence at/above this auto-approves (PR-002 "AI Assists — Humans
@@ -45,13 +50,6 @@ export interface DocumentClassification {
   readable: boolean;
   matchedRequirementId: string | null;
   confidence: number;
-}
-
-export interface DocumentClassificationCandidate {
-  id: string;
-  name: string;
-  /** serviceDocumentRequirements.id, when this cycle's requirement traces back to a template — null for a one-off, cycle-only requirement with nothing to learn against. */
-  sourceRequirementId?: string | null;
 }
 
 export interface LearnedDocumentPattern {
@@ -172,19 +170,34 @@ export function matchLearnedPattern(
   return best ? { sourceRequirementId: best.sourceRequirementId, confidence: LEARNED_MATCH_CONFIDENCE } : null;
 }
 
-// Ch.6 layer 3 (AI) — reached only once Learned Knowledge and the
-// deterministic heuristic have both failed to confidently match. No OCR/
-// LLM provider is configured for this pilot (same mock-first pattern as
-// every other AI seam in this codebase) — a documented no-op, never a
-// fake guess. Wiring in a real provider later touches only this function.
-/* eslint-disable @typescript-eslint/no-unused-vars */
-async function classifyDocumentViaAI(
-  _fileName: string,
-  _candidates: Array<{ id: string; name: string }>
-): Promise<{ matchedRequirementId: string; confidence: number } | null> {
-  return null;
+// Real file content to classify against, when the caller has it — only
+// real inbound WhatsApp attachments (src/app/api/webhooks/whatsapp/route.ts)
+// and manual uploads with an actual file do. The DevTools simulator and any
+// other filename-only path omit this, and layer 3 below stays a no-op for
+// them exactly as before (there's nothing to show a vision model).
+export interface ClassifiableFileContent {
+  bytes: Buffer;
+  mimeType: string;
 }
-/* eslint-enable @typescript-eslint/no-unused-vars */
+
+// Ch.6 layer 3 (AI) — reached only once Learned Knowledge and the
+// deterministic filename heuristic have both failed to confidently match.
+// Delegates to documentVisionClassifier.ts, which reads the actual file
+// content via a configured multimodal provider — this is the only layer
+// that can work on a WhatsApp-inbound photo, since Meta never supplies a
+// real filename for one (the deterministic heuristic above is filename-only
+// and always scores 0 against a generated name like "image_<wamid>.jpg").
+// With no fileContent (filename-only paths) this stays the documented
+// no-op it always was.
+async function classifyDocumentViaAI(
+  candidates: DocumentClassificationCandidate[],
+  fileContent: ClassifiableFileContent | undefined
+): Promise<{ matchedRequirementId: string; confidence: number } | null> {
+  if (!fileContent) return null;
+  const result = await classifyDocumentViaVisionAI(fileContent.bytes, fileContent.mimeType, candidates);
+  if (!result?.matchedRequirementId) return null;
+  return { matchedRequirementId: result.matchedRequirementId, confidence: result.confidence };
+}
 
 // The full 4-layer pipeline: Learned Knowledge -> Business Rules -> AI ->
 // (implicitly) Human Review, via the same needs_review fallthrough that
@@ -194,7 +207,8 @@ async function classifyDocumentViaAI(
 export async function classifyDocumentWithLearning(
   fileName: string,
   candidates: DocumentClassificationCandidate[],
-  learnedPatterns: LearnedDocumentPattern[]
+  learnedPatterns: LearnedDocumentPattern[],
+  fileContent?: ClassifiableFileContent
 ): Promise<DocumentClassification> {
   const gateFailure = checkFileGate(fileName);
   if (gateFailure) {
@@ -219,7 +233,7 @@ export async function classifyDocumentWithLearning(
   const deterministic = await classifyDocument(fileName, candidates);
   if (deterministic.matchedRequirementId) return deterministic;
 
-  const aiMatch = await classifyDocumentViaAI(fileName, candidates);
+  const aiMatch = await classifyDocumentViaAI(candidates, fileContent);
   if (aiMatch) {
     return {
       supported: true,
