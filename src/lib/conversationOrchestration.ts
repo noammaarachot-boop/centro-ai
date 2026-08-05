@@ -122,7 +122,18 @@ async function sendViaWhatsApp(
   conversationId: string,
   body: string,
   senderType: "ai" | "employee",
-  templateSend?: TemplateSend
+  templateSend?: TemplateSend,
+  // An "ai" send with no matching pre-approved template normally fails
+  // with no_template (WhatsApp requires a template for business-initiated
+  // messages). Set this when the send is a *direct reaction* to a message
+  // the client just sent (a confirmation/clarification question, or an
+  // acknowledgment of the client's own reply) — WhatsApp's 24-hour
+  // customer service session window allows free-form text there, the same
+  // legal basis "employee" sends already rely on. Never set for a
+  // send that could go out days after the client's last message (a
+  // reminder) — the window may well have closed by then; see
+  // documentIntakeReview.ts's own comment on that tradeoff.
+  allowFreeform = false
 ): Promise<{ whatsappMessageId: string | null; deliveryStatus: string }> {
   // [wa-diag] TEMPORARY — no logic changed, recipient number not logged (PII).
   console.log("[wa-diag] sendViaWhatsApp ENTER", {
@@ -144,7 +155,7 @@ async function sendViaWhatsApp(
   }
 
   try {
-    if (senderType === "ai") {
+    if (senderType === "ai" && !(allowFreeform && !templateSend)) {
       // Prefer an explicit template descriptor (dynamic initial request);
       // otherwise resolve the static template by its exact body text.
       let templateName: string;
@@ -175,6 +186,11 @@ async function sendViaWhatsApp(
       return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
     }
 
+    if (senderType === "ai") {
+      console.log("[wa-diag] REACHED Meta call (ai free-form, 24h session window)", {
+        phoneNumberId: organization.whatsappPhoneNumberId,
+      });
+    }
     console.log("[wa-diag] REACHED Meta call (text)", { phoneNumberId: organization.whatsappPhoneNumberId });
     const result = await sendTextMessage(organization.whatsappPhoneNumberId, to, body);
     console.log("[wa-diag] text send returned OK", { messageId: result.messageId });
@@ -235,7 +251,12 @@ export async function sendOutboundMessage(
   trigger: "manual" | "automated" = "automated",
   // Optional explicit template descriptor (dynamic initial request). When
   // omitted, an "ai" send resolves its template from `body` as before.
-  templateSend?: TemplateSend
+  templateSend?: TemplateSend,
+  // See sendViaWhatsApp's own doc comment: set only for an "ai" send that is
+  // a direct reaction to a message the client just sent, within the 24h
+  // WhatsApp session window, with no pre-approved template for its dynamic
+  // text (e.g. a document-intake confirmation/clarification question).
+  allowFreeform = false
 ): Promise<{ sent: boolean }> {
   const db = await getDb();
   const organization = await getOrganizationConfig(organizationId);
@@ -288,7 +309,8 @@ export async function sendOutboundMessage(
     conversationId,
     body,
     senderType,
-    templateSend
+    templateSend,
+    allowFreeform
   );
 
   if (deliveryStatus === "sent") {

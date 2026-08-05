@@ -6,12 +6,24 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { AUTO_APPROVE_CONFIDENCE, type DocumentClassification } from "@/lib/ai/documentClassifier";
+import { resolveConfirmationFromReply } from "@/lib/pendingConfirmations";
 
 let db: Database;
 
 vi.mock("@/db", () => ({
   getDb: async () => db,
 }));
+
+const sendTextMessage = vi.fn();
+const sendTemplateMessage = vi.fn();
+vi.mock("@/lib/whatsapp/send", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
+  return {
+    ...actual,
+    sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
+    sendTemplateMessage: (...args: unknown[]) => sendTemplateMessage(...args),
+  };
+});
 
 const getValidAccessToken = vi.fn();
 vi.mock("@/lib/googleAuth/driveTokens", async () => {
@@ -93,6 +105,8 @@ beforeEach(() => {
   fakeFolders = [];
   fakeFiles = [];
   getValidAccessToken.mockResolvedValue("fake-token");
+  sendTextMessage.mockReset();
+  sendTemplateMessage.mockReset();
 });
 
 // ---------------------------------------------------------------------------
@@ -194,7 +208,11 @@ describe("resolveDocumentIntakeOutcome", () => {
 // Integration: confirmation creation + application + reminders/escalation
 // ---------------------------------------------------------------------------
 
-async function seedRequest(options?: { businessHoursAlwaysOpen?: boolean; confirmationMaxReminders?: number }) {
+async function seedRequest(options?: {
+  businessHoursAlwaysOpen?: boolean;
+  confirmationMaxReminders?: number;
+  whatsappPhoneNumberId?: string;
+}) {
   const [org] = await db
     .insert(schema.organizations)
     .values({
@@ -207,6 +225,7 @@ async function seedRequest(options?: { businessHoursAlwaysOpen?: boolean; confir
       ...(options?.confirmationMaxReminders !== undefined
         ? { confirmationMaxReminders: options.confirmationMaxReminders }
         : {}),
+      ...(options?.whatsappPhoneNumberId ? { whatsappPhoneNumberId: options.whatsappPhoneNumberId } : {}),
     })
     .returning();
   const [client] = await db
@@ -435,5 +454,169 @@ describe("sendConfirmationRemindersAndEscalate", () => {
 
     const result = await sendConfirmationRemindersAndEscalate(orgId);
     expect(result).toEqual({ reminded: 0, escalated: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The messaging fix: the confirmation/clarification question — and the
+// thank-you that follows a "yes" — must actually reach the client over
+// WhatsApp. Before this fix, both were silently dropped: an "ai" sender with
+// no matching pre-approved template returns deliveryStatus "no_template"
+// (dynamic text is never in TEMPLATE_BY_BODY), and even past that,
+// trigger:"automated" (the old default) is held outside business hours.
+// These tests prove the real Cloud API call is actually attempted — via
+// free-form text, bypassing both blockers — not just that a DB row gets
+// created.
+// ---------------------------------------------------------------------------
+
+describe("WhatsApp delivery of the confirmation question (the messaging fix)", () => {
+  it("sends the question as free-form text, bypassing the no-template block and the business-hours gate", async () => {
+    // Deliberately NOT businessHoursAlwaysOpen — proves trigger:\"manual\"
+    // really does bypass that gate for this immediate, reactive send.
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
+      whatsappPhoneNumberId: "phone-1",
+    });
+    sendTextMessage.mockResolvedValueOnce({ messageId: "wamid.out.1" });
+
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית מס קבלה",
+    });
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+
+    const [message] = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(message.deliveryStatus).toBe("sent");
+    expect(message.whatsappMessageId).toBe("wamid.out.1");
+  });
+
+  it("sends the clarification question the same way", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
+      whatsappPhoneNumberId: "phone-1",
+    });
+    sendTextMessage.mockResolvedValueOnce({ messageId: "wamid.out.2" });
+
+    await createClarificationRequest({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId });
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const [message] = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(message.deliveryStatus).toBe("sent");
+  });
+
+  it("sends the thank-you after a 'yes' reply as free-form text too", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
+      whatsappPhoneNumberId: "phone-1",
+    });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+
+    await applyUnsolicitedConfirmationDecision({ ...confirmation, status: "confirmed", conversationId });
+
+    // One for the original question, one for the thank-you.
+    expect(sendTextMessage).toHaveBeenCalledTimes(2);
+    const sentMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(sentMessages.every((m) => m.deliveryStatus === "sent")).toBe(true);
+  });
+
+  it("reminder resend also goes out as free-form text (no pre-approved template exists for this dynamic question)", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
+      businessHoursAlwaysOpen: true,
+      whatsappPhoneNumberId: "phone-1",
+    });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ nextReminderAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.pendingConfirmations.id, confirmation.id));
+
+    const result = await sendConfirmationRemindersAndEscalate(orgId);
+
+    expect(result.reminded).toBe(1);
+    // Original question + the reminder resend, both free-form text.
+    expect(sendTextMessage).toHaveBeenCalledTimes(2);
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+    const sentMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(sentMessages).toHaveLength(2);
+  });
+
+  it("a WhatsApp send failure doesn't block the confirmation from being created, is recorded on the message row, and stays pending for the next reminder to retry", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
+      whatsappPhoneNumberId: "phone-1",
+    });
+    const { WhatsAppSendError } = await import("@/lib/whatsapp/send");
+    sendTextMessage.mockRejectedValueOnce(new WhatsAppSendError("simulated Meta failure"));
+
+    await expect(
+      createUnsolicitedDocumentConfirmation({
+        organizationId: orgId,
+        clientId,
+        collectionRequestId: requestId,
+        documentId,
+        documentType: "חשבונית",
+      })
+    ).resolves.not.toThrow();
+
+    const [row] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(row.status).toBe("pending");
+    expect(row.nextReminderAt).not.toBeNull();
+
+    const [message] = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(message.deliveryStatus).toBe("failed");
+  });
+
+  it("a duplicate reply delivery only resolves and acts on the confirmation once — no double upload", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
+      whatsappPhoneNumberId: "phone-1",
+    });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+
+    const first = await resolveConfirmationFromReply(conversationId, "כן");
+    expect(first).not.toBeNull();
+    await applyUnsolicitedConfirmationDecision({ ...first!, conversationId });
+
+    // A redelivered copy of the same inbound "כן" webhook: nothing is left
+    // in "pending" status to match, so this must be a no-op, not a second
+    // upload/thank-you.
+    const second = await resolveConfirmationFromReply(conversationId, "כן");
+    expect(second).toBeNull();
+
+    expect(fakeFiles).toHaveLength(1);
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.id, documentId));
+    expect(doc.status).toBe("unsolicited_approved");
   });
 });

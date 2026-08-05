@@ -240,6 +240,11 @@ async function handleInboundMessage(
   // separate copy rather than a shared extraction, since the approved
   // plan explicitly leaves simulateInboundMessage itself unchanged.
   if (body) {
+    console.log("[wa-inbound] customer reply received", {
+      conversationId: conversation.id,
+      collectionRequestId,
+      bodyPreview: body.slice(0, 80),
+    });
     const intent = await classifyIntent(body);
     await recordAuditEvent({
       organizationId: organization.id,
