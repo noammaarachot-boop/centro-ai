@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequestRequirements, collectionRequests, documents, organizations } from "@/db/schema";
 import { OperationFailedError, withRetry } from "@/lib/resilience";
@@ -62,17 +62,46 @@ function placeholderContent(fileName: string): Buffer {
   );
 }
 
+const HEBREW_MONTHS = [
+  "ינואר",
+  "פברואר",
+  "מרץ",
+  "אפריל",
+  "מאי",
+  "יוני",
+  "יולי",
+  "אוגוסט",
+  "ספטמבר",
+  "אוקטובר",
+  "נובמבר",
+  "דצמבר",
+];
+
+// "<Hebrew month> <year>", e.g. "אוגוסט 2026" — always computed in Israel
+// local time (never the server's own timezone, which on Vercel is UTC) so
+// a request created near midnight Israel time never lands in the wrong
+// month's folder just because UTC hadn't rolled over yet.
+export function formatHebrewMonthYear(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jerusalem",
+    month: "numeric",
+    year: "numeric",
+  }).formatToParts(date);
+  const month = Number(parts.find((p) => p.type === "month")?.value);
+  const year = parts.find((p) => p.type === "year")?.value;
+  return `${HEBREW_MONTHS[month - 1]} ${year}`;
+}
+
 // A same-named folder already sitting in the parent (found once the caller
 // has already ruled out — via findFolderByClientProperty — that it's
 // tagged as *this* client's) is only safe to reuse bare-named when nothing
-// else could be claiming that exact name. Once the one-off backfill
-// (scripts/backfillClientDriveFolderTags.ts) has tagged every pre-existing
-// client folder, any untagged-or-differently-tagged same-named folder found
-// here is a genuine collision with a different client, not a legacy folder
-// of this one — so the safe default is always a suffix, never a guess.
-// The suffix is an opaque slice of the client's own internal id — never a
-// government id number or other sensitive personal data (per product
-// requirement: no ID-card numbers or similar in a folder name).
+// else could be claiming that exact name. Any untagged-or-differently-
+// tagged same-named folder found here is a genuine collision with a
+// different client, not a legacy folder of this one — so the safe default
+// is always a suffix, never a guess. The suffix is an opaque slice of the
+// client's own internal id — never a government id number or other
+// sensitive personal data (per product requirement: no ID-card numbers or
+// similar in a folder name).
 async function resolveClientFolderName(
   accessToken: string,
   parentId: string,
@@ -81,116 +110,232 @@ async function resolveClientFolderName(
 ): Promise<string> {
   const existing = await findFoldersByName(accessToken, parentId, clientName);
   if (existing.length === 0) return clientName;
-  return `${clientName} - ${clientId.slice(-5)}`;
+  return `${clientName} - ${clientId.slice(-5).toUpperCase()}`;
 }
 
-// BR-3.003: store the folder ID, not its name. One folder per client,
-// created lazily on first use rather than during onboarding/import, nested
-// inside the organization's own selected root folder. Throws
-// GoogleNotConnectedError if the organization hasn't completed OAuth +
-// folder selection yet — callers (uploadDocument below, and its own
-// resilient wrappers) must not let that crash a Collection Request.
-//
-// Race safety: two documents for the same client can arrive within
-// seconds of each other (e.g. two WhatsApp attachments), and Vercel's
-// serverless model gives each webhook call its own process — there is no
-// in-memory lock to share between them. A Postgres advisory lock, keyed by
-// (organization's parent folder, normalized client name) rather than just
-// this client id, serializes the search-then-create sequence below across
-// both the common case (the same client's two attachments) and the rarer
-// case of two different clients who happen to share a display name and
-// both get their first-ever document at nearly the same instant. The lock
-// is scoped to this transaction and releases automatically on
-// commit/rollback — nothing to clean up explicitly.
-export async function ensureClientFolder(clientId: string): Promise<DriveFolder> {
-  const db = await getDb();
+// Month folders need no property tagging (unlike client folders) — a month
+// name like "אוגוסט 2026" is an unambiguous, deterministic string with no
+// legitimate collision to worry about, so find-by-name-or-create is the
+// whole story.
+async function resolveMonthFolder(accessToken: string, rootFolderId: string, monthName: string): Promise<string> {
+  const existing = await findFoldersByName(accessToken, rootFolderId, monthName);
+  if (existing[0]) return existing[0].id;
+  const folder = await createDriveFolder(accessToken, monthName, rootFolderId);
+  return folder.id;
+}
 
+async function resolveClientFolderUnderMonth(
+  accessToken: string,
+  monthFolderId: string,
+  clientId: string,
+  clientName: string
+): Promise<string> {
+  const tagged = await findFolderByClientProperty(accessToken, monthFolderId, clientId);
+  if (tagged) return tagged.id;
+  const folderName = await resolveClientFolderName(accessToken, monthFolderId, clientName, clientId);
+  const folder = await createDriveFolder(accessToken, folderName, monthFolderId, { centroClientId: clientId });
+  return folder.id;
+}
+
+// The single function responsible for the whole Drive path: <org's chosen
+// root>/<Hebrew month year>/<client>. Finds-or-creates the month folder,
+// then finds-or-creates the client folder inside it, and returns only the
+// client folder id — every upload must use exactly that id and nothing
+// else (never the root, never the month folder directly).
+//
+// Race safety: two documents for the same client (or even two different
+// clients sharing a display name) can arrive within seconds of each other,
+// and Vercel's serverless model gives each webhook call its own process —
+// there is no in-memory lock to share between them. Two Postgres advisory
+// locks, held for this call's duration and released automatically at
+// commit, serialize the search-then-create sequence at each level: one
+// keyed by (root, month name) so the month folder is never created twice,
+// nested inside one keyed by (month folder, normalized client name) so the
+// client folder is never created twice. Both are scoped strictly to their
+// own parent — never a global Drive search.
+export async function ensureDrivePath(
+  rootFolderId: string,
+  requestCreatedAt: Date,
+  clientId: string,
+  clientName: string
+): Promise<{ driveClientFolderId: string }> {
+  const db = await getDb();
   const [client] = await db
-    .select({ driveFolderId: clients.driveFolderId, name: clients.name, organizationId: clients.organizationId })
+    .select({ organizationId: clients.organizationId })
     .from(clients)
     .where(eq(clients.id, clientId))
     .limit(1);
   if (!client) throw new Error(`Client ${clientId} not found`);
-  if (client.driveFolderId) {
-    return { folderId: client.driveFolderId };
-  }
-
-  const [organization] = await db
-    .select({ googleDriveFolderId: organizations.googleDriveFolderId })
-    .from(organizations)
-    .where(eq(organizations.id, client.organizationId))
-    .limit(1);
-  if (!organization?.googleDriveFolderId) {
-    throw new GoogleNotConnectedError();
-  }
-  const parentId = organization.googleDriveFolderId;
   const accessToken = await getValidAccessToken(client.organizationId);
 
+  const monthName = formatHebrewMonthYear(requestCreatedAt);
+  const normalizedClientName = clientName.trim().toLowerCase();
+
   return db.transaction(async (tx) => {
-    const lockKey = `${parentId}::${client.name.trim().toLowerCase()}`;
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${rootFolderId}::month::${monthName}`}))`);
+    const monthFolderId = await resolveMonthFolder(accessToken, rootFolderId, monthName);
 
-    // Re-check under the lock — another request for this same client may
-    // have already resolved and committed a folder while this one waited.
-    const [freshClient] = await tx
-      .select({ driveFolderId: clients.driveFolderId })
-      .from(clients)
-      .where(eq(clients.id, clientId))
-      .limit(1);
-    if (freshClient?.driveFolderId) {
-      return { folderId: freshClient.driveFolderId };
-    }
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${monthFolderId}::client::${normalizedClientName}`}))`);
+    const driveClientFolderId = await resolveClientFolderUnderMonth(accessToken, monthFolderId, clientId, clientName);
 
-    // Already exists, tagged as this exact client's — adopt it. Covers a
-    // prior run that created the Drive folder but crashed before the DB
-    // write landed, and legacy folders the one-off backfill has tagged.
-    const tagged = await findFolderByClientProperty(accessToken, parentId, clientId);
-    if (tagged) {
-      await tx.update(clients).set({ driveFolderId: tagged.id, updatedAt: new Date() }).where(eq(clients.id, clientId));
-      return { folderId: tagged.id };
-    }
-
-    const folderName = await resolveClientFolderName(accessToken, parentId, client.name, clientId);
-    const folder = await createDriveFolder(accessToken, folderName, parentId, { centroClientId: clientId });
-    await tx.update(clients).set({ driveFolderId: folder.id, updatedAt: new Date() }).where(eq(clients.id, clientId));
-    return { folderId: folder.id };
+    return { driveClientFolderId };
   });
 }
 
-// Locates every Drive folder that could plausibly be a leftover duplicate
-// for this client under the org's parent folder (by exact name, by the
-// collision-suffixed name, and by the client-id property tag — a duplicate
-// created by an earlier, race-prone version of ensureClientFolder could
-// match any of the three depending on when it was created), merges every
-// file from every duplicate into one surviving primary folder, verifies
-// each move before trashing the now-empty duplicate, and points
-// clients.driveFolderId at the primary. Idempotent — safe to run again
-// (finds nothing to merge once no duplicates remain) and safe to run for a
-// client that never had a duplicate in the first place.
-export async function mergeDuplicateClientFolders(
+// Caches ensureDrivePath's result on the Collection Request itself
+// (collectionRequests.driveClientFolderId) — the unit every document
+// belongs to (documents.collectionRequestId) and the natural place to
+// answer "which Drive folder does the 1st, 5th, and 15th document of this
+// request use" with a single stored id instead of a fresh Drive search on
+// every upload. A collection request never moves between months once
+// created, so this value, once resolved, is permanent for that request's
+// lifetime — satisfies "the same client folder minutes, hours, or days
+// later" without ever re-deriving the path.
+export async function ensureCollectionRequestDriveFolder(collectionRequestId: string): Promise<DriveFolder> {
+  const db = await getDb();
+
+  const [request] = await db
+    .select({
+      driveClientFolderId: collectionRequests.driveClientFolderId,
+      clientId: collectionRequests.clientId,
+      organizationId: collectionRequests.organizationId,
+      createdAt: collectionRequests.createdAt,
+    })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .limit(1);
+  if (!request) throw new Error(`Collection request ${collectionRequestId} not found`);
+  if (request.driveClientFolderId) {
+    return { folderId: request.driveClientFolderId };
+  }
+
+  const [organization] = await db
+    .select({ googleDriveFolderId: organizations.googleDriveFolderId })
+    .from(organizations)
+    .where(eq(organizations.id, request.organizationId))
+    .limit(1);
+  if (!organization?.googleDriveFolderId) {
+    throw new GoogleNotConnectedError();
+  }
+
+  const [client] = await db
+    .select({ name: clients.name })
+    .from(clients)
+    .where(eq(clients.id, request.clientId))
+    .limit(1);
+  if (!client) throw new Error(`Client ${request.clientId} not found`);
+
+  // No wrapping transaction here — ensureDrivePath manages its own (it
+  // needs to hold two advisory locks across a Drive search-then-create
+  // sequence), and Postgres doesn't support nesting a second
+  // db.transaction() inside a first over the same connection. Two
+  // concurrent calls for the same request that both miss the cache below
+  // will therefore both call ensureDrivePath — redundant, but not
+  // incorrect: ensureDrivePath's own locking guarantees they resolve to
+  // the identical folder id, so both writes below converge on the same
+  // value regardless of ordering.
+  const { driveClientFolderId } = await ensureDrivePath(
+    organization.googleDriveFolderId!,
+    request.createdAt,
+    request.clientId,
+    client.name
+  );
+  await db
+    .update(collectionRequests)
+    .set({ driveClientFolderId, updatedAt: new Date() })
+    .where(eq(collectionRequests.id, collectionRequestId));
+  return { folderId: driveClientFolderId };
+}
+
+// One-time migration helper (see scripts/fixClientDriveFolders.ts): a
+// client whose only Drive folder still sits directly under the org's root
+// (the pre-monthly-structure layout) gets it relocated under the correct
+// month folder — computed from the most recent of this client's collection
+// requests that hasn't yet resolved its own driveClientFolderId — and that
+// request's driveClientFolderId is set to point at the (now relocated)
+// folder. A no-op for a client whose folder is already nested under a
+// month folder, or who has no legacy flat folder to relocate.
+export async function relocateLegacyClientFolder(
   clientId: string
-): Promise<{ primaryFolderId: string; duplicatesMerged: number; filesMoved: number }> {
+): Promise<{ relocated: boolean; collectionRequestId?: string; monthFolderId?: string; clientFolderId?: string }> {
   const db = await getDb();
   const [client] = await db
     .select({ driveFolderId: clients.driveFolderId, name: clients.name, organizationId: clients.organizationId })
     .from(clients)
     .where(eq(clients.id, clientId))
     .limit(1);
-  if (!client) throw new Error(`Client ${clientId} not found`);
+  if (!client?.driveFolderId) return { relocated: false };
 
   const [organization] = await db
     .select({ googleDriveFolderId: organizations.googleDriveFolderId })
     .from(organizations)
     .where(eq(organizations.id, client.organizationId))
     .limit(1);
-  if (!organization?.googleDriveFolderId) {
-    throw new GoogleNotConnectedError();
-  }
-  const parentId = organization.googleDriveFolderId;
+  if (!organization?.googleDriveFolderId) return { relocated: false };
+  const rootFolderId = organization.googleDriveFolderId;
+  const accessToken = await getValidAccessToken(client.organizationId);
+
+  // Only a direct child of root is "legacy flat" — already-nested folders
+  // (new layout) are left untouched.
+  const flatMatches = await findFoldersByName(accessToken, rootFolderId, client.name);
+  const isFlatChildOfRoot = flatMatches.some((f) => f.id === client.driveFolderId);
+  if (!isFlatChildOfRoot) return { relocated: false };
+
+  const [targetRequest] = await db
+    .select({ id: collectionRequests.id, createdAt: collectionRequests.createdAt })
+    .from(collectionRequests)
+    .where(and(eq(collectionRequests.clientId, clientId), isNull(collectionRequests.driveClientFolderId)))
+    .orderBy(desc(collectionRequests.createdAt))
+    .limit(1);
+  if (!targetRequest) return { relocated: false };
+
+  const monthFolderId = await resolveMonthFolder(
+    accessToken,
+    rootFolderId,
+    formatHebrewMonthYear(targetRequest.createdAt)
+  );
+  await moveDriveFile(accessToken, client.driveFolderId, rootFolderId, monthFolderId);
+  await setFolderClientProperty(accessToken, client.driveFolderId, clientId);
+  await db
+    .update(collectionRequests)
+    .set({ driveClientFolderId: client.driveFolderId, updatedAt: new Date() })
+    .where(eq(collectionRequests.id, targetRequest.id));
+
+  return {
+    relocated: true,
+    collectionRequestId: targetRequest.id,
+    monthFolderId,
+    clientFolderId: client.driveFolderId,
+  };
+}
+
+// Locates every Drive folder that could plausibly be a leftover duplicate
+// for this client under a given parent folder (by exact name, by the
+// collision-suffixed name, and by the client-id property tag — a duplicate
+// created by an earlier, race-prone version of the folder resolution logic
+// could match any of the three depending on when it was created), merges
+// every file from every duplicate into one surviving primary folder,
+// verifies each move before trashing the now-empty duplicate, and tags the
+// primary. Idempotent — safe to run again (finds nothing once no
+// duplicates remain). Takes an explicit parentId (the month folder, or —
+// for pre-monthly-structure legacy data — the org root) rather than
+// re-deriving it, since which parent to scan depends on which layer of the
+// migration is calling it.
+export async function mergeDuplicateClientFolders(
+  clientId: string,
+  parentId: string
+): Promise<{ primaryFolderId: string; duplicatesMerged: number; filesMoved: number }> {
+  const db = await getDb();
+  const [client] = await db
+    .select({ name: clients.name, organizationId: clients.organizationId })
+    .from(clients)
+    .where(eq(clients.id, clientId))
+    .limit(1);
+  if (!client) throw new Error(`Client ${clientId} not found`);
   const accessToken = await getValidAccessToken(client.organizationId);
 
   const byName = await findFoldersByName(accessToken, parentId, client.name);
-  const bySuffixedName = await findFoldersByName(accessToken, parentId, `${client.name} - ${clientId.slice(-5)}`);
+  const bySuffixedName = await findFoldersByName(accessToken, parentId, `${client.name} - ${clientId.slice(-5).toUpperCase()}`);
   const byTag = await findFolderByClientProperty(accessToken, parentId, clientId);
 
   const seen = new Map<string, DriveFolderRef>();
@@ -200,11 +345,10 @@ export async function mergeDuplicateClientFolders(
   const all = [...seen.values()];
 
   if (all.length === 0) {
-    return { primaryFolderId: client.driveFolderId ?? "", duplicatesMerged: 0, filesMoved: 0 };
+    return { primaryFolderId: "", duplicatesMerged: 0, filesMoved: 0 };
   }
 
-  const primaryId =
-    client.driveFolderId && all.some((f) => f.id === client.driveFolderId) ? client.driveFolderId : all[0].id;
+  const primaryId = byTag?.id ?? all[0].id;
   const duplicates = all.filter((f) => f.id !== primaryId);
 
   let filesMoved = 0;
@@ -226,7 +370,6 @@ export async function mergeDuplicateClientFolders(
   }
 
   await setFolderClientProperty(accessToken, primaryId, clientId);
-  await db.update(clients).set({ driveFolderId: primaryId, updatedAt: new Date() }).where(eq(clients.id, clientId));
 
   return { primaryFolderId: primaryId, duplicatesMerged: duplicates.length, filesMoved };
 }
@@ -239,9 +382,12 @@ function fileExtension(fileName: string): string {
 // Anti-overwrite: Drive itself never overwrites on a name collision (two
 // files can share a name with no error), but that just leaves confusing
 // duplicate-named files sitting in the client's folder — e.g. a client
-// re-sending "תעודת זהות" a second time. Appends " (2)", " (3)", ... the
-// same way a desktop file manager would, checked against what's actually
-// in the folder right now rather than trusting any cache.
+// re-sending "תעודת זהות" a second time (an updated copy, not a duplicate
+// upload of the identical file — that case is caught earlier, by
+// isFuzzyDuplicate in conversationActions.ts, before a Drive upload is
+// ever attempted). Appends " - גרסה 2", " - גרסה 3", ..., checked against
+// what's actually in the folder right now rather than trusting any cache —
+// never silently overwrites a prior version.
 async function resolveUniqueDriveFileName(accessToken: string, folderId: string, desiredName: string): Promise<string> {
   const existingNames = new Set((await listFolderFiles(accessToken, folderId)).map((f) => f.name));
   if (!existingNames.has(desiredName)) return desiredName;
@@ -249,10 +395,10 @@ async function resolveUniqueDriveFileName(accessToken: string, folderId: string,
   const ext = fileExtension(desiredName);
   const base = ext ? desiredName.slice(0, -ext.length) : desiredName;
   let attempt = 2;
-  while (existingNames.has(`${base} (${attempt})${ext}`)) {
+  while (existingNames.has(`${base} - גרסה ${attempt}${ext}`)) {
     attempt += 1;
   }
-  return `${base} (${attempt})${ext}`;
+  return `${base} - גרסה ${attempt}${ext}`;
 }
 
 // BR-11.5: only validated (approved) documents are stored in Drive.
@@ -268,10 +414,11 @@ async function resolveUniqueDriveFileName(accessToken: string, folderId: string,
 export async function uploadDocument(
   clientId: string,
   documentId: string,
+  collectionRequestId: string,
   fileBytes?: Buffer,
   mimeType?: string
 ): Promise<DriveFile> {
-  const { folderId } = await ensureClientFolder(clientId);
+  const { folderId } = await ensureCollectionRequestDriveFolder(collectionRequestId);
 
   const db = await getDb();
   const [client] = await db
@@ -369,7 +516,7 @@ export async function uploadDocumentResiliently(
   console.log("[wa-inbound] uploadDocumentResiliently START", { documentId, collectionRequestId, fileName });
   const db = await getDb();
   try {
-    const uploaded = await uploadDocument(clientId, documentId, fileBytes, mimeType);
+    const uploaded = await uploadDocument(clientId, documentId, collectionRequestId, fileBytes, mimeType);
     console.log("[wa-inbound] uploadDocumentResiliently OK", { documentId, driveFileId: uploaded.fileId });
     // Success — the real bytes are safely in Drive now; the temporary copy
     // (if any was held) and the retry-tracking columns are no longer

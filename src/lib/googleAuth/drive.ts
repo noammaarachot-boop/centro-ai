@@ -76,7 +76,7 @@ export async function createDriveFolder(
   // the API by the app that set it) — used to tag a client's folder with
   // its Centro client id, so a later lookup can confirm "this folder really
   // is this client's" instead of relying on a name match alone, which a
-  // same-named different client could collide with. See ensureClientFolder
+  // same-named different client could collide with. See ensureDrivePath
   // in src/lib/storage/driveAdapter.ts.
   properties?: Record<string, string>
 ): Promise<DriveFolderRef> {
@@ -113,7 +113,7 @@ export async function findFoldersByName(
 
 // The authoritative "is this folder really this client's" check — a name
 // match alone can't distinguish two different clients who happen to share a
-// display name (see the collision-suffix logic in ensureClientFolder).
+// display name (see the collision-suffix logic in ensureDrivePath).
 // Property values in a Drive query must themselves be quoted+escaped the
 // same as any other string literal.
 export async function findFolderByClientProperty(

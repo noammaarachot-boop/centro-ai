@@ -211,7 +211,13 @@ export async function processInboundAttachment(
   fileName: string,
   manualRequirementId: string | null,
   fileBytes?: Buffer,
-  mimeType?: string
+  mimeType?: string,
+  // Set only for a real WhatsApp attachment (the webhook route's own
+  // message.id/wamid) — the idempotency key that lets a redelivered
+  // webhook be recognized and skipped instead of downloading/uploading the
+  // same file twice. Null for the DevTools simulator and manual uploads,
+  // which have no WhatsApp message to key off.
+  whatsappMessageId?: string
 ) {
   const db = await getDb();
 
@@ -358,6 +364,7 @@ export async function processInboundAttachment(
       // succeeds, so a failure right after auto-approval can never
       // silently lose the file.
       ...(fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
+      ...(whatsappMessageId ? { whatsappMessageId } : {}),
     })
     .returning();
 

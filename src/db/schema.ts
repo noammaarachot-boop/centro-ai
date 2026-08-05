@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   customType,
@@ -701,6 +702,17 @@ export const collectionRequests = pgTable("collection_requests", {
     .notNull()
     .defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
+  // Google Drive monthly folder structure — <org root>/<Hebrew month
+  // year>/<client>/<documents>. Resolved once (see ensureDrivePath /
+  // ensureCollectionRequestDriveFolder in src/lib/storage/driveAdapter.ts)
+  // from this request's own createdAt, and cached here so every document
+  // this request ever receives — the first and the fifteenth, minutes or
+  // days apart — uploads into the exact same Drive folder without a fresh
+  // search. Scoped per request (not per client) because the desired
+  // structure buckets a client's documents by the month their collection
+  // cycle started, matching a recurring bookkeeping/accounting workflow
+  // where each month's documents are reviewed as their own batch.
+  driveClientFolderId: text("drive_client_folder_id"),
 });
 
 // The per-cycle snapshot described in BR-002 above — copied from
@@ -790,7 +802,21 @@ export const documents = pgTable("documents", {
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+  // Webhook idempotency key — Meta can and does redeliver the same webhook
+  // event (a slow ack, a transient error on our end) — without this, a
+  // redelivered "image" event would insert a second documents row for the
+  // exact same WhatsApp message and upload the same file to Drive twice.
+  // Null for anything that didn't arrive as a real WhatsApp attachment
+  // (manual uploads, the DevTools simulator), so the partial unique index
+  // below only constrains real inbound WhatsApp messages against each
+  // other. See handleInboundMessage in the webhook route, which checks
+  // this before doing any work.
+  whatsappMessageId: text("whatsapp_message_id"),
+}, (table) => [
+  uniqueIndex("documents_whatsapp_message_id_idx")
+    .on(table.whatsappMessageId)
+    .where(sql`${table.whatsappMessageId} is not null`),
+]);
 
 // EPS Ch.6: Open → Waiting for Client → Human Control → Closed.
 export const conversationStatus = pgEnum("conversation_status", [
