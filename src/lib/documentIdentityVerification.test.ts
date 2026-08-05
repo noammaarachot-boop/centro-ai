@@ -92,6 +92,19 @@ const {
   applyIdentityAnomalyDecision,
 } = await import("./documentIdentityVerification");
 const { sendConfirmationRemindersAndEscalate } = await import("./documentIntakeReview");
+const { flushDueIntakeNotifications } = await import("./pendingConfirmations");
+
+// Smart notification grouping: createOrMergeIdentityAnomalyConfirmation
+// holds the question (notifyAfter set) until flushDueIntakeNotifications
+// actually sends it — forces that flush immediately for tests that need to
+// observe the send.
+async function forceFlush(orgId: string, requestId: string) {
+  await db
+    .update(schema.pendingConfirmations)
+    .set({ notifyAfter: new Date(Date.now() - 1000) })
+    .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+  return flushDueIntakeNotifications(orgId, requestId);
+}
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -285,50 +298,64 @@ describe("buildIdentityReferencePool", () => {
 
 describe("createOrMergeIdentityAnomalyConfirmation — grouping", () => {
   it("groups several documents sharing the same anomaly into one pending confirmation instead of asking a separate question per file", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    const { orgId, clientId, requestId, clientName, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
     const doc1 = await seedDocument(requestId, orgId);
     const doc2 = await seedDocument(requestId, orgId);
     const doc3 = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc1.id, anomaly, documentType: "חשבונית" });
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc2.id, anomaly, documentType: "חשבונית" });
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc3.id, anomaly, documentType: "חשבונית" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc1.id, anomaly, documentType: "תעודת זהות" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc2.id, anomaly, documentType: "דרכון" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc3.id, anomaly, documentType: "רישיון נהיגה" });
 
     const rows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(rows).toHaveLength(1);
-    const payload = rows[0].payload as { documentIds: string[] };
-    expect(payload.documentIds).toEqual([doc1.id, doc2.id, doc3.id]);
-    expect(rows[0].question).toContain("3 מסמכים");
+    const payload = rows[0].payload as { documents: Array<{ id: string; documentType: string | null }> };
+    expect(payload.documents.map((d) => d.id)).toEqual([doc1.id, doc2.id, doc3.id]);
+    // Real document types listed, not a bare count.
+    expect(rows[0].question).toContain("תעודת זהות");
+    expect(rows[0].question).toContain("דרכון");
+    expect(rows[0].question).toContain("רישיון נהיגה");
+    expect(rows[0].question).toContain("ישראל ישראלי");
 
     // Only one question actually sent over WhatsApp — not one per document.
+    await forceFlush(orgId, requestId);
     const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     expect(messages).toHaveLength(1);
   });
 
-  it("handles a genuinely different anomaly as a separate question, not merged into an unrelated one", async () => {
-    const { orgId, clientId, requestId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+  it("a genuinely different anomaly stays a distinct, independently-answerable group — but still combined into one WhatsApp message", async () => {
+    const { orgId, clientId, requestId, clientName } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
     const doc1 = await seedDocument(requestId, orgId);
     const doc2 = await seedDocument(requestId, orgId);
     const anomalyA = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
     const anomalyB = { kind: "id_mismatch" as const, confident: true, conflictingName: null, maskedIdNumber: "***9999" };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc1.id, anomaly: anomalyA, documentType: null });
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc2.id, anomaly: anomalyB, documentType: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc1.id, anomaly: anomalyA, documentType: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc2.id, anomaly: anomalyB, documentType: null });
 
     const rows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    // Two distinct groups in the DB (independently answerable later)...
     expect(rows).toHaveLength(2);
-    expect(sendTextMessage).toHaveBeenCalledTimes(2);
+
+    // ...but still exactly one combined WhatsApp message, not one per group.
+    await forceFlush(orgId, requestId);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    // sendTextMessage(phoneNumberId, to, body) — group 0's options are 1/2,
+    // group 1's are 3/4.
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("1.");
+    expect(body).toContain("3.");
   });
 });
 
 describe("applyIdentityAnomalyDecision", () => {
   it("client confirms it was sent on purpose — uploads to the client's folder, never marked as fulfilling a requirement", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    const { orgId, clientId, requestId, clientName, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc.id, anomaly, documentType: "חשבונית מס" });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
 
     await applyIdentityAnomalyDecision({ ...confirmation, status: "confirmed", conversationId });
@@ -341,10 +368,10 @@ describe("applyIdentityAnomalyDecision", () => {
   });
 
   it("client says it was sent by mistake — never uploaded, pending bytes cleared, marked rejected", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    const { orgId, clientId, requestId, clientName, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc.id, anomaly, documentType: "חשבונית מס" });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
 
     await applyIdentityAnomalyDecision({ ...confirmation, status: "declined", conversationId });
@@ -358,10 +385,10 @@ describe("applyIdentityAnomalyDecision", () => {
 
 describe("identity_anomaly reminders/escalation reuse the generic pending-confirmation cron pass", () => {
   it("client doesn't answer after the reminder budget is exhausted — escalates to needs_review, never approved or silently dropped", async () => {
-    const { orgId, clientId, requestId } = await seedRequest({ businessHoursAlwaysOpen: true, whatsappPhoneNumberId: "phone-1" });
+    const { orgId, clientId, requestId, clientName } = await seedRequest({ businessHoursAlwaysOpen: true, whatsappPhoneNumberId: "phone-1" });
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, clientName, documentId: doc.id, anomaly, documentType: "חשבונית מס" });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     await db
       .update(schema.pendingConfirmations)

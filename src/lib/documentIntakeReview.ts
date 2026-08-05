@@ -11,6 +11,8 @@ import {
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import {
   createPendingConfirmation,
+  flushDueIntakeNotifications,
+  formatQuestionWithOptions,
   type PendingConfirmationKind,
 } from "@/lib/pendingConfirmations";
 import { fileExtension, uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
@@ -80,12 +82,13 @@ export function resolveDocumentIntakeOutcome(
 
 async function getConfirmationReminderConfig(
   organizationId: string
-): Promise<{ reminderIntervalDays: number; maxReminders: number }> {
+): Promise<{ reminderIntervalDays: number; maxReminders: number; groupingWindowSeconds: number }> {
   const db = await getDb();
   const [org] = await db
     .select({
       reminderIntervalDays: organizations.reminderIntervalDays,
       confirmationMaxReminders: organizations.confirmationMaxReminders,
+      documentGroupingWindowSeconds: organizations.documentGroupingWindowSeconds,
     })
     .from(organizations)
     .where(eq(organizations.id, organizationId))
@@ -93,7 +96,19 @@ async function getConfirmationReminderConfig(
   return {
     reminderIntervalDays: org?.reminderIntervalDays ?? 2,
     maxReminders: org?.confirmationMaxReminders ?? 2,
+    groupingWindowSeconds: org?.documentGroupingWindowSeconds ?? 15,
   };
+}
+
+// Smart notification grouping (Ch.6 fix): several unsolicited documents of
+// the exact same type arriving in a short burst (e.g. two invoices) must
+// read as one question, not one per file. count=1 keeps the original
+// single-document wording verbatim.
+function buildUnsolicitedQuestion(documentType: string, count: number): string {
+  if (count === 1) {
+    return `זיהינו ששלחת מסמך מסוג ${documentType}, אך מסמך זה לא נכלל כרגע ברשימת המסמכים שהתבקשת לשלוח.\nהאם שלחת אותו בכוונה?`;
+  }
+  return `זיהינו ש-${count} מהמסמכים ששלחת הם מסוג ${documentType}, אך הם אינם נכללים כרגע ברשימת המסמכים שהתבקשת לשלוח.\nהאם שלחת אותם בכוונה?`;
 }
 
 // Case 2 (unsolicited): "did you mean to send this?" — a yes/no question,
@@ -107,13 +122,48 @@ export async function createUnsolicitedDocumentConfirmation(params: {
   documentId: string;
   documentType: string;
 }): Promise<void> {
-  const { reminderIntervalDays } = await getConfirmationReminderConfig(params.organizationId);
-  const question = [
-    `זיהינו ששלחת מסמך מסוג ${params.documentType}, אך מסמך זה לא נכלל כרגע ברשימת המסמכים שהתבקשת לשלוח.`,
-    "האם שלחת אותו בכוונה?",
-    "1. כן, שלחתי בכוונה",
-    "2. לא, שלחתי בטעות",
-  ].join("\n");
+  const db = await getDb();
+
+  // Smart notification grouping: several unsolicited documents of the same
+  // type arriving in a short burst (e.g. two invoices) must fold into the
+  // same still-unnotified group instead of each opening its own question —
+  // this is what actually stops the client being flooded with near-
+  // identical messages. Only ever merges into a group that hasn't been
+  // sent yet (notifiedAt IS NULL); once a question has gone out, a later
+  // document of the same type starts (or joins) a fresh group instead of
+  // silently rewriting a message the client may already be reading.
+  const openRows = await db
+    .select()
+    .from(pendingConfirmations)
+    .where(
+      and(
+        eq(pendingConfirmations.collectionRequestId, params.collectionRequestId),
+        eq(pendingConfirmations.kind, "unsolicited_document" satisfies PendingConfirmationKind),
+        eq(pendingConfirmations.status, "pending"),
+        isNull(pendingConfirmations.notifiedAt)
+      )
+    );
+  const existing = openRows.find(
+    (row) => (row.payload as { documentType?: string } | null)?.documentType === params.documentType
+  );
+
+  if (existing) {
+    const payload = existing.payload as { documentIds: string[]; documentType: string };
+    const documentIds = [...payload.documentIds, params.documentId];
+    await db
+      .update(pendingConfirmations)
+      .set({
+        payload: { documentIds, documentType: params.documentType },
+        question: buildUnsolicitedQuestion(params.documentType, documentIds.length),
+      })
+      .where(eq(pendingConfirmations.id, existing.id));
+    console.log("[document-intake] unsolicited document merged into existing pending confirmation", {
+      pendingConfirmationId: existing.id,
+      collectionRequestId: params.collectionRequestId,
+      documentCount: documentIds.length,
+    });
+    return;
+  }
 
   console.log("[document-intake] pending confirmation created (unsolicited_document)", {
     organizationId: params.organizationId,
@@ -123,25 +173,15 @@ export async function createUnsolicitedDocumentConfirmation(params: {
     documentType: params.documentType,
   });
 
-  // trigger: "manual" + allowFreeform: true — this question is a direct
-  // reaction to the document the client just sent, within WhatsApp's 24h
-  // customer service session window, and has no pre-approved template
-  // (the wording is dynamic — includes documentType). Same legal basis as
-  // an employee's own free-text reply inside an open conversation; see
-  // sendViaWhatsApp's doc comment. Must bypass the automated/business-hours
-  // gate too — a client waiting mid-conversation for an answer shouldn't be
-  // held until tomorrow's business hours just because this question happens
-  // to be system-generated rather than typed by an employee.
+  const { groupingWindowSeconds } = await getConfirmationReminderConfig(params.organizationId);
   await createPendingConfirmation({
     organizationId: params.organizationId,
     clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,
     kind: "unsolicited_document" satisfies PendingConfirmationKind,
-    payload: { documentId: params.documentId, documentType: params.documentType },
-    question,
-    reminderIntervalDays,
-    trigger: "manual",
-    allowFreeform: true,
+    payload: { documentIds: [params.documentId], documentType: params.documentType },
+    question: buildUnsolicitedQuestion(params.documentType, 1),
+    notifyAfter: new Date(Date.now() + groupingWindowSeconds * 1000),
   });
 }
 
@@ -195,31 +235,40 @@ interface ResolvedConfirmationRow {
 // resolveConfirmationFromReply returns.
 export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedConfirmationRow): Promise<void> {
   if (resolved.kind !== ("unsolicited_document" satisfies PendingConfirmationKind)) return;
-  const payload = resolved.payload as { documentId?: string; documentType?: string } | null;
-  const documentId = payload?.documentId;
-  if (!documentId) return;
+  // documentId (singular) is read as a fallback only for a row created
+  // before smart notification grouping switched this payload to
+  // documentIds (plural) — safe to remove once no such row can still be
+  // pending in production.
+  const payload = resolved.payload as { documentIds?: string[]; documentId?: string; documentType?: string } | null;
+  const documentIds = payload?.documentIds ?? (payload?.documentId ? [payload.documentId] : []);
+  if (documentIds.length === 0) return;
   const documentType = payload?.documentType ?? "מסמך נוסף";
 
   const db = await getDb();
 
   if (resolved.status === "declined") {
     // Sent by mistake: never uploaded, never counted, temp bytes cleared
-    // per retention policy — nothing left behind.
-    await db
-      .update(documents)
-      .set({ status: "unsolicited_rejected", pendingFileContent: null, pendingFileMimeType: null, updatedAt: new Date() })
-      .where(eq(documents.id, documentId));
-    await recordAuditEvent({
-      organizationId: resolved.organizationId,
-      eventType: "document.unsolicited_rejected",
-      description: `הלקוח ציין שהמסמך "${documentType}" נשלח בטעות — לא הועלה ל-Drive`,
-      actorType: "client",
-      clientId: resolved.clientId,
-      collectionRequestId: resolved.collectionRequestId,
-      metadata: { documentId },
-    });
+    // per retention policy — nothing left behind. Applies to every
+    // document in this group — a group is only ever created from
+    // documents that share the exact same anomaly, so one decision is
+    // always meant to cover all of them.
+    for (const documentId of documentIds) {
+      await db
+        .update(documents)
+        .set({ status: "unsolicited_rejected", pendingFileContent: null, pendingFileMimeType: null, updatedAt: new Date() })
+        .where(eq(documents.id, documentId));
+      await recordAuditEvent({
+        organizationId: resolved.organizationId,
+        eventType: "document.unsolicited_rejected",
+        description: `הלקוח ציין שהמסמך "${documentType}" נשלח בטעות — לא הועלה ל-Drive`,
+        actorType: "client",
+        clientId: resolved.clientId,
+        collectionRequestId: resolved.collectionRequestId,
+        metadata: { documentId },
+      });
+    }
     console.log("[document-intake] confirmation resolved: declined, no upload", {
-      documentId,
+      documentIds,
       collectionRequestId: resolved.collectionRequestId,
     });
     return;
@@ -227,63 +276,67 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
 
   if (resolved.status !== "confirmed") return;
 
-  const [doc] = await db
-    .select({
-      fileName: documents.fileName,
-      pendingFileContent: documents.pendingFileContent,
-      pendingFileMimeType: documents.pendingFileMimeType,
-    })
-    .from(documents)
-    .where(eq(documents.id, documentId))
-    .limit(1);
-  if (!doc) return;
+  for (const documentId of documentIds) {
+    const [doc] = await db
+      .select({
+        fileName: documents.fileName,
+        pendingFileContent: documents.pendingFileContent,
+        pendingFileMimeType: documents.pendingFileMimeType,
+      })
+      .from(documents)
+      .where(eq(documents.id, documentId))
+      .limit(1);
+    if (!doc) continue;
 
-  // A readable name from what the AI actually identified it as — never
-  // the meaningless WhatsApp-generated filename — reusing uploadDocument's
-  // existing fallback-to-fileName + anti-overwrite logic unchanged; it
-  // never gets a requirementId (there is none to assign), so the rename
-  // has to happen here instead of via the requirement-name lookup path.
-  const targetFileName = `${documentType}${fileExtension(doc.fileName)}`;
-  await db
-    .update(documents)
-    .set({ status: "unsolicited_approved", fileName: targetFileName, updatedAt: new Date() })
-    .where(eq(documents.id, documentId));
+    // A readable name from what the AI actually identified it as — never
+    // the meaningless WhatsApp-generated filename — reusing uploadDocument's
+    // existing fallback-to-fileName + anti-overwrite logic unchanged; it
+    // never gets a requirementId (there is none to assign), so the rename
+    // has to happen here instead of via the requirement-name lookup path.
+    const targetFileName = `${documentType}${fileExtension(doc.fileName)}`;
+    await db
+      .update(documents)
+      .set({ status: "unsolicited_approved", fileName: targetFileName, updatedAt: new Date() })
+      .where(eq(documents.id, documentId));
 
-  await recordAuditEvent({
-    organizationId: resolved.organizationId,
-    eventType: "document.unsolicited_approved",
-    description: `הלקוח אישר שהמסמך "${documentType}" נשלח בכוונה — נשמר כמסמך נוסף בתיקיית הלקוח`,
-    actorType: "client",
-    clientId: resolved.clientId,
-    collectionRequestId: resolved.collectionRequestId,
-    metadata: { documentId },
-  });
+    // Every document in the group keeps its own independent audit trail
+    // entry, even though one client answer covers the whole group.
+    await recordAuditEvent({
+      organizationId: resolved.organizationId,
+      eventType: "document.unsolicited_approved",
+      description: `הלקוח אישר שהמסמך "${documentType}" נשלח בכוונה — נשמר כמסמך נוסף בתיקיית הלקוח`,
+      actorType: "client",
+      clientId: resolved.clientId,
+      collectionRequestId: resolved.collectionRequestId,
+      metadata: { documentId },
+    });
 
-  // Same client folder every other approved document for this request
-  // uses (ensureCollectionRequestDriveFolder) — never a new one, per
-  // product requirement.
-  await uploadDocumentResiliently(
-    resolved.organizationId,
-    resolved.clientId,
-    documentId,
-    targetFileName,
-    resolved.collectionRequestId,
-    doc.pendingFileContent ?? undefined,
-    doc.pendingFileMimeType ?? undefined
-  );
-  console.log("[document-intake] confirmation resolved: confirmed, uploaded to Drive", {
-    documentId,
-    collectionRequestId: resolved.collectionRequestId,
-    targetFileName,
-  });
+    // Same client folder every other approved document for this request
+    // uses (ensureCollectionRequestDriveFolder) — never a new one, per
+    // product requirement.
+    await uploadDocumentResiliently(
+      resolved.organizationId,
+      resolved.clientId,
+      documentId,
+      targetFileName,
+      resolved.collectionRequestId,
+      doc.pendingFileContent ?? undefined,
+      doc.pendingFileMimeType ?? undefined
+    );
+    console.log("[document-intake] confirmation resolved: confirmed, uploaded to Drive", {
+      documentId,
+      collectionRequestId: resolved.collectionRequestId,
+      targetFileName,
+    });
+  }
 
-  // Direct reaction to the client's own "yes" reply, inside the same
-  // session window — same allowFreeform/trigger reasoning as the question
-  // that prompted it.
+  // One thank-you for the whole group, not one per document — direct
+  // reaction to the client's own reply, inside the same session window,
+  // same allowFreeform/trigger reasoning as the question that prompted it.
   await sendOutboundMessage(
     resolved.organizationId,
     resolved.conversationId,
-    `תודה, שמרנו את המסמך "${documentType}" בתיקייה שלך.`,
+    documentIds.length > 1 ? "תודה, שמרנו את המסמכים בתיקייה שלך." : `תודה, שמרנו את המסמך "${documentType}" בתיקייה שלך.`,
     "ai",
     "manual",
     undefined,
@@ -421,13 +474,20 @@ export async function sendConfirmationRemindersAndEscalate(
   for (const row of due) {
     if (row.remindersSent >= maxReminders) {
       // Every payload shape this cron pass has ever needed to escalate:
-      // unsolicited_document/document_clarification carry a single
-      // documentId; identity_anomaly (documentIdentityVerification.ts) can
-      // carry several documentIds grouped under one question. Escalating
-      // means every document tied to this unanswered question moves to
-      // needs_review, not just the first one.
-      const payload = row.payload as { documentId?: string; documentIds?: string[] } | null;
-      const documentIds = payload?.documentIds ?? (payload?.documentId ? [payload.documentId] : []);
+      // document_clarification carries a single documentId;
+      // unsolicited_document carries documentIds (plural, smart
+      // notification grouping); identity_anomaly
+      // (documentIdentityVerification.ts) carries a `documents` array with
+      // per-document type labels. Escalating means every document tied to
+      // this unanswered question moves to needs_review, not just the first
+      // one.
+      const payload = row.payload as
+        | { documentId?: string; documentIds?: string[]; documents?: Array<{ id: string }> }
+        | null;
+      const documentIds =
+        payload?.documentIds ??
+        payload?.documents?.map((d) => d.id) ??
+        (payload?.documentId ? [payload.documentId] : []);
       for (const documentId of documentIds) {
         await db
           .update(documents)
@@ -460,10 +520,19 @@ export async function sendConfirmationRemindersAndEscalate(
     // failure surfaces as a normal deliveryStatus:"failed" on the message
     // row (see sendViaWhatsApp), not a crash — a disclosed, accepted
     // limitation rather than a silent gap.
+    // unsolicited_document/identity_anomaly questions carry numbered
+    // yes/no options assigned at flush time (groupIndex) — the resend must
+    // reconstruct them, since row.question itself is just the descriptive
+    // statement (see formatQuestionWithOptions). document_clarification is
+    // open-ended and was never given options to begin with.
+    const resendBody =
+      row.kind === ("document_clarification" satisfies PendingConfirmationKind)
+        ? `תזכורת: ${row.question}`
+        : `תזכורת: ${formatQuestionWithOptions(row.question, row.groupIndex)}`;
     const { sent } = await sendOutboundMessage(
       organizationId,
       row.conversationId,
-      `תזכורת: ${row.question}`,
+      resendBody,
       "ai",
       "automated",
       undefined,
@@ -487,4 +556,36 @@ export async function sendConfirmationRemindersAndEscalate(
   }
 
   return { reminded, escalated };
+}
+
+// The other cron pass smart notification grouping needs (wired into
+// src/lib/scheduler.ts alongside sendConfirmationRemindersAndEscalate
+// above): the backstop for a batch that has no further document arriving
+// after it to trigger the lazy flush processInboundAttachment does on
+// every call. Without this, a single burst of anomalies followed by
+// silence would hold its question forever — this is what guarantees it
+// still goes out once the grouping window elapses, bounded only by how
+// often the external scheduler actually calls /api/cron/tick.
+export async function flushDueIntakeNotificationsForOrganization(
+  organizationId: string
+): Promise<{ flushed: number }> {
+  const db = await getDb();
+  const rows = await db
+    .select({ collectionRequestId: pendingConfirmations.collectionRequestId })
+    .from(pendingConfirmations)
+    .where(
+      and(
+        eq(pendingConfirmations.organizationId, organizationId),
+        eq(pendingConfirmations.status, "pending"),
+        isNull(pendingConfirmations.notifiedAt)
+      )
+    );
+  const uniqueRequestIds = [...new Set(rows.map((row) => row.collectionRequestId))];
+
+  let flushed = 0;
+  for (const collectionRequestId of uniqueRequestIds) {
+    const result = await flushDueIntakeNotifications(organizationId, collectionRequestId);
+    if (result.sent) flushed += 1;
+  }
+  return { flushed };
 }

@@ -150,6 +150,15 @@ export const organizations = pgTable("organizations", {
   confirmationMaxReminders: integer("confirmation_max_reminders")
     .notNull()
     .default(2),
+  // Smart notification grouping window (pendingConfirmations.ts's
+  // flushDueIntakeNotifications) — how long to hold an unsolicited_document/
+  // identity_anomaly question after the first one on a request, so several
+  // documents/anomalies arriving in a short burst reach the client as one
+  // combined WhatsApp message instead of one per file. Configurable per
+  // organization, never hard-coded.
+  documentGroupingWindowSeconds: integer("document_grouping_window_seconds")
+    .notNull()
+    .default(15),
   // Office policy (Architecture Ch.8: Centro learns which documents to
   // collect, never when — this is configured once by the accountant and
   // never touched automatically). The day of the month collection begins
@@ -981,6 +990,22 @@ export const pendingConfirmations = pgTable("pending_confirmations", {
   // the scheduler's signal to stop reminding and hand the linked document
   // to needs_review, and a guard against escalating (or reminding) twice.
   escalatedAt: timestamp("escalated_at", { withTimezone: true }),
+  // Smart notification grouping (src/lib/pendingConfirmations.ts's
+  // flushDueIntakeNotifications) — several documents/anomalies arriving in
+  // a short burst must reach the client as ONE combined WhatsApp message,
+  // never one per file. A row created in "batched" mode (unsolicited_document
+  // / identity_anomaly) starts with notifyAfter set and notifiedAt/
+  // groupIndex null — held, not sent — until the grouping window elapses,
+  // at which point every still-unnotified row for the same collection
+  // request is flushed together: each gets a groupIndex (its 0-based
+  // position in the combined message, which is also what the numbered
+  // reply options 2*i+1 / 2*i+2 refer to) and notifiedAt is stamped.
+  // Both stay null for the two document_profile_* kinds and
+  // document_clarification, which are unaffected by this and still send
+  // immediately exactly as before.
+  notifyAfter: timestamp("notify_after", { withTimezone: true }),
+  notifiedAt: timestamp("notified_at", { withTimezone: true }),
+  groupIndex: integer("group_index"),
 });
 
 export const clientDocumentRequirementAction = pgEnum(

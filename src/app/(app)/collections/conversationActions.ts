@@ -15,7 +15,9 @@ import { classifyDocumentWithLearning, isFuzzyDuplicate, SUPPORTED_EXTENSIONS } 
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
 import { getLearnedDocumentPatterns } from "@/lib/documentLearning";
 import {
+  flushDueIntakeNotifications,
   respondToPendingConfirmationManually,
+  resolveBatchedIntakeReply,
   resolveConfirmationFromReply,
   resolveOpenClarificationReply,
 } from "@/lib/pendingConfirmations";
@@ -166,6 +168,28 @@ export async function simulateInboundMessage(
       metadata: { intent },
     });
 
+    // Smart notification grouping's reply counterpart: once several
+    // groups have actually been sent together in one combined message,
+    // the client answers by number ("1", "1,3") rather than a bare yes/no
+    // — checked before every other resolver, since with 2+ groups open a
+    // bare "כן"/"לא" is genuinely ambiguous and none of the resolvers
+    // below may guess which one it answers.
+    const batchResolved = await resolveBatchedIntakeReply(conversation.id, body);
+    if (batchResolved.length > 0) {
+      for (const resolved of batchResolved) {
+        await applyUnsolicitedConfirmationDecision(resolved);
+        await applyIdentityAnomalyDecision(resolved);
+        await recordAuditEvent({
+          organizationId: session.organizationId,
+          eventType: "pending_confirmation.resolved",
+          description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} קבוצה בהודעה מרוכזת: "${resolved.question}"`,
+          actorType: "client",
+          clientId: current.clientId,
+          collectionRequestId,
+          metadata: { kind: resolved.kind, status: resolved.status, groupIndex: resolved.groupIndex },
+        });
+      }
+    } else {
     // Milestone 5 (Ch.3 "Confirm") / Ch.6 3-way document intake — a no-op
     // unless there is actually an open confirmation waiting for this exact
     // conversation. document_clarification is open-ended (not yes/no), so
@@ -203,6 +227,7 @@ export async function simulateInboundMessage(
           metadata: { kind: resolved.kind, status: resolved.status },
         });
       }
+    }
     }
   }
 
@@ -251,6 +276,14 @@ export async function processInboundAttachment(
   whatsappMessageId?: string
 ) {
   const db = await getDb();
+
+  // Smart notification grouping's lazy flush trigger: any new activity on
+  // this request is a chance to notice an earlier batch (from a document
+  // processed moments ago) has crossed its grouping window and is now due
+  // — sent here, promptly, rather than waiting on the next cron tick. A
+  // no-op whenever nothing is actually due yet (including the common case
+  // of no open batch at all).
+  await flushDueIntakeNotifications(organizationId, collectionRequestId);
 
   // FR-11.2: unsupported file types are rejected automatically.
   const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
@@ -324,6 +357,7 @@ export async function processInboundAttachment(
   // matched or was unsolicited (the right document type still says nothing
   // about whose document it actually is).
   let identityAnomaly: IdentityAnomaly | null = null;
+  let identityClientName = "";
   // Persisted on the document row only when extraction was confident enough
   // to trust as a future sibling-comparison reference (see
   // extractedIdentityForStorage's own gate) — never a low-confidence guess.
@@ -401,7 +435,8 @@ export async function processInboundAttachment(
     // comment.
     if (outcome.kind !== "unrecognized" && (classification.identityExtractionConfidence ?? 0) > 0) {
       const [clientRow] = await db.select({ name: clients.name }).from(clients).where(eq(clients.id, clientId)).limit(1);
-      const pool = await buildIdentityReferencePool(collectionRequestId, null, clientRow?.name ?? "");
+      identityClientName = clientRow?.name ?? "";
+      const pool = await buildIdentityReferencePool(collectionRequestId, null, identityClientName);
       identityAnomaly = detectIdentityAnomaly(
         {
           extractedPersonName: classification.extractedPersonName ?? null,
@@ -513,6 +548,7 @@ export async function processInboundAttachment(
       organizationId,
       clientId,
       collectionRequestId,
+      clientName: identityClientName,
       documentId: document.id,
       anomaly: identityAnomaly,
       documentType: identityDocumentType,

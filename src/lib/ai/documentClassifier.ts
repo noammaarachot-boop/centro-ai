@@ -298,8 +298,11 @@ export async function classifyDocumentWithLearning(
       // Carried through even on a match — resolveDocumentIntakeOutcome's
       // identity check runs regardless of whether the document type
       // matched (the right document type can still belong to the wrong
-      // person).
+      // person), and documentIdentityVerification.ts's question wording
+      // needs the real document type (e.g. "תעודת זהות") to name it
+      // instead of falling back to a bare count.
       aiRan: true,
+      aiDocumentType: aiResult.aiDocumentType,
       extractedPersonName: aiResult.extractedPersonName,
       extractedIdNumber: aiResult.extractedIdNumber,
       extractedCompanyName: aiResult.extractedCompanyName,

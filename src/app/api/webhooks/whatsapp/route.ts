@@ -5,7 +5,11 @@ import { clients, conversations, documents, messages, organizations } from "@/db
 import { recordAuditEvent } from "@/lib/audit";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
-import { resolveConfirmationFromReply, resolveOpenClarificationReply } from "@/lib/pendingConfirmations";
+import {
+  resolveBatchedIntakeReply,
+  resolveConfirmationFromReply,
+  resolveOpenClarificationReply,
+} from "@/lib/pendingConfirmations";
 import {
   applyClarificationReply,
   applyUnsolicitedConfirmationDecision,
@@ -257,6 +261,32 @@ async function handleInboundMessage(
       metadata: { intent },
     });
 
+    // Smart notification grouping's reply counterpart: once several groups
+    // have actually been sent together in one combined message, the client
+    // answers by number ("1", "1,3") instead of a bare yes/no — checked
+    // before every other resolver, since with 2+ groups open a bare
+    // "כן"/"לא" is genuinely ambiguous and none of the resolvers below may
+    // guess which one it answers.
+    const batchResolved = await resolveBatchedIntakeReply(conversation.id, body);
+    if (batchResolved.length > 0) {
+      console.log("[wa-inbound] batched intake reply resolved", {
+        groupCount: batchResolved.length,
+        groupIndexes: batchResolved.map((r) => r.groupIndex),
+      });
+      for (const resolved of batchResolved) {
+        await applyUnsolicitedConfirmationDecision(resolved);
+        await applyIdentityAnomalyDecision(resolved);
+        await recordAuditEvent({
+          organizationId: organization.id,
+          eventType: "pending_confirmation.resolved",
+          description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} קבוצה בהודעה מרוכזת: "${resolved.question}"`,
+          actorType: "client",
+          clientId: client.id,
+          collectionRequestId,
+          metadata: { kind: resolved.kind, status: resolved.status, groupIndex: resolved.groupIndex },
+        });
+      }
+    } else {
     // document_clarification is open-ended ("what document is this?"), not
     // yes/no — checked first, via its own resolver, so a reply describing
     // the document is never misread as a yes/no answer to some other
@@ -294,6 +324,7 @@ async function handleInboundMessage(
           metadata: { kind: resolved.kind, status: resolved.status },
         });
       }
+    }
     }
   }
 

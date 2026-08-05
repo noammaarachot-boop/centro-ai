@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import { documents, organizations, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -279,30 +279,44 @@ export function extractedIdentityForStorage(classification: DocumentClassificati
   };
 }
 
+// Hebrew "X, Y ו-Z" list join — used to name the actual document types in a
+// group ("תעודת זהות ודרכון") instead of a bare count, whenever every
+// document in the group has a known type.
+function joinHebrewList(items: string[]): string {
+  if (items.length === 0) return "מסמך";
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} ו${items[1]}`;
+  return `${items.slice(0, -1).join(", ")} ו${items[items.length - 1]}`;
+}
+
 // Tailored wording per anomaly kind/confidence — never a generic "something
-// doesn't match" message. `documentCount` > 1 only ever happens via the
-// grouping path below (several documents already folded into the same
-// still-open question).
-function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentCount: number): string {
-  const plural = documentCount > 1;
-  const countPhrase = plural ? `${documentCount} מסמכים` : "מסמך";
+// doesn't match" message, and never just a bare count when the actual
+// document types are known ("תעודת זהות ודרכון", not "2 מסמכים"). Only the
+// descriptive statement — numbered yes/no options are appended later, once
+// this group's final position in a (possibly combined, possibly solo)
+// outbound message is decided by flushDueIntakeNotifications
+// (pendingConfirmations.ts).
+function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<string | null>, clientName: string): string {
+  const count = documentTypes.length;
+  const plural = count > 1;
+  const knownTypes = documentTypes.filter((t): t is string => !!t);
+  const subject = knownTypes.length === count ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
 
   let statement: string;
   if (anomaly.kind === "id_mismatch") {
-    statement = `זיהינו ש${plural ? "במספר מסמכים" : "במסמך"} ששלחת מופיע מספר זהות שונה מהמסמכים הקודמים שהתקבלו בבקשה הזאת (מסתיים ב-${anomaly.maskedIdNumber}).`;
+    statement = `קיבלנו ${subject}, אך מספר תעודת הזהות שמופיע ב${plural ? "הם" : "ו"} שונה מהמסמכים הקודמים שהתקבלו בבקשה הזאת (מסתיים ב-${anomaly.maskedIdNumber}).`;
   } else if (anomaly.kind === "name_mismatch") {
     statement = anomaly.confident
-      ? `זיהינו ש${countPhrase} ששלחת ${plural ? "מופיעים" : "מופיע"} על שם ${anomaly.conflictingName}, בעוד שבקשת המסמכים היא עבור לקוח אחר.`
-      : `לא הצלחנו לוודא בבירור למי שייך ${countPhrase} ששלחת.`;
+      ? `קיבלנו ${subject} על שם ${anomaly.conflictingName}, בעוד שהבקשה היא עבור ${clientName}.`
+      : `לא הצלחנו לוודא בבירור למי שייכ${plural ? "ים" : ""} ${subject} ששלחת.`;
   } else {
     statement = anomaly.confident
-      ? `זיהינו ש${countPhrase} ששלחת ${plural ? "שייכים" : "שייך"} ככל הנראה לחברה אחרת (${anomaly.conflictingName}).`
-      : `לא הצלחנו לוודא בבירור לאיזו חברה ${countPhrase} ששלחת שייך.`;
+      ? `קיבלנו ${subject}, ${plural ? "ששייכים" : "ששייך"} ככל הנראה לחברה אחרת (${anomaly.conflictingName}).`
+      : `לא הצלחנו לוודא בבירור לאיזו חברה ${plural ? "שייכים" : "שייך"} ${subject} ששלחת.`;
   }
 
-  return [statement, `האם שלחת ${plural ? "אותם" : "אותו"} בכוונה?`, "1. כן, שלחתי בכוונה", "2. לא, שלחתי בטעות"].join(
-    "\n"
-  );
+  const question = plural ? "האם המסמכים נשלחו בכוונה?" : "האם שלחת אותו בכוונה?";
+  return `${statement}\n${question}`;
 }
 
 // Groups documents that share the same underlying anomaly into one signature
@@ -317,33 +331,32 @@ function anomalySignature(anomaly: IdentityAnomaly): string {
 }
 
 interface IdentityAnomalyPayload {
-  documentIds: string[];
+  documents: Array<{ id: string; documentType: string | null }>;
   anomaly: IdentityAnomaly;
-  documentType: string | null;
 }
 
-async function getConfirmationReminderConfig(
-  organizationId: string
-): Promise<{ reminderIntervalDays: number }> {
+async function getGroupingWindowSeconds(organizationId: string): Promise<number> {
   const db = await getDb();
   const [org] = await db
-    .select({ reminderIntervalDays: organizations.reminderIntervalDays })
+    .select({ documentGroupingWindowSeconds: organizations.documentGroupingWindowSeconds })
     .from(organizations)
     .where(eq(organizations.id, organizationId))
     .limit(1);
-  return { reminderIntervalDays: org?.reminderIntervalDays ?? 2 };
+  return org?.documentGroupingWindowSeconds ?? 15;
 }
 
 // Creates a new identity-anomaly pending confirmation, or — if one with the
-// exact same anomaly signature is already open on this request — folds this
-// document into it instead of asking a second question. Mirrors
-// createUnsolicitedDocumentConfirmation in documentIntakeReview.ts (same
-// trigger:"manual" + allowFreeform:true reasoning: a direct reaction to the
-// document the client just sent, within the WhatsApp session window).
+// exact same anomaly signature is already open (still unnotified) on this
+// request — folds this document into it instead of asking a second
+// question. Batched mode (notifyAfter): the actual WhatsApp send is held
+// until flushDueIntakeNotifications (pendingConfirmations.ts) fires, so
+// several documents/anomalies arriving in a short burst reach the client as
+// one combined message — see that module's own doc comment for why.
 export async function createOrMergeIdentityAnomalyConfirmation(params: {
   organizationId: string;
   clientId: string;
   collectionRequestId: string;
+  clientName: string;
   documentId: string;
   anomaly: IdentityAnomaly;
   documentType: string | null;
@@ -358,7 +371,8 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
       and(
         eq(pendingConfirmations.collectionRequestId, params.collectionRequestId),
         eq(pendingConfirmations.kind, "identity_anomaly" satisfies PendingConfirmationKind),
-        eq(pendingConfirmations.status, "pending")
+        eq(pendingConfirmations.status, "pending"),
+        isNull(pendingConfirmations.notifiedAt)
       )
     );
   const existing = openRows.find((row) => {
@@ -368,24 +382,25 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
 
   if (existing) {
     const payload = existing.payload as IdentityAnomalyPayload;
-    const documentIds = [...payload.documentIds, params.documentId];
+    const documentsInGroup = [...payload.documents, { id: params.documentId, documentType: params.documentType }];
     await db
       .update(pendingConfirmations)
       .set({
-        payload: { ...payload, documentIds } satisfies IdentityAnomalyPayload,
-        question: buildAnomalyQuestion(params.anomaly, documentIds.length),
+        payload: { ...payload, documents: documentsInGroup } satisfies IdentityAnomalyPayload,
+        question: buildAnomalyQuestion(
+          params.anomaly,
+          documentsInGroup.map((d) => d.documentType),
+          params.clientName
+        ),
       })
       .where(eq(pendingConfirmations.id, existing.id));
     console.log("[document-intake] identity anomaly merged into existing pending confirmation", {
       pendingConfirmationId: existing.id,
       collectionRequestId: params.collectionRequestId,
-      documentCount: documentIds.length,
+      documentCount: documentsInGroup.length,
     });
     return;
   }
-
-  const { reminderIntervalDays } = await getConfirmationReminderConfig(params.organizationId);
-  const question = buildAnomalyQuestion(params.anomaly, 1);
 
   console.log("[document-intake] pending confirmation created (identity_anomaly)", {
     organizationId: params.organizationId,
@@ -395,20 +410,18 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     confident: params.anomaly.confident,
   });
 
+  const groupingWindowSeconds = await getGroupingWindowSeconds(params.organizationId);
   await createPendingConfirmation({
     organizationId: params.organizationId,
     clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,
     kind: "identity_anomaly" satisfies PendingConfirmationKind,
     payload: {
-      documentIds: [params.documentId],
+      documents: [{ id: params.documentId, documentType: params.documentType }],
       anomaly: params.anomaly,
-      documentType: params.documentType,
     } satisfies IdentityAnomalyPayload,
-    question,
-    reminderIntervalDays,
-    trigger: "manual",
-    allowFreeform: true,
+    question: buildAnomalyQuestion(params.anomaly, [params.documentType], params.clientName),
+    notifyAfter: new Date(Date.now() + groupingWindowSeconds * 1000),
   });
 }
 
@@ -428,13 +441,13 @@ interface ResolvedConfirmationRow {
 export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmationRow): Promise<void> {
   if (resolved.kind !== ("identity_anomaly" satisfies PendingConfirmationKind)) return;
   const payload = resolved.payload as IdentityAnomalyPayload | null;
-  const documentIds = payload?.documentIds ?? [];
-  if (documentIds.length === 0) return;
+  const documentsInGroup = payload?.documents ?? [];
+  if (documentsInGroup.length === 0) return;
 
   const db = await getDb();
 
   if (resolved.status === "declined") {
-    for (const documentId of documentIds) {
+    for (const { id: documentId } of documentsInGroup) {
       await db
         .update(documents)
         .set({
@@ -444,18 +457,18 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
           updatedAt: new Date(),
         })
         .where(eq(documents.id, documentId));
+      await recordAuditEvent({
+        organizationId: resolved.organizationId,
+        eventType: "document.identity_anomaly_rejected",
+        description: `הלקוח ציין שהמסמך נשלח בטעות (חריגת זהות) — לא הועלה ל-Drive`,
+        actorType: "client",
+        clientId: resolved.clientId,
+        collectionRequestId: resolved.collectionRequestId,
+        metadata: { documentId, anomalyKind: payload?.anomaly.kind },
+      });
     }
-    await recordAuditEvent({
-      organizationId: resolved.organizationId,
-      eventType: "document.identity_anomaly_rejected",
-      description: `הלקוח ציין שהמסמך/מסמכים נשלחו בטעות (חריגת זהות) — לא הועלו ל-Drive`,
-      actorType: "client",
-      clientId: resolved.clientId,
-      collectionRequestId: resolved.collectionRequestId,
-      metadata: { documentIds, anomalyKind: payload?.anomaly.kind },
-    });
     console.log("[document-intake] identity anomaly resolved: declined, no upload", {
-      documentIds,
+      documentIds: documentsInGroup.map((d) => d.id),
       collectionRequestId: resolved.collectionRequestId,
     });
     return;
@@ -463,7 +476,7 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
 
   if (resolved.status !== "confirmed") return;
 
-  for (const documentId of documentIds) {
+  for (const { id: documentId, documentType } of documentsInGroup) {
     const [doc] = await db
       .select({
         fileName: documents.fileName,
@@ -479,10 +492,10 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
     // actually match, and never changes the request's primary client —
     // uploaded as an extra document, exactly like a confirmed unsolicited
     // document, with the anomaly itself kept in payload/audit metadata as
-    // the record of what the client actually confirmed.
-    const targetFileName = payload?.documentType
-      ? `${payload.documentType}${fileExtension(doc.fileName)}`
-      : doc.fileName;
+    // the record of what the client actually confirmed. Each document in
+    // the group keeps its own type-based name (an ID card and a passport
+    // in the same group must not both become the same filename).
+    const targetFileName = documentType ? `${documentType}${fileExtension(doc.fileName)}` : doc.fileName;
     await db
       .update(documents)
       .set({ status: "identity_anomaly_confirmed", fileName: targetFileName, updatedAt: new Date() })
@@ -516,7 +529,7 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
   await sendOutboundMessage(
     resolved.organizationId,
     resolved.conversationId,
-    documentIds.length > 1 ? "תודה, שמרנו את המסמכים בתיקייה שלך." : "תודה, שמרנו את המסמך בתיקייה שלך.",
+    documentsInGroup.length > 1 ? "תודה, שמרנו את המסמכים בתיקייה שלך." : "תודה, שמרנו את המסמך בתיקייה שלך.",
     "ai",
     "manual",
     undefined,

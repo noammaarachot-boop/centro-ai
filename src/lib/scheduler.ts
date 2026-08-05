@@ -11,7 +11,10 @@ import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 import { REMINDER_BODY as REMINDER_MESSAGE } from "@/lib/whatsapp/templates";
 import { retryFailedDriveUploads } from "@/lib/storage/driveAdapter";
 import { runRecurringCycleCreation } from "@/lib/recurringScheduler";
-import { sendConfirmationRemindersAndEscalate } from "@/lib/documentIntakeReview";
+import {
+  flushDueIntakeNotificationsForOrganization,
+  sendConfirmationRemindersAndEscalate,
+} from "@/lib/documentIntakeReview";
 
 /**
  * The real automatic trigger Ch.5/Ch.16 describe — "after N minutes of
@@ -46,6 +49,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   recurringCyclesCreated: number;
   confirmationsReminded: number;
   confirmationsEscalated: number;
+  intakeNotificationsFlushed: number;
 }> {
   const db = await getDb();
   const allOrganizations = organizationId
@@ -56,6 +60,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   let reminded = 0;
   let confirmationsReminded = 0;
   let confirmationsEscalated = 0;
+  let intakeNotificationsFlushed = 0;
   let delivered = 0;
   let driveRetried = 0;
   let recurringCyclesCreated = 0;
@@ -213,6 +218,14 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     );
     confirmationsReminded += confirmationReminders;
     confirmationsEscalated += escalated;
+
+    // Smart notification grouping's backstop (src/lib/pendingConfirmations.ts's
+    // flushDueIntakeNotifications): the lazy flush processInboundAttachment
+    // does on every new document covers a request that keeps receiving
+    // documents, but a single burst followed by silence needs this tick to
+    // ever actually send its question.
+    const { flushed } = await flushDueIntakeNotificationsForOrganization(organization.id);
+    intakeNotificationsFlushed += flushed;
   }
 
   return {
@@ -223,5 +236,6 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     recurringCyclesCreated,
     confirmationsReminded,
     confirmationsEscalated,
+    intakeNotificationsFlushed,
   };
 }
