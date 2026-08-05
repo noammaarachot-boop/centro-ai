@@ -50,6 +50,12 @@ export async function createPendingConfirmation(params: {
   // nextReminderAt is set to now + intervalDays; sendConfirmationReminders
   // (src/lib/documentIntakeReview.ts) is what actually acts on it.
   reminderIntervalDays?: number;
+  // Passed straight through to sendOutboundMessage — see its own doc
+  // comments for what each means. Both default to the original behavior
+  // (automated + template-only) so the two document_profile_* callers,
+  // which don't pass these, are unaffected by this fix.
+  trigger?: "manual" | "automated";
+  allowFreeform?: boolean;
 }) {
   const conversation = await ensureConversation(
     params.organizationId,
@@ -57,7 +63,32 @@ export async function createPendingConfirmation(params: {
     params.clientId
   );
 
-  await sendOutboundMessage(params.organizationId, conversation.id, params.question, "ai");
+  console.log("[pending-confirmation] send attempted", {
+    kind: params.kind,
+    collectionRequestId: params.collectionRequestId,
+    conversationId: conversation.id,
+    trigger: params.trigger ?? "automated",
+    allowFreeform: params.allowFreeform ?? false,
+  });
+  const { sent } = await sendOutboundMessage(
+    params.organizationId,
+    conversation.id,
+    params.question,
+    "ai",
+    params.trigger ?? "automated",
+    undefined,
+    params.allowFreeform ?? false
+  );
+  console.log("[pending-confirmation] send result", {
+    kind: params.kind,
+    collectionRequestId: params.collectionRequestId,
+    // `sent` reflects only the automation gate (see sendOutboundMessage's
+    // own doc comment) — real delivery success/failure is logged
+    // separately by sendOutboundMessage itself
+    // (document_collection_send_accepted / _failed) with the actual
+    // whatsappMessageId or deliveryStatus.
+    gatedSent: sent,
+  });
 
   const db = await getDb();
   const [row] = await db

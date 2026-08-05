@@ -115,6 +115,23 @@ export async function createUnsolicitedDocumentConfirmation(params: {
     "2. לא, שלחתי בטעות",
   ].join("\n");
 
+  console.log("[document-intake] pending confirmation created (unsolicited_document)", {
+    organizationId: params.organizationId,
+    clientId: params.clientId,
+    collectionRequestId: params.collectionRequestId,
+    documentId: params.documentId,
+    documentType: params.documentType,
+  });
+
+  // trigger: "manual" + allowFreeform: true — this question is a direct
+  // reaction to the document the client just sent, within WhatsApp's 24h
+  // customer service session window, and has no pre-approved template
+  // (the wording is dynamic — includes documentType). Same legal basis as
+  // an employee's own free-text reply inside an open conversation; see
+  // sendViaWhatsApp's doc comment. Must bypass the automated/business-hours
+  // gate too — a client waiting mid-conversation for an answer shouldn't be
+  // held until tomorrow's business hours just because this question happens
+  // to be system-generated rather than typed by an employee.
   await createPendingConfirmation({
     organizationId: params.organizationId,
     clientId: params.clientId,
@@ -123,6 +140,8 @@ export async function createUnsolicitedDocumentConfirmation(params: {
     payload: { documentId: params.documentId, documentType: params.documentType },
     question,
     reminderIntervalDays,
+    trigger: "manual",
+    allowFreeform: true,
   });
 }
 
@@ -138,6 +157,14 @@ export async function createClarificationRequest(params: {
   const { reminderIntervalDays } = await getConfirmationReminderConfig(params.organizationId);
   const question = "לא הצלחנו לזהות בוודאות את המסמך ששלחת. אנא כתוב איזה מסמך זה או שלח צילום ברור יותר.";
 
+  console.log("[document-intake] pending confirmation created (document_clarification)", {
+    organizationId: params.organizationId,
+    clientId: params.clientId,
+    collectionRequestId: params.collectionRequestId,
+    documentId: params.documentId,
+  });
+
+  // Same reasoning as createUnsolicitedDocumentConfirmation above.
   await createPendingConfirmation({
     organizationId: params.organizationId,
     clientId: params.clientId,
@@ -146,6 +173,8 @@ export async function createClarificationRequest(params: {
     payload: { documentId: params.documentId },
     question,
     reminderIntervalDays,
+    trigger: "manual",
+    allowFreeform: true,
   });
 }
 
@@ -188,6 +217,10 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
       clientId: resolved.clientId,
       collectionRequestId: resolved.collectionRequestId,
       metadata: { documentId },
+    });
+    console.log("[document-intake] confirmation resolved: declined, no upload", {
+      documentId,
+      collectionRequestId: resolved.collectionRequestId,
     });
     return;
   }
@@ -238,12 +271,23 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
     doc.pendingFileContent ?? undefined,
     doc.pendingFileMimeType ?? undefined
   );
+  console.log("[document-intake] confirmation resolved: confirmed, uploaded to Drive", {
+    documentId,
+    collectionRequestId: resolved.collectionRequestId,
+    targetFileName,
+  });
 
+  // Direct reaction to the client's own "yes" reply, inside the same
+  // session window — same allowFreeform/trigger reasoning as the question
+  // that prompted it.
   await sendOutboundMessage(
     resolved.organizationId,
     resolved.conversationId,
     `תודה, שמרנו את המסמך "${documentType}" בתיקייה שלך.`,
-    "ai"
+    "ai",
+    "manual",
+    undefined,
+    true
   );
 }
 
@@ -314,12 +358,20 @@ export async function applyClarificationReply(resolved: ResolvedConfirmationRow,
       doc.pendingFileContent ?? undefined,
       doc.pendingFileMimeType ?? undefined
     );
+    console.log("[document-intake] clarification resolved: matched requirement, uploaded to Drive", {
+      documentId,
+      collectionRequestId: resolved.collectionRequestId,
+      requirementId: matchedRequirement.id,
+    });
 
     await sendOutboundMessage(
       resolved.organizationId,
       resolved.conversationId,
       `תודה על ההבהרה! שמרנו את המסמך כ"${matchedRequirement.name}".`,
-      "ai"
+      "ai",
+      "manual",
+      undefined,
+      true
     );
     return;
   }
@@ -392,7 +444,29 @@ export async function sendConfirmationRemindersAndEscalate(
       continue;
     }
 
-    const { sent } = await sendOutboundMessage(organizationId, row.conversationId, `תזכורת: ${row.question}`, "ai");
+    // Unlike the immediate question/thank-you sends above, a reminder can
+    // legitimately go out days later — trigger stays "automated" (still
+    // respects business hours, same as every other scheduler-driven send)
+    // and the 24h session window may well have closed by then. allowFreeform
+    // is still required (no pre-approved template exists for this dynamic
+    // text) but Meta may reject the delivery outside the window; that
+    // failure surfaces as a normal deliveryStatus:"failed" on the message
+    // row (see sendViaWhatsApp), not a crash — a disclosed, accepted
+    // limitation rather than a silent gap.
+    const { sent } = await sendOutboundMessage(
+      organizationId,
+      row.conversationId,
+      `תזכורת: ${row.question}`,
+      "ai",
+      "automated",
+      undefined,
+      true
+    );
+    console.log("[document-intake] reminder send attempt", {
+      pendingConfirmationId: row.id,
+      kind: row.kind,
+      gatedSent: sent,
+    });
     if (sent) {
       await db
         .update(pendingConfirmations)
