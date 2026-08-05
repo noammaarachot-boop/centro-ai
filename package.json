@@ -4,11 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "npm run db:migrate && next build",
+    "build": "npm run db:migrate && npm run fix:drive-folders && next build",
     "start": "next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
+    "fix:drive-folders": "tsx scripts/fixClientDriveFolders.ts",
     "org:create": "tsx scripts/create-organization.ts",
     "owner:create": "tsx scripts/create-owner.ts",
     "owner:reset-password": "tsx scripts/reset-owner-password.ts",
