@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const classifyDocumentViaVisionAI = vi.fn();
+vi.mock("./documentVisionClassifier", () => ({
+  classifyDocumentViaVisionAI: (...args: unknown[]) => classifyDocumentViaVisionAI(...args),
+}));
+
 import {
   AUTO_APPROVE_CONFIDENCE,
   classifyDocument,
@@ -116,10 +122,43 @@ describe("classifyDocumentWithLearning — full 4-layer pipeline", () => {
     expect(result.matchedRequirementId).toBeNull();
   });
 
-  it("never guesses — returns no match when neither learned nor generic matching finds anything", async () => {
+  it("never guesses — returns no match when neither learned nor generic matching finds anything, and no fileContent was given", async () => {
     const result = await classifyDocumentWithLearning("totally-unrelated.pdf", CANDIDATES, []);
     expect(result.matchedRequirementId).toBeNull();
     expect(result.confidence).toBe(0);
+    expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled();
+  });
+
+  it("layer 3 (AI): falls through to vision classification when fileContent is given and nothing else matched — this is the real path for a WhatsApp photo, whose generated filename (image_<wamid>.jpg) never matches on tokens", async () => {
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      matchedRequirementId: "req-bank",
+      confidence: 0.88,
+      documentType: "Bank Statement",
+    });
+    const result = await classifyDocumentWithLearning(
+      "image_wamid.abc123.jpg",
+      CANDIDATES,
+      [],
+      { bytes: Buffer.from("fake-bytes"), mimeType: "image/jpeg" }
+    );
+    expect(result.matchedRequirementId).toBe("req-bank");
+    expect(result.confidence).toBe(0.88);
+    expect(classifyDocumentViaVisionAI).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      "image/jpeg",
+      CANDIDATES
+    );
+  });
+
+  it("layer 3 (AI): still needs_review when vision classification also finds nothing", async () => {
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({ matchedRequirementId: null, confidence: 0.1, documentType: "unclear" });
+    const result = await classifyDocumentWithLearning(
+      "image_wamid.xyz.jpg",
+      CANDIDATES,
+      [],
+      { bytes: Buffer.from("fake-bytes"), mimeType: "image/jpeg" }
+    );
+    expect(result.matchedRequirementId).toBeNull();
   });
 });
 
