@@ -131,9 +131,11 @@ describe("classifyDocumentWithLearning — full 4-layer pipeline", () => {
 
   it("layer 3 (AI): falls through to vision classification when fileContent is given and nothing else matched — this is the real path for a WhatsApp photo, whose generated filename (image_<wamid>.jpg) never matches on tokens", async () => {
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      matchedRequirementId: "req-bank",
-      confidence: 0.88,
+      identified: true,
       documentType: "Bank Statement",
+      identificationConfidence: 0.9,
+      matchedRequirementId: "req-bank",
+      matchConfidence: 0.88,
     });
     const result = await classifyDocumentWithLearning(
       "image_wamid.abc123.jpg",
@@ -150,8 +152,14 @@ describe("classifyDocumentWithLearning — full 4-layer pipeline", () => {
     );
   });
 
-  it("layer 3 (AI): still needs_review when vision classification also finds nothing", async () => {
-    classifyDocumentViaVisionAI.mockResolvedValueOnce({ matchedRequirementId: null, confidence: 0.1, documentType: "unclear" });
+  it("layer 3 (AI): no match, but carries the AI's identification signal through — this is what lets the caller tell 'identified as something else' apart from 'genuinely unrecognized'", async () => {
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חשבונית מס קבלה",
+      identificationConfidence: 0.97,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
     const result = await classifyDocumentWithLearning(
       "image_wamid.xyz.jpg",
       CANDIDATES,
@@ -159,6 +167,28 @@ describe("classifyDocumentWithLearning — full 4-layer pipeline", () => {
       { bytes: Buffer.from("fake-bytes"), mimeType: "image/jpeg" }
     );
     expect(result.matchedRequirementId).toBeNull();
+    expect(result.aiRan).toBe(true);
+    expect(result.aiIdentified).toBe(true);
+    expect(result.aiDocumentType).toBe("חשבונית מס קבלה");
+  });
+
+  it("layer 3 (AI): identified=false when the AI genuinely can't tell what the document is", async () => {
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.1,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
+    const result = await classifyDocumentWithLearning(
+      "image_wamid.blurry.jpg",
+      CANDIDATES,
+      [],
+      { bytes: Buffer.from("fake-bytes"), mimeType: "image/jpeg" }
+    );
+    expect(result.matchedRequirementId).toBeNull();
+    expect(result.aiRan).toBe(true);
+    expect(result.aiIdentified).toBe(false);
   });
 });
 

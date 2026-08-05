@@ -3,10 +3,22 @@ import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 import type { DocumentClassificationCandidate } from "./documentClassifierTypes";
 
+// Identification (what is this document?) and matching (does it answer one
+// of the request's open requirements?) are deliberately two separate
+// signals, not one confidence number — a document can be identified with
+// total certainty (an invoice) while still matching nothing on the list.
+// Conflating them was the original bug: a real production case had the
+// model return matchedRequirementName "none" alongside a 0.97 "confidence"
+// that actually meant "I'm sure this is an invoice," which downstream code
+// read as "0.97 confident it's a match." See resolveDocumentIntakeOutcome
+// in src/lib/documentIntakeReview.ts, which is what actually decides
+// matched vs unsolicited vs unrecognized from this result.
 export interface VisionClassificationResult {
+  identified: boolean;
+  documentType: string | null;
+  identificationConfidence: number;
   matchedRequirementId: string | null;
-  confidence: number;
-  documentType: string;
+  matchConfidence: number;
 }
 
 // WhatsApp never supplies a real filename for an inbound photo (Meta's
@@ -35,12 +47,14 @@ export function isVisionClassifiableMimeType(mimeType: string): boolean {
   return VISION_SUPPORTED_MIME_TYPES.has(mimeType);
 }
 
+const NONE = "לא ידוע / לא תואם";
+
 // Never throws — any failure (no provider configured, API error, timeout,
-// a malformed/unparseable model response) resolves to null so the caller
-// falls through to the existing needs_review path. A classification outage
-// must never block a document from being received and stored (same
-// resilience principle as withRetry/uploadDocumentResiliently elsewhere in
-// this pipeline).
+// a malformed/unparseable model response) resolves to null, which the
+// caller (classifyDocumentViaAI) treats the same as "not identified" —
+// a classification outage must never block a document from being received
+// and stored (same resilience principle as withRetry/
+// uploadDocumentResiliently elsewhere in this pipeline).
 export async function classifyDocumentViaVisionAI(
   fileBytes: Buffer,
   mimeType: string,
@@ -53,14 +67,32 @@ export async function classifyDocumentViaVisionAI(
   try {
     const model = await resolveLanguageModel();
     const candidateNames = candidates.map((c) => c.name);
-    const NONE = "לא ידוע / לא תואם";
 
     const schema = z.object({
-      documentType: z.string().describe("תיאור קצר בעברית של סוג המסמך בפועל (למשל: תעודת זהות, תלוש שכר, דף חשבון בנק)"),
+      identified: z
+        .boolean()
+        .describe(
+          "true אם הצלחת לזהות בבירור איזה סוג מסמך זה בפועל — גם אם הוא לא מתאים לאף אחת מהדרישות ברשימה. false רק אם הקובץ לא ברור, לא קריא, או שלא ניתן לזהות כלל על מה מדובר."
+        ),
+      documentType: z
+        .string()
+        .nullable()
+        .describe("תיאור קצר בעברית של סוג המסמך בפועל (למשל: תעודת זהות, חשבונית מס, תלוש שכר) — null אם identified=false"),
+      identificationConfidence: z
+        .number()
+        .min(0)
+        .max(1)
+        .describe("רמת ביטחון בזיהוי סוג המסמך עצמו — לא בהתאמה שלו לדרישה כלשהי"),
       matchedRequirementName: z
         .enum([NONE, ...candidateNames])
-        .describe("ההעתקה המדויקת של השם, מתוך רשימת הדרישות שסופקה, שהמסמך הזה עונה עליה — או הערך המיוחד אם אף אחת לא מתאימה"),
-      confidence: z.number().min(0).max(1).describe("רמת ביטחון בהתאמה, מ-0 עד 1"),
+        .describe(
+          `ההעתקה המדויקת של השם, מתוך רשימת הדרישות שסופקה, שהמסמך הזה עונה עליה בפועל — או "${NONE}" אם המסמך אינו עונה על אף אחת מהן, גם אם זוהה בבירור`
+        ),
+      matchConfidence: z
+        .number()
+        .min(0)
+        .max(1)
+        .describe(`רמת ביטחון שהמסמך עונה על הדרישה שנבחרה — 0 אם matchedRequirementName הוא "${NONE}"`),
     });
 
     console.log("[wa-inbound] vision classification REQUEST", {
@@ -78,7 +110,7 @@ export async function classifyDocumentViaVisionAI(
           content: [
             {
               type: "text",
-              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. זהה איזה סוג מסמך זה בפועל, ואיזו דרישה מהרשימה, אם בכלל, הוא עונה עליה. אם הקובץ לא ברור, לא קריא, או לא תואם אף דרישה מהרשימה — ציין זאת בבירור והחזר "${NONE}".`,
+              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. יש שתי שאלות נפרדות: (1) האם אתה יכול לזהות בבירור איזה סוג מסמך זה בפועל, גם אם הוא לא קשור לרשימה? (2) בהנחה שזיהית אותו, האם הוא בפועל עונה על אחת מהדרישות ברשימה, או שהוא סוג מסמך אחר לגמרי (כמו חשבונית, קבלה, או כל דבר אחר שלא התבקש)? אל תסמן התאמה רק כי המסמך זוהה — התאמה נדרשת רק כשהוא באמת מהסוג המבוקש.`,
             },
             { type: "file", data: fileBytes, mediaType: mimeType },
           ],
@@ -87,22 +119,27 @@ export async function classifyDocumentViaVisionAI(
     });
 
     console.log("[wa-inbound] vision classification RESPONSE", {
+      identified: object.identified,
       documentType: object.documentType,
+      identificationConfidence: object.identificationConfidence,
       matchedRequirementName: object.matchedRequirementName,
-      confidence: object.confidence,
+      matchConfidence: object.matchConfidence,
     });
 
-    if (object.matchedRequirementName === NONE) {
-      return { matchedRequirementId: null, confidence: object.confidence, documentType: object.documentType };
-    }
-    const matched = candidates.find((c) => c.name === object.matchedRequirementName);
+    const matched =
+      object.matchedRequirementName === NONE
+        ? null
+        : (candidates.find((c) => c.name === object.matchedRequirementName) ?? null);
+
     return {
-      matchedRequirementId: matched?.id ?? null,
-      confidence: object.confidence,
+      identified: object.identified,
       documentType: object.documentType,
+      identificationConfidence: object.identificationConfidence,
+      matchedRequirementId: matched?.id ?? null,
+      matchConfidence: matched ? object.matchConfidence : 0,
     };
   } catch (error) {
-    console.error("[wa-inbound] vision classification FAILED (falling back to needs_review)", error);
+    console.error("[wa-inbound] vision classification FAILED (falling back to unrecognized)", error);
     return null;
   }
 }

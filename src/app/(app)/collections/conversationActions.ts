@@ -10,19 +10,21 @@ import {
   documents,
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
-import {
-  AUTO_APPROVE_CONFIDENCE,
-  classifyDocumentWithLearning,
-  isFuzzyDuplicate,
-  resolveRequirementAssignment,
-  SUPPORTED_EXTENSIONS,
-} from "@/lib/ai/documentClassifier";
+import { classifyDocumentWithLearning, isFuzzyDuplicate, SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
 import { getLearnedDocumentPatterns } from "@/lib/documentLearning";
 import {
   respondToPendingConfirmationManually,
   resolveConfirmationFromReply,
+  resolveOpenClarificationReply,
 } from "@/lib/pendingConfirmations";
+import {
+  applyClarificationReply,
+  applyUnsolicitedConfirmationDecision,
+  createClarificationRequest,
+  createUnsolicitedDocumentConfirmation,
+  resolveDocumentIntakeOutcome,
+} from "@/lib/documentIntakeReview";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
@@ -155,23 +157,42 @@ export async function simulateInboundMessage(
       metadata: { intent },
     });
 
-    // Milestone 5 (Ch.3 "Confirm"): a no-op unless there is actually an
-    // open confirmation waiting for this exact conversation — never
-    // guesses at intent beyond a clear yes/no keyword match.
-    const resolved = await resolveConfirmationFromReply(conversation.id, body);
-    if (resolved) {
-      // Milestone 6 (Learn) — the only place a client's own reply changes
-      // their document profile. A no-op for any other confirmation kind.
-      await applyDocumentProfileConfirmation(resolved);
+    // Milestone 5 (Ch.3 "Confirm") / Ch.6 3-way document intake — a no-op
+    // unless there is actually an open confirmation waiting for this exact
+    // conversation. document_clarification is open-ended (not yes/no), so
+    // it's checked first via its own resolver; everything else (including
+    // the new unsolicited_document kind) goes through the generic yes/no
+    // resolver, same as before.
+    const clarificationResolved = await resolveOpenClarificationReply(conversation.id, body);
+    if (clarificationResolved) {
+      await applyClarificationReply(clarificationResolved, body);
       await recordAuditEvent({
         organizationId: session.organizationId,
         eventType: "pending_confirmation.resolved",
-        description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור: "${resolved.question}"`,
+        description: `הלקוח הבהיר לגבי המסמך: "${body}"`,
         actorType: "client",
         clientId: current.clientId,
         collectionRequestId,
-        metadata: { kind: resolved.kind, status: resolved.status },
+        metadata: { kind: clarificationResolved.kind, status: clarificationResolved.status },
       });
+    } else {
+      const resolved = await resolveConfirmationFromReply(conversation.id, body);
+      if (resolved) {
+        // Milestone 6 (Learn) — the only place a client's own reply
+        // changes their document profile. Both are no-ops for any kind
+        // that isn't their own.
+        await applyDocumentProfileConfirmation(resolved);
+        await applyUnsolicitedConfirmationDecision(resolved);
+        await recordAuditEvent({
+          organizationId: session.organizationId,
+          eventType: "pending_confirmation.resolved",
+          description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור: "${resolved.question}"`,
+          actorType: "client",
+          clientId: current.clientId,
+          collectionRequestId,
+          metadata: { kind: resolved.kind, status: resolved.status },
+        });
+      }
     }
   }
 
@@ -271,7 +292,17 @@ export async function processInboundAttachment(
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
 
   let requirementId: string | null = manualRequirementId;
-  let status: "approved" | "needs_review" = "needs_review";
+  type IntakeStatus = "needs_review" | "approved" | "unsolicited_pending_confirmation" | "clarification_requested";
+  // Preserves the pre-existing behavior for a manual hint (the DevTools
+  // simulator's "assign to this requirement" option): classification is
+  // bypassed, but the document still lands in needs_review pending an
+  // employee's actual approve/reject via reviewDocument — "we know which
+  // requirement" was never the same thing as "auto-approved." Only the
+  // real classification branch below uses the new 3-way outcomes.
+  let status: IntakeStatus = "needs_review";
+  // Populated only for the "unsolicited" outcome — read after the document
+  // row exists (the confirmation's payload needs its id).
+  let unsolicitedDocumentType: string | null = null;
 
   if (!manualRequirementId) {
     // Ch.6 layer 1: this client's own confirmed history is checked before
@@ -289,6 +320,8 @@ export async function processInboundAttachment(
       readable: classification.readable,
       matchedRequirementId: classification.matchedRequirementId,
       confidence: classification.confidence,
+      aiRan: classification.aiRan,
+      aiIdentified: classification.aiIdentified,
     });
 
     // FR-11.3: unreadable documents get an automatic request for a
@@ -320,29 +353,38 @@ export async function processInboundAttachment(
       .map((r) => r.id)
       .filter((id) => !approvedRequirementIds.has(id));
 
-    const resolved = resolveRequirementAssignment(classification, outstandingRequirementIds);
-    requirementId = resolved.requirementId;
-    const confidence = resolved.confidence;
-    status = confidence >= AUTO_APPROVE_CONFIDENCE ? "approved" : "needs_review";
-    console.log("[wa-inbound] requirement assignment", {
-      collectionRequestId,
-      outstandingCount: outstandingRequirementIds.length,
-      requirementId,
-      confidence,
-      status,
-      usedSoleOutstandingFallback: !classification.matchedRequirementId && !!requirementId,
-    });
+    // Ch.6 3-way split (src/lib/documentIntakeReview.ts) — a document that
+    // doesn't match anything open is not automatically needs_review
+    // anymore: "identified but not needed" (asks the client if it was
+    // intentional) and "genuinely unrecognized" (asks the client what it
+    // is) are both resolved by the client, not an employee, before
+    // needs_review is ever reached.
+    const outcome = resolveDocumentIntakeOutcome(classification, outstandingRequirementIds);
+    console.log("[wa-inbound] intake outcome", { collectionRequestId, outcome });
+
+    if (outcome.kind === "matched") {
+      requirementId = outcome.requirementId;
+      status = "approved";
+    } else if (outcome.kind === "unsolicited") {
+      status = "unsolicited_pending_confirmation";
+      unsolicitedDocumentType = outcome.documentType;
+    } else {
+      status = "clarification_requested";
+    }
 
     await recordAuditEvent({
       organizationId,
       eventType: "document.classified",
-      description: requirementId
-        ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(confidence * 100).toFixed(0)}%)`
-        : `מסמך "${fileName}" לא ניתן היה לשייך אוטומטית לדרישה - דורש בדיקה ידנית`,
+      description:
+        outcome.kind === "matched"
+          ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(outcome.confidence * 100).toFixed(0)}%)`
+          : outcome.kind === "unsolicited"
+            ? `מסמך "${fileName}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, נשלחה שאלת אישור ללקוח`
+            : `מסמך "${fileName}" לא זוהה בביטחון מספק — נשלחה בקשת הבהרה ללקוח`,
       actorType: "ai",
       clientId,
       collectionRequestId,
-      metadata: { confidence, requirementId },
+      metadata: { outcome },
     });
   }
 
@@ -389,6 +431,24 @@ export async function processInboundAttachment(
       fileBytes,
       mimeType
     );
+  } else if (status === "unsolicited_pending_confirmation" && unsolicitedDocumentType) {
+    // Never uploaded and never counted until the client actually confirms
+    // it was intentional (applyUnsolicitedConfirmationDecision) — see
+    // src/lib/documentIntakeReview.ts.
+    await createUnsolicitedDocumentConfirmation({
+      organizationId,
+      clientId,
+      collectionRequestId,
+      documentId: document.id,
+      documentType: unsolicitedDocumentType,
+    });
+  } else if (status === "clarification_requested") {
+    await createClarificationRequest({
+      organizationId,
+      clientId,
+      collectionRequestId,
+      documentId: document.id,
+    });
   }
 
   const reopened = await reopenIfCompleted(organizationId, collectionRequestId);

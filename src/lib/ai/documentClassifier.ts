@@ -50,6 +50,18 @@ export interface DocumentClassification {
   readable: boolean;
   matchedRequirementId: string | null;
   confidence: number;
+  // Populated only when the AI vision layer actually returned a usable
+  // result (real file bytes were available and the model responded) — lets
+  // resolveDocumentIntakeOutcome (src/lib/documentIntakeReview.ts)
+  // distinguish "AI confidently identified this as something else" (a
+  // document that doesn't need a human at all, just the client's
+  // confirmation) from "nothing could determine what this is" (genuinely
+  // needs a person, or at least the client's own description, eventually).
+  // Never set by the deterministic/learned layers, which have no concept
+  // of "identified but not needed."
+  aiRan?: boolean;
+  aiIdentified?: boolean;
+  aiDocumentType?: string | null;
 }
 
 export interface LearnedDocumentPattern {
@@ -112,6 +124,33 @@ function checkFileGate(fileName: string): FileGateFailure | null {
   return null;
 }
 
+// The raw token-overlap scorer, with no notion of "is this a filename" —
+// shared by classifyDocument (which gates on a real file extension first,
+// below) and documentIntakeReview.ts's clarification-reply matching (a
+// client's own short free-text answer, e.g. "תעודת זהות שלי", which has no
+// extension to gate on and was never meant to be treated like one).
+export function matchTextToCandidates(
+  text: string,
+  candidates: Array<{ id: string; name: string }>
+): { id: string; score: number } | null {
+  const fileTokens = normalize(text);
+  let best: { id: string; score: number } | null = null;
+
+  for (const candidate of candidates) {
+    const candidateTokens = normalize(candidate.name);
+    if (candidateTokens.length === 0) continue;
+    const overlap = candidateTokens.filter((token) =>
+      fileTokens.some((fileToken) => fileToken.includes(token) || token.includes(fileToken))
+    ).length;
+    const score = overlap / candidateTokens.length;
+    if (score > 0 && (!best || score > best.score)) {
+      best = { id: candidate.id, score };
+    }
+  }
+
+  return best;
+}
+
 // The plain deterministic heuristic — Ch.6's "Business Rules" layer for
 // documents: universal, the same for every organization, no learning
 // involved. Exported directly for any caller that has no client-specific
@@ -127,20 +166,7 @@ export async function classifyDocument(
 
   const dotIndex = fileName.lastIndexOf(".");
   const baseName = dotIndex >= 0 ? fileName.slice(0, dotIndex) : fileName;
-  const fileTokens = normalize(baseName);
-  let best: { id: string; score: number } | null = null;
-
-  for (const candidate of candidates) {
-    const candidateTokens = normalize(candidate.name);
-    if (candidateTokens.length === 0) continue;
-    const overlap = candidateTokens.filter((token) =>
-      fileTokens.some((fileToken) => fileToken.includes(token) || token.includes(fileToken))
-    ).length;
-    const score = overlap / candidateTokens.length;
-    if (score > 0 && (!best || score > best.score)) {
-      best = { id: candidate.id, score };
-    }
-  }
+  const best = matchTextToCandidates(baseName, candidates);
 
   return {
     supported: true,
@@ -189,14 +215,26 @@ export interface ClassifiableFileContent {
 // and always scores 0 against a generated name like "image_<wamid>.jpg").
 // With no fileContent (filename-only paths) this stays the documented
 // no-op it always was.
+interface AiClassificationResult {
+  matchedRequirementId: string | null;
+  confidence: number;
+  aiIdentified: boolean;
+  aiDocumentType: string | null;
+}
+
 async function classifyDocumentViaAI(
   candidates: DocumentClassificationCandidate[],
   fileContent: ClassifiableFileContent | undefined
-): Promise<{ matchedRequirementId: string; confidence: number } | null> {
+): Promise<AiClassificationResult | null> {
   if (!fileContent) return null;
   const result = await classifyDocumentViaVisionAI(fileContent.bytes, fileContent.mimeType, candidates);
-  if (!result?.matchedRequirementId) return null;
-  return { matchedRequirementId: result.matchedRequirementId, confidence: result.confidence };
+  if (!result) return null;
+  return {
+    matchedRequirementId: result.matchedRequirementId,
+    confidence: result.matchConfidence,
+    aiIdentified: result.identified,
+    aiDocumentType: result.documentType,
+  };
 }
 
 // The full 4-layer pipeline: Learned Knowledge -> Business Rules -> AI ->
@@ -233,14 +271,22 @@ export async function classifyDocumentWithLearning(
   const deterministic = await classifyDocument(fileName, candidates);
   if (deterministic.matchedRequirementId) return deterministic;
 
-  const aiMatch = await classifyDocumentViaAI(candidates, fileContent);
-  if (aiMatch) {
+  const aiResult = await classifyDocumentViaAI(candidates, fileContent);
+  if (aiResult?.matchedRequirementId) {
     return {
       supported: true,
       readable: true,
-      matchedRequirementId: aiMatch.matchedRequirementId,
-      confidence: aiMatch.confidence,
+      matchedRequirementId: aiResult.matchedRequirementId,
+      confidence: aiResult.confidence,
     };
+  }
+  if (aiResult) {
+    // The AI ran and returned a real result, just no match — carry its
+    // identification signal through so the caller can tell a confidently-
+    // identified-but-unneeded document (Case 2: unsolicited) apart from a
+    // genuinely unrecognizable one (Case 3), instead of collapsing both
+    // into the same "needs_review" bucket.
+    return { ...deterministic, aiRan: true, aiIdentified: aiResult.aiIdentified, aiDocumentType: aiResult.aiDocumentType };
   }
 
   return deterministic;

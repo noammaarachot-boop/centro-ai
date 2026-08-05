@@ -79,6 +79,14 @@ const DOCUMENT_STATUS_META: Record<string, { label: string; tone: BadgeTone }> =
   rejected: { label: "נדחה", tone: "danger" },
   needs_review: { label: "דורש בדיקה", tone: "warning" },
   deleted_from_drive: { label: "נמחק מ-Drive", tone: "neutral" },
+  // Ch.6 3-way document intake split (src/lib/documentIntakeReview.ts) —
+  // these never reach this per-requirement list in practice (they carry no
+  // requirementId until resolved), but are listed defensively so a status
+  // badge never renders undefined if that ever changes.
+  unsolicited_pending_confirmation: { label: "ממתין לאישור הלקוח (לא נדרש)", tone: "purple" },
+  unsolicited_approved: { label: "אושר כמסמך נוסף", tone: "success" },
+  unsolicited_rejected: { label: "נשלח בטעות", tone: "neutral" },
+  clarification_requested: { label: "ממתין להבהרת הלקוח", tone: "purple" },
 };
 
 const CONVERSATION_STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {

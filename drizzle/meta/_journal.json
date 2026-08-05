@@ -232,6 +232,13 @@
       "when": 1785954334229,
       "tag": "0032_add_drive_monthly_folder_structure",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785958392155,
+      "tag": "0033_document_intake_confirmation_flow",
+      "breakpoints": true
     }
   ]
 }

@@ -44,24 +44,65 @@ describe("classifyDocumentViaVisionAI", () => {
   it("maps a confident model match back to the exact candidate id", async () => {
     resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
     generateObject.mockResolvedValueOnce({
-      object: { documentType: "תעודת זהות", matchedRequirementName: "תעודת זהות", confidence: 0.92 },
+      object: {
+        identified: true,
+        documentType: "תעודת זהות",
+        identificationConfidence: 0.95,
+        matchedRequirementName: "תעודת זהות",
+        matchConfidence: 0.92,
+      },
     });
 
     const result = await classifyDocumentViaVisionAI(Buffer.from("x"), "image/jpeg", CANDIDATES);
-    expect(result).toEqual({ matchedRequirementId: "req-id-card", confidence: 0.92, documentType: "תעודת זהות" });
+    expect(result).toEqual({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: "req-id-card",
+      matchConfidence: 0.92,
+    });
   });
 
-  it("returns a null requirement id when the model finds no match", async () => {
+  it("identified but no match — the real 'unsolicited document' case: an invoice sent while only ID-card-style requirements are open", async () => {
     resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
     generateObject.mockResolvedValueOnce({
-      object: { documentType: "קבלה", matchedRequirementName: "לא ידוע / לא תואם", confidence: 0.1 },
+      object: {
+        identified: true,
+        documentType: "חשבונית מס קבלה",
+        identificationConfidence: 0.97,
+        matchedRequirementName: "לא ידוע / לא תואם",
+        matchConfidence: 0,
+      },
     });
 
     const result = await classifyDocumentViaVisionAI(Buffer.from("x"), "image/jpeg", CANDIDATES);
-    expect(result).toEqual({ matchedRequirementId: null, confidence: 0.1, documentType: "קבלה" });
+    expect(result).toEqual({
+      identified: true,
+      documentType: "חשבונית מס קבלה",
+      identificationConfidence: 0.97,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
   });
 
-  it("never throws — a provider/API failure resolves to null so the caller falls back to needs_review", async () => {
+  it("not identified at all — the real 'unrecognized document' case", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({
+      object: {
+        identified: false,
+        documentType: null,
+        identificationConfidence: 0.1,
+        matchedRequirementName: "לא ידוע / לא תואם",
+        matchConfidence: 0,
+      },
+    });
+
+    const result = await classifyDocumentViaVisionAI(Buffer.from("x"), "image/jpeg", CANDIDATES);
+    expect(result?.identified).toBe(false);
+    expect(result?.matchedRequirementId).toBeNull();
+  });
+
+  it("never throws — a provider/API failure resolves to null so the caller falls back to unrecognized", async () => {
     resolveLanguageModel.mockRejectedValueOnce(new Error("no provider configured"));
     const result = await classifyDocumentViaVisionAI(Buffer.from("x"), "image/jpeg", CANDIDATES);
     expect(result).toBeNull();

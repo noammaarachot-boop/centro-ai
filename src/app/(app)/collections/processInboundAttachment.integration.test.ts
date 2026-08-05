@@ -162,9 +162,11 @@ describe("processInboundAttachment — documents arriving as separate calls for 
 
     // Message 1+2: "two images together" — both match real outstanding requirements.
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      matchedRequirementId: licenseReq.id,
-      confidence: 0.98,
+      identified: true,
       documentType: "רישיון נהיגה",
+      identificationConfidence: 0.98,
+      matchedRequirementId: licenseReq.id,
+      matchConfidence: 0.98,
     });
     await processInboundAttachment(
       orgId,
@@ -179,9 +181,11 @@ describe("processInboundAttachment — documents arriving as separate calls for 
     );
 
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      matchedRequirementId: idReq.id,
-      confidence: 0.98,
+      identified: true,
       documentType: "תעודת זהות",
+      identificationConfidence: 0.98,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.98,
     });
     await processInboundAttachment(
       orgId,
@@ -197,11 +201,14 @@ describe("processInboundAttachment — documents arriving as separate calls for 
 
     // Message 3 ("~1 minute later" — nothing in this path is time-sensitive,
     // simulated as simply the next call): an unrelated invoice PDF that
-    // doesn't match either of the two still-open requirements.
+    // the AI identifies with real confidence, but that doesn't match
+    // either of the two still-open requirements.
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      matchedRequirementId: null,
-      confidence: 0.97,
+      identified: true,
       documentType: "חשבונית מס קבלה",
+      identificationConfidence: 0.97,
+      matchedRequirementId: null,
+      matchConfidence: 0,
     });
     await processInboundAttachment(
       orgId,
@@ -215,11 +222,13 @@ describe("processInboundAttachment — documents arriving as separate calls for 
       "wamid.3"
     );
 
-    // Message 4 ("~6 minutes later"): another unrelated document.
+    // Message 4 ("~6 minutes later"): another identified-but-unneeded document.
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      matchedRequirementId: null,
-      confidence: 0.95,
+      identified: true,
       documentType: "חשבונית שירות טלפוני",
+      identificationConfidence: 0.95,
+      matchedRequirementId: null,
+      matchConfidence: 0,
     });
     await processInboundAttachment(
       orgId,
@@ -239,9 +248,13 @@ describe("processInboundAttachment — documents arriving as separate calls for 
     expect(allDocs.every((d) => d.collectionRequestId === requestId)).toBe(true);
 
     const approved = allDocs.filter((d) => d.status === "approved");
+    const unsolicited = allDocs.filter((d) => d.status === "unsolicited_pending_confirmation");
+    // Ch.6: identified-but-unneeded documents are never needs_review —
+    // they wait on the client's own yes/no answer instead.
     const needsReview = allDocs.filter((d) => d.status === "needs_review");
     expect(approved).toHaveLength(2);
-    expect(needsReview).toHaveLength(2);
+    expect(unsolicited).toHaveLength(2);
+    expect(needsReview).toHaveLength(0);
 
     // Both approved documents landed in the exact same Drive folder — no
     // per-call folder drift, no duplicate folder for the later arrivals.
@@ -249,11 +262,22 @@ describe("processInboundAttachment — documents arriving as separate calls for 
     const parents = new Set(fakeFiles.filter((f) => approvedFileIds.includes(f.id)).map((f) => f.parentId));
     expect(parents.size).toBe(1);
 
-    // The unmatched documents were correctly held for human review, not
-    // silently dropped and not incorrectly auto-approved.
-    for (const doc of needsReview) {
+    // Neither unsolicited document was uploaded to Drive yet — waiting on
+    // the client, not auto-filed and not dropped.
+    for (const doc of unsolicited) {
       expect(doc.requirementId).toBeNull();
+      expect(doc.googleDriveFileId).toBeNull();
     }
+
+    // A real "was this intentional?" question was asked for each — this is
+    // what actually replaces needs_review here.
+    const openConfirmations = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    const unsolicitedConfirmations = openConfirmations.filter((c) => c.kind === "unsolicited_document");
+    expect(unsolicitedConfirmations).toHaveLength(2);
+    expect(unsolicitedConfirmations.every((c) => c.status === "pending")).toBe(true);
 
     // The request must NOT have auto-closed with only 2 of 4 requirements
     // satisfied — checkCompletionGate only allows "completed" when every
@@ -267,9 +291,11 @@ describe("processInboundAttachment — documents arriving as separate calls for 
     const idReq = requirements[0];
 
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      matchedRequirementId: idReq.id,
-      confidence: 0.98,
+      identified: true,
       documentType: "תעודת זהות",
+      identificationConfidence: 0.98,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.98,
     });
     await processInboundAttachment(
       orgId,
