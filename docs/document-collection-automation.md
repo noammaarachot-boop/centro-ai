@@ -125,7 +125,7 @@ Every requirement/list read is organization-scoped: `getRequestRequirementNames(
 
 ## 16. Known limitations / follow-ups
 
-- **Meta approval dependency:** the dynamic list message (v2 template) cannot go live until Meta approves `centro_initial_request_v2` on the WABA (Phase 2). Phase 1 keeps the static message.
+- **Meta approval dependency:** resolved — `centro_initial_request_v2` was approved on the WABA on 2026-08-05, and `INITIAL_REQUEST_V2_ENABLED` is now `true` in production.
 - **First-message list format:** single-line comma-separated (Meta parameter constraint), not bulleted multi-line.
 - **Ambiguous matching:** confidence-gap disambiguation between the top two candidates is a documented follow-up.
 - **`automationActivatedAt`:** retained temporarily for compatibility; a later change should remove its remaining read sites once fully superseded.
@@ -134,9 +134,9 @@ Every requirement/list read is organization-scoped: `getRequestRequirementNames(
 ## Phase plan
 
 - **Phase 1 (done):** column + migration + backfill; manual/automated split; block-when-no-requirements; settings toggle; dynamic list builder; structured logging; tests.
-- **Phase 2 (plumbing done, flag OFF pending Meta):** the full v2 dynamic-list send path is built, wired, and tested behind `INITIAL_REQUEST_V2_ENABLED = false`. Remaining once Meta approves `centro_initial_request_v2`: flip the flag to `true`, run one E2E, update the PDF book, deploy.
-- **Phase 3 (blocked on a manual live-send QA pass, not on Meta):** remove temporary `[wa-diag]` logs, keep the four structured events. Gated on the E2E pass described in §12 — a deliberate, human-triggered real send against the *existing approved* template, independent of the Meta v2 approval in Phase 2.
+- **Phase 2 (done):** `centro_initial_request_v2` approved by Meta 2026-08-05; `INITIAL_REQUEST_V2_ENABLED` flipped to `true`. The initial document request now sends the dynamic per-request list live. No other code change was required — confirmed by tracing `startConversation` → `buildInitialRequestSend` → `sendOutboundMessage` → `sendViaWhatsApp`, the single path used by both manual (Send Now / Initiate) and automated (scheduler/cron) sends.
+- **Phase 3 (pending a live-send QA pass):** remove temporary `[wa-diag]` logs, keep the four structured events. Gated on the E2E pass described in §12, now being run against production following the Phase 2 flag flip.
 
 ### Status as of 2026-08-05
 
-All code for Phase 1 and Phase 2 is merged to `main` (PR #1, `b16b0f6`). Nothing further is buildable right now without either (a) Meta approving `centro_initial_request_v2`, or (b) a human deliberately running the live send described in §12. Both are external/manual gates, not open development work.
+Phase 1 and Phase 2 code is merged to `main`. The live E2E confirmation (real WhatsApp send → real device receipt → document upload → flow completion) is being run manually against production immediately after this deploy, since the WhatsApp send credentials (`WHATSAPP_SYSTEM_USER_TOKEN` etc.) exist only in the Production environment — there is no sandbox to validate against first. Phase 3 (log cleanup) follows once that pass is confirmed.

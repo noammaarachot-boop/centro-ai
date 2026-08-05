@@ -37,12 +37,12 @@ export const INITIAL_REQUEST_V2_BODY =
   "שלום! זהו סנטרו, העוזר הדיגיטלי של המשרד. כדי שנוכל להמשיך בטיפול בבקשה, נא שלחו את המסמכים הבאים: {{1}}";
 export const INITIAL_REQUEST_V2_TEMPLATE_NAME = "centro_initial_request_v2";
 // Master switch for actually SENDING the parameterized v2 template over
-// WhatsApp. Stays false until centro_initial_request_v2 is APPROVED on the
-// WABA. While false, the initial request is sent with the static
-// centro_initial_request (no parameters) exactly as before — every piece of
-// the dynamic-list plumbing is still built, wired, and tested, only the live
-// send does not switch templates yet. Approval → flip this to true (one line).
-export const INITIAL_REQUEST_V2_ENABLED = false;
+// WhatsApp. centro_initial_request_v2 was approved on the WABA on
+// 2026-08-05 — flipped to true. The initial request now sends the
+// dynamic per-request document list via {{1}}; centro_initial_request
+// (static, no params) remains the fallback used when a request has zero
+// requirements (see buildInitialRequestSend).
+export const INITIAL_REQUEST_V2_ENABLED = true;
 export const THANK_YOU_BODY =
   "תודה, קיבלנו את המסמכים! האם סיימתם לשלוח את כל המסמכים? השיבו 'סיימתי' או 'יש עוד מסמכים'.";
 export const REMINDER_BODY = "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";
