@@ -102,6 +102,17 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
 }));
 
 const { processInboundAttachment } = await import("./conversationActions");
+const { flushDueIntakeNotifications } = await import("@/lib/pendingConfirmations");
+
+// Smart notification grouping holds the question until the grouping window
+// elapses — forces it due immediately so tests can observe the send.
+async function forceFlush(orgId: string, requestId: string) {
+  await db
+    .update(schema.pendingConfirmations)
+    .set({ notifyAfter: new Date(Date.now() - 1000) })
+    .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+  return flushDueIntakeNotifications(orgId, requestId);
+}
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -192,6 +203,10 @@ describe("processInboundAttachment — smart identity/consistency verification",
     expect(doc.googleDriveFileId).toBeNull();
     expect(doc.requirementId).toBeNull();
     expect(fakeFiles).toHaveLength(0);
+
+    // Smart notification grouping holds the question for the grouping
+    // window — force it due to observe the actual send.
+    await forceFlush(orgId, requestId);
 
     const [confirmation] = await db
       .select()

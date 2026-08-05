@@ -6,7 +6,7 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { AUTO_APPROVE_CONFIDENCE, type DocumentClassification } from "@/lib/ai/documentClassifier";
-import { resolveConfirmationFromReply } from "@/lib/pendingConfirmations";
+import { flushDueIntakeNotifications, resolveConfirmationFromReply } from "@/lib/pendingConfirmations";
 
 let db: Database;
 
@@ -267,8 +267,21 @@ async function seedRequest(options?: {
   };
 }
 
+// Smart notification grouping: createUnsolicitedDocumentConfirmation holds
+// the question (notifyAfter set, notifiedAt/nextReminderAt null) until
+// flushDueIntakeNotifications actually sends it — this forces that flush
+// immediately instead of waiting for the real grouping window, the same
+// "force it due" pattern the reminder tests below already use.
+async function forceFlush(orgId: string, requestId: string) {
+  await db
+    .update(schema.pendingConfirmations)
+    .set({ notifyAfter: new Date(Date.now() - 1000) })
+    .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+  return flushDueIntakeNotifications(orgId, requestId);
+}
+
 describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", () => {
-  it("creates a pending confirmation with the document id in its payload, and schedules a reminder", async () => {
+  it("creates a pending confirmation (held for the grouping window) with the document id in its payload", async () => {
     const { orgId, clientId, requestId, documentId } = await seedRequest();
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,
@@ -281,8 +294,33 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
     const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.kind).toBe("unsolicited_document");
     expect(row.status).toBe("pending");
-    expect((row.payload as { documentId: string }).documentId).toBe(documentId);
+    expect((row.payload as { documentIds: string[] }).documentIds).toEqual([documentId]);
+    // Held, not sent yet — nextReminderAt (and notifiedAt) are only set once
+    // flushDueIntakeNotifications actually dispatches the question.
+    expect(row.notifiedAt).toBeNull();
+    expect(row.nextReminderAt).toBeNull();
+    expect(row.notifyAfter).not.toBeNull();
+  });
+
+  it("flushing sends the question and only then schedules a reminder", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית מס קבלה",
+    });
+
+    const result = await forceFlush(orgId, requestId);
+    expect(result).toEqual({ sent: true, groupCount: 1 });
+
+    const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(row.notifiedAt).not.toBeNull();
     expect(row.nextReminderAt).not.toBeNull();
+    expect(row.groupIndex).toBe(0);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
   });
 
   it("clarification request payload references the document, no yes/no options in a matching name", async () => {
@@ -292,6 +330,70 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
     const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.kind).toBe("document_clarification");
     expect((row.payload as { documentId: string }).documentId).toBe(documentId);
+  });
+
+  // Smart notification grouping (production report: two unrelated invoices
+  // produced two separate WhatsApp messages) — several unsolicited
+  // documents of the exact same type must fold into one still-unnotified
+  // group, not open a question per file.
+  it("two documents of the same unrelated type merge into one group and produce exactly one WhatsApp message", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    const [secondDoc] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "invoice2.jpg", status: "unsolicited_pending_confirmation" })
+      .returning();
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+
+    await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId, documentType: "חשבונית מס" });
+    await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: secondDoc.id, documentType: "חשבונית מס" });
+
+    const rows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(rows).toHaveLength(1);
+    expect((rows[0].payload as { documentIds: string[] }).documentIds).toEqual([documentId, secondDoc.id]);
+    expect(rows[0].question).toContain("2");
+
+    await forceFlush(orgId, requestId);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messages).toHaveLength(1);
+  });
+
+  it("a document of a different unrelated type does not merge into an existing group of another type", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    const [secondDoc] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "other.jpg", status: "unsolicited_pending_confirmation" })
+      .returning();
+
+    await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId, documentType: "חשבונית מס" });
+    await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: secondDoc.id, documentType: "אישור ניהול חשבון" });
+
+    const rows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("a new document of the same type arriving after the group's question was already sent starts a fresh group instead of reopening the sent one", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId, documentType: "חשבונית מס" });
+    await forceFlush(orgId, requestId);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+
+    const [thirdDoc] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "invoice-later.jpg", status: "unsolicited_pending_confirmation" })
+      .returning();
+    await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: thirdDoc.id, documentType: "חשבונית מס" });
+
+    const rows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(rows).toHaveLength(2);
+    const alreadySent = rows.find((r) => r.notifiedAt !== null)!;
+    const stillPending = rows.find((r) => r.notifiedAt === null)!;
+    expect((alreadySent.payload as { documentIds: string[] }).documentIds).toEqual([documentId]);
+    expect((stillPending.payload as { documentIds: string[] }).documentIds).toEqual([thirdDoc.id]);
+    // No second message yet — the new document only opened a new pending
+    // group, it didn't reopen or resend the one already delivered.
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -485,6 +587,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
       documentId,
       documentType: "חשבונית מס קבלה",
     });
+    await forceFlush(orgId, requestId);
 
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     expect(sendTemplateMessage).not.toHaveBeenCalled();
@@ -519,6 +622,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
       documentId,
       documentType: "חשבונית",
     });
+    await forceFlush(orgId, requestId);
     const [confirmation] = await db
       .select()
       .from(schema.pendingConfirmations)
@@ -545,6 +649,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
       documentId,
       documentType: "חשבונית",
     });
+    await forceFlush(orgId, requestId);
     const [confirmation] = await db
       .select()
       .from(schema.pendingConfirmations)
@@ -557,35 +662,35 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     const result = await sendConfirmationRemindersAndEscalate(orgId);
 
     expect(result.reminded).toBe(1);
-    // Original question + the reminder resend, both free-form text.
+    // Original question (via flush) + the reminder resend, both free-form text.
     expect(sendTextMessage).toHaveBeenCalledTimes(2);
     expect(sendTemplateMessage).not.toHaveBeenCalled();
     const sentMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
     expect(sentMessages).toHaveLength(2);
   });
 
-  it("a WhatsApp send failure doesn't block the confirmation from being created, is recorded on the message row, and stays pending for the next reminder to retry", async () => {
+  it("a WhatsApp send failure doesn't block the confirmation from being flushed, is recorded on the message row, and stays pending for the next reminder to retry", async () => {
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
       whatsappPhoneNumberId: "phone-1",
     });
     const { WhatsAppSendError } = await import("@/lib/whatsapp/send");
     sendTextMessage.mockRejectedValueOnce(new WhatsAppSendError("simulated Meta failure"));
 
-    await expect(
-      createUnsolicitedDocumentConfirmation({
-        organizationId: orgId,
-        clientId,
-        collectionRequestId: requestId,
-        documentId,
-        documentType: "חשבונית",
-      })
-    ).resolves.not.toThrow();
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    await expect(forceFlush(orgId, requestId)).resolves.not.toThrow();
 
     const [row] = await db
       .select()
       .from(schema.pendingConfirmations)
       .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.status).toBe("pending");
+    expect(row.notifiedAt).not.toBeNull();
     expect(row.nextReminderAt).not.toBeNull();
 
     const [message] = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
