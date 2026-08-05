@@ -10,6 +10,7 @@ import {
   applyClarificationReply,
   applyUnsolicitedConfirmationDecision,
 } from "@/lib/documentIntakeReview";
+import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification";
 import { recordInboundMessage } from "@/lib/conversationOrchestration";
 import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
 import { downloadMedia } from "@/lib/whatsapp/media";
@@ -282,6 +283,7 @@ async function handleInboundMessage(
         // Both are no-ops for any kind that isn't their own.
         await applyDocumentProfileConfirmation(resolved);
         await applyUnsolicitedConfirmationDecision(resolved);
+        await applyIdentityAnomalyDecision(resolved);
         await recordAuditEvent({
           organizationId: organization.id,
           eventType: "pending_confirmation.resolved",

@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import {
+  clients,
   collectionRequestRequirements,
   collectionRequests,
   conversations,
@@ -25,6 +26,14 @@ import {
   createUnsolicitedDocumentConfirmation,
   resolveDocumentIntakeOutcome,
 } from "@/lib/documentIntakeReview";
+import {
+  applyIdentityAnomalyDecision,
+  buildIdentityReferencePool,
+  createOrMergeIdentityAnomalyConfirmation,
+  detectIdentityAnomaly,
+  extractedIdentityForStorage,
+  type IdentityAnomaly,
+} from "@/lib/documentIdentityVerification";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
@@ -183,6 +192,7 @@ export async function simulateInboundMessage(
         // that isn't their own.
         await applyDocumentProfileConfirmation(resolved);
         await applyUnsolicitedConfirmationDecision(resolved);
+        await applyIdentityAnomalyDecision(resolved);
         await recordAuditEvent({
           organizationId: session.organizationId,
           eventType: "pending_confirmation.resolved",
@@ -292,7 +302,12 @@ export async function processInboundAttachment(
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
 
   let requirementId: string | null = manualRequirementId;
-  type IntakeStatus = "needs_review" | "approved" | "unsolicited_pending_confirmation" | "clarification_requested";
+  type IntakeStatus =
+    | "needs_review"
+    | "approved"
+    | "unsolicited_pending_confirmation"
+    | "clarification_requested"
+    | "identity_anomaly_pending_confirmation";
   // Preserves the pre-existing behavior for a manual hint (the DevTools
   // simulator's "assign to this requirement" option): classification is
   // bypassed, but the document still lands in needs_review pending an
@@ -303,6 +318,20 @@ export async function processInboundAttachment(
   // Populated only for the "unsolicited" outcome — read after the document
   // row exists (the confirmation's payload needs its id).
   let unsolicitedDocumentType: string | null = null;
+  // Smart identity/consistency verification — populated whenever the
+  // document's own content doesn't line up with the client or a sibling
+  // document already on this request, regardless of whether it otherwise
+  // matched or was unsolicited (the right document type still says nothing
+  // about whose document it actually is).
+  let identityAnomaly: IdentityAnomaly | null = null;
+  // Persisted on the document row only when extraction was confident enough
+  // to trust as a future sibling-comparison reference (see
+  // extractedIdentityForStorage's own gate) — never a low-confidence guess.
+  let extractedIdentity: ReturnType<typeof extractedIdentityForStorage> = null;
+  // What the AI called this document — used only to name the file when an
+  // identity-anomaly document is later confirmed by the client (mirrors
+  // unsolicitedDocumentType's own role for that flow).
+  let identityDocumentType: string | null = null;
 
   if (!manualRequirementId) {
     // Ch.6 layer 1: this client's own confirmed history is checked before
@@ -361,8 +390,34 @@ export async function processInboundAttachment(
     // needs_review is ever reached.
     const outcome = resolveDocumentIntakeOutcome(classification, outstandingRequirementIds);
     console.log("[wa-inbound] intake outcome", { collectionRequestId, outcome });
+    extractedIdentity = extractedIdentityForStorage(classification);
+    identityDocumentType = classification.aiDocumentType ?? null;
 
-    if (outcome.kind === "matched") {
+    // Smart identity/consistency verification: runs whenever the document
+    // was actually identified (matched or unsolicited — "unrecognized"
+    // already routes to its own clarification question, which has nothing
+    // yet to compare identity against). Can override even a confident
+    // "matched" outcome — see documentIdentityVerification.ts's own doc
+    // comment.
+    if (outcome.kind !== "unrecognized" && (classification.identityExtractionConfidence ?? 0) > 0) {
+      const [clientRow] = await db.select({ name: clients.name }).from(clients).where(eq(clients.id, clientId)).limit(1);
+      const pool = await buildIdentityReferencePool(collectionRequestId, null, clientRow?.name ?? "");
+      identityAnomaly = detectIdentityAnomaly(
+        {
+          extractedPersonName: classification.extractedPersonName ?? null,
+          extractedIdNumber: classification.extractedIdNumber ?? null,
+          extractedCompanyName: classification.extractedCompanyName ?? null,
+          identityExtractionConfidence: classification.identityExtractionConfidence ?? 0,
+        },
+        pool
+      );
+      console.log("[wa-inbound] identity check", { collectionRequestId, identityAnomaly });
+    }
+
+    if (identityAnomaly) {
+      status = "identity_anomaly_pending_confirmation";
+      requirementId = null;
+    } else if (outcome.kind === "matched") {
       requirementId = outcome.requirementId;
       status = "approved";
     } else if (outcome.kind === "unsolicited") {
@@ -375,8 +430,9 @@ export async function processInboundAttachment(
     await recordAuditEvent({
       organizationId,
       eventType: "document.classified",
-      description:
-        outcome.kind === "matched"
+      description: identityAnomaly
+        ? `מסמך "${fileName}" זוהה, אך התגלתה אי-התאמת זהות (${identityAnomaly.kind}) — נשלחה שאלת אישור ללקוח`
+        : outcome.kind === "matched"
           ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(outcome.confidence * 100).toFixed(0)}%)`
           : outcome.kind === "unsolicited"
             ? `מסמך "${fileName}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, נשלחה שאלת אישור ללקוח`
@@ -384,7 +440,7 @@ export async function processInboundAttachment(
       actorType: "ai",
       clientId,
       collectionRequestId,
-      metadata: { outcome },
+      metadata: { outcome, identityAnomaly },
     });
   }
 
@@ -407,6 +463,7 @@ export async function processInboundAttachment(
       // silently lose the file.
       ...(fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
       ...(whatsappMessageId ? { whatsappMessageId } : {}),
+      ...(extractedIdentity ?? {}),
     })
     .returning();
 
@@ -448,6 +505,17 @@ export async function processInboundAttachment(
       clientId,
       collectionRequestId,
       documentId: document.id,
+    });
+  } else if (status === "identity_anomaly_pending_confirmation" && identityAnomaly) {
+    // Never uploaded and never counted until the client actually confirms
+    // it — see documentIdentityVerification.ts's applyIdentityAnomalyDecision.
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId,
+      clientId,
+      collectionRequestId,
+      documentId: document.id,
+      anomaly: identityAnomaly,
+      documentType: identityDocumentType,
     });
   }
 

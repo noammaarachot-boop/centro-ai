@@ -62,6 +62,15 @@ export interface DocumentClassification {
   aiRan?: boolean;
   aiIdentified?: boolean;
   aiDocumentType?: string | null;
+  // Smart identity/consistency verification (documentIdentityVerification.ts)
+  // — carried through regardless of whether this classification matched a
+  // requirement, since even a document of the right type can belong to the
+  // wrong person. Populated only when aiRan is true and the model actually
+  // extracted something; see documentVisionClassifier.ts's own doc comment.
+  extractedPersonName?: string | null;
+  extractedIdNumber?: string | null;
+  extractedCompanyName?: string | null;
+  identityExtractionConfidence?: number;
 }
 
 export interface LearnedDocumentPattern {
@@ -220,6 +229,10 @@ interface AiClassificationResult {
   confidence: number;
   aiIdentified: boolean;
   aiDocumentType: string | null;
+  extractedPersonName: string | null;
+  extractedIdNumber: string | null;
+  extractedCompanyName: string | null;
+  identityExtractionConfidence: number;
 }
 
 async function classifyDocumentViaAI(
@@ -234,6 +247,10 @@ async function classifyDocumentViaAI(
     confidence: result.matchConfidence,
     aiIdentified: result.identified,
     aiDocumentType: result.documentType,
+    extractedPersonName: result.extractedPersonName,
+    extractedIdNumber: result.extractedIdNumber,
+    extractedCompanyName: result.extractedCompanyName,
+    identityExtractionConfidence: result.identityExtractionConfidence,
   };
 }
 
@@ -278,6 +295,15 @@ export async function classifyDocumentWithLearning(
       readable: true,
       matchedRequirementId: aiResult.matchedRequirementId,
       confidence: aiResult.confidence,
+      // Carried through even on a match — resolveDocumentIntakeOutcome's
+      // identity check runs regardless of whether the document type
+      // matched (the right document type can still belong to the wrong
+      // person).
+      aiRan: true,
+      extractedPersonName: aiResult.extractedPersonName,
+      extractedIdNumber: aiResult.extractedIdNumber,
+      extractedCompanyName: aiResult.extractedCompanyName,
+      identityExtractionConfidence: aiResult.identityExtractionConfidence,
     };
   }
   if (aiResult) {
@@ -286,7 +312,16 @@ export async function classifyDocumentWithLearning(
     // identified-but-unneeded document (Case 2: unsolicited) apart from a
     // genuinely unrecognizable one (Case 3), instead of collapsing both
     // into the same "needs_review" bucket.
-    return { ...deterministic, aiRan: true, aiIdentified: aiResult.aiIdentified, aiDocumentType: aiResult.aiDocumentType };
+    return {
+      ...deterministic,
+      aiRan: true,
+      aiIdentified: aiResult.aiIdentified,
+      aiDocumentType: aiResult.aiDocumentType,
+      extractedPersonName: aiResult.extractedPersonName,
+      extractedIdNumber: aiResult.extractedIdNumber,
+      extractedCompanyName: aiResult.extractedCompanyName,
+      identityExtractionConfidence: aiResult.identityExtractionConfidence,
+    };
   }
 
   return deterministic;

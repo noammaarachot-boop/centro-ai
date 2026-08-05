@@ -772,6 +772,23 @@ export const documentStatus = pgEnum("document_status", [
   // The AI couldn't identify the document with enough confidence at all —
   // the client is asked what it is, in their own words.
   "clarification_requested",
+  // Smart identity/consistency verification (documentIdentityVerification.ts)
+  // — the document's own content (extracted name/ID number) doesn't line up
+  // with the client on this request, or with another document already
+  // received for it (e.g. a different person's ID, or two documents with
+  // different ID numbers). Held here — never uploaded, never needs_review
+  // — while the client is asked a question tailored to the specific
+  // mismatch found.
+  "identity_anomaly_pending_confirmation",
+  // Client confirmed the flagged document is correct/intentional anyway —
+  // uploaded to the client's folder with an audit trail of the
+  // confirmation. Never auto-treated as fulfilling the requirement it
+  // doesn't actually match, and never changes the request's primary client.
+  "identity_anomaly_confirmed",
+  // Client said the document doesn't belong here — never uploaded;
+  // pendingFileContent cleared, same retention policy as
+  // unsolicited_rejected.
+  "identity_anomaly_rejected",
 ]);
 
 // Metadata + a Google Drive file reference (EPS Ch.4/Ch.8 — Drive stores
@@ -838,6 +855,17 @@ export const documents = pgTable("documents", {
   // other. See handleInboundMessage in the webhook route, which checks
   // this before doing any work.
   whatsappMessageId: text("whatsapp_message_id"),
+  // Smart identity/consistency verification (documentIdentityVerification.ts)
+  // — best-effort fields the vision classifier extracted from the document
+  // itself, used only to compare this document against the request's
+  // client and its sibling documents (never shown in full anywhere —
+  // outbound messages and logs only ever surface the last few digits of
+  // an ID number). Null whenever nothing was reliably extractable, or the
+  // extraction confidence was too low to trust — never a guess written to
+  // the database. extractedIdNumber is digits only (no dashes/spaces).
+  extractedPersonName: text("extracted_person_name"),
+  extractedIdNumber: text("extracted_id_number"),
+  extractedCompanyName: text("extracted_company_name"),
 }, (table) => [
   uniqueIndex("documents_whatsapp_message_id_idx")
     .on(table.whatsappMessageId)

@@ -27,7 +27,13 @@ export type PendingConfirmationKind =
   // client actually writes back — see resolveOpenClarificationReply below,
   // not the generic yes/no resolveConfirmationFromReply.
   | "unsolicited_document"
-  | "document_clarification";
+  | "document_clarification"
+  // Smart identity/consistency verification (documentIdentityVerification.ts)
+  // — the document's own content doesn't line up with the client or a
+  // sibling document already received (wrong person's name/ID, mismatched
+  // ID between two documents, wrong company). Yes/no, resolved the same
+  // way as unsolicited_document.
+  | "identity_anomaly";
 
 export interface PendingConfirmationPayload {
   [key: string]: unknown;
