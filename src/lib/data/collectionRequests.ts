@@ -85,6 +85,16 @@ export async function listRequirementsWithDocuments(
 // requirementId null — still real, received documents that need a human
 // to either assign them to a requirement or reject them, not documents
 // that got silently dropped.
+// Explicitly scoped to needs_review — not just "no requirementId" — so a
+// document currently mid-flight through the Ch.6 3-way intake split
+// (unsolicited_pending_confirmation / clarification_requested, both also
+// requirementId-null while the client hasn't answered yet) never shows up
+// here asking an employee to manually assign it. Those two are visible
+// instead via listOpenConfirmations' own card, which shows the actual
+// question awaiting the client's reply. Only a document that reached
+// needs_review — as a genuine last resort, see
+// src/lib/documentIntakeReview.ts — belongs in this "needs manual
+// assignment" list.
 export async function listUnmatchedDocuments(collectionRequestId: string) {
   const db = await getDb();
   return db
@@ -93,7 +103,8 @@ export async function listUnmatchedDocuments(collectionRequestId: string) {
     .where(
       and(
         eq(documents.collectionRequestId, collectionRequestId),
-        isNull(documents.requirementId)
+        isNull(documents.requirementId),
+        eq(documents.status, "needs_review")
       )
     );
 }

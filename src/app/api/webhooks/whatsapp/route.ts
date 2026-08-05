@@ -5,7 +5,11 @@ import { clients, conversations, documents, messages, organizations } from "@/db
 import { recordAuditEvent } from "@/lib/audit";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
-import { resolveConfirmationFromReply } from "@/lib/pendingConfirmations";
+import { resolveConfirmationFromReply, resolveOpenClarificationReply } from "@/lib/pendingConfirmations";
+import {
+  applyClarificationReply,
+  applyUnsolicitedConfirmationDecision,
+} from "@/lib/documentIntakeReview";
 import { recordInboundMessage } from "@/lib/conversationOrchestration";
 import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
 import { downloadMedia } from "@/lib/whatsapp/media";
@@ -247,18 +251,42 @@ async function handleInboundMessage(
       metadata: { intent },
     });
 
-    const resolved = await resolveConfirmationFromReply(conversation.id, body);
-    if (resolved) {
-      await applyDocumentProfileConfirmation(resolved);
+    // document_clarification is open-ended ("what document is this?"), not
+    // yes/no — checked first, via its own resolver, so a reply describing
+    // the document is never misread as a yes/no answer to some other
+    // question. Everything else (document_profile_*, and the new
+    // unsolicited_document — "did you mean to send this?") goes through
+    // the generic yes/no resolver exactly as before.
+    const clarificationResolved = await resolveOpenClarificationReply(conversation.id, body);
+    if (clarificationResolved) {
+      console.log("[wa-inbound] clarification reply resolved", { pendingConfirmationId: clarificationResolved.id });
+      await applyClarificationReply(clarificationResolved, body);
       await recordAuditEvent({
         organizationId: organization.id,
         eventType: "pending_confirmation.resolved",
-        description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור: "${resolved.question}"`,
+        description: `הלקוח הבהיר לגבי המסמך: "${body}"`,
         actorType: "client",
         clientId: client.id,
         collectionRequestId,
-        metadata: { kind: resolved.kind, status: resolved.status },
+        metadata: { kind: clarificationResolved.kind, status: clarificationResolved.status },
       });
+    } else {
+      const resolved = await resolveConfirmationFromReply(conversation.id, body);
+      if (resolved) {
+        console.log("[wa-inbound] confirmation reply resolved", { pendingConfirmationId: resolved.id, kind: resolved.kind, status: resolved.status });
+        // Both are no-ops for any kind that isn't their own.
+        await applyDocumentProfileConfirmation(resolved);
+        await applyUnsolicitedConfirmationDecision(resolved);
+        await recordAuditEvent({
+          organizationId: organization.id,
+          eventType: "pending_confirmation.resolved",
+          description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור: "${resolved.question}"`,
+          actorType: "client",
+          clientId: client.id,
+          collectionRequestId,
+          metadata: { kind: resolved.kind, status: resolved.status },
+        });
+      }
     }
   }
 

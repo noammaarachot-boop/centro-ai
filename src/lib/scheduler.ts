@@ -11,6 +11,7 @@ import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 import { REMINDER_BODY as REMINDER_MESSAGE } from "@/lib/whatsapp/templates";
 import { retryFailedDriveUploads } from "@/lib/storage/driveAdapter";
 import { runRecurringCycleCreation } from "@/lib/recurringScheduler";
+import { sendConfirmationRemindersAndEscalate } from "@/lib/documentIntakeReview";
 
 /**
  * The real automatic trigger Ch.5/Ch.16 describe — "after N minutes of
@@ -43,6 +44,8 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   delivered: number;
   driveRetried: number;
   recurringCyclesCreated: number;
+  confirmationsReminded: number;
+  confirmationsEscalated: number;
 }> {
   const db = await getDb();
   const allOrganizations = organizationId
@@ -51,6 +54,8 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
 
   let evaluated = 0;
   let reminded = 0;
+  let confirmationsReminded = 0;
+  let confirmationsEscalated = 0;
   let delivered = 0;
   let driveRetried = 0;
   let recurringCyclesCreated = 0;
@@ -196,7 +201,27 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     // query), never a per-call flag that could be forgotten.
     const { created } = await runRecurringCycleCreation(organization.id);
     recurringCyclesCreated += created;
+
+    // Ch.6 3-way document intake (src/lib/documentIntakeReview.ts) — nudges
+    // clients who haven't answered an "was this intentional?" or "what
+    // document is this?" question yet, and escalates to needs_review only
+    // once the organization's confirmationMaxReminders is exhausted with
+    // no reply. needs_review here is explicitly about non-response, never
+    // about the document not matching a requirement.
+    const { reminded: confirmationReminders, escalated } = await sendConfirmationRemindersAndEscalate(
+      organization.id
+    );
+    confirmationsReminded += confirmationReminders;
+    confirmationsEscalated += escalated;
   }
 
-  return { evaluated, reminded, delivered, driveRetried, recurringCyclesCreated };
+  return {
+    evaluated,
+    reminded,
+    delivered,
+    driveRetried,
+    recurringCyclesCreated,
+    confirmationsReminded,
+    confirmationsEscalated,
+  };
 }

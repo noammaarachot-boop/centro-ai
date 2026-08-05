@@ -15,7 +15,19 @@ import { ensureConversation, sendOutboundMessage } from "@/lib/conversationOrche
  * module only ever reports the outcome.
  */
 
-export type PendingConfirmationKind = "document_profile_addition" | "document_profile_removal";
+export type PendingConfirmationKind =
+  | "document_profile_addition"
+  | "document_profile_removal"
+  // Ch.6 3-way document intake split (src/lib/documentIntakeReview.ts) —
+  // "unsolicited_document": the AI identified the document with real
+  // confidence but it doesn't answer any open requirement; a yes/no
+  // question ("did you mean to send this?"), resolved the same way as the
+  // two kinds above. "document_clarification": the AI couldn't identify
+  // the document at all; an open-ended question, resolved by whatever the
+  // client actually writes back — see resolveOpenClarificationReply below,
+  // not the generic yes/no resolveConfirmationFromReply.
+  | "unsolicited_document"
+  | "document_clarification";
 
 export interface PendingConfirmationPayload {
   [key: string]: unknown;
@@ -32,6 +44,12 @@ export async function createPendingConfirmation(params: {
   kind: PendingConfirmationKind;
   payload: PendingConfirmationPayload;
   question: string;
+  // Opt-in reminder scheduling — the document-intake kinds use this
+  // (src/lib/documentIntakeReview.ts); the two document_profile_* kinds
+  // don't pass it and keep their original never-reminded behavior.
+  // nextReminderAt is set to now + intervalDays; sendConfirmationReminders
+  // (src/lib/documentIntakeReview.ts) is what actually acts on it.
+  reminderIntervalDays?: number;
 }) {
   const conversation = await ensureConversation(
     params.organizationId,
@@ -52,6 +70,9 @@ export async function createPendingConfirmation(params: {
       kind: params.kind,
       payload: params.payload,
       question: params.question,
+      nextReminderAt: params.reminderIntervalDays
+        ? new Date(Date.now() + params.reminderIntervalDays * 24 * 60 * 60 * 1000)
+        : null,
     })
     .returning();
 
@@ -126,8 +147,14 @@ export async function respondToPendingConfirmationManually(
   return resolve(organizationId, id, confirmed, null);
 }
 
-const YES_WORDS = ["כן", "אישור", "מאשר", "מאשרת", "בטח", "בסדר", "אוקיי", "yes", "ok"];
-const NO_WORDS = ["לא", "לא צריך", "לא רוצה", "בטל", "no"];
+// "1"/"2" cover the numbered-option format the document-intake questions
+// use (e.g. "1. כן, שלחתי בכוונה" / "2. לא, שלחתי בטעות") — a bare digit
+// reply is unambiguous there. True WhatsApp interactive reply buttons
+// would remove any need for free-text parsing at all; not implemented in
+// this pass (still plain text, per every other outbound message in this
+// codebase), tracked as a follow-up.
+const YES_WORDS = ["כן", "אישור", "מאשר", "מאשרת", "בטח", "בסדר", "אוקיי", "yes", "ok", "1"];
+const NO_WORDS = ["לא", "לא צריך", "לא רוצה", "בטל", "no", "2"];
 
 // Deterministic, same mock-first pattern as intentClassifier.ts — no LLM
 // provider is configured for this pilot. A free-text reply only counts as
@@ -178,9 +205,41 @@ export async function resolveConfirmationFromReply(conversationId: string, reply
   // which targets one specific confirmation by id).
   if (openRows.length !== 1) return null;
   const open = openRows[0];
+  // document_clarification is open-ended ("what document is this?"), not
+  // yes/no — routed exclusively through resolveOpenClarificationReply
+  // below. Without this exclusion, a clarification reply that happens to
+  // start with a NO_WORD (e.g. "לא יודע בדיוק, נראה כמו קבלה" — "not sure
+  // exactly, looks like a receipt") would be misread as declining
+  // something there was never a yes/no question about.
+  if (open.kind === ("document_clarification" satisfies PendingConfirmationKind)) return null;
 
   const intent = parseConfirmationReply(replyText);
   if (intent === "unclear") return null;
 
   return resolve(open.organizationId, open.id, intent === "yes", replyText);
+}
+
+// The document_clarification counterpart to resolveConfirmationFromReply —
+// open-ended, not yes/no: any non-empty reply counts as an answer (the
+// client's own words are the classification input, handled by
+// applyClarificationReply in src/lib/documentIntakeReview.ts), never
+// parsed for intent here. Same "exactly one open confirmation, else don't
+// guess" discipline, scoped to this one kind.
+export async function resolveOpenClarificationReply(conversationId: string, replyText: string) {
+  const trimmed = replyText.trim();
+  if (!trimmed) return null;
+
+  const db = await getDb();
+  const openRows = await db
+    .select()
+    .from(pendingConfirmations)
+    .where(
+      and(eq(pendingConfirmations.conversationId, conversationId), eq(pendingConfirmations.status, "pending"))
+    )
+    .limit(2);
+  if (openRows.length !== 1) return null;
+  const open = openRows[0];
+  if (open.kind !== ("document_clarification" satisfies PendingConfirmationKind)) return null;
+
+  return resolve(open.organizationId, open.id, true, replyText);
 }

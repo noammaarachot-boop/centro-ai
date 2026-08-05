@@ -374,7 +374,7 @@ export async function mergeDuplicateClientFolders(
   return { primaryFolderId: primaryId, duplicatesMerged: duplicates.length, filesMoved };
 }
 
-function fileExtension(fileName: string): string {
+export function fileExtension(fileName: string): string {
   const dotIndex = fileName.lastIndexOf(".");
   return dotIndex >= 0 ? fileName.slice(dotIndex) : "";
 }

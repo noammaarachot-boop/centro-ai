@@ -140,6 +140,16 @@ export const organizations = pgTable("organizations", {
   inactivityTimeoutMinutes: integer("inactivity_timeout_minutes")
     .notNull()
     .default(15),
+  // How many reminder nudges an unanswered document-intake confirmation
+  // (unsolicited_document / document_clarification — see
+  // src/lib/documentIntakeReview.ts) gets, spaced reminderIntervalDays
+  // apart (reusing the interval above rather than adding a second one),
+  // before escalating to needs_review. needs_review is the *last* resort
+  // per product requirement — never the first response to an unmatched
+  // document.
+  confirmationMaxReminders: integer("confirmation_max_reminders")
+    .notNull()
+    .default(2),
   // Office policy (Architecture Ch.8: Centro learns which documents to
   // collect, never when — this is configured once by the accountant and
   // never touched automatically). The day of the month collection begins
@@ -746,6 +756,22 @@ export const documentStatus = pgEnum("document_status", [
   "rejected",
   "needs_review",
   "deleted_from_drive",
+  // Ch.6 3-way document intake split — a document the AI identified with
+  // real confidence but that doesn't match any of the request's open
+  // requirements (e.g. an invoice, sent while only "תעודת זהות" is still
+  // outstanding). Held here — not needs_review, not uploaded — while the
+  // client is asked whether it was sent on purpose. See
+  // src/lib/documentIntakeReview.ts.
+  "unsolicited_pending_confirmation",
+  // Client confirmed it was intentional — uploaded to the existing client
+  // folder as an extra document, never tied to a requirement.
+  "unsolicited_approved",
+  // Client said it was sent by mistake — never uploaded; pendingFileContent
+  // cleared.
+  "unsolicited_rejected",
+  // The AI couldn't identify the document with enough confidence at all —
+  // the client is asked what it is, in their own words.
+  "clarification_requested",
 ]);
 
 // Metadata + a Google Drive file reference (EPS Ch.4/Ch.8 — Drive stores
@@ -914,6 +940,19 @@ export const pendingConfirmations = pgTable("pending_confirmations", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  // Reminder/escalation for the two document-intake kinds
+  // (unsolicited_document / document_clarification — see
+  // src/lib/documentIntakeReview.ts). Unused (stays 0/null) by the
+  // existing document_profile_* kinds, which were never reminded before
+  // this and still aren't. nextReminderAt null means "nothing scheduled" —
+  // either never configured, or remindersSent has already reached the
+  // organization's confirmationMaxReminders and escalatedAt is set instead.
+  remindersSent: integer("reminders_sent").notNull().default(0),
+  nextReminderAt: timestamp("next_reminder_at", { withTimezone: true }),
+  // Set once, the moment the reminder budget is exhausted with no reply —
+  // the scheduler's signal to stop reminding and hand the linked document
+  // to needs_review, and a guard against escalating (or reminding) twice.
+  escalatedAt: timestamp("escalated_at", { withTimezone: true }),
 });
 
 export const clientDocumentRequirementAction = pgEnum(
