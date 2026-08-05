@@ -6,12 +6,18 @@ import {
   INITIAL_REQUEST_V2_TEMPLATE_NAME,
 } from "./templates";
 
-describe("buildInitialRequestSend — while v2 is disabled (current production state)", () => {
-  it("the shipped flag is still false (v2 not sent live until Meta approves)", () => {
-    expect(INITIAL_REQUEST_V2_ENABLED).toBe(false);
+describe("buildInitialRequestSend — v2 approved and live (current production state)", () => {
+  it("the shipped flag is true (centro_initial_request_v2 approved by Meta 2026-08-05)", () => {
+    expect(INITIAL_REQUEST_V2_ENABLED).toBe(true);
   });
 
-  it("falls back to the static v1 template with no params, even with a requirement list", () => {
+  it("defaults to v2 with no explicit flag argument, using the real production flag", () => {
+    const send = buildInitialRequestSend(["תעודת זהות", "דפי חשבון בנק"]);
+    expect(send.usedV2).toBe(true);
+    expect(send.templateName).toBe(INITIAL_REQUEST_V2_TEMPLATE_NAME);
+  });
+
+  it("still falls back to the static v1 template when explicitly disabled", () => {
     const send = buildInitialRequestSend(["תעודת זהות", "דפי חשבון בנק"], false);
     expect(send.usedV2).toBe(false);
     expect(send.templateName).toBe("centro_initial_request");
@@ -20,7 +26,7 @@ describe("buildInitialRequestSend — while v2 is disabled (current production s
   });
 });
 
-describe("buildInitialRequestSend — v2 enabled (Phase 2, once approved)", () => {
+describe("buildInitialRequestSend — v2 enabled", () => {
   it("uses the v2 template with the dynamic comma-separated document list as {{1}}", () => {
     const names = ["תעודת זהות", "דפי חשבון בנק", "דו״ח תיק השקעות"];
     const send = buildInitialRequestSend(names, true);

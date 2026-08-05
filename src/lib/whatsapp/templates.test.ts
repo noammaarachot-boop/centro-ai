@@ -31,12 +31,13 @@ describe("template definitions", () => {
     }
   });
 
-  // The live send path (conversationOrchestration.ts's sendViaWhatsApp)
-  // sends these templates with zero body parameters, so any template it can
-  // resolve-and-send must have no {{n}} placeholder. The parameterized
-  // centro_initial_request_v2 is the one exception — it carries
-  // exampleParams and is deliberately NOT sent by the live path until it is
-  // approved on the WABA (Phase 2).
+  // The live send path's TEMPLATE_BY_BODY exact-body lookup
+  // (conversationOrchestration.ts's sendViaWhatsApp) resolves templates with
+  // zero body parameters, so any template found that way must have no
+  // {{n}} placeholder. The parameterized centro_initial_request_v2 is the
+  // one exception — it carries exampleParams and is always sent through the
+  // explicit templateSend descriptor built by buildInitialRequestSend,
+  // never through this zero-param body lookup.
   it("any template without exampleParams has no placeholder (safe to send with zero params)", () => {
     for (const template of REQUIRED_TEMPLATES) {
       if (!template.exampleParams) {
