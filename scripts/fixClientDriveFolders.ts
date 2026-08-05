@@ -1,15 +1,19 @@
 /**
- * One-off, idempotent cleanup: for every client of every Drive-connected
- * organization, resolves duplicate Google Drive folders left over from the
- * race in the pre-fix ensureClientFolder (two documents arriving close
- * together could each create their own folder before either write landed)
- * down to a single primary folder, moving every file into it, verifying
- * the move, then trashing the emptied duplicates. Also tags (or re-tags)
- * every client's surviving folder with the centroClientId property the new
- * ensureClientFolder relies on to recognize its own folder on sight,
- * including clients who only ever had one folder and never a duplicate.
+ * One-off, idempotent cleanup, run in two passes for every client of every
+ * Drive-connected organization:
  *
- * Safe to run more than once — a client with nothing to merge is a no-op.
+ *  1. mergeDuplicateClientFolders(clientId, rootFolderId) — resolves any
+ *     leftover duplicate folder directly under the org root (from the
+ *     pre-locking race in the very first version of the folder-resolution
+ *     logic) down to one.
+ *  2. relocateLegacyClientFolder(clientId) — moves that single flat
+ *     root-level folder under the correct "<Hebrew month> <year>" folder
+ *     (computed from the client's most recent collection request that
+ *     hasn't resolved its own driveClientFolderId yet), completing the
+ *     move to the new <root>/<month>/<client>/<documents> structure.
+ *
+ * Safe to run more than once — a client with nothing to merge or relocate
+ * is a no-op in both passes.
  *
  * Wired into the build for exactly one deploy (see package.json) rather
  * than run ad hoc, for the same reason as db:migrate: the real, decrypted
@@ -22,21 +26,23 @@
 import { isNotNull, eq } from "drizzle-orm";
 import { getDb } from "../src/db";
 import { clients, organizations } from "../src/db/schema";
-import { mergeDuplicateClientFolders } from "../src/lib/storage/driveAdapter";
+import { mergeDuplicateClientFolders, relocateLegacyClientFolder } from "../src/lib/storage/driveAdapter";
 
 async function main() {
   const db = await getDb();
   const connectedOrgs = await db
-    .select({ id: organizations.id, name: organizations.name })
+    .select({ id: organizations.id, name: organizations.name, rootFolderId: organizations.googleDriveFolderId })
     .from(organizations)
     .where(isNotNull(organizations.googleDriveFolderId));
 
   let clientsProcessed = 0;
-  let totalDuplicatesMerged = 0;
-  let totalFilesMoved = 0;
+  let duplicatesMerged = 0;
+  let filesMoved = 0;
+  let relocated = 0;
   let failures = 0;
 
   for (const org of connectedOrgs) {
+    if (!org.rootFolderId) continue;
     const orgClients = await db
       .select({ id: clients.id, name: clients.name })
       .from(clients)
@@ -44,13 +50,23 @@ async function main() {
 
     for (const client of orgClients) {
       try {
-        const result = await mergeDuplicateClientFolders(client.id);
+        const mergeResult = await mergeDuplicateClientFolders(client.id, org.rootFolderId);
         clientsProcessed += 1;
-        totalDuplicatesMerged += result.duplicatesMerged;
-        totalFilesMoved += result.filesMoved;
-        console.log(
-          `[fix-drive-folders] org="${org.name}" client="${client.name}" (${client.id}) -> primary=${result.primaryFolderId} duplicatesMerged=${result.duplicatesMerged} filesMoved=${result.filesMoved}`
-        );
+        duplicatesMerged += mergeResult.duplicatesMerged;
+        filesMoved += mergeResult.filesMoved;
+        if (mergeResult.duplicatesMerged > 0) {
+          console.log(
+            `[fix-drive-folders] merged org="${org.name}" client="${client.name}" (${client.id}) -> primary=${mergeResult.primaryFolderId} duplicatesMerged=${mergeResult.duplicatesMerged} filesMoved=${mergeResult.filesMoved}`
+          );
+        }
+
+        const relocateResult = await relocateLegacyClientFolder(client.id);
+        if (relocateResult.relocated) {
+          relocated += 1;
+          console.log(
+            `[fix-drive-folders] relocated org="${org.name}" client="${client.name}" (${client.id}) -> month=${relocateResult.monthFolderId} folder=${relocateResult.clientFolderId} request=${relocateResult.collectionRequestId}`
+          );
+        }
       } catch (error) {
         failures += 1;
         // Never let one client's failure abort the run for every other
@@ -62,7 +78,7 @@ async function main() {
   }
 
   console.log(
-    `[fix-drive-folders] done: ${clientsProcessed} client(s) processed, ${totalDuplicatesMerged} duplicate folder(s) merged, ${totalFilesMoved} file(s) moved, ${failures} failure(s)`
+    `[fix-drive-folders] done: ${clientsProcessed} client(s) processed, ${duplicatesMerged} duplicate folder(s) merged, ${filesMoved} file(s) moved, ${relocated} folder(s) relocated into month structure, ${failures} failure(s)`
   );
   // Always exits 0, even with per-client failures (already logged above in
   // full) — a stale token or transient Drive error for one client must

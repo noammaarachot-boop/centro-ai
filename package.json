@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "npm run db:migrate && next build",
+    "build": "npm run db:migrate && npm run fix:drive-folders && next build",
     "start": "next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",

@@ -1,0 +1,72 @@
+import { describe, expect, it } from "vitest";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
+import * as schema from "@/db/schema";
+import { isUniqueViolation } from "./route";
+
+// isUniqueViolation is the backstop behind the webhook's fast-path
+// idempotency check (see handleInboundMessage) — it decides whether a
+// thrown DB error is the *expected* outcome of two redelivered webhooks
+// racing to insert the same WhatsApp message, or a genuinely unexpected
+// failure that should be logged and surfaced. Getting the error shape
+// wrong (assuming a `.code`/`.constraint_name` shape postgres-js doesn't
+// actually produce) would either swallow real bugs or spam false alarms
+// for every duplicate webhook delivery — worth proving against a real
+// Postgres engine (PGlite), not just a guessed error shape.
+describe("isUniqueViolation", () => {
+  it("recognizes a real unique-constraint violation on documents.whatsapp_message_id", async () => {
+    const client = new PGlite();
+    const db = drizzle(client, { schema });
+    await migrate(db as never, { migrationsFolder: "./drizzle" });
+
+    const [org] = await db.insert(schema.organizations).values({ name: "Org" }).returning();
+    const [clientRow] = await db
+      .insert(schema.clients)
+      .values({ organizationId: org.id, name: "Client", phone: "+972500000000" })
+      .returning();
+    const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "Service" }).returning();
+    const [request] = await db
+      .insert(schema.collectionRequests)
+      .values({ organizationId: org.id, clientId: clientRow.id, serviceId: service.id, periodLabel: "p" })
+      .returning();
+
+    await db.insert(schema.documents).values({
+      organizationId: org.id,
+      collectionRequestId: request.id,
+      fileName: "a.jpg",
+      whatsappMessageId: "wamid.same",
+    });
+
+    let caught: unknown = null;
+    try {
+      await db.insert(schema.documents).values({
+        organizationId: org.id,
+        collectionRequestId: request.id,
+        fileName: "b.jpg",
+        whatsappMessageId: "wamid.same",
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(isUniqueViolation(caught, "documents_whatsapp_message_id_idx")).toBe(true);
+  }, 30_000);
+
+  it("does not match a differently-named constraint (never swallows an unrelated unique violation)", () => {
+    const fakeError = { code: "23505", constraint_name: "some_other_constraint" };
+    expect(isUniqueViolation(fakeError, "documents_whatsapp_message_id_idx")).toBe(false);
+  });
+
+  it("does not match a non-unique-violation error", () => {
+    const fakeError = { code: "23503", constraint_name: "documents_whatsapp_message_id_idx" };
+    expect(isUniqueViolation(fakeError, "documents_whatsapp_message_id_idx")).toBe(false);
+  });
+
+  it("handles non-object errors safely", () => {
+    expect(isUniqueViolation("plain string error", "documents_whatsapp_message_id_idx")).toBe(false);
+    expect(isUniqueViolation(null, "documents_whatsapp_message_id_idx")).toBe(false);
+    expect(isUniqueViolation(undefined, "documents_whatsapp_message_id_idx")).toBe(false);
+  });
+});

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { clients, conversations, messages, organizations } from "@/db/schema";
+import { clients, conversations, documents, messages, organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
@@ -118,6 +118,51 @@ async function findClientAndConversation(organizationId: string, fromWaId: strin
   return { client, conversation };
 }
 
+// Idempotency check — Meta can and does redeliver the same webhook event
+// (a slow ack, a transient error on our end), and without this a
+// redelivered "image"/"document" event would download and upload the same
+// file to Drive a second time. documents.whatsappMessageId is the ledger:
+// a real WhatsApp attachment always sets it at insert time (see
+// processInboundAttachment), so "does a document with this message id
+// already exist" is a direct, reliable answer — not a heuristic. The
+// unique partial index on that column (migration 0032) is the actual
+// backstop against a true race (two redeliveries processed concurrently);
+// this check is the fast path that avoids the redundant work in the
+// overwhelmingly common case.
+// Postgres unique_violation (SQLSTATE 23505). drizzle-orm wraps the raw
+// driver error in its own error object with the original underneath
+// `.cause` (confirmed empirically — checked both, not assumed), so both
+// the top-level error and `.cause` are checked. `constraint_name` is
+// populated by postgres-js against a real network Postgres server (what
+// actually runs in production) but PGlite's driver layer leaves it
+// undefined even though the same violation genuinely occurred (also
+// confirmed empirically) — when absent, falls back to matching the
+// constraint name inside the error message text, which both drivers
+// include. Checking the specific index name (rather than any 23505) keeps
+// this from ever accidentally swallowing an unrelated unique violation as
+// if it were the expected idempotency race.
+export function isUniqueViolation(error: unknown, constraintName: string): boolean {
+  for (const candidate of [error, (error as { cause?: unknown } | null)?.cause]) {
+    if (!candidate || typeof candidate !== "object") continue;
+    if ((candidate as { code?: unknown }).code !== "23505") continue;
+    const actualConstraint = (candidate as { constraint_name?: unknown }).constraint_name;
+    if (typeof actualConstraint === "string") return actualConstraint === constraintName;
+    const message = (candidate as { message?: unknown }).message;
+    return typeof message === "string" && message.includes(constraintName);
+  }
+  return false;
+}
+
+async function isMessageAlreadyProcessed(messageId: string): Promise<boolean> {
+  const db = await getDb();
+  const [existing] = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(eq(documents.whatsappMessageId, messageId))
+    .limit(1);
+  return !!existing;
+}
+
 function resolveAttachment(
   message: WhatsAppInboundMessage
 ): { fileName: string; mimeType: string; mediaId: string } | null {
@@ -172,6 +217,13 @@ async function handleInboundMessage(
     fileName: attachment?.fileName ?? null,
     mimeType: attachment?.mimeType ?? null,
   });
+
+  if (attachment && (await isMessageAlreadyProcessed(message.id))) {
+    console.log("[wa-inbound] SKIPPED (idempotency): this WhatsApp message already produced a document", {
+      messageId: message.id,
+    });
+    return;
+  }
 
   await recordInboundMessage(
     organization.id,
@@ -249,10 +301,25 @@ async function handleInboundMessage(
       attachment.fileName,
       null,
       media.bytes,
-      media.mimeType
+      media.mimeType,
+      message.id
     );
     console.log("[wa-inbound] processInboundAttachment DONE");
   } catch (error) {
+    // The unique partial index on documents.whatsappMessageId (migration
+    // 0032) is the hard backstop behind the isMessageAlreadyProcessed
+    // fast-path check above — if two redeliveries of the exact same
+    // message were somehow processed concurrently and both passed that
+    // check, exactly one INSERT wins and the other hits this constraint.
+    // That's a successful idempotency guarantee doing its job, not a
+    // failure — surfacing it as whatsapp.inbound_processing_failed would
+    // be a false alarm for something that behaved correctly.
+    if (isUniqueViolation(error, "documents_whatsapp_message_id_idx")) {
+      console.log("[wa-inbound] SKIPPED (idempotency, race): concurrent redelivery lost the insert race, as intended", {
+        messageId: message.id,
+      });
+      return;
+    }
     // Distinct from the download failure above — this is a genuinely
     // unexpected error (DB write, classification, or Drive upload throwing
     // instead of recording its own failure state), not the documented
@@ -303,8 +370,22 @@ async function processWebhookPayload(payload: WhatsAppWebhookPayload) {
           .where(eq(messages.whatsappMessageId, status.id));
       }
 
+      // Each message gets its own try/catch — Meta can (and, per the
+      // original bug report, sometimes does) batch several attachments
+      // into one payload, or send several messages seconds apart. Before
+      // this, a single throw from message N aborted the loop and silently
+      // dropped every message after it in the same payload; a document
+      // failure must never cost a sibling attachment its own chance to be
+      // received.
       for (const message of value.messages ?? []) {
-        await handleInboundMessage(organization, message);
+        try {
+          await handleInboundMessage(organization, message);
+        } catch (error) {
+          console.error("[wa-inbound] handleInboundMessage FAILED (isolated — other messages in this payload still process)", {
+            messageId: message.id,
+            error,
+          });
+        }
       }
     }
   }
