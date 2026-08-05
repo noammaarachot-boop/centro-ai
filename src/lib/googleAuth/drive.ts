@@ -33,6 +33,35 @@ async function driveFetch(accessToken: string, path: string, init?: RequestInit)
   );
 }
 
+// Escapes a value for safe interpolation into a Drive `q` search string —
+// Drive's query grammar treats a bare `'` as the string delimiter itself,
+// so any `'` inside a client/file name (e.g. "O'Brien") must be backslash-
+// escaped or it would break out of the quoted literal. Never used to build
+// SQL — this is Drive API's own query language, unrelated to the app's
+// Postgres layer.
+function escapeDriveQueryValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+async function listDriveItems(
+  accessToken: string,
+  query: string,
+  fields: string
+): Promise<Array<Record<string, string>>> {
+  const params = new URLSearchParams({
+    q: query,
+    fields: `files(${fields})`,
+    pageSize: "100",
+    spaces: "drive",
+  });
+  const response = await driveFetch(accessToken, `/files?${params.toString()}`);
+  if (!response.ok) {
+    throw new DriveApiError(`Drive search failed (${response.status})`);
+  }
+  const data = (await response.json()) as { files?: Array<Record<string, string>> };
+  return data.files ?? [];
+}
+
 // Creating a folder is always allowed under the minimal drive.file scope
 // (the app owns anything it creates) — no Picker interaction needed.
 // `parentId` nests it inside another folder Centro already owns/was
@@ -42,7 +71,14 @@ async function driveFetch(accessToken: string, path: string, init?: RequestInit)
 export async function createDriveFolder(
   accessToken: string,
   name: string,
-  parentId?: string
+  parentId?: string,
+  // Private custom metadata (never shown in the Drive UI, only readable via
+  // the API by the app that set it) — used to tag a client's folder with
+  // its Centro client id, so a later lookup can confirm "this folder really
+  // is this client's" instead of relying on a name match alone, which a
+  // same-named different client could collide with. See ensureClientFolder
+  // in src/lib/storage/driveAdapter.ts.
+  properties?: Record<string, string>
 ): Promise<DriveFolderRef> {
   const response = await driveFetch(accessToken, "/files?fields=id,name", {
     method: "POST",
@@ -50,6 +86,7 @@ export async function createDriveFolder(
       name,
       mimeType: FOLDER_MIME_TYPE,
       parents: parentId ? [parentId] : undefined,
+      ...(properties ? { properties } : {}),
     }),
   });
   if (!response.ok) {
@@ -57,6 +94,92 @@ export async function createDriveFolder(
   }
   const data = (await response.json()) as { id: string; name: string };
   return { id: data.id, name: data.name };
+}
+
+// Scoped strictly to `parentId` (never a global Drive search — the
+// drive.file scope wouldn't allow one to see anything meaningful anyway).
+// Returns every matching folder, not just one, so callers can both (a)
+// reuse a single existing match and (b) detect genuine duplicates left over
+// from a race, which mergeDuplicateClientFolders below cleans up.
+export async function findFoldersByName(
+  accessToken: string,
+  parentId: string,
+  name: string
+): Promise<DriveFolderRef[]> {
+  const query = `'${parentId}' in parents and name='${escapeDriveQueryValue(name)}' and mimeType='${FOLDER_MIME_TYPE}' and trashed=false`;
+  const files = await listDriveItems(accessToken, query, "id,name");
+  return files.map((f) => ({ id: f.id, name: f.name }));
+}
+
+// The authoritative "is this folder really this client's" check — a name
+// match alone can't distinguish two different clients who happen to share a
+// display name (see the collision-suffix logic in ensureClientFolder).
+// Property values in a Drive query must themselves be quoted+escaped the
+// same as any other string literal.
+export async function findFolderByClientProperty(
+  accessToken: string,
+  parentId: string,
+  clientId: string
+): Promise<DriveFolderRef | null> {
+  const query = `'${parentId}' in parents and mimeType='${FOLDER_MIME_TYPE}' and trashed=false and properties has { key='centroClientId' and value='${escapeDriveQueryValue(clientId)}' }`;
+  const files = await listDriveItems(accessToken, query, "id,name");
+  return files[0] ? { id: files[0].id, name: files[0].name } : null;
+}
+
+// Non-folder files directly inside a folder — used by
+// mergeDuplicateClientFolders to move every file out of a duplicate before
+// it's trashed, and by resolveUniqueFileName's overwrite check.
+export async function listFolderFiles(accessToken: string, folderId: string): Promise<DriveFileRef[]> {
+  const query = `'${folderId}' in parents and mimeType!='${FOLDER_MIME_TYPE}' and trashed=false`;
+  const files = await listDriveItems(accessToken, query, "id,name,webViewLink");
+  return files.map((f) => ({ id: f.id, name: f.name, webViewLink: f.webViewLink ?? null }));
+}
+
+// Drive files don't have a single "parent folder" field to overwrite —
+// moving means adding the new parent and removing the old one in the same
+// call (Drive API v3's documented move pattern).
+export async function moveDriveFile(
+  accessToken: string,
+  fileId: string,
+  fromParentId: string,
+  toParentId: string
+): Promise<void> {
+  const params = new URLSearchParams({ addParents: toParentId, removeParents: fromParentId, fields: "id" });
+  const response = await driveFetch(accessToken, `/files/${encodeURIComponent(fileId)}?${params.toString()}`, {
+    method: "PATCH",
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    throw new DriveApiError(`Failed to move Drive file (${response.status})`);
+  }
+}
+
+// Tags (or re-tags) an existing folder with the app's private client-id
+// property — used both to adopt a legacy pre-tagging folder and to
+// guarantee the surviving folder after a duplicate merge is tagged, whether
+// or not it already was.
+export async function setFolderClientProperty(accessToken: string, folderId: string, clientId: string): Promise<void> {
+  const response = await driveFetch(accessToken, `/files/${encodeURIComponent(folderId)}?fields=id`, {
+    method: "PATCH",
+    body: JSON.stringify({ properties: { centroClientId: clientId } }),
+  });
+  if (!response.ok) {
+    throw new DriveApiError(`Failed to tag Drive folder (${response.status})`);
+  }
+}
+
+// Soft delete (moves to Drive's own Trash) rather than a permanent
+// files.delete — a duplicate-folder merge is exactly the kind of operation
+// that should stay reversible if something about the merge turns out to be
+// wrong, for as long as Drive's own trash retention allows.
+export async function trashDriveFolder(accessToken: string, folderId: string): Promise<void> {
+  const response = await driveFetch(accessToken, `/files/${encodeURIComponent(folderId)}?fields=id`, {
+    method: "PATCH",
+    body: JSON.stringify({ trashed: true }),
+  });
+  if (!response.ok) {
+    throw new DriveApiError(`Failed to trash Drive folder (${response.status})`);
+  }
 }
 
 // Simple (non-resumable) multipart upload — appropriate for the small

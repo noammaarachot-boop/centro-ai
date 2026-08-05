@@ -1,9 +1,20 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { clients, collectionRequests, documents, organizations } from "@/db/schema";
+import { clients, collectionRequestRequirements, collectionRequests, documents, organizations } from "@/db/schema";
 import { OperationFailedError, withRetry } from "@/lib/resilience";
 import { getValidAccessToken, GoogleNotConnectedError } from "@/lib/googleAuth/driveTokens";
-import { createDriveFolder, uploadDriveFile } from "@/lib/googleAuth/drive";
+import {
+  createDriveFolder,
+  DriveApiError,
+  findFolderByClientProperty,
+  findFoldersByName,
+  listFolderFiles,
+  moveDriveFile,
+  setFolderClientProperty,
+  trashDriveFolder,
+  uploadDriveFile,
+  type DriveFolderRef,
+} from "@/lib/googleAuth/drive";
 import { recordAuditEvent } from "@/lib/audit";
 
 /**
@@ -51,25 +62,55 @@ function placeholderContent(fileName: string): Buffer {
   );
 }
 
+// A same-named folder already sitting in the parent (found once the caller
+// has already ruled out — via findFolderByClientProperty — that it's
+// tagged as *this* client's) is only safe to reuse bare-named when nothing
+// else could be claiming that exact name. Once the one-off backfill
+// (scripts/backfillClientDriveFolderTags.ts) has tagged every pre-existing
+// client folder, any untagged-or-differently-tagged same-named folder found
+// here is a genuine collision with a different client, not a legacy folder
+// of this one — so the safe default is always a suffix, never a guess.
+// The suffix is an opaque slice of the client's own internal id — never a
+// government id number or other sensitive personal data (per product
+// requirement: no ID-card numbers or similar in a folder name).
+async function resolveClientFolderName(
+  accessToken: string,
+  parentId: string,
+  clientName: string,
+  clientId: string
+): Promise<string> {
+  const existing = await findFoldersByName(accessToken, parentId, clientName);
+  if (existing.length === 0) return clientName;
+  return `${clientName} - ${clientId.slice(-5)}`;
+}
+
 // BR-3.003: store the folder ID, not its name. One folder per client,
-// created lazily on first use rather than during onboarding/import,
-// nested inside the organization's own selected root folder. Throws
+// created lazily on first use rather than during onboarding/import, nested
+// inside the organization's own selected root folder. Throws
 // GoogleNotConnectedError if the organization hasn't completed OAuth +
 // folder selection yet — callers (uploadDocument below, and its own
 // resilient wrappers) must not let that crash a Collection Request.
+//
+// Race safety: two documents for the same client can arrive within
+// seconds of each other (e.g. two WhatsApp attachments), and Vercel's
+// serverless model gives each webhook call its own process — there is no
+// in-memory lock to share between them. A Postgres advisory lock, keyed by
+// (organization's parent folder, normalized client name) rather than just
+// this client id, serializes the search-then-create sequence below across
+// both the common case (the same client's two attachments) and the rarer
+// case of two different clients who happen to share a display name and
+// both get their first-ever document at nearly the same instant. The lock
+// is scoped to this transaction and releases automatically on
+// commit/rollback — nothing to clean up explicitly.
 export async function ensureClientFolder(clientId: string): Promise<DriveFolder> {
   const db = await getDb();
+
   const [client] = await db
-    .select({
-      driveFolderId: clients.driveFolderId,
-      name: clients.name,
-      organizationId: clients.organizationId,
-    })
+    .select({ driveFolderId: clients.driveFolderId, name: clients.name, organizationId: clients.organizationId })
     .from(clients)
     .where(eq(clients.id, clientId))
     .limit(1);
   if (!client) throw new Error(`Client ${clientId} not found`);
-
   if (client.driveFolderId) {
     return { folderId: client.driveFolderId };
   }
@@ -82,16 +123,136 @@ export async function ensureClientFolder(clientId: string): Promise<DriveFolder>
   if (!organization?.googleDriveFolderId) {
     throw new GoogleNotConnectedError();
   }
-
+  const parentId = organization.googleDriveFolderId;
   const accessToken = await getValidAccessToken(client.organizationId);
-  const folder = await createDriveFolder(accessToken, client.name, organization.googleDriveFolderId);
 
-  await db
-    .update(clients)
-    .set({ driveFolderId: folder.id, updatedAt: new Date() })
-    .where(eq(clients.id, clientId));
+  return db.transaction(async (tx) => {
+    const lockKey = `${parentId}::${client.name.trim().toLowerCase()}`;
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`);
 
-  return { folderId: folder.id };
+    // Re-check under the lock — another request for this same client may
+    // have already resolved and committed a folder while this one waited.
+    const [freshClient] = await tx
+      .select({ driveFolderId: clients.driveFolderId })
+      .from(clients)
+      .where(eq(clients.id, clientId))
+      .limit(1);
+    if (freshClient?.driveFolderId) {
+      return { folderId: freshClient.driveFolderId };
+    }
+
+    // Already exists, tagged as this exact client's — adopt it. Covers a
+    // prior run that created the Drive folder but crashed before the DB
+    // write landed, and legacy folders the one-off backfill has tagged.
+    const tagged = await findFolderByClientProperty(accessToken, parentId, clientId);
+    if (tagged) {
+      await tx.update(clients).set({ driveFolderId: tagged.id, updatedAt: new Date() }).where(eq(clients.id, clientId));
+      return { folderId: tagged.id };
+    }
+
+    const folderName = await resolveClientFolderName(accessToken, parentId, client.name, clientId);
+    const folder = await createDriveFolder(accessToken, folderName, parentId, { centroClientId: clientId });
+    await tx.update(clients).set({ driveFolderId: folder.id, updatedAt: new Date() }).where(eq(clients.id, clientId));
+    return { folderId: folder.id };
+  });
+}
+
+// Locates every Drive folder that could plausibly be a leftover duplicate
+// for this client under the org's parent folder (by exact name, by the
+// collision-suffixed name, and by the client-id property tag — a duplicate
+// created by an earlier, race-prone version of ensureClientFolder could
+// match any of the three depending on when it was created), merges every
+// file from every duplicate into one surviving primary folder, verifies
+// each move before trashing the now-empty duplicate, and points
+// clients.driveFolderId at the primary. Idempotent — safe to run again
+// (finds nothing to merge once no duplicates remain) and safe to run for a
+// client that never had a duplicate in the first place.
+export async function mergeDuplicateClientFolders(
+  clientId: string
+): Promise<{ primaryFolderId: string; duplicatesMerged: number; filesMoved: number }> {
+  const db = await getDb();
+  const [client] = await db
+    .select({ driveFolderId: clients.driveFolderId, name: clients.name, organizationId: clients.organizationId })
+    .from(clients)
+    .where(eq(clients.id, clientId))
+    .limit(1);
+  if (!client) throw new Error(`Client ${clientId} not found`);
+
+  const [organization] = await db
+    .select({ googleDriveFolderId: organizations.googleDriveFolderId })
+    .from(organizations)
+    .where(eq(organizations.id, client.organizationId))
+    .limit(1);
+  if (!organization?.googleDriveFolderId) {
+    throw new GoogleNotConnectedError();
+  }
+  const parentId = organization.googleDriveFolderId;
+  const accessToken = await getValidAccessToken(client.organizationId);
+
+  const byName = await findFoldersByName(accessToken, parentId, client.name);
+  const bySuffixedName = await findFoldersByName(accessToken, parentId, `${client.name} - ${clientId.slice(-5)}`);
+  const byTag = await findFolderByClientProperty(accessToken, parentId, clientId);
+
+  const seen = new Map<string, DriveFolderRef>();
+  for (const folder of [...byName, ...bySuffixedName, ...(byTag ? [byTag] : [])]) {
+    seen.set(folder.id, folder);
+  }
+  const all = [...seen.values()];
+
+  if (all.length === 0) {
+    return { primaryFolderId: client.driveFolderId ?? "", duplicatesMerged: 0, filesMoved: 0 };
+  }
+
+  const primaryId =
+    client.driveFolderId && all.some((f) => f.id === client.driveFolderId) ? client.driveFolderId : all[0].id;
+  const duplicates = all.filter((f) => f.id !== primaryId);
+
+  let filesMoved = 0;
+  for (const duplicate of duplicates) {
+    const files = await listFolderFiles(accessToken, duplicate.id);
+    for (const file of files) {
+      await moveDriveFile(accessToken, file.id, duplicate.id, primaryId);
+      filesMoved += 1;
+    }
+    // Verify before trashing — never discard a folder that still holds a
+    // file the move silently failed to relocate.
+    const remaining = await listFolderFiles(accessToken, duplicate.id);
+    if (remaining.length > 0) {
+      throw new DriveApiError(
+        `Refusing to trash Drive folder ${duplicate.id}: ${remaining.length} file(s) failed to move to ${primaryId}`
+      );
+    }
+    await trashDriveFolder(accessToken, duplicate.id);
+  }
+
+  await setFolderClientProperty(accessToken, primaryId, clientId);
+  await db.update(clients).set({ driveFolderId: primaryId, updatedAt: new Date() }).where(eq(clients.id, clientId));
+
+  return { primaryFolderId: primaryId, duplicatesMerged: duplicates.length, filesMoved };
+}
+
+function fileExtension(fileName: string): string {
+  const dotIndex = fileName.lastIndexOf(".");
+  return dotIndex >= 0 ? fileName.slice(dotIndex) : "";
+}
+
+// Anti-overwrite: Drive itself never overwrites on a name collision (two
+// files can share a name with no error), but that just leaves confusing
+// duplicate-named files sitting in the client's folder — e.g. a client
+// re-sending "תעודת זהות" a second time. Appends " (2)", " (3)", ... the
+// same way a desktop file manager would, checked against what's actually
+// in the folder right now rather than trusting any cache.
+async function resolveUniqueDriveFileName(accessToken: string, folderId: string, desiredName: string): Promise<string> {
+  const existingNames = new Set((await listFolderFiles(accessToken, folderId)).map((f) => f.name));
+  if (!existingNames.has(desiredName)) return desiredName;
+
+  const ext = fileExtension(desiredName);
+  const base = ext ? desiredName.slice(0, -ext.length) : desiredName;
+  let attempt = 2;
+  while (existingNames.has(`${base} (${attempt})${ext}`)) {
+    attempt += 1;
+  }
+  return `${base} (${attempt})${ext}`;
 }
 
 // BR-11.5: only validated (approved) documents are stored in Drive.
@@ -121,19 +282,40 @@ export async function uploadDocument(
   if (!client) throw new Error(`Client ${clientId} not found`);
 
   const [document] = await db
-    .select({ fileName: documents.fileName })
+    .select({ fileName: documents.fileName, requirementId: documents.requirementId })
     .from(documents)
     .where(eq(documents.id, documentId))
     .limit(1);
   if (!document) throw new Error(`Document ${documentId} not found`);
 
+  // Prefer the matched requirement's own name over the stored fileName —
+  // for a real WhatsApp attachment that's a meaningless generated name
+  // (image_<wamid>.jpg; see resolveAttachment in the webhook route), never
+  // what a client or employee would recognize in Drive. Falls back to the
+  // stored fileName when there's no requirement match (needs_review
+  // documents never reach here — see the `status === "approved"` gate in
+  // processInboundAttachment/reviewDocument) or it's a manual upload that
+  // already had a real name.
+  let targetFileName = document.fileName;
+  if (document.requirementId) {
+    const [requirement] = await db
+      .select({ name: collectionRequestRequirements.name })
+      .from(collectionRequestRequirements)
+      .where(eq(collectionRequestRequirements.id, document.requirementId))
+      .limit(1);
+    if (requirement) {
+      targetFileName = `${requirement.name}${fileExtension(document.fileName)}`;
+    }
+  }
+
   return withRetry(async () => {
     const accessToken = await getValidAccessToken(client.organizationId);
     const content = fileBytes ?? placeholderContent(document.fileName);
     const contentType = fileBytes ? mimeType ?? "application/octet-stream" : "text/plain; charset=utf-8";
+    const uniqueFileName = await resolveUniqueDriveFileName(accessToken, folderId, targetFileName);
 
     const uploaded = await uploadDriveFile(accessToken, {
-      name: document.fileName,
+      name: uniqueFileName,
       parentId: folderId,
       mimeType: contentType,
       content,
