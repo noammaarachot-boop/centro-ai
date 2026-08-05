@@ -65,6 +65,11 @@ async function findOrganizationByPhoneNumberId(phoneNumberId: string) {
     .from(organizations)
     .where(eq(organizations.whatsappPhoneNumberId, phoneNumberId))
     .limit(1);
+  console.log("[wa-inbound] findOrganizationByPhoneNumberId", {
+    phoneNumberId,
+    matched: !!organization,
+    organizationId: organization?.id ?? null,
+  });
   return organization ?? null;
 }
 
@@ -84,6 +89,16 @@ async function findClientAndConversation(organizationId: string, fromWaId: strin
 
   const target = `+${fromWaId}`;
   const client = orgClients.find((c) => toE164(c.phone) === target);
+  // Last 4 digits only — matches the codebase's "no full phone numbers in
+  // logs" convention (see document-collection-automation.md §12) while
+  // still being enough to eyeball a match/mismatch against known test data.
+  console.log("[wa-inbound] findClientAndConversation: phone match", {
+    organizationId,
+    fromWaIdLast4: fromWaId.slice(-4),
+    candidateCount: orgClients.length,
+    matched: !!client,
+    clientId: client?.id ?? null,
+  });
   if (!client) return null;
 
   const [conversation] = await db
@@ -92,6 +107,12 @@ async function findClientAndConversation(organizationId: string, fromWaId: strin
     .where(and(eq(conversations.organizationId, organizationId), eq(conversations.clientId, client.id)))
     .orderBy(desc(conversations.updatedAt))
     .limit(1);
+  console.log("[wa-inbound] findClientAndConversation: conversation lookup", {
+    clientId: client.id,
+    conversationFound: !!conversation,
+    conversationId: conversation?.id ?? null,
+    collectionRequestId: conversation?.collectionRequestId ?? null,
+  });
   if (!conversation) return null;
 
   return { client, conversation };
@@ -123,8 +144,15 @@ async function handleInboundMessage(
   organization: typeof organizations.$inferSelect,
   message: WhatsAppInboundMessage
 ) {
+  console.log("[wa-inbound] handleInboundMessage ENTER", {
+    organizationId: organization.id,
+    messageId: message.id,
+    type: message.type,
+  });
+
   const match = await findClientAndConversation(organization.id, message.from);
   if (!match) {
+    console.log("[wa-inbound] STOPPED: no matching client/conversation for this org — see phone match log above");
     await recordAuditEvent({
       organizationId: organization.id,
       eventType: "whatsapp.inbound_unmatched",
@@ -138,6 +166,12 @@ async function handleInboundMessage(
 
   const body = message.text?.body ?? null;
   const attachment = resolveAttachment(message);
+  console.log("[wa-inbound] resolveAttachment", {
+    messageType: message.type,
+    attachmentFound: !!attachment,
+    fileName: attachment?.fileName ?? null,
+    mimeType: attachment?.mimeType ?? null,
+  });
 
   await recordInboundMessage(
     organization.id,
@@ -176,10 +210,37 @@ async function handleInboundMessage(
     }
   }
 
-  if (!attachment) return;
+  if (!attachment) {
+    console.log("[wa-inbound] no attachment on this message, done (text-only)");
+    return;
+  }
+
+  let media: Awaited<ReturnType<typeof downloadMedia>>;
+  try {
+    console.log("[wa-inbound] downloadMedia START", { mediaId: attachment.mediaId });
+    media = await downloadMedia(attachment.mediaId);
+    console.log("[wa-inbound] downloadMedia OK", {
+      byteLength: media.bytes.length,
+      mimeType: media.mimeType,
+    });
+  } catch (error) {
+    console.error("[wa-inbound] downloadMedia FAILED", error);
+    await recordAuditEvent({
+      organizationId: organization.id,
+      eventType: "whatsapp.inbound_media_download_failed",
+      description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+      actorType: "system",
+      clientId: client.id,
+      collectionRequestId,
+    });
+    return;
+  }
 
   try {
-    const media = await downloadMedia(attachment.mediaId);
+    console.log("[wa-inbound] processInboundAttachment START", {
+      collectionRequestId,
+      fileName: attachment.fileName,
+    });
     await processInboundAttachment(
       organization.id,
       collectionRequestId,
@@ -190,12 +251,18 @@ async function handleInboundMessage(
       media.bytes,
       media.mimeType
     );
+    console.log("[wa-inbound] processInboundAttachment DONE");
   } catch (error) {
-    console.error("[whatsapp-webhook] media download failed", error);
+    // Distinct from the download failure above — this is a genuinely
+    // unexpected error (DB write, classification, or Drive upload throwing
+    // instead of recording its own failure state), not the documented
+    // "download failed" case. Kept separate so the audit trail and logs
+    // never misattribute a processing bug as a download problem.
+    console.error("[wa-inbound] processInboundAttachment FAILED", error);
     await recordAuditEvent({
       organizationId: organization.id,
-      eventType: "whatsapp.inbound_media_download_failed",
-      description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+      eventType: "whatsapp.inbound_processing_failed",
+      description: `עיבוד המסמך שהתקבל מהלקוח נכשל (${attachment.fileName})`,
       actorType: "system",
       clientId: client.id,
       collectionRequestId,
@@ -210,6 +277,15 @@ async function processWebhookPayload(payload: WhatsAppWebhookPayload) {
     for (const change of entry.changes ?? []) {
       const value = change.value;
       if (!value?.metadata?.phone_number_id) continue;
+
+      const statusCount = value.statuses?.length ?? 0;
+      const messageCount = value.messages?.length ?? 0;
+      console.log("[wa-inbound] webhook change received", {
+        phoneNumberId: value.metadata.phone_number_id,
+        statusCount,
+        messageCount,
+        messageTypes: (value.messages ?? []).map((m) => m.type),
+      });
 
       const organization = await findOrganizationByPhoneNumberId(value.metadata.phone_number_id);
       if (!organization) {

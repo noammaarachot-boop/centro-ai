@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTO_APPROVE_CONFIDENCE,
   classifyDocument,
   classifyDocumentWithLearning,
   isFuzzyDuplicate,
   matchLearnedPattern,
+  resolveRequirementAssignment,
   type DocumentClassificationCandidate,
   type LearnedDocumentPattern,
 } from "./documentClassifier";
@@ -118,6 +120,29 @@ describe("classifyDocumentWithLearning — full 4-layer pipeline", () => {
     const result = await classifyDocumentWithLearning("totally-unrelated.pdf", CANDIDATES, []);
     expect(result.matchedRequirementId).toBeNull();
     expect(result.confidence).toBe(0);
+  });
+});
+
+describe("resolveRequirementAssignment — sole-outstanding-requirement fallback", () => {
+  it("uses the classifier's match when it found one, ignoring outstanding count", () => {
+    const result = resolveRequirementAssignment({ matchedRequirementId: "req-bank", confidence: 0.4 }, ["req-bank", "req-invoice"]);
+    expect(result).toEqual({ requirementId: "req-bank", confidence: 0.4 });
+  });
+
+  it("auto-assigns to the one outstanding requirement when the classifier found nothing (WhatsApp image case)", () => {
+    const result = resolveRequirementAssignment({ matchedRequirementId: null, confidence: 0 }, ["req-id-card"]);
+    expect(result.requirementId).toBe("req-id-card");
+    expect(result.confidence).toBeGreaterThanOrEqual(AUTO_APPROVE_CONFIDENCE);
+  });
+
+  it("stays unmatched when nothing overlaps and more than one requirement is still outstanding", () => {
+    const result = resolveRequirementAssignment({ matchedRequirementId: null, confidence: 0 }, ["req-bank", "req-invoice"]);
+    expect(result).toEqual({ requirementId: null, confidence: 0 });
+  });
+
+  it("stays unmatched when nothing overlaps and zero requirements are outstanding (all already approved)", () => {
+    const result = resolveRequirementAssignment({ matchedRequirementId: null, confidence: 0 }, []);
+    expect(result).toEqual({ requirementId: null, confidence: 0 });
   });
 });
 

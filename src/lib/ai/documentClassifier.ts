@@ -232,6 +232,35 @@ export async function classifyDocumentWithLearning(
   return deterministic;
 }
 
+// Sole-outstanding-requirement fallback: WhatsApp images never carry a real
+// filename (Meta's payload for an inbound photo is just a media id — see
+// resolveAttachment in src/app/api/webhooks/whatsapp/route.ts, which falls
+// back to a generated name like "image_<wamid>.jpg"). The filename-token
+// classifier above can never score a confident match on that generated name
+// against a real requirement name, so every photo a client sends would
+// otherwise always land in needs_review — regardless of how unambiguous the
+// match is to a human. When exactly one requirement on the request is still
+// outstanding (no approved document yet), a newly-received file can only be
+// answering that one open question, so it's safe to resolve it there even
+// without a confident filename match. Multiple outstanding requirements stay
+// needs_review exactly as before — this fallback only removes ambiguity that
+// doesn't actually exist.
+export function resolveRequirementAssignment(
+  classification: Pick<DocumentClassification, "matchedRequirementId" | "confidence">,
+  outstandingRequirementIds: string[]
+): { requirementId: string | null; confidence: number } {
+  if (classification.matchedRequirementId) {
+    return { requirementId: classification.matchedRequirementId, confidence: classification.confidence };
+  }
+  if (outstandingRequirementIds.length === 1) {
+    return {
+      requirementId: outstandingRequirementIds[0],
+      confidence: Math.max(classification.confidence, AUTO_APPROVE_CONFIDENCE),
+    };
+  }
+  return { requirementId: null, confidence: classification.confidence };
+}
+
 // Ch.9 duplicate detection floor for renamed files — fuzzier than M8's
 // original exact-filename check: a new name built on top of the old one
 // still counts as the same document (e.g. "bank-statement-jan.pdf" vs
