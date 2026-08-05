@@ -50,6 +50,10 @@ describe("classifyDocumentViaVisionAI", () => {
         identificationConfidence: 0.95,
         matchedRequirementName: "תעודת זהות",
         matchConfidence: 0.92,
+        extractedPersonName: "נועם שלום",
+        extractedIdNumber: "111-111-118",
+        extractedCompanyName: null,
+        identityExtractionConfidence: 0.9,
       },
     });
 
@@ -60,6 +64,11 @@ describe("classifyDocumentViaVisionAI", () => {
       identificationConfidence: 0.95,
       matchedRequirementId: "req-id-card",
       matchConfidence: 0.92,
+      // Non-digit characters (dashes) are stripped before being returned.
+      extractedPersonName: "נועם שלום",
+      extractedIdNumber: "111111118",
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0.9,
     });
   });
 
@@ -72,6 +81,10 @@ describe("classifyDocumentViaVisionAI", () => {
         identificationConfidence: 0.97,
         matchedRequirementName: "לא ידוע / לא תואם",
         matchConfidence: 0,
+        extractedPersonName: null,
+        extractedIdNumber: null,
+        extractedCompanyName: "חברת ABC בע\"מ",
+        identityExtractionConfidence: 0.8,
       },
     });
 
@@ -82,6 +95,10 @@ describe("classifyDocumentViaVisionAI", () => {
       identificationConfidence: 0.97,
       matchedRequirementId: null,
       matchConfidence: 0,
+      extractedPersonName: null,
+      extractedIdNumber: null,
+      extractedCompanyName: "חברת ABC בע\"מ",
+      identityExtractionConfidence: 0.8,
     });
   });
 

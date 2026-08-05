@@ -420,12 +420,19 @@ export async function sendConfirmationRemindersAndEscalate(
 
   for (const row of due) {
     if (row.remindersSent >= maxReminders) {
-      const payload = row.payload as { documentId?: string } | null;
-      if (payload?.documentId) {
+      // Every payload shape this cron pass has ever needed to escalate:
+      // unsolicited_document/document_clarification carry a single
+      // documentId; identity_anomaly (documentIdentityVerification.ts) can
+      // carry several documentIds grouped under one question. Escalating
+      // means every document tied to this unanswered question moves to
+      // needs_review, not just the first one.
+      const payload = row.payload as { documentId?: string; documentIds?: string[] } | null;
+      const documentIds = payload?.documentIds ?? (payload?.documentId ? [payload.documentId] : []);
+      for (const documentId of documentIds) {
         await db
           .update(documents)
           .set({ status: "needs_review", updatedAt: new Date() })
-          .where(eq(documents.id, payload.documentId));
+          .where(eq(documents.id, documentId));
       }
       await db
         .update(pendingConfirmations)

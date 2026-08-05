@@ -239,6 +239,13 @@
       "when": 1785958392155,
       "tag": "0033_document_intake_confirmation_flow",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1785963625902,
+      "tag": "0034_identity_anomaly_verification",
+      "breakpoints": true
     }
   ]
 }

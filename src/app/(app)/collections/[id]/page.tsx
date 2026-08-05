@@ -87,6 +87,11 @@ const DOCUMENT_STATUS_META: Record<string, { label: string; tone: BadgeTone }> =
   unsolicited_approved: { label: "אושר כמסמך נוסף", tone: "success" },
   unsolicited_rejected: { label: "נשלח בטעות", tone: "neutral" },
   clarification_requested: { label: "ממתין להבהרת הלקוח", tone: "purple" },
+  // Smart identity/consistency verification (documentIdentityVerification.ts)
+  // — same defensive-listing reasoning as the block above.
+  identity_anomaly_pending_confirmation: { label: "ממתין לאישור זהות מהלקוח", tone: "purple" },
+  identity_anomaly_confirmed: { label: "אושר על ידי הלקוח (חריגת זהות)", tone: "success" },
+  identity_anomaly_rejected: { label: "נשלח בטעות (חריגת זהות)", tone: "neutral" },
 };
 
 const CONVERSATION_STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {
