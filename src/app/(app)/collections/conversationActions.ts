@@ -1,6 +1,6 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import {
@@ -14,6 +14,7 @@ import {
   AUTO_APPROVE_CONFIDENCE,
   classifyDocumentWithLearning,
   isFuzzyDuplicate,
+  resolveRequirementAssignment,
   SUPPORTED_EXTENSIONS,
 } from "@/lib/ai/documentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
@@ -271,6 +272,13 @@ export async function processInboundAttachment(
     // the generic heuristic — see src/lib/documentLearning.ts.
     const learnedPatterns = await getLearnedDocumentPatterns(organizationId, clientId);
     const classification = await classifyDocumentWithLearning(fileName, requirements, learnedPatterns);
+    console.log("[wa-inbound] classification result", {
+      collectionRequestId,
+      fileName,
+      readable: classification.readable,
+      matchedRequirementId: classification.matchedRequirementId,
+      confidence: classification.confidence,
+    });
 
     // FR-11.3: unreadable documents get an automatic request for a
     // clearer copy instead of being filed at all.
@@ -292,19 +300,38 @@ export async function processInboundAttachment(
       return;
     }
 
-    requirementId = classification.matchedRequirementId;
-    status = classification.confidence >= AUTO_APPROVE_CONFIDENCE ? "approved" : "needs_review";
+    const existingApproved = await db
+      .select({ requirementId: documents.requirementId })
+      .from(documents)
+      .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
+    const approvedRequirementIds = new Set(existingApproved.map((d) => d.requirementId));
+    const outstandingRequirementIds = requirements
+      .map((r) => r.id)
+      .filter((id) => !approvedRequirementIds.has(id));
+
+    const resolved = resolveRequirementAssignment(classification, outstandingRequirementIds);
+    requirementId = resolved.requirementId;
+    const confidence = resolved.confidence;
+    status = confidence >= AUTO_APPROVE_CONFIDENCE ? "approved" : "needs_review";
+    console.log("[wa-inbound] requirement assignment", {
+      collectionRequestId,
+      outstandingCount: outstandingRequirementIds.length,
+      requirementId,
+      confidence,
+      status,
+      usedSoleOutstandingFallback: !classification.matchedRequirementId && !!requirementId,
+    });
 
     await recordAuditEvent({
       organizationId,
       eventType: "document.classified",
       description: requirementId
-        ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(classification.confidence * 100).toFixed(0)}%)`
+        ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(confidence * 100).toFixed(0)}%)`
         : `מסמך "${fileName}" לא ניתן היה לשייך אוטומטית לדרישה - דורש בדיקה ידנית`,
       actorType: "ai",
       clientId,
       collectionRequestId,
-      metadata: { confidence: classification.confidence, requirementId },
+      metadata: { confidence, requirementId },
     });
   }
 

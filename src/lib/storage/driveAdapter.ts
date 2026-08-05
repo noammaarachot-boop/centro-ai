@@ -184,9 +184,11 @@ export async function uploadDocumentResiliently(
   fileBytes?: Buffer,
   mimeType?: string
 ): Promise<{ uploaded: boolean }> {
+  console.log("[wa-inbound] uploadDocumentResiliently START", { documentId, collectionRequestId, fileName });
   const db = await getDb();
   try {
-    await uploadDocument(clientId, documentId, fileBytes, mimeType);
+    const uploaded = await uploadDocument(clientId, documentId, fileBytes, mimeType);
+    console.log("[wa-inbound] uploadDocumentResiliently OK", { documentId, driveFileId: uploaded.fileId });
     // Success — the real bytes are safely in Drive now; the temporary copy
     // (if any was held) and the retry-tracking columns are no longer
     // needed.
@@ -204,6 +206,7 @@ export async function uploadDocumentResiliently(
     return { uploaded: true };
   } catch (error) {
     if (error instanceof GoogleNotConnectedError) {
+      console.error("[wa-inbound] uploadDocumentResiliently SKIPPED: Google not connected", { documentId });
       await db
         .update(documents)
         .set({ driveUploadFailedAt: new Date(), updatedAt: new Date() })
@@ -219,6 +222,7 @@ export async function uploadDocumentResiliently(
       return { uploaded: false };
     }
     if (!(error instanceof OperationFailedError)) throw error;
+    console.error("[wa-inbound] uploadDocumentResiliently FAILED (will retry)", { documentId, error });
 
     const [current] = await db
       .select({ driveUploadRetryCount: documents.driveUploadRetryCount })
