@@ -71,6 +71,10 @@ export interface DocumentClassification {
   extractedIdNumber?: string | null;
   extractedCompanyName?: string | null;
   identityExtractionConfidence?: number;
+  // Quantity-aware requirement engine (src/lib/documentQuantity.ts) — same
+  // aiRan-gated carry-through as the identity fields above.
+  extractedPeriodLabel?: string | null;
+  periodExtractionConfidence?: number;
 }
 
 export interface LearnedDocumentPattern {
@@ -233,6 +237,8 @@ interface AiClassificationResult {
   extractedIdNumber: string | null;
   extractedCompanyName: string | null;
   identityExtractionConfidence: number;
+  extractedPeriodLabel: string | null;
+  periodExtractionConfidence: number;
 }
 
 async function classifyDocumentViaAI(
@@ -251,6 +257,8 @@ async function classifyDocumentViaAI(
     extractedIdNumber: result.extractedIdNumber,
     extractedCompanyName: result.extractedCompanyName,
     identityExtractionConfidence: result.identityExtractionConfidence,
+    extractedPeriodLabel: result.documentPeriodLabel,
+    periodExtractionConfidence: result.periodExtractionConfidence,
   };
 }
 
@@ -307,6 +315,8 @@ export async function classifyDocumentWithLearning(
       extractedIdNumber: aiResult.extractedIdNumber,
       extractedCompanyName: aiResult.extractedCompanyName,
       identityExtractionConfidence: aiResult.identityExtractionConfidence,
+      extractedPeriodLabel: aiResult.extractedPeriodLabel,
+      periodExtractionConfidence: aiResult.periodExtractionConfidence,
     };
   }
   if (aiResult) {
@@ -324,6 +334,8 @@ export async function classifyDocumentWithLearning(
       extractedIdNumber: aiResult.extractedIdNumber,
       extractedCompanyName: aiResult.extractedCompanyName,
       identityExtractionConfidence: aiResult.identityExtractionConfidence,
+      extractedPeriodLabel: aiResult.extractedPeriodLabel,
+      periodExtractionConfidence: aiResult.periodExtractionConfidence,
     };
   }
 

@@ -54,6 +54,8 @@ describe("classifyDocumentViaVisionAI", () => {
         extractedIdNumber: "111-111-118",
         extractedCompanyName: null,
         identityExtractionConfidence: 0.9,
+        documentPeriodLabel: null,
+        periodExtractionConfidence: 0,
       },
     });
 
@@ -69,6 +71,9 @@ describe("classifyDocumentViaVisionAI", () => {
       extractedIdNumber: "111111118",
       extractedCompanyName: null,
       identityExtractionConfidence: 0.9,
+      // An ID card has no dated period — undatable document type.
+      documentPeriodLabel: null,
+      periodExtractionConfidence: 0,
     });
   });
 
@@ -85,6 +90,8 @@ describe("classifyDocumentViaVisionAI", () => {
         extractedIdNumber: null,
         extractedCompanyName: "חברת ABC בע\"מ",
         identityExtractionConfidence: 0.8,
+        documentPeriodLabel: "03/2026",
+        periodExtractionConfidence: 0.85,
       },
     });
 
@@ -99,7 +106,31 @@ describe("classifyDocumentViaVisionAI", () => {
       extractedIdNumber: null,
       extractedCompanyName: "חברת ABC בע\"מ",
       identityExtractionConfidence: 0.8,
+      documentPeriodLabel: "03/2026",
+      periodExtractionConfidence: 0.85,
     });
+  });
+
+  it("discards a malformed period label instead of trusting it as-is", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({
+      object: {
+        identified: true,
+        documentType: "תלוש שכר",
+        identificationConfidence: 0.9,
+        matchedRequirementName: "לא ידוע / לא תואם",
+        matchConfidence: 0,
+        extractedPersonName: null,
+        extractedIdNumber: null,
+        extractedCompanyName: null,
+        identityExtractionConfidence: 0,
+        documentPeriodLabel: "March 2026", // not the requested MM/YYYY shape
+        periodExtractionConfidence: 0.9,
+      },
+    });
+
+    const result = await classifyDocumentViaVisionAI(Buffer.from("x"), "image/jpeg", CANDIDATES);
+    expect(result?.documentPeriodLabel).toBeNull();
   });
 
   it("not identified at all — the real 'unrecognized document' case", async () => {

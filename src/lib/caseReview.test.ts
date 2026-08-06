@@ -252,6 +252,35 @@ describe("attemptFinishCollectionRequest", () => {
     expect(body).toContain("אישור ניהול חשבון");
   });
 
+  it("reports quantity-aware progress for a partially-satisfied multi-unit requirement (e.g. 1 of 3 payslips)", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תלוש שכר"]);
+    await db
+      .update(schema.collectionRequestRequirements)
+      .set({ requiredCount: 3 })
+      .where(eq(schema.collectionRequestRequirements.id, requirements[0].id));
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId: requirements[0].id,
+      fileName: "payslip-jan.jpg",
+      status: "approved",
+      extractedPeriodLabel: "01/2026",
+    });
+
+    const outcome = await attemptFinishCollectionRequest({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      conversationId,
+      clientId,
+      actorType: "client",
+    });
+
+    expect(outcome).toBe("missing_requirements");
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("תלוש שכר");
+    expect(body).toContain("1 מתוך 3");
+  });
+
   it("reviews the whole case first — a deferred exception is asked about instead of the request completing or failing silently", async () => {
     const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
     const [doc] = await db

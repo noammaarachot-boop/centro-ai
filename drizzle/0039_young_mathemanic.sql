@@ -1,0 +1,1 @@
+ALTER TABLE "documents" ADD COLUMN "extracted_period_label" text;

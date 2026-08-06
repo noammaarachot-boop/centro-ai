@@ -33,6 +33,7 @@ import {
   extractedIdentityForStorage,
   type IdentityAnomaly,
 } from "@/lib/documentIdentityVerification";
+import { computeRequirementSatisfaction, extractedPeriodLabelForStorage } from "@/lib/documentQuantity";
 import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
@@ -345,6 +346,7 @@ export async function processInboundAttachment(
       id: collectionRequestRequirements.id,
       name: collectionRequestRequirements.name,
       sourceRequirementId: collectionRequestRequirements.sourceRequirementId,
+      requiredCount: collectionRequestRequirements.requiredCount,
     })
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
@@ -374,6 +376,11 @@ export async function processInboundAttachment(
   // to trust as a future sibling-comparison reference (see
   // extractedIdentityForStorage's own gate) — never a low-confidence guess.
   let extractedIdentity: ReturnType<typeof extractedIdentityForStorage> = null;
+  // Quantity-aware requirement engine (src/lib/documentQuantity.ts) — the
+  // dated period this document was extracted to cover, persisted only when
+  // extraction was confident enough (same aiRan-gated discipline as
+  // extractedIdentity above). Null for anything undated or below-threshold.
+  let extractedPeriodLabel: string | null = null;
   // What the AI called this document — used only to name the file when an
   // identity-anomaly document is later confirmed by the client, and
   // carried into deferredReviewPayload below for that same purpose once
@@ -430,13 +437,23 @@ export async function processInboundAttachment(
     }
 
     const existingApproved = await db
-      .select({ requirementId: documents.requirementId })
+      .select({ requirementId: documents.requirementId, extractedPeriodLabel: documents.extractedPeriodLabel })
       .from(documents)
       .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
-    const approvedRequirementIds = new Set(existingApproved.map((d) => d.requirementId));
+    // Quantity-aware: a requirement stops being "outstanding" only once its
+    // requiredCount units are actually satisfied (computeRequirementSatisfaction),
+    // not the moment a single document is approved for it — see
+    // src/lib/documentQuantity.ts. For every existing requirement
+    // (requiredCount defaults to 1), this is exactly the old one-document
+    // behavior, unchanged.
     const outstandingRequirementIds = requirements
-      .map((r) => r.id)
-      .filter((id) => !approvedRequirementIds.has(id));
+      .filter((requirement) => {
+        const periodLabels = existingApproved
+          .filter((doc) => doc.requirementId === requirement.id)
+          .map((doc) => doc.extractedPeriodLabel);
+        return !computeRequirementSatisfaction(requirement.requiredCount, periodLabels).satisfied;
+      })
+      .map((requirement) => requirement.id);
 
     // Ch.6 3-way split (src/lib/documentIntakeReview.ts) — a document that
     // doesn't match anything open is not automatically needs_review
@@ -447,6 +464,7 @@ export async function processInboundAttachment(
     const outcome = resolveDocumentIntakeOutcome(classification, outstandingRequirementIds);
     console.log("[wa-inbound] intake outcome", { collectionRequestId, outcome });
     extractedIdentity = extractedIdentityForStorage(classification);
+    extractedPeriodLabel = extractedPeriodLabelForStorage(classification);
     identityDocumentType = classification.aiDocumentType ?? null;
 
     // Smart identity/consistency verification: runs whenever the document
@@ -532,6 +550,7 @@ export async function processInboundAttachment(
       ...(fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
       ...(whatsappMessageId ? { whatsappMessageId } : {}),
       ...(extractedIdentity ?? {}),
+      ...(extractedPeriodLabel ? { extractedPeriodLabel } : {}),
       ...(deferredReviewKind ? { deferredReviewKind, deferredReviewPayload } : {}),
     })
     .returning();
