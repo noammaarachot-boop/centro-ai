@@ -21,11 +21,7 @@ import { getRequestRequirementNames } from "@/lib/documentRequestList";
 import { toE164 } from "@/lib/whatsapp/phone";
 import { buildInitialRequestSend } from "@/lib/whatsapp/initialRequestMessage";
 import { sendTemplateMessage, sendTextMessage, WhatsAppSendError } from "@/lib/whatsapp/send";
-import {
-  DUPLICATE_BODY as DUPLICATE_TEMPLATE,
-  TEMPLATE_BY_BODY,
-  THANK_YOU_BODY as THANK_YOU_TEMPLATE,
-} from "@/lib/whatsapp/templates";
+import { TEMPLATE_BY_BODY, THANK_YOU_BODY as THANK_YOU_TEMPLATE } from "@/lib/whatsapp/templates";
 
 /**
  * Real WhatsApp Cloud API integration (Real WhatsApp Integration M-WA-3 —
@@ -403,18 +399,6 @@ export async function startConversation(
     { templateName: initial.templateName, language: initial.language, params: initial.params }
   );
   return { conversation, sent };
-}
-
-export async function sendDuplicateAcknowledgement(
-  organizationId: string,
-  conversationId: string
-) {
-  await sendOutboundMessage(
-    organizationId,
-    conversationId,
-    DUPLICATE_TEMPLATE,
-    "ai"
-  );
 }
 
 // Ch.10 step 3-4: the stand-in for "after N minutes of inactivity" (no

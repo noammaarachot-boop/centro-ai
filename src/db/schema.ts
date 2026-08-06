@@ -750,6 +750,13 @@ export const collectionRequestRequirements = pgTable(
     ),
     name: text("name").notNull(),
     description: text("description"),
+    // Groundwork only — not read or written by any logic yet (default 1
+    // preserves today's exactly-one-document-per-requirement behavior for
+    // every existing requirement). Reserved for the planned quantity-aware
+    // requirement engine ("3 payslips", "2 invoices") — checkCompletionGate
+    // and the matching/counting logic in documentIntakeReview.ts still only
+    // ever check "is there one approved document," not "are there N."
+    requiredCount: integer("required_count").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

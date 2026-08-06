@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -327,5 +327,26 @@ describe("processInboundAttachment — documents arriving as separate calls for 
     expect(docs).toHaveLength(1);
     expect(docs[0].status).toBe("approved");
     expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1);
+  });
+
+  // Decision-engine "Level 1" principle: the system resolves a duplicate
+  // entirely on its own — the client never even needs to know there was a
+  // dilemma. No WhatsApp message, still fully audited.
+  it("a duplicate document is resolved silently — no WhatsApp message, but still audited", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "bank-statement-jan.pdf", null, Buffer.from("x"), "application/pdf", "wamid.dup.1");
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "bank-statement-jan-copy.pdf", null, Buffer.from("y"), "application/pdf", "wamid.dup.2");
+
+    const outboundMessages = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outboundMessages).toHaveLength(0);
+
+    const auditEvents = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(and(eq(schema.auditLogs.collectionRequestId, requestId), eq(schema.auditLogs.eventType, "document.duplicate_detected")));
+    expect(auditEvents).toHaveLength(1);
   });
 });

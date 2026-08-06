@@ -461,3 +461,97 @@ describe("flushDueIntakeNotifications never sends the same combined message twic
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
   });
 });
+
+// Decision-engine "level 3" principle: when a request's documents don't
+// all point to one person (two or more genuinely distinct identities, not
+// just one outlier), the combined message should name that pattern up
+// front instead of the generic "a few things to double check" opener.
+describe("case-wide identity split wording", () => {
+  it("uses the whole-case 'more than one person' opener when 2+ distinct identities are flagged together", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const { createOrMergeIdentityAnomalyConfirmation } = await import("./documentIdentityVerification");
+    const [docA] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "a.jpg", status: "identity_anomaly_pending_confirmation" })
+      .returning();
+    const [docB] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "b.jpg", status: "identity_anomaly_pending_confirmation" })
+      .returning();
+
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: docA.id,
+      anomaly: { kind: "name_mismatch", confident: true, conflictingName: "אורית לוי", maskedIdNumber: null },
+      documentType: "תעודת זהות",
+    });
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: docB.id,
+      anomaly: { kind: "name_mismatch", confident: true, conflictingName: "משה גולן", maskedIdNumber: null },
+      documentType: "רישיון נהיגה",
+    });
+
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ notifyAfter: new Date(Date.now() - 1000) })
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await flushDueIntakeNotifications(orgId, requestId);
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("יותר מאדם אחד");
+    expect(body).toContain("אורית לוי");
+    expect(body).toContain("משה גולן");
+
+    const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messages).toHaveLength(1);
+  });
+
+  it("does not use the whole-case opener for a single outlier against an otherwise-consistent request", async () => {
+    const { orgId, clientId, requestId } = await seedRequest();
+    const { createOrMergeIdentityAnomalyConfirmation } = await import("./documentIdentityVerification");
+    const { createUnsolicitedDocumentConfirmation } = await import("./documentIntakeReview");
+    const [docA] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "a.jpg", status: "identity_anomaly_pending_confirmation" })
+      .returning();
+    const [docB] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "invoice.pdf", status: "unsolicited_pending_confirmation" })
+      .returning();
+
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: docA.id,
+      anomaly: { kind: "name_mismatch", confident: true, conflictingName: "אורית לוי", maskedIdNumber: null },
+      documentType: "תעודת זהות",
+    });
+    // A second group, but a *different kind* (unsolicited, not a second
+    // identity) — only one distinct identity is in question here, so the
+    // generic opener stays correct.
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: docB.id,
+      documentType: "חשבונית מס",
+    });
+
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ notifyAfter: new Date(Date.now() - 1000) })
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await flushDueIntakeNotifications(orgId, requestId);
+
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).not.toContain("יותר מאדם אחד");
+    expect(body).toContain("מצאתי כמה מסמכים שדורשים הבהרה");
+  });
+});
