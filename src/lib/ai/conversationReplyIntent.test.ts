@@ -10,7 +10,9 @@ vi.mock("ai", () => ({
   generateObject: (...args: unknown[]) => generateObject(...args),
 }));
 
-const { classifyYesNoReply, classifyFollowUpIntent, classifyReopenIntent } = await import("./conversationReplyIntent");
+const { classifyYesNoReply, classifyFollowUpIntent, classifyReopenIntent, classifyDocumentRelationIntent } = await import(
+  "./conversationReplyIntent"
+);
 
 beforeEach(() => {
   resolveLanguageModel.mockReset();
@@ -111,6 +113,42 @@ describe("classifyReopenIntent", () => {
 
   it("returns false on an empty message without calling the model", async () => {
     expect(await classifyReopenIntent("")).toBe(false);
+    expect(resolveLanguageModel).not.toHaveBeenCalled();
+  });
+});
+
+describe("classifyDocumentRelationIntent", () => {
+  it("recognizes 'זה מחליף את הקודם' as a replace", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({ object: { relation: "replace" } });
+    expect(await classifyDocumentRelationIntent("זה מחליף את הקודם")).toBe("replace");
+  });
+
+  it("recognizes 'תתעלם מהקובץ הקודם' as a replace", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({ object: { relation: "replace" } });
+    expect(await classifyDocumentRelationIntent("תתעלם מהקובץ הקודם")).toBe("replace");
+  });
+
+  it("recognizes 'זה מסמך נוסף, לא חלופי' as additional, never a replace", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({ object: { relation: "additional" } });
+    expect(await classifyDocumentRelationIntent("זה מסמך נוסף, לא חלופי")).toBe("additional");
+  });
+
+  it("returns 'none' for a caption that doesn't reference any relation — never guesses", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({ object: { relation: "none" } });
+    expect(await classifyDocumentRelationIntent("הנה התלוש")).toBe("none");
+  });
+
+  it("never guesses on a provider failure — falls back to 'none'", async () => {
+    resolveLanguageModel.mockRejectedValueOnce(new Error("no provider configured"));
+    expect(await classifyDocumentRelationIntent("זה מחליף את הקודם")).toBe("none");
+  });
+
+  it("returns 'none' on an empty caption without calling the model", async () => {
+    expect(await classifyDocumentRelationIntent("")).toBe("none");
     expect(resolveLanguageModel).not.toHaveBeenCalled();
   });
 });

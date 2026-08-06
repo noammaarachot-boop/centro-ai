@@ -847,6 +847,14 @@ export const documentStatus = pgEnum("document_status", [
   // completed; pendingFileContent cleared, same retention policy as
   // unsolicited_rejected.
   "reopen_declined",
+  // Document replace/supersede (src/lib/documentReplace.ts) — the client
+  // explicitly said a newer document replaces this one ("זה מחליף את
+  // הקודם"). Never deleted — the row and its real Drive file both stay,
+  // renamed to make the supersession visible at a glance
+  // (markDocumentSupersededInDrive) — just excluded from every
+  // active-document count (approved-requirement checks, quantity
+  // satisfaction) via documents.supersededByDocumentId being set.
+  "superseded",
 ]);
 
 // Metadata + a Google Drive file reference (EPS Ch.4/Ch.8 — Drive stores
@@ -947,6 +955,12 @@ export const documents = pgTable("documents", {
   // is computed (src/lib/documentQuantity.ts) so it can never inflate a
   // requirement's satisfied count.
   continuationOfDocumentId: uuid("continuation_of_document_id").references((): AnyPgColumn => documents.id),
+  // Document replace/supersede (src/lib/documentReplace.ts) — set on the
+  // OLD document once the client confirms a newer one replaces it; points
+  // at the new document. Never set together with continuationOfDocumentId
+  // — a document is either a continuation page of another, or superseded
+  // by another, never both.
+  supersededByDocumentId: uuid("superseded_by_document_id").references((): AnyPgColumn => documents.id),
   // "Centro checks the case, not the document" (caseReview.ts) — a
   // document classified as an identity anomaly, unsolicited, or
   // unrecognized no longer gets its client-facing question asked the

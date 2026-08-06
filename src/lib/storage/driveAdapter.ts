@@ -10,6 +10,7 @@ import {
   findFoldersByName,
   listFolderFiles,
   moveDriveFile,
+  renameDriveFile,
   setFolderClientProperty,
   trashDriveFolder,
   uploadDriveFile,
@@ -633,4 +634,21 @@ export async function retryFailedDriveUploads(organizationId: string): Promise<{
   }
 
   return { retried };
+}
+
+// Document replace/supersede (src/lib/documentReplace.ts) — "archive/mark,
+// never delete without need": a superseded document keeps its real file in
+// Drive, just renamed to make its status visible at a glance instead of
+// looking like an active, current document. Best-effort and non-throwing —
+// same resilience philosophy as uploadDocumentResiliently: a rename
+// failure (Drive not connected, a transient API error) must never block
+// the replace decision itself, which has already been recorded in the
+// database by the time this runs.
+export async function markDocumentSupersededInDrive(organizationId: string, driveFileId: string, fileName: string): Promise<void> {
+  try {
+    const accessToken = await getValidAccessToken(organizationId);
+    await withRetry(() => renameDriveFile(accessToken, driveFileId, `[הוחלף] ${fileName}`));
+  } catch (error) {
+    console.error("[document-replace] renaming superseded file in Drive failed (non-fatal)", error);
+  }
 }

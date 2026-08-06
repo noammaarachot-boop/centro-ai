@@ -34,6 +34,7 @@ import {
   type IdentityAnomaly,
 } from "@/lib/documentIdentityVerification";
 import { computeRequirementSatisfaction, extractedPeriodLabelForStorage } from "@/lib/documentQuantity";
+import { applyDocumentReplaceIntentIfCaptioned } from "@/lib/documentReplace";
 import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
@@ -281,7 +282,12 @@ export async function processInboundAttachment(
   // webhook be recognized and skipped instead of downloading/uploading the
   // same file twice. Null for the DevTools simulator and manual uploads,
   // which have no WhatsApp message to key off.
-  whatsappMessageId?: string
+  whatsappMessageId?: string,
+  // Document replace/supersede (src/lib/documentReplace.ts) — the text a
+  // client attached to this exact file as its WhatsApp caption (e.g. "זה
+  // מחליף את הקודם"). Null whenever there was none, or for any caller that
+  // doesn't have one (the DevTools simulator, manual uploads).
+  captionText?: string | null
 ) {
   const db = await getDb();
 
@@ -541,7 +547,12 @@ export async function processInboundAttachment(
     } else if (outcome.kind === "matched") {
       requirementId = outcome.requirementId;
       status = "approved";
-      continuationOfDocumentId = findContinuationTarget(outcome.requirementId);
+      // Document replace/supersede (src/lib/documentReplace.ts): a
+      // captioned message is a deliberate, distinct statement about this
+      // exact file, never just another page of the same document — never
+      // merge it as a continuation page (the two concepts are mutually
+      // exclusive; see documents.supersededByDocumentId's own doc comment).
+      continuationOfDocumentId = captionText ? null : findContinuationTarget(outcome.requirementId);
     } else if (outcome.kind === "unsolicited") {
       status = "unsolicited_pending_confirmation";
       deferredReviewKind = "unsolicited_document";
@@ -616,6 +627,20 @@ export async function processInboundAttachment(
       fileBytes,
       mimeType
     );
+
+    // Document replace/supersede (src/lib/documentReplace.ts) — only ever
+    // consulted when the client actually attached a caption, and only ever
+    // acts when that caption clearly says this replaces a prior document.
+    if (requirementId && captionText) {
+      await applyDocumentReplaceIntentIfCaptioned({
+        organizationId,
+        clientId,
+        collectionRequestId,
+        requirementId,
+        newDocumentId: document.id,
+        captionText,
+      });
+    }
   }
   // unsolicited_pending_confirmation / clarification_requested /
   // identity_anomaly_pending_confirmation: never uploaded and never
