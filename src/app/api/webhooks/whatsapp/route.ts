@@ -15,6 +15,7 @@ import {
   applyUnsolicitedConfirmationDecision,
 } from "@/lib/documentIntakeReview";
 import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification";
+import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { recordInboundMessage } from "@/lib/conversationOrchestration";
 import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
 import { downloadMedia } from "@/lib/whatsapp/media";
@@ -335,6 +336,19 @@ async function handleInboundMessage(
           collectionRequestId,
           metadata: { kind: resolved.kind, status: resolved.status },
         });
+      } else if (isFinishedSignal(body)) {
+        // "Centro checks the case, not the document" (caseReview.ts) — the
+        // real, primary trigger for the whole-case review: the client's
+        // own words, not just the employee dashboard button.
+        console.log("[wa-inbound] finished signal detected, running case review", { collectionRequestId });
+        const outcome = await attemptFinishCollectionRequest({
+          organizationId: organization.id,
+          collectionRequestId,
+          conversationId: conversation.id,
+          clientId: client.id,
+          actorType: "client",
+        });
+        console.log("[wa-inbound] case review outcome", { collectionRequestId, outcome });
       }
     }
     }

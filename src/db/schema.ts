@@ -875,6 +875,17 @@ export const documents = pgTable("documents", {
   extractedPersonName: text("extracted_person_name"),
   extractedIdNumber: text("extracted_id_number"),
   extractedCompanyName: text("extracted_company_name"),
+  // "Centro checks the case, not the document" (caseReview.ts) — a
+  // document classified as an identity anomaly, unsolicited, or
+  // unrecognized no longer gets its client-facing question asked the
+  // moment it arrives. It's held here (status already reflects which of
+  // the three; these two columns carry whatever runCaseReview needs to
+  // ask about it later) until the client actually signals they're done
+  // sending documents — only then does the whole case get reviewed
+  // together, once. Both null for every document that was never deferred
+  // (approved, or genuinely still mid-classification).
+  deferredReviewKind: text("deferred_review_kind"),
+  deferredReviewPayload: jsonb("deferred_review_payload"),
 }, (table) => [
   uniqueIndex("documents_whatsapp_message_id_idx")
     .on(table.whatsappMessageId)
