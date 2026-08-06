@@ -9,14 +9,20 @@ export interface TemplateDefinition {
   category: "UTILITY" | "MARKETING" | "AUTHENTICATION";
   bodyText: string;
   // Required by Meta for any template whose bodyText contains {{1}},
-  // {{2}}, ... placeholders — one example value per placeholder, in
-  // order. Omitting this for a parameterized template doesn't just get
-  // rejected for policy reasons, it fails submission outright with
-  // rejected_reason: INVALID_FORMAT (confirmed live: this is exactly
-  // what happened to LEAD_WELCOME_TEMPLATE before this field existed).
-  // None of REQUIRED_TEMPLATES' four bodies use any placeholder, so this
-  // stays undefined for all of them.
+  // {{2}}, ... POSITIONAL placeholders — one example value per
+  // placeholder, in order. Omitting this for a parameterized template
+  // doesn't just get rejected for policy reasons, it fails submission
+  // outright with rejected_reason: INVALID_FORMAT (confirmed live: this is
+  // exactly what happened to LEAD_WELCOME_TEMPLATE before this field
+  // existed). Mutually exclusive with namedExampleParams below — a
+  // template uses one placeholder style or the other, never both.
   exampleParams?: string[];
+  // The equivalent requirement for a template whose bodyText instead uses
+  // NAMED {{variable_name}}-style placeholders (centro_reminder_v2's own
+  // {{documents}}) — Meta's submission API wants
+  // example.body_text_named_params, a {param_name, example} pair per
+  // placeholder, not a plain positional array.
+  namedExampleParams?: Array<{ paramName: string; example: string }>;
 }
 
 // Single source of truth for the four automated ("ai") message bodies —
@@ -48,18 +54,31 @@ export const THANK_YOU_BODY =
 export const REMINDER_BODY = "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";
 // Dynamic reminder — lists exactly which documents are still missing,
 // instead of the static REMINDER_BODY's generic "still waiting for your
-// answer." {{1}} is the client's name, {{2}} is a single-line,
-// comma-separated list of missing document names (same constraint as
-// INITIAL_REQUEST_V2_BODY's {{1}} — Meta forbids newlines in a template
-// parameter). Submitted to Meta for approval now (in REQUIRED_TEMPLATES
-// below), but NOT yet used for real sends — see REMINDER_V2_ENABLED.
-export const REMINDER_V2_BODY = "היי {{1}}, עדיין חסרים לנו: {{2}}. אפשר לשלוח אותם כאן. תודה!";
+// answer." Submitted to Meta directly via the Business Manager UI (not
+// this codebase's own ensureTemplatesProvisioned) as a NAMED-parameter
+// template — the single placeholder is {{documents}}, not a positional
+// {{1}}/{{2}} — this exact body text, word for word, is what's pending
+// review; it must never be edited without resubmitting to Meta. The
+// parameter value itself must still be a single line, comma-separated
+// (Meta forbids newlines inside a template PARAMETER — the static body
+// text itself may and does contain real newlines, those are fine).
+// Currently PENDING REVIEW on the WABA, not yet approved — see
+// REMINDER_V2_ENABLED.
+export const REMINDER_V2_BODY =
+  "שלום,\n\nרצינו להזכיר שעדיין חסרים המסמכים הבאים:\n\n{{documents}}\n\nלאחר קבלת כל המסמכים הנדרשים, הבקשה תושלם באופן אוטומטי.\n\nתודה.";
 export const REMINDER_V2_TEMPLATE_NAME = "centro_reminder_v2";
+// The exact name of the template's own named parameter — must match
+// precisely what was submitted to Meta (see REMINDER_V2_BODY's own doc
+// comment); sendTemplateMessage's named-parameter form matches by this
+// string, not by array position.
+export const REMINDER_V2_PARAM_NAME = "documents";
 // Master switch for actually SENDING the parameterized v2 reminder
 // template over WhatsApp — false until centro_reminder_v2 is APPROVED on
-// the WABA (see the acceptance-testing report for the exact submission
-// details). Until then, src/lib/reminderContent.ts falls back to the
-// already-approved static REMINDER_BODY, exactly today's behavior.
+// the WABA. Until then, src/lib/reminderContent.ts falls back to the
+// already-approved static REMINDER_BODY, exactly today's behavior. THE
+// ONLY THING TO CHANGE ONCE META APPROVES: flip this to true. No other
+// code change is needed — the send path, named-parameter mapping, and
+// fallback are already fully wired and tested.
 export const REMINDER_V2_ENABLED = false;
 export const DUPLICATE_BODY = "קיבלנו מסמך זה כבר, תודה.";
 
@@ -83,12 +102,18 @@ export const REQUIRED_TEMPLATES: TemplateDefinition[] = [
   },
   { name: "centro_thank_you_confirm", language: "he", category: "UTILITY", bodyText: THANK_YOU_BODY },
   { name: "centro_reminder", language: "he", category: "UTILITY", bodyText: REMINDER_BODY },
+  // Already submitted by hand via the Business Manager UI (not by this
+  // provisioning code) as a NAMED-parameter template — this entry exists
+  // so ensureTemplatesProvisioned recognizes it as already-existing by
+  // name+language and never attempts a duplicate submission, and so any
+  // future organization that doesn't have it yet gets it submitted with
+  // the exact same named-parameter shape Meta already has on file.
   {
     name: REMINDER_V2_TEMPLATE_NAME,
     language: "he",
     category: "UTILITY",
     bodyText: REMINDER_V2_BODY,
-    exampleParams: ["ישראל ישראלי", "תעודת זהות, אישור שכירות"],
+    namedExampleParams: [{ paramName: REMINDER_V2_PARAM_NAME, example: "תעודת זהות, 3 תלושי שכר, דפי בנק" }],
   },
   { name: "centro_duplicate_document", language: "he", category: "UTILITY", bodyText: DUPLICATE_BODY },
 ];
@@ -169,6 +194,16 @@ export async function ensureTemplatesProvisioned(
               type: "BODY",
               text: template.bodyText,
               ...(template.exampleParams ? { example: { body_text: [template.exampleParams] } } : {}),
+              ...(template.namedExampleParams
+                ? {
+                    example: {
+                      body_text_named_params: template.namedExampleParams.map(({ paramName, example }) => ({
+                        param_name: paramName,
+                        example,
+                      })),
+                    },
+                  }
+                : {}),
             },
           ],
         }),

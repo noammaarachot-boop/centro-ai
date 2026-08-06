@@ -98,18 +98,26 @@ export async function sendInteractiveButtonsMessage(
   });
 }
 
+// A body parameter is either positional (fills the template's {{1}},
+// {{2}}, ... placeholders in array order — every template Centro has sent
+// live so far, e.g. centro_initial_request_v2) or named (fills a
+// {{variable_name}}-style placeholder by name, matched via Meta's
+// `parameter_name` field regardless of array position — the format
+// centro_reminder_v2 was actually created with, {{documents}}). Mixing the
+// two within one send isn't meaningful and isn't attempted anywhere in
+// this codebase; a caller uses one shape consistently per template.
+export type TemplateBodyParam = string | { name: string; value: string };
+
 // Pre-approved Message Template — required for every automated ("ai")
 // send, since WhatsApp forbids free-form messages to anyone who hasn't
 // messaged the business first (see templates.ts and the WhatsApp plan's
-// Message Template constraint). `bodyParams` fill the template's {{1}},
-// {{2}}, ... placeholders in order; none of Centro's four templates use
-// any today, so callers pass an empty array.
+// Message Template constraint).
 export async function sendTemplateMessage(
   phoneNumberId: string,
   to: string,
   templateName: string,
   languageCode: string,
-  bodyParams: string[] = []
+  bodyParams: TemplateBodyParam[] = []
 ): Promise<SendResult> {
   return postMessage(phoneNumberId, {
     messaging_product: "whatsapp",
@@ -119,7 +127,18 @@ export async function sendTemplateMessage(
       name: templateName,
       language: { code: languageCode },
       ...(bodyParams.length > 0
-        ? { components: [{ type: "body", parameters: bodyParams.map((text) => ({ type: "text", text })) }] }
+        ? {
+            components: [
+              {
+                type: "body",
+                parameters: bodyParams.map((param) =>
+                  typeof param === "string"
+                    ? { type: "text", text: param }
+                    : { type: "text", parameter_name: param.name, text: param.value }
+                ),
+              },
+            ],
+          }
         : {}),
     },
   });

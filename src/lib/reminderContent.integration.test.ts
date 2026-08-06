@@ -86,14 +86,14 @@ describe("mandatory #16: reminder outside the 24h window uses the Meta template"
     expect(send.allowFreeform).toBe(false);
   });
 
-  it("once centro_reminder_v2 is approved (v2Enabled), selects the new dynamic Template with the real missing-document list as its params", async () => {
+  it("once centro_reminder_v2 is approved (v2Enabled), selects the new dynamic Template with the real missing-document list as its named 'documents' param", async () => {
     const { conversationId, requestId } = await seedRequestWithMissingRequirement(30);
 
     const send = await buildReminderSend(conversationId, requestId, "רז שלום", true);
     expect(send.templateSend).toEqual({
       templateName: "centro_reminder_v2",
       language: "he",
-      params: ["רז שלום", "אישור שכירות"],
+      params: [{ name: "documents", value: "אישור שכירות" }],
     });
     expect(send.body).toContain("אישור שכירות");
   });

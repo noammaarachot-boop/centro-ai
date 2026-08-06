@@ -22,6 +22,7 @@ import { toE164 } from "@/lib/whatsapp/phone";
 import { buildInitialRequestSend } from "@/lib/whatsapp/initialRequestMessage";
 import {
   type InteractiveButton,
+  type TemplateBodyParam,
   sendInteractiveButtonsMessage,
   sendTemplateMessage,
   sendTextMessage,
@@ -116,7 +117,7 @@ async function getClientPhoneForConversation(conversationId: string): Promise<st
 export interface TemplateSend {
   templateName: string;
   language: string;
-  params: string[];
+  params: TemplateBodyParam[];
 }
 
 async function sendViaWhatsApp(
@@ -170,7 +171,7 @@ async function sendViaWhatsApp(
       // otherwise resolve the static template by its exact body text.
       let templateName: string;
       let language: string;
-      let params: string[];
+      let params: TemplateBodyParam[];
       if (templateSend) {
         templateName = templateSend.templateName;
         language = templateSend.language;

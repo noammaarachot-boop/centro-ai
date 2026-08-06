@@ -1,7 +1,13 @@
 import { isWithinFreeformSessionWindow, type TemplateSend } from "@/lib/conversationOrchestration";
 import { listMissingRequirementNames } from "@/lib/caseReview";
 import { formatRequirementListForTemplateParam } from "@/lib/documentRequestList";
-import { REMINDER_BODY, REMINDER_V2_BODY, REMINDER_V2_ENABLED, REMINDER_V2_TEMPLATE_NAME } from "@/lib/whatsapp/templates";
+import {
+  REMINDER_BODY,
+  REMINDER_V2_BODY,
+  REMINDER_V2_ENABLED,
+  REMINDER_V2_PARAM_NAME,
+  REMINDER_V2_TEMPLATE_NAME,
+} from "@/lib/whatsapp/templates";
 
 /**
  * Dynamic reminder content — instead of a static "still waiting for your
@@ -57,8 +63,12 @@ export async function buildReminderSend(
   if (v2Enabled) {
     const listParam = formatRequirementListForTemplateParam(missing);
     return {
-      body: REMINDER_V2_BODY.replace("{{1}}", clientName).replace("{{2}}", listParam),
-      templateSend: { templateName: REMINDER_V2_TEMPLATE_NAME, language: "he", params: [clientName, listParam] },
+      body: REMINDER_V2_BODY.replace("{{documents}}", listParam),
+      templateSend: {
+        templateName: REMINDER_V2_TEMPLATE_NAME,
+        language: "he",
+        params: [{ name: REMINDER_V2_PARAM_NAME, value: listParam }],
+      },
       allowFreeform: false,
     };
   }
