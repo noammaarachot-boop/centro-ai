@@ -60,7 +60,11 @@ export async function checkCompletionGate(
   const db = await getDb();
 
   const requirements = await db
-    .select({ id: collectionRequestRequirements.id, requiredCount: collectionRequestRequirements.requiredCount })
+    .select({
+      id: collectionRequestRequirements.id,
+      requiredCount: collectionRequestRequirements.requiredCount,
+      semanticSpec: collectionRequestRequirements.semanticSpec,
+    })
     .from(collectionRequestRequirements)
     .where(
       eq(collectionRequestRequirements.collectionRequestId, collectionRequestId)
@@ -71,6 +75,7 @@ export async function checkCompletionGate(
       requirementId: documents.requirementId,
       status: documents.status,
       extractedPeriodLabel: documents.extractedPeriodLabel,
+      extractedPersonName: documents.extractedPersonName,
       continuationOfDocumentId: documents.continuationOfDocumentId,
     })
     .from(documents)
@@ -82,17 +87,18 @@ export async function checkCompletionGate(
 
   const approvedDocuments = requestDocuments.filter((doc) => doc.status === "approved" && doc.requirementId);
 
-  // Quantity-aware (src/lib/documentQuantity.ts): a requirement with
-  // requiredCount > 1 ("3 תלושי שכר") needs that many distinct-period
-  // approved documents, not just one — every existing requirement
-  // (requiredCount defaults to 1) resolves to exactly the old
-  // one-approved-document check, unchanged. Multi-page continuation pages
-  // (continuationOfDocumentId set) are never counted as their own unit.
+  // Semantic requirement engine (src/lib/ai/requirementSemantics.ts): a
+  // requirement with requiredCount > 1 needs that many units satisfied
+  // against the office user's own stated meaning — see
+  // src/lib/documentQuantity.ts. A requirement with no parsed spec resolves
+  // to exactly the pre-semantic one-approved-document/distinct-period
+  // check, unchanged. Multi-page continuation pages (continuationOfDocumentId
+  // set) are never counted as their own unit.
   const unsatisfied = requirements.filter((requirement) => {
-    const periodLabels = approvedDocuments
+    const docs = approvedDocuments
       .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
-      .map((doc) => doc.extractedPeriodLabel);
-    return !computeRequirementSatisfaction(requirement.requiredCount, periodLabels).satisfied;
+      .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
+    return !computeRequirementSatisfaction(requirement, docs).satisfied;
   });
   if (unsatisfied.length > 0) {
     return `יש ${unsatisfied.length} דרישות מסמכים שטרם אושרו.`;

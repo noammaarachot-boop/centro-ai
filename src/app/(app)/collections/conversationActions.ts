@@ -347,6 +347,7 @@ export async function processInboundAttachment(
       name: collectionRequestRequirements.name,
       sourceRequirementId: collectionRequestRequirements.sourceRequirementId,
       requiredCount: collectionRequestRequirements.requiredCount,
+      semanticSpec: collectionRequestRequirements.semanticSpec,
     })
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
@@ -445,26 +446,28 @@ export async function processInboundAttachment(
         id: documents.id,
         requirementId: documents.requirementId,
         extractedPeriodLabel: documents.extractedPeriodLabel,
+        extractedPersonName: documents.extractedPersonName,
         receivedAt: documents.receivedAt,
         continuationOfDocumentId: documents.continuationOfDocumentId,
       })
       .from(documents)
       .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
-    // Quantity-aware: a requirement stops being "outstanding" only once its
-    // requiredCount units are actually satisfied (computeRequirementSatisfaction),
-    // not the moment a single document is approved for it — see
-    // src/lib/documentQuantity.ts. For every existing requirement
-    // (requiredCount defaults to 1), this is exactly the old one-document
-    // behavior, unchanged.
+    // Semantic requirement engine (src/lib/ai/requirementSemantics.ts): a
+    // requirement stops being "outstanding" only once its requiredCount
+    // units are actually satisfied against the office user's own stated
+    // meaning (computeRequirementSatisfaction), not the moment a single
+    // document is approved for it — see src/lib/documentQuantity.ts. A
+    // requirement with no parsed spec resolves to exactly the pre-semantic
+    // one-document/distinct-period behavior, unchanged.
     const outstandingRequirementIds = requirements
       .filter((requirement) => {
         // Multi-page continuation pages (continuationOfDocumentId set) are
         // never counted as their own unit — only the document they're a
         // page of is.
-        const periodLabels = existingApproved
+        const docs = existingApproved
           .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
-          .map((doc) => doc.extractedPeriodLabel);
-        return !computeRequirementSatisfaction(requirement.requiredCount, periodLabels).satisfied;
+          .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
+        return !computeRequirementSatisfaction(requirement, docs).satisfied;
       })
       .map((requirement) => requirement.id);
 
