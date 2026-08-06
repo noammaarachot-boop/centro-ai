@@ -48,6 +48,8 @@ interface FakeFile {
   id: string;
   name: string;
   parentId: string;
+  content?: Buffer;
+  mimeType?: string;
 }
 let fakeFolders: FakeFolder[] = [];
 let fakeFiles: FakeFile[] = [];
@@ -90,14 +92,28 @@ vi.mock("@/lib/googleAuth/drive", async () => {
       const folder = fakeFolders.find((f) => f.id === folderId);
       if (folder) folder.trashed = true;
     }),
-    uploadDriveFile: vi.fn(async (_token: string, options: { name: string; parentId: string }) => {
-      const id = `file-${nextId++}`;
-      fakeFiles.push({ id, name: options.name, parentId: options.parentId });
-      return { id, name: options.name, webViewLink: `https://drive.example/${id}` };
-    }),
+    uploadDriveFile: vi.fn(
+      async (_token: string, options: { name: string; parentId: string; mimeType?: string; content?: Buffer }) => {
+        const id = `file-${nextId++}`;
+        fakeFiles.push({ id, name: options.name, parentId: options.parentId, content: options.content, mimeType: options.mimeType });
+        return { id, name: options.name, webViewLink: `https://drive.example/${id}` };
+      }
+    ),
     renameDriveFile: vi.fn(async (_token: string, fileId: string, newName: string) => {
       const file = fakeFiles.find((f) => f.id === fileId);
       if (file) file.name = newName;
+    }),
+    downloadDriveFile: vi.fn(async (_token: string, fileId: string) => {
+      const file = fakeFiles.find((f) => f.id === fileId);
+      if (!file) throw new Error(`fake drive file ${fileId} not found`);
+      return { bytes: file.content ?? Buffer.from(""), mimeType: file.mimeType ?? "application/octet-stream" };
+    }),
+    updateDriveFileContent: vi.fn(async (_token: string, fileId: string, content: Buffer, mimeType: string) => {
+      const file = fakeFiles.find((f) => f.id === fileId);
+      if (file) {
+        file.content = content;
+        file.mimeType = mimeType;
+      }
     }),
   };
 });
@@ -112,6 +128,15 @@ const classifyDocumentRelationIntent = vi.fn();
 vi.mock("@/lib/ai/conversationReplyIntent", () => ({
   classifyDocumentRelationIntent: (...args: unknown[]) => classifyDocumentRelationIntent(...args),
 }));
+
+// Real single-PDF merging (src/lib/documentMerge.ts) actually calls
+// pdf-lib's embedPng/embedJpg on these bytes — Buffer.from("page1")-style
+// placeholders used elsewhere in this file aren't valid image data and
+// would throw there. This is the smallest possible valid 1x1 PNG.
+const MINIMAL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64"
+);
 
 const { processInboundAttachment } = await import("./conversationActions");
 const { runCaseReview } = await import("@/lib/caseReview");
@@ -699,6 +724,139 @@ describe("processInboundAttachment — multi-page document merging", () => {
     const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
     expect(docs).toHaveLength(2);
     expect(docs.every((d) => d.continuationOfDocumentId === null)).toBe(true);
+  });
+});
+
+// Real single-PDF merging end to end (mandatory scenario #12/#14): once
+// multi-page detection confidently recognizes several images as one
+// document, Centro must produce exactly one real merged PDF file in
+// Drive — not just link several separate image files in the database.
+describe("processInboundAttachment — real single-PDF merging", () => {
+  it("5 images of the same document merge into exactly one real PDF file in Drive, never counted as 5 documents", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["חוזה שכירות"]);
+    const leaseReq = requirements[0];
+
+    for (let page = 1; page <= 5; page++) {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "חוזה שכירות",
+        identificationConfidence: 0.95,
+        matchedRequirementId: leaseReq.id,
+        matchConfidence: 0.95,
+        pageNumberCurrent: page,
+        pageNumberTotal: 5,
+      });
+      await processInboundAttachment(
+        orgId,
+        requestId,
+        conversationId,
+        clientId,
+        `image_wamid.mergepage${page}.jpg`,
+        null,
+        MINIMAL_PNG,
+        "image/png",
+        `wamid.mergepage${page}`
+      );
+    }
+
+    const docs = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.collectionRequestId, requestId))
+      .orderBy(schema.documents.receivedAt);
+    expect(docs).toHaveLength(5);
+    const head = docs[0];
+    expect(head.continuationOfDocumentId).toBeNull();
+    expect(docs.slice(1).every((d) => d.continuationOfDocumentId === head.id)).toBe(true);
+
+    // Never counted as 5 separate documents for a requiredCount=1
+    // requirement.
+    expect(await checkCompletionGate(requestId)).toBeNull();
+
+    // Exactly one merged PDF file was produced (created once, then updated
+    // in place 4 times — never a new file per page).
+    expect(head.mergedPdfDriveFileId).not.toBeNull();
+    expect(head.mergedPdfVersion).toBe(4);
+    const mergedFile = fakeFiles.find((f) => f.id === head.mergedPdfDriveFileId);
+    expect(mergedFile).toBeDefined();
+    expect(mergedFile!.mimeType).toBe("application/pdf");
+
+    // Every raw source page still has its own individual Drive file too —
+    // nothing was deleted.
+    expect(fakeFiles.filter((f) => f.mimeType !== "application/pdf")).toHaveLength(5);
+    // Exactly one merged PDF among all Drive files (not one per page).
+    expect(fakeFiles.filter((f) => f.mimeType === "application/pdf")).toHaveLength(1);
+
+    // The merged file is a real, valid PDF with all 5 pages, in order.
+    const { PDFDocument } = await import("pdf-lib");
+    const mergedPdf = await PDFDocument.load(mergedFile!.content!);
+    expect(mergedPdf.getPageCount()).toBe(5);
+  });
+
+  it("a late-arriving page updates the same merged PDF file in place — never a duplicate file", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["חוזה שכירות"]);
+    const leaseReq = requirements[0];
+
+    for (let page = 1; page <= 2; page++) {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "חוזה שכירות",
+        identificationConfidence: 0.95,
+        matchedRequirementId: leaseReq.id,
+        matchConfidence: 0.95,
+        pageNumberCurrent: page,
+        pageNumberTotal: 3,
+      });
+      await processInboundAttachment(
+        orgId,
+        requestId,
+        conversationId,
+        clientId,
+        `image_wamid.latepage${page}.jpg`,
+        null,
+        MINIMAL_PNG,
+        "image/png",
+        `wamid.latepage${page}`
+      );
+    }
+    const docsAfterTwo = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    const head = docsAfterTwo.find((d) => d.continuationOfDocumentId === null)!;
+    const mergedFileIdAfterTwo = head.mergedPdfDriveFileId;
+    expect(mergedFileIdAfterTwo).not.toBeNull();
+
+    // A third page, arriving later, clearly belonging to the same document
+    // (matching total page count, sequential page number).
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חוזה שכירות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: leaseReq.id,
+      matchConfidence: 0.95,
+      pageNumberCurrent: 3,
+      pageNumberTotal: 3,
+    });
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "image_wamid.latepage3.jpg",
+      null,
+      MINIMAL_PNG,
+      "image/png",
+      "wamid.latepage3"
+    );
+
+    const [updatedHead] = await db.select().from(schema.documents).where(eq(schema.documents.id, head.id));
+    // Same Drive file id — updated in place, never a second merged file.
+    expect(updatedHead.mergedPdfDriveFileId).toBe(mergedFileIdAfterTwo);
+    expect(updatedHead.mergedPdfVersion).toBe(2);
+    expect(fakeFiles.filter((f) => f.mimeType === "application/pdf")).toHaveLength(1);
+
+    const { PDFDocument } = await import("pdf-lib");
+    const mergedFile = fakeFiles.find((f) => f.id === updatedHead.mergedPdfDriveFileId);
+    const mergedPdf = await PDFDocument.load(mergedFile!.content!);
+    expect(mergedPdf.getPageCount()).toBe(3);
   });
 });
 
