@@ -9,6 +9,7 @@ import {
 } from "@/lib/data/services";
 import {
   addRequirement,
+  addRequirementWithClarification,
   deleteService,
   pauseServiceAutomation,
   removeRequirement,
@@ -34,11 +35,11 @@ export default async function ServiceDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; clarifyName?: string; clarifyDescription?: string; clarifyQuestion?: string }>;
 }) {
   const session = await requireSession();
   const { id } = await params;
-  const { error } = await searchParams;
+  const { error, clarifyName, clarifyDescription, clarifyQuestion } = await searchParams;
 
   const organization = await getOrganization(session.organizationId);
   if (!organization) notFound();
@@ -68,6 +69,7 @@ export default async function ServiceDetailPage({
   const boundUpdate = updateService.bind(null, service.id);
   const boundDelete = deleteService.bind(null, service.id);
   const boundAddRequirement = addRequirement.bind(null, service.id);
+  const boundAddRequirementWithClarification = addRequirementWithClarification.bind(null, service.id);
   const isPaused = !!service.automationPausedAt;
 
   return (
@@ -199,18 +201,44 @@ export default async function ServiceDetailPage({
           </ul>
         )}
 
-        <form action={boundAddRequirement} className="flex items-center gap-2">
-          <input
-            name="name"
-            type="text"
-            required
-            placeholder="לדוגמה: דף חשבון בנק"
-            className={fieldClass("md", "flex-1")}
-          />
-          <button type="submit" className={buttonVariants({ variant: "secondary" })}>
-            הוספת דרישה
-          </button>
-        </form>
+        {clarifyQuestion ? (
+          // Semantic requirement engine — the AI couldn't confidently
+          // interpret the free text alone; asks the OFFICE USER (never the
+          // client) one short question before this requirement is saved.
+          <form
+            action={boundAddRequirementWithClarification}
+            className="space-y-2 rounded-xl border border-brand-purple/30 bg-brand-purple/5 p-4"
+          >
+            <p className="text-sm font-medium text-text-primary">{clarifyQuestion}</p>
+            <input type="hidden" name="name" value={clarifyName ?? ""} />
+            <input type="hidden" name="description" value={clarifyDescription ?? ""} />
+            <div className="flex items-center gap-2">
+              <input
+                name="clarificationAnswer"
+                type="text"
+                autoFocus
+                placeholder="תשובה קצרה..."
+                className={fieldClass("md", "flex-1")}
+              />
+              <button type="submit" className={buttonVariants({ variant: "primary" })}>
+                אישור
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form action={boundAddRequirement} className="flex items-center gap-2">
+            <input
+              name="name"
+              type="text"
+              required
+              placeholder="לדוגמה: דף חשבון בנק"
+              className={fieldClass("md", "flex-1")}
+            />
+            <button type="submit" className={buttonVariants({ variant: "secondary" })}>
+              הוספת דרישה
+            </button>
+          </form>
+        )}
       </Card>
 
       <ServiceFrequencyCard

@@ -9,6 +9,7 @@ import {
 import { recordAuditEvent } from "@/lib/audit";
 import { detectMissingRequirements, resolveEffectiveRequirementNames } from "@/lib/clientDocumentProfile";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
+import { resolveExplicitPeriodsForSnapshot, type RequirementSemanticSpec } from "@/lib/ai/requirementSemantics";
 
 export type CollectionRequestStatus =
   | "draft"
@@ -249,12 +250,26 @@ export async function snapshotServiceRequirements(
 
   if (effective.length === 0) return;
 
+  // Semantic requirement engine — a bare month-only period ("06" for
+  // "יוני") in the reusable template only becomes a concrete "MM/YYYY" now,
+  // anchored to this specific request's own creation moment (see
+  // resolveExplicitPeriodsForSnapshot's own doc comment: a template has no
+  // request date of its own to anchor a year to).
+  const now = new Date();
   await db.insert(collectionRequestRequirements).values(
-    effective.map((requirement) => ({
-      collectionRequestId,
-      sourceRequirementId: requirement.sourceRequirementId,
-      name: requirement.name,
-      description: requirement.description,
-    }))
+    effective.map((requirement) => {
+      const templateSpec = requirement.semanticSpec as RequirementSemanticSpec | null;
+      const snapshotSpec: RequirementSemanticSpec | null = templateSpec
+        ? { ...templateSpec, explicitPeriods: resolveExplicitPeriodsForSnapshot(templateSpec.explicitPeriods, now) }
+        : null;
+      return {
+        collectionRequestId,
+        sourceRequirementId: requirement.sourceRequirementId,
+        name: requirement.name,
+        description: requirement.description,
+        requiredCount: requirement.requiredCount,
+        semanticSpec: snapshotSpec,
+      };
+    })
   );
 }

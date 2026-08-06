@@ -15,6 +15,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { snapshotServiceRequirements } from "@/lib/collectionRequestStateMachine";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
+import { parseRequirementSemantics, requiresClarification } from "@/lib/ai/requirementSemantics";
 
 // Product Evolution M5 — a Template is a bare `services` row for a
 // one-time-workflow organization (see ARCHITECTURE.md); these actions are
@@ -116,11 +117,23 @@ export async function createCollectionRequestDraft(
     .returning();
 
   if (requirementNames.length > 0) {
+    // Semantic requirement engine (src/lib/ai/requirementSemantics.ts) —
+    // parsed and stored honestly here, but never blocks this bulk wizard
+    // step on ambiguity (unlike addRequirement/addTemplateRequirement's
+    // single-item synchronous clarification): a requirement parsed with
+    // low confidence is still saved, with that low confidence recorded —
+    // resolveRequirementSemantics (requirementSemanticsActions.ts) is what
+    // lets the office user resolve it, from the template management page
+    // that follows immediately after this step and before the request is
+    // ever actually sent to a client.
+    const specs = await Promise.all(requirementNames.map((reqName) => parseRequirementSemantics(reqName, requirementNames)));
     await db.insert(serviceDocumentRequirements).values(
       requirementNames.map((reqName, index) => ({
         serviceId: draft.id,
         name: reqName,
         position: index,
+        requiredCount: specs[index].requiredCount,
+        semanticSpec: specs[index],
       }))
     );
   }
@@ -257,7 +270,25 @@ export async function addTemplateRequirement(templateId: string, formData: FormD
   await getOrgScopedTemplate(session.organizationId, templateId);
 
   const db = await getDb();
-  await db.insert(serviceDocumentRequirements).values({ serviceId: templateId, name });
+  const existingNames = (
+    await db
+      .select({ name: serviceDocumentRequirements.name })
+      .from(serviceDocumentRequirements)
+      .where(eq(serviceDocumentRequirements.serviceId, templateId))
+  ).map((r) => r.name);
+  const spec = await parseRequirementSemantics(name, existingNames);
+
+  if (requiresClarification(spec)) {
+    const params = new URLSearchParams({ clarifyName: name, clarifyQuestion: spec.clarifyingQuestion ?? "" });
+    redirect(`/collections/manage/${templateId}?${params.toString()}`);
+  }
+
+  await db.insert(serviceDocumentRequirements).values({
+    serviceId: templateId,
+    name,
+    requiredCount: spec.requiredCount,
+    semanticSpec: spec,
+  });
 
   await recordAuditEvent({
     organizationId: session.organizationId,
@@ -265,6 +296,47 @@ export async function addTemplateRequirement(templateId: string, formData: FormD
     description: `מסמך "${name}" נוסף לבקשת האיסוף`,
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { requiredCount: spec.requiredCount, periodType: spec.periodType },
+  });
+
+  refresh();
+}
+
+// The clarification counterpart to addTemplateRequirement above — mirrors
+// addRequirementWithClarification (services/actions.ts) exactly.
+export async function addTemplateRequirementWithClarification(templateId: string, formData: FormData) {
+  const session = await requireSession();
+  const name = String(formData.get("name") ?? "").trim();
+  const clarificationAnswer = String(formData.get("clarificationAnswer") ?? "").trim();
+  if (!name) redirect(`/collections/manage/${templateId}?error=requirement-name`);
+
+  await getOrgScopedTemplate(session.organizationId, templateId);
+
+  const db = await getDb();
+  const existingNames = (
+    await db
+      .select({ name: serviceDocumentRequirements.name })
+      .from(serviceDocumentRequirements)
+      .where(eq(serviceDocumentRequirements.serviceId, templateId))
+  ).map((r) => r.name);
+  const clarifiedText = clarificationAnswer ? `${name} — הבהרת המשתמש: ${clarificationAnswer}` : name;
+  const spec = await parseRequirementSemantics(clarifiedText, existingNames);
+  const resolvedSpec = { ...spec, originalText: name };
+
+  await db.insert(serviceDocumentRequirements).values({
+    serviceId: templateId,
+    name,
+    requiredCount: resolvedSpec.requiredCount,
+    semanticSpec: resolvedSpec,
+  });
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "template.requirement_added",
+    description: `מסמך "${name}" נוסף לבקשת האיסוף`,
+    actorType: "employee",
+    actorUserId: session.userId,
+    metadata: { requiredCount: resolvedSpec.requiredCount, periodType: resolvedSpec.periodType },
   });
 
   refresh();

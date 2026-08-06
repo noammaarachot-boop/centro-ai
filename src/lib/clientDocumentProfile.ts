@@ -43,6 +43,8 @@ export interface EffectiveRequirement {
   sourceRequirementId: string | null;
   name: string;
   description: string | null;
+  requiredCount: number;
+  semanticSpec: unknown;
 }
 
 // What snapshotServiceRequirements actually copies into a new Collection
@@ -61,6 +63,8 @@ export async function resolveEffectiveRequirementNames(
       id: serviceDocumentRequirements.id,
       name: serviceDocumentRequirements.name,
       description: serviceDocumentRequirements.description,
+      requiredCount: serviceDocumentRequirements.requiredCount,
+      semanticSpec: serviceDocumentRequirements.semanticSpec,
     })
     .from(serviceDocumentRequirements)
     .where(eq(serviceDocumentRequirements.serviceId, serviceId));
@@ -83,10 +87,20 @@ export async function resolveEffectiveRequirementNames(
 
   const effective: EffectiveRequirement[] = templates
     .filter((t) => !removedTemplateIds.has(t.id))
-    .map((t) => ({ sourceRequirementId: t.id, name: t.name, description: t.description }));
+    .map((t) => ({
+      sourceRequirementId: t.id,
+      name: t.name,
+      description: t.description,
+      requiredCount: t.requiredCount,
+      semanticSpec: t.semanticSpec,
+    }));
 
   for (const addition of confirmedAdditions) {
-    effective.push({ sourceRequirementId: null, name: addition.name, description: null });
+    // An ad-hoc client-profile addition (Milestone 6 — an employee assigned
+    // an unmatched document to a brand-new name for this client) was never
+    // a parsed template requirement — always exactly one document, no
+    // period/quantity semantics to speak of.
+    effective.push({ sourceRequirementId: null, name: addition.name, description: null, requiredCount: 1, semanticSpec: null });
   }
 
   return effective;

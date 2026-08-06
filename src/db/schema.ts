@@ -542,6 +542,21 @@ export const serviceDocumentRequirements = pgTable(
     // default, so an all-null service's requirements keep exactly their
     // original creation-time order with no special-case code needed.
     position: integer("position"),
+    // Semantic requirement engine (src/lib/ai/requirementSemantics.ts) — the
+    // office user's free text (`name`) is the source of truth; this is the
+    // structured interpretation of it (RequirementSemanticSpec), parsed once
+    // at save time via AI, never guessed silently below a confidence floor
+    // (see requirementSemantics.ts's own doc comment for the office-user
+    // clarification flow). Null for a requirement created before this
+    // feature, or if parsing genuinely failed — src/lib/documentQuantity.ts's
+    // computeRequirementSatisfaction falls back to today's exact
+    // one-document/distinct-label behavior when this is null.
+    semanticSpec: jsonb("semantic_spec"),
+    // Mirrors collectionRequestRequirements.requiredCount — kept here too
+    // (not only derivable from semanticSpec) so a requirement's own count is
+    // never lost if the spec fails to parse; default 1 preserves today's
+    // exactly-one-document behavior.
+    requiredCount: integer("required_count").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -758,13 +773,22 @@ export const collectionRequestRequirements = pgTable(
     ),
     name: text("name").notNull(),
     description: text("description"),
-    // Groundwork only — not read or written by any logic yet (default 1
-    // preserves today's exactly-one-document-per-requirement behavior for
-    // every existing requirement). Reserved for the planned quantity-aware
-    // requirement engine ("3 payslips", "2 invoices") — checkCompletionGate
-    // and the matching/counting logic in documentIntakeReview.ts still only
-    // ever check "is there one approved document," not "are there N."
+    // Read by src/lib/documentQuantity.ts's computeRequirementSatisfaction
+    // and checkCompletionGate — how many units this requirement needs.
+    // Default 1 preserves today's exactly-one-document behavior for every
+    // requirement whose semanticSpec (below) is null or has no opinion.
     requiredCount: integer("required_count").notNull().default(1),
+    // Semantic requirement engine (src/lib/ai/requirementSemantics.ts) —
+    // copied from serviceDocumentRequirements.semanticSpec at snapshot time
+    // (snapshotServiceRequirements), with any relative/month-only period
+    // resolved into concrete "MM/YYYY" entries anchored to this specific
+    // request's own creation date (a reusable Service template has no
+    // request date of its own — "last 3 months" only means something once
+    // a real request exists). Null when the source had no parsed spec, or
+    // for an ad-hoc client-profile addition (Milestone 6) that was never a
+    // template requirement at all — computeRequirementSatisfaction falls
+    // back to legacy behavior in both cases.
+    semanticSpec: jsonb("semantic_spec"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

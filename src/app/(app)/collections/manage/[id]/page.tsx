@@ -11,10 +11,13 @@ import {
 } from "@/lib/data/services";
 import {
   addTemplateRequirement,
+  addTemplateRequirementWithClarification,
   deleteTemplate,
   duplicateTemplate,
   updateTemplate,
 } from "../../../templates/actions";
+import { resolveRequirementSemantics } from "@/lib/requirementSemanticsActions";
+import { requiresClarification, type RequirementSemanticSpec } from "@/lib/ai/requirementSemantics";
 import { TemplateForm } from "../../../templates/TemplateForm";
 import { TemplateRequirementRow } from "../../../templates/TemplateRequirementRow";
 import { TemplateClientAssignment } from "../../../templates/TemplateClientAssignment";
@@ -47,11 +50,11 @@ export default async function CollectionRequestManagePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; sent?: string; scheduled?: string }>;
+  searchParams: Promise<{ error?: string; sent?: string; scheduled?: string; clarifyName?: string; clarifyQuestion?: string }>;
 }) {
   const session = await requireSession();
   const { id } = await params;
-  const { error, sent, scheduled } = await searchParams;
+  const { error, sent, scheduled, clarifyName, clarifyQuestion } = await searchParams;
 
   const organization = await getOrganization(session.organizationId);
   if (!organization) notFound();
@@ -68,6 +71,7 @@ export default async function CollectionRequestManagePage({
   const boundDelete = deleteTemplate.bind(null, template.id);
   const boundDuplicate = duplicateTemplate.bind(null, template.id);
   const boundAddRequirement = addTemplateRequirement.bind(null, template.id);
+  const boundAddRequirementWithClarification = addTemplateRequirementWithClarification.bind(null, template.id);
 
   return (
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -142,31 +146,81 @@ export default async function CollectionRequestManagePage({
           />
         ) : (
           <ul className="mb-5 space-y-2">
-            {requirements.map((requirement, index) => (
-              <TemplateRequirementRow
-                key={requirement.id}
-                templateId={template.id}
-                requirementId={requirement.id}
-                name={requirement.name}
-                isFirst={index === 0}
-                isLast={index === requirements.length - 1}
-              />
-            ))}
+            {requirements.map((requirement, index) => {
+              const spec = requirement.semanticSpec as RequirementSemanticSpec | null;
+              const ambiguous = spec && requiresClarification(spec);
+              return (
+                <li key={requirement.id}>
+                  <TemplateRequirementRow
+                    templateId={template.id}
+                    requirementId={requirement.id}
+                    name={requirement.name}
+                    isFirst={index === 0}
+                    isLast={index === requirements.length - 1}
+                  />
+                  {ambiguous && (
+                    // Semantic requirement engine — this row was saved via
+                    // the bulk wizard step (createCollectionRequestDraft),
+                    // which never blocks on ambiguity; resolved here,
+                    // before the request is ever sent.
+                    <form
+                      action={resolveRequirementSemantics.bind(null, requirement.id)}
+                      className="mt-1 space-y-1.5 rounded-lg border border-brand-purple/30 bg-brand-purple/5 p-3"
+                    >
+                      <p className="text-xs font-medium text-text-primary">{spec!.clarifyingQuestion}</p>
+                      <div className="flex items-center gap-2">
+                        <input
+                          name="clarificationAnswer"
+                          type="text"
+                          placeholder="תשובה קצרה..."
+                          className={fieldClass("sm", "flex-1")}
+                        />
+                        <button type="submit" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+                          אישור
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
 
-        <form action={boundAddRequirement} className="flex items-center gap-2">
-          <input
-            name="name"
-            type="text"
-            required
-            placeholder="לדוגמה: תעודת זהות"
-            className={fieldClass("md", "flex-1")}
-          />
-          <button type="submit" className={buttonVariants({ variant: "secondary" })}>
-            הוספת מסמך
-          </button>
-        </form>
+        {clarifyQuestion ? (
+          <form
+            action={boundAddRequirementWithClarification}
+            className="space-y-2 rounded-xl border border-brand-purple/30 bg-brand-purple/5 p-4"
+          >
+            <p className="text-sm font-medium text-text-primary">{clarifyQuestion}</p>
+            <input type="hidden" name="name" value={clarifyName ?? ""} />
+            <div className="flex items-center gap-2">
+              <input
+                name="clarificationAnswer"
+                type="text"
+                autoFocus
+                placeholder="תשובה קצרה..."
+                className={fieldClass("md", "flex-1")}
+              />
+              <button type="submit" className={buttonVariants({ variant: "primary" })}>
+                אישור
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form action={boundAddRequirement} className="flex items-center gap-2">
+            <input
+              name="name"
+              type="text"
+              required
+              placeholder="לדוגמה: תעודת זהות"
+              className={fieldClass("md", "flex-1")}
+            />
+            <button type="submit" className={buttonVariants({ variant: "secondary" })}>
+              הוספת מסמך
+            </button>
+          </form>
+        )}
       </Card>
 
       <TemplateClientAssignment

@@ -9,6 +9,12 @@ import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { resolveScheduleConfig } from "@/lib/businessHours";
 import { computeInitialCollectionRunAt } from "@/lib/recurringScheduler";
+import {
+  parseRequirementSemantics,
+  requiresClarification,
+  type RequirementSemanticSpec,
+} from "@/lib/ai/requirementSemantics";
+import { listServiceRequirements } from "@/lib/data/services";
 
 export interface ServiceFormState {
   error?: string;
@@ -136,31 +142,90 @@ export async function deleteService(serviceId: string) {
 // to drop its cached RSC payload, so the new requirement wouldn't appear
 // until a manual reload. redirect() is only used below for the genuine
 // same-page-but-different-query error case, which is a real navigation.
-export async function addRequirement(serviceId: string, formData: FormData) {
-  const session = await requireSession();
-  const name = String(formData.get("name") ?? "").trim();
-  const description = String(formData.get("description") ?? "").trim();
-  const returnTo = formData.get("returnTo")?.toString();
-
-  if (!name) redirect(returnTo || `/services/${serviceId}?error=requirement-name`);
-
-  await getOrgScopedService(session.organizationId, serviceId);
-
+// Semantic requirement engine (src/lib/ai/requirementSemantics.ts) — "the
+// office user's request is the source of truth." Parses the free text
+// once at save time; when the interpretation is genuinely ambiguous (e.g.
+// "3 תלושי שכר" without saying whether the three must be different months),
+// this never guesses a rule the office user didn't state — it redirects
+// back with the AI's own short clarifying question instead of saving, and
+// addRequirementWithClarification below is what actually saves once the
+// office user has answered.
+async function saveRequirement(
+  organizationId: string,
+  actorUserId: string,
+  serviceId: string,
+  name: string,
+  description: string,
+  spec: RequirementSemanticSpec
+) {
   const db = await getDb();
   await db.insert(serviceDocumentRequirements).values({
     serviceId,
     name,
     description: description || null,
+    requiredCount: spec.requiredCount,
+    semanticSpec: spec,
   });
 
   await recordAuditEvent({
-    organizationId: session.organizationId,
+    organizationId,
     eventType: "service.requirement_added",
     description: `דרישת מסמך "${name}" נוספה לתבנית`,
     actorType: "employee",
-    actorUserId: session.userId,
+    actorUserId,
+    metadata: { requiredCount: spec.requiredCount, periodType: spec.periodType, interpretationConfidence: spec.interpretationConfidence },
   });
+}
 
+export async function addRequirement(serviceId: string, formData: FormData) {
+  const session = await requireSession();
+  const name = String(formData.get("name") ?? "").trim();
+  const description = String(formData.get("description") ?? "").trim();
+  const returnTo = formData.get("returnTo")?.toString() || `/services/${serviceId}`;
+
+  if (!name) redirect(returnTo.includes("?") ? `${returnTo}&error=requirement-name` : `${returnTo}?error=requirement-name`);
+
+  await getOrgScopedService(session.organizationId, serviceId);
+
+  const existingNames = (await listServiceRequirements(serviceId)).map((r) => r.name);
+  const spec = await parseRequirementSemantics(name, existingNames);
+
+  if (requiresClarification(spec)) {
+    const params = new URLSearchParams({
+      clarifyName: name,
+      clarifyDescription: description,
+      clarifyQuestion: spec.clarifyingQuestion ?? "",
+    });
+    redirect(`/services/${serviceId}?${params.toString()}`);
+  }
+
+  await saveRequirement(session.organizationId, session.userId, serviceId, name, description, spec);
+  refresh();
+}
+
+// The second half of the clarification round-trip — re-parses with the
+// office user's own answer appended as extra context, then saves
+// regardless of the resulting confidence (never asks a second time; a
+// still-low-confidence result after a real clarification attempt is saved
+// as the best available interpretation rather than looping forever).
+export async function addRequirementWithClarification(serviceId: string, formData: FormData) {
+  const session = await requireSession();
+  const name = String(formData.get("name") ?? "").trim();
+  const description = String(formData.get("description") ?? "").trim();
+  const clarificationAnswer = String(formData.get("clarificationAnswer") ?? "").trim();
+
+  if (!name) redirect(`/services/${serviceId}?error=requirement-name`);
+
+  await getOrgScopedService(session.organizationId, serviceId);
+
+  const existingNames = (await listServiceRequirements(serviceId)).map((r) => r.name);
+  const clarifiedText = clarificationAnswer ? `${name} — הבהרת המשתמש: ${clarificationAnswer}` : name;
+  const spec = await parseRequirementSemantics(clarifiedText, existingNames);
+  // originalText must stay the requirement's own literal name, never the
+  // clarification-augmented prompt text used only to help the AI understand.
+  const resolvedSpec: RequirementSemanticSpec = { ...spec, originalText: name };
+
+  await saveRequirement(session.organizationId, session.userId, serviceId, name, description, resolvedSpec);
   refresh();
 }
 
