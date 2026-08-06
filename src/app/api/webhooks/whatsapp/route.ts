@@ -18,7 +18,8 @@ import {
   applyUnsolicitedConfirmationDecision,
 } from "@/lib/documentIntakeReview";
 import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification";
-import { applyFollowUpPromiseIfAny, attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
+import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
+import { applyDeferralIfAny } from "@/lib/reminderDeferral";
 import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
 import { createRequestReopenConfirmation, applyRequestReopenDecision, decidePostCompletionGate } from "@/lib/requestReopen";
 import { applyExtensionFinishedDecision } from "@/lib/requestExtension";
@@ -464,12 +465,13 @@ async function handleInboundMessage(
         });
         console.log("[wa-inbound] case review outcome", { collectionRequestId, outcome });
       } else {
-        // Free-text "I'll send it later" understanding — only reached once
+        // Free-text "I'll send it later" understanding, now including real
+        // dated commitments ("אשלח ביום חמישי") as a stronger case than a
+        // vague short-term promise ("אשלח בערב") — only reached once
         // nothing else claimed this message (no open confirmation, not a
         // finished signal). A no-op for the overwhelming majority of
-        // ordinary messages; see applyFollowUpPromiseIfAny's own doc
-        // comment.
-        const promised = await applyFollowUpPromiseIfAny({
+        // ordinary messages; see applyDeferralIfAny's own doc comment.
+        const promised = await applyDeferralIfAny({
           organizationId: organization.id,
           conversationId: conversation.id,
           collectionRequestId,
@@ -477,7 +479,7 @@ async function handleInboundMessage(
           replyText: body,
         });
         if (promised) {
-          console.log("[wa-inbound] follow-up promise recognized, reminder deferred", { collectionRequestId });
+          console.log("[wa-inbound] follow-up promise or dated deferral recognized", { collectionRequestId });
         } else {
           // Message-relevance gate — the final fallback, only reached once
           // every earlier resolver (open confirmation, "finished", "I'll

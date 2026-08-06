@@ -1055,6 +1055,26 @@ export const conversations = pgTable("conversations", {
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  // Reminder deferral by explicit client commitment (src/lib/reminderDeferral.ts)
+  // — set only when the client committed to a genuine future date ("אשלח
+  // ביום חמישי", "אשלח ב-15 באוגוסט"), never for a vague short-term promise
+  // ("אשלח בערב", still handled by the pre-existing ack-only path with no
+  // stored date). While set and still in the future, the scheduler's
+  // normal reminderIntervalDays-based staleness check is bypassed entirely
+  // — no reminder before this moment, regardless of how long the
+  // conversation has been idle. Cleared the moment it's actually acted on
+  // (the date arrives and a reminder/completion is triggered) or the
+  // request completes early — never left stale once used.
+  deferredReminderAt: timestamp("deferred_reminder_at", { withTimezone: true }),
+  // The client's own literal wording — kept as the source of truth
+  // alongside the resolved instant above, same discipline as
+  // RequirementSemanticSpec.originalText.
+  deferredReminderOriginalText: text("deferred_reminder_original_text"),
+  deferredReminderTimezone: text("deferred_reminder_timezone"),
+  // Human-readable Hebrew explanation of what was understood (e.g. "יום
+  // חמישי" or "בעוד יומיים, בתאריך 8 באוגוסט") — reused verbatim to build
+  // the client-facing confirmation and kept here for audit/debugging.
+  deferredReminderReason: text("deferred_reminder_reason"),
 });
 
 export const messageDirection = pgEnum("message_direction", [

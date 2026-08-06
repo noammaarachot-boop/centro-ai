@@ -2,7 +2,7 @@ import { and, eq, isNotNull, lte } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
-import { resolveScheduleConfig } from "@/lib/businessHours";
+import { isWithinBusinessHours, nextBusinessOpenTime, resolveScheduleConfig } from "@/lib/businessHours";
 import {
   evaluateAndPrompt,
   sendOutboundMessage,
@@ -136,6 +136,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         clientId: collectionRequests.clientId,
         clientName: clients.name,
         updatedAt: conversations.updatedAt,
+        deferredReminderAt: conversations.deferredReminderAt,
         service: services,
       })
       .from(conversations)
@@ -157,21 +158,46 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       );
 
     for (const conversation of staleWaitingConversations) {
-      const { reminderIntervalDays } = resolveScheduleConfig(
-        organization,
-        conversation.service
-      );
-      const reminderCutoff = new Date(
-        Date.now() - reminderIntervalDays * 24 * 60 * 60 * 1000
-      );
-      // Free-text "I'll send it later" understanding
-      // (src/lib/ai/conversationReplyIntent.ts) — no separate deferral
-      // bookkeeping needed here: the client's own message already reset
+      const scheduleConfig = resolveScheduleConfig(organization, conversation.service);
+      const { reminderIntervalDays } = scheduleConfig;
+
+      // Reminder deferral by explicit client commitment
+      // (src/lib/reminderDeferral.ts) — a genuine dated promise ("אשלח ביום
+      // חמישי") suppresses the normal reminderIntervalDays staleness check
+      // entirely until that date, regardless of how long the conversation
+      // has been idle. A vague short-term promise ("אשלח בעוד שעה") never
+      // sets this at all — the client's own message already reset
       // conversations.updatedAt (recordInboundMessage), which is exactly
-      // what this staleness check measures against — a promise like "אשלח
-      // בעוד שעה" is never nagged before this regular interval elapses
-      // either way.
-      if (conversation.updatedAt >= reminderCutoff) continue;
+      // what the normal staleness check below measures against.
+      if (conversation.deferredReminderAt) {
+        if (conversation.deferredReminderAt > new Date()) continue; // not due yet
+
+        // Atomic claim (same compare-and-swap pattern as
+        // flushDueIntakeNotifications) — prevents two concurrent scheduler
+        // ticks from both acting on the same due deferral. Clears the
+        // deferral unconditionally; a business-hours gate below restores
+        // it (rescheduled) if the send can't actually go out right now.
+        const claimed = await db
+          .update(conversations)
+          .set({ deferredReminderAt: null })
+          .where(and(eq(conversations.id, conversation.id), eq(conversations.deferredReminderAt, conversation.deferredReminderAt)))
+          .returning({ id: conversations.id });
+        if (claimed.length === 0) continue; // lost the race to another tick
+
+        if (!isWithinBusinessHours(scheduleConfig)) {
+          await db
+            .update(conversations)
+            .set({ deferredReminderAt: nextBusinessOpenTime(scheduleConfig) })
+            .where(eq(conversations.id, conversation.id));
+          continue;
+        }
+        // Due and within business hours — fall through to the same
+        // gate-check-then-send-or-complete logic as a normal stale
+        // reminder, just without the interval-staleness gate above.
+      } else {
+        const reminderCutoff = new Date(Date.now() - reminderIntervalDays * 24 * 60 * 60 * 1000);
+        if (conversation.updatedAt >= reminderCutoff) continue;
+      }
 
       // Reminder infrastructure — "ביטול תזכורת כאשר הדרישה הושלמה": a
       // request can become fully satisfied without the client ever typing

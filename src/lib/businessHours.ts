@@ -91,7 +91,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Sat: 6,
 };
 
-interface ZonedDateParts {
+export interface ZonedDateParts {
   weekday: number;
   year: number;
   month: number; // 1-12
@@ -105,7 +105,12 @@ interface ZonedDateParts {
 // hand-rolled Intl-based helper is enough for business-hours-granularity
 // scheduling; see zonedWallTimeToUtc's own doc comment for the one accepted
 // imprecision, DST-transition minutes twice a year).
-function zonedDateParts(date: Date, timeZone: string): ZonedDateParts {
+// Exported for src/lib/ai/deferralIntent.ts's date resolution (a client
+// committing to a real future date — "יום חמישי", "15 באוגוסט" — needs the
+// exact same "what does the office's own wall clock read right now"
+// primitive this module already built for business-hours checks; never a
+// second, independently-maintained timezone implementation).
+export function zonedDateParts(date: Date, timeZone: string): ZonedDateParts {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
     weekday: "short",
@@ -146,7 +151,7 @@ function timeZoneOffsetMinutes(utcInstant: Date, timeZone: string): number {
 // need to resolve to the minute; a reminder landing up to ~an hour early or
 // late on the two days a year clocks change is an accepted, disclosed
 // limitation, not a correctness bug for this feature.
-function zonedWallTimeToUtc(
+export function zonedWallTimeToUtc(
   year: number,
   month: number,
   day: number,
