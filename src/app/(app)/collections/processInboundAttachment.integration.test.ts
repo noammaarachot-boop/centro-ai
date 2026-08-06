@@ -854,3 +854,61 @@ describe("processInboundAttachment — document replace/supersede via caption", 
     expect(allDocs.every((d) => d.supersededByDocumentId === null)).toBe(true);
   });
 });
+
+// Reminder infrastructure — "ברגע שכל הדרישות הושלמו... הבקשה נסגרת מיד":
+// completion never depends on the client saying "finished" or on the
+// reminder cycle noticing — it happens the instant the last requirement is
+// actually satisfied.
+describe("processInboundAttachment — immediate completion the instant nothing is left missing", () => {
+  it("completes the request right away when the arriving document is the last thing missing — no 'finished' phrase needed", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    const idReq = requirements[0];
+    // completeCollectionRequest only allows draft->processing->completed
+    // via "active" first — seedRequest's own default status ("draft") is
+    // irrelevant to what this test actually verifies.
+    await db.update(schema.collectionRequests).set({ status: "active" }).where(eq(schema.collectionRequests.id, requestId));
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.instant1");
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.status).toBe("closed");
+
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].body).toContain("קיבלתי הכל");
+  });
+
+  it("never sends a 'still missing' message after an ordinary document that doesn't complete the request", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "דף חשבון בנק"]);
+    const idReq = requirements.find((r) => r.name === "תעודת זהות")!;
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.instant2");
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).not.toBe("completed");
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(0); // completely silent — never interrupts mid-collection
+  });
+});

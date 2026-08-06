@@ -58,31 +58,27 @@ describe("classifyYesNoReply", () => {
 });
 
 describe("classifyFollowUpIntent", () => {
-  it("recognizes a send-later promise and estimates a delay", async () => {
+  it("recognizes a send-later promise", async () => {
     resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
-    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: true, approxDelayMinutes: 240 } });
+    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: true } });
 
-    const result = await classifyFollowUpIntent("אשלח בערב");
-    expect(result).toEqual({ isFollowUpPromise: true, approxDelayMinutes: 240 });
+    expect(await classifyFollowUpIntent("אשלח בערב")).toBe(true);
   });
 
   it("returns false for an ordinary message", async () => {
     resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
-    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false, approxDelayMinutes: null } });
+    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false } });
 
-    const result = await classifyFollowUpIntent("תודה רבה");
-    expect(result).toEqual({ isFollowUpPromise: false, approxDelayMinutes: null });
+    expect(await classifyFollowUpIntent("תודה רבה")).toBe(false);
   });
 
   it("never throws — a provider failure resolves to no promise recognized", async () => {
     resolveLanguageModel.mockRejectedValueOnce(new Error("no provider configured"));
-    const result = await classifyFollowUpIntent("אשלח בערב");
-    expect(result).toEqual({ isFollowUpPromise: false, approxDelayMinutes: null });
+    expect(await classifyFollowUpIntent("אשלח בערב")).toBe(false);
   });
 
   it("returns false on an empty message without calling the model", async () => {
-    const result = await classifyFollowUpIntent("");
-    expect(result).toEqual({ isFollowUpPromise: false, approxDelayMinutes: null });
+    expect(await classifyFollowUpIntent("")).toBe(false);
     expect(resolveLanguageModel).not.toHaveBeenCalled();
   });
 });

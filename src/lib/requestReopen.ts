@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, documents } from "@/db/schema";
+import { collectionRequests, conversations, documents } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage, reopenIfCompleted } from "@/lib/conversationOrchestration";
 import {
@@ -160,6 +160,18 @@ export async function applyRequestReopenDecision(
   if (documentId) {
     await processDocument(documentId);
   }
+
+  // The held document itself may have been exactly what was missing —
+  // processDocument's own immediate-completion check (processInboundAttachment)
+  // already thanked the client and closed the request in that case; a
+  // second "reopened, thanks" message here would be redundant and
+  // confusing right after "got everything, done!".
+  const [current] = await db
+    .select({ status: collectionRequests.status })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, resolved.collectionRequestId))
+    .limit(1);
+  if (current?.status === "completed") return;
 
   await sendOutboundMessage(
     resolved.organizationId,

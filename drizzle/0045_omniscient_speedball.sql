@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" DROP COLUMN "next_follow_up_at";

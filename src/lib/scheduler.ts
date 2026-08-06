@@ -15,6 +15,8 @@ import {
   flushDueIntakeNotificationsForOrganization,
   sendConfirmationRemindersAndEscalate,
 } from "@/lib/documentIntakeReview";
+import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
+import { attemptFinishCollectionRequest } from "@/lib/caseReview";
 
 /**
  * The real automatic trigger Ch.5/Ch.16 describe — "after N minutes of
@@ -123,8 +125,8 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       .select({
         id: conversations.id,
         collectionRequestId: conversations.collectionRequestId,
+        clientId: collectionRequests.clientId,
         updatedAt: conversations.updatedAt,
-        nextFollowUpAt: conversations.nextFollowUpAt,
         service: services,
       })
       .from(conversations)
@@ -149,22 +151,33 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       const reminderCutoff = new Date(
         Date.now() - reminderIntervalDays * 24 * 60 * 60 * 1000
       );
+      // Free-text "I'll send it later" understanding
+      // (src/lib/ai/conversationReplyIntent.ts) — no separate deferral
+      // bookkeeping needed here: the client's own message already reset
+      // conversations.updatedAt (recordInboundMessage), which is exactly
+      // what this staleness check measures against — a promise like "אשלח
+      // בעוד שעה" is never nagged before this regular interval elapses
+      // either way.
       if (conversation.updatedAt >= reminderCutoff) continue;
 
-      // Free-text "I'll send it later" understanding
-      // (src/lib/ai/conversationReplyIntent.ts) — the client explicitly
-      // committed to a later time; a reminder must never go out before
-      // then. Still due once that time has passed — cleared here so it
-      // never holds a reminder back forever if the client doesn't follow
-      // up after all.
-      if (conversation.nextFollowUpAt && conversation.nextFollowUpAt > new Date()) {
+      // Reminder infrastructure — "ביטול תזכורת כאשר הדרישה הושלמה": a
+      // request can become fully satisfied without the client ever typing
+      // a "finished" phrase (e.g. the last outstanding document arrived,
+      // or a document.replace resolved what was missing). Nudging with a
+      // generic "still waiting for documents" reminder in that case would
+      // be actively misleading — check first, and if nothing is actually
+      // missing, complete the request the same way an explicit "finished"
+      // signal would, instead of sending the reminder at all.
+      const gateError = await checkCompletionGate(conversation.collectionRequestId);
+      if (gateError === null) {
+        await attemptFinishCollectionRequest({
+          organizationId: organization.id,
+          collectionRequestId: conversation.collectionRequestId,
+          conversationId: conversation.id,
+          clientId: conversation.clientId,
+          actorType: "client",
+        });
         continue;
-      }
-      if (conversation.nextFollowUpAt) {
-        await db
-          .update(conversations)
-          .set({ nextFollowUpAt: null })
-          .where(eq(conversations.id, conversation.id));
       }
 
       const { sent } = await sendOutboundMessage(

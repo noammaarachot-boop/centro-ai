@@ -35,6 +35,7 @@ import {
 } from "@/lib/documentIdentityVerification";
 import { computeRequirementSatisfaction, extractedPeriodLabelForStorage } from "@/lib/documentQuantity";
 import { applyDocumentReplaceIntentIfCaptioned } from "@/lib/documentReplace";
+import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
@@ -640,6 +641,30 @@ export async function processInboundAttachment(
         newDocumentId: document.id,
         captionText,
       });
+    }
+
+    // "ברגע שכל הדרישות הושלמו... הבקשה נסגרת מיד" — closing never depends
+    // on the reminder cycle or an explicit "finished" phrase: the instant
+    // this document happens to be the last thing missing, the request
+    // completes right here. checkCompletionGate is consulted directly
+    // (never attemptFinishCollectionRequest blind) so a request that's
+    // NOT yet satisfied never gets a "still missing X" message after every
+    // single ordinary document — that's exactly the per-document
+    // interruption "Centro checks the case, not the document" rules out.
+    const gateError = await checkCompletionGate(collectionRequestId);
+    if (gateError === null) {
+      const outcome = await attemptFinishCollectionRequest({
+        organizationId,
+        collectionRequestId,
+        conversationId,
+        clientId,
+        actorType: "client",
+      });
+      // Just completed it ourselves this same call — reopenIfCompleted
+      // below exists for a genuinely late document arriving on an
+      // *already*-completed request, not this one; skip it so it doesn't
+      // immediately undo the completion that just happened.
+      if (outcome === "completed") return;
     }
   }
   // unsolicited_pending_confirmation / clarification_requested /

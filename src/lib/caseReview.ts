@@ -281,24 +281,24 @@ export async function applyFollowUpPromiseIfAny(params: {
   clientId: string;
   replyText: string;
 }): Promise<boolean> {
-  const { isFollowUpPromise, approxDelayMinutes } = await classifyFollowUpIntent(params.replyText);
-  if (!isFollowUpPromise || approxDelayMinutes === null) return false;
+  const isFollowUpPromise = await classifyFollowUpIntent(params.replyText);
+  if (!isFollowUpPromise) return false;
 
-  const db = await getDb();
-  const nextFollowUpAt = new Date(Date.now() + approxDelayMinutes * 60 * 1000);
-  await db
-    .update(conversations)
-    .set({ nextFollowUpAt })
-    .where(eq(conversations.id, params.conversationId));
+  // A short, human acknowledgment — never a reminder, never a question.
+  // No explicit deferral bookkeeping is needed beyond this: the client's
+  // own message already reset conversations.updatedAt (recordInboundMessage),
+  // which is exactly what the scheduler's stale-conversation reminder
+  // measures staleness against — see classifyFollowUpIntent's own doc
+  // comment for why that alone is enough.
+  await sendOutboundMessage(params.organizationId, params.conversationId, "בסדר, תודה 😊", "ai", "manual", undefined, true);
 
   await recordAuditEvent({
     organizationId: params.organizationId,
     eventType: "conversation.follow_up_promised",
-    description: "הלקוח ציין שישלח מסמכים נוספים בהמשך — התזכורת האוטומטית תידחה עד אז",
+    description: "הלקוח ציין שישלח מסמכים נוספים בהמשך",
     actorType: "client",
     clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,
-    metadata: { approxDelayMinutes },
   });
   return true;
 }
