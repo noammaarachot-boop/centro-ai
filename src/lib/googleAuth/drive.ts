@@ -234,6 +234,56 @@ export async function uploadDriveFile(
   return { id: data.id, name: data.name, webViewLink: data.webViewLink ?? null };
 }
 
+// Real single-PDF merging (src/lib/documentMerge.ts) — downloads a source
+// page's actual bytes back from Drive so several already-uploaded pages can
+// be combined into one PDF. `alt=media` returns the raw file content
+// instead of JSON metadata; the mime type is fetched separately since
+// Drive's media endpoint doesn't echo it back in a header this client reads.
+export async function downloadDriveFile(accessToken: string, fileId: string): Promise<{ bytes: Buffer; mimeType: string }> {
+  const metaResponse = await driveFetch(accessToken, `/files/${encodeURIComponent(fileId)}?fields=mimeType`);
+  if (!metaResponse.ok) {
+    throw new DriveApiError(`Failed to read Drive file metadata (${metaResponse.status})`);
+  }
+  const meta = (await metaResponse.json()) as { mimeType: string };
+
+  const contentResponse = await withRetry(() =>
+    fetch(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+  );
+  if (!contentResponse.ok) {
+    throw new DriveApiError(`Failed to download Drive file content (${contentResponse.status})`);
+  }
+  const bytes = Buffer.from(await contentResponse.arrayBuffer());
+  return { bytes, mimeType: meta.mimeType };
+}
+
+// Real single-PDF merging (src/lib/documentMerge.ts) — replaces an existing
+// Drive file's CONTENT in place (same file id, same permissions/links),
+// used when a later page arrives and the merged PDF needs to be
+// regenerated: "no duplication" means updating the one active file rather
+// than creating a new one each time.
+export async function updateDriveFileContent(
+  accessToken: string,
+  fileId: string,
+  content: Buffer,
+  mimeType: string
+): Promise<void> {
+  const response = await withRetry(() =>
+    fetch(`${DRIVE_UPLOAD_API}/${encodeURIComponent(fileId)}?uploadType=media`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": mimeType,
+      },
+      body: new Uint8Array(content),
+    })
+  );
+  if (!response.ok) {
+    throw new DriveApiError(`Failed to update Drive file content (${response.status})`);
+  }
+}
+
 // Reads back a file Centro itself just uploaded — used to verify the
 // upload actually landed in Drive rather than trusting the create
 // response alone.

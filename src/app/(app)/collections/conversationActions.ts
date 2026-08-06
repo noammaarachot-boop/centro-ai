@@ -36,6 +36,7 @@ import {
 import { computeRequirementSatisfaction, extractedPeriodLabelForStorage } from "@/lib/documentQuantity";
 import { computeContinuationConfidence, MIN_CONTINUATION_CONFIDENCE } from "@/lib/documentContinuation";
 import { applyDocumentReplaceIntentIfCaptioned } from "@/lib/documentReplace";
+import { mergeContinuationGroupToPdf } from "@/lib/documentMerge";
 import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { withdrawStaleFinishedCheck } from "@/lib/requestExtension";
@@ -702,6 +703,15 @@ export async function processInboundAttachment(
       fileBytes,
       mimeType
     );
+
+    // Real single-PDF merging (src/lib/documentMerge.ts) — only ever
+    // consulted when this document was itself confidently detected as
+    // another page of an already-approved one (continuationOfDocumentId
+    // set); a document's own first page never triggers this, since there's
+    // nothing to merge with yet.
+    if (continuationOfDocumentId) {
+      await mergeContinuationGroupToPdf(organizationId, collectionRequestId, continuationOfDocumentId);
+    }
 
     // Document replace/supersede (src/lib/documentReplace.ts) — only ever
     // consulted when the client actually attached a caption, and only ever
