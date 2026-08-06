@@ -84,6 +84,32 @@ export async function POST(request: Request) {
         });
       }
 
+      // Read-only diagnostic — never mutates anything. Lists every
+      // organization with a real Drive/WhatsApp connection, and every
+      // client row matching the test phone number's digits (regardless of
+      // which organization it belongs to), so the correct org/client pair
+      // can be identified with certainty instead of guessed.
+      case "survey": {
+        const allOrgs = await db.select().from(organizations);
+        const allClients = await db.select().from(clients);
+        const matchingClients = allClients.filter((c) => c.phone.replace(/\D/g, "").endsWith(TEST_CLIENT_PHONE_SUFFIX));
+        return NextResponse.json({
+          ok: true,
+          organizations: allOrgs.map((o) => ({
+            id: o.id,
+            name: o.name,
+            googleConnectedAt: o.googleConnectedAt,
+            hasGoogleDriveFolderId: !!o.googleDriveFolderId,
+            googleDriveFolderName: o.googleDriveFolderName,
+            whatsappConnectedAt: o.whatsappConnectedAt,
+            hasWhatsappPhoneNumberId: !!o.whatsappPhoneNumberId,
+            whatsappDisplayPhoneNumber: o.whatsappDisplayPhoneNumber,
+            documentCollectionEnabled: o.documentCollectionEnabled,
+          })),
+          matchingClients: matchingClients.map((c) => ({ id: c.id, name: c.name, phone: c.phone, organizationId: c.organizationId })),
+        });
+      }
+
       case "status": {
         const requests = await db
           .select()
