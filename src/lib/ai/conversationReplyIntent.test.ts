@@ -10,7 +10,7 @@ vi.mock("ai", () => ({
   generateObject: (...args: unknown[]) => generateObject(...args),
 }));
 
-const { classifyYesNoReply, classifyFollowUpIntent } = await import("./conversationReplyIntent");
+const { classifyYesNoReply, classifyFollowUpIntent, classifyReopenIntent } = await import("./conversationReplyIntent");
 
 beforeEach(() => {
   resolveLanguageModel.mockReset();
@@ -81,6 +81,36 @@ describe("classifyFollowUpIntent", () => {
   it("returns false on an empty message without calling the model", async () => {
     const result = await classifyFollowUpIntent("");
     expect(result).toEqual({ isFollowUpPromise: false, approxDelayMinutes: null });
+    expect(resolveLanguageModel).not.toHaveBeenCalled();
+  });
+});
+
+describe("classifyReopenIntent", () => {
+  it("recognizes an explicit reference to a document already sent in the finished request", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({ object: { isReopenIntent: true } });
+    expect(await classifyReopenIntent("שכחתי לשלוח עוד מסמך")).toBe(true);
+  });
+
+  it("recognizes a correction to a previously-sent document", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({ object: { isReopenIntent: true } });
+    expect(await classifyReopenIntent("המסמך הקודם היה לא נכון")).toBe(true);
+  });
+
+  it("returns false for an unrelated general message — stays silent by design", async () => {
+    resolveLanguageModel.mockResolvedValueOnce({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({ object: { isReopenIntent: false } });
+    expect(await classifyReopenIntent("אפשר להתקשר אליי?")).toBe(false);
+  });
+
+  it("never guesses on a provider failure — returns false (silent), never true", async () => {
+    resolveLanguageModel.mockRejectedValueOnce(new Error("no provider configured"));
+    expect(await classifyReopenIntent("שכחתי לשלוח עוד מסמך")).toBe(false);
+  });
+
+  it("returns false on an empty message without calling the model", async () => {
+    expect(await classifyReopenIntent("")).toBe(false);
     expect(resolveLanguageModel).not.toHaveBeenCalled();
   });
 });

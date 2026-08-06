@@ -634,6 +634,55 @@ export async function processInboundAttachment(
   }
 }
 
+// Post-completion intent gate (src/lib/requestReopen.ts) — the "process"
+// half of applyRequestReopenDecision's callback contract. A document
+// arriving on a closed conversation was stashed as a "reopen_pending_confirmation"
+// placeholder row (see the webhook route) without ever being classified or
+// uploaded; once the client confirms reopening, this is what actually runs
+// it through the real intake pipeline for the first time — fetching the
+// held bytes, deleting the placeholder (never left behind as a duplicate),
+// then calling processInboundAttachment exactly as if the document had
+// just arrived on an already-open request, which by this point it now is.
+export async function reprocessHeldReopenDocument(documentId: string): Promise<void> {
+  const db = await getDb();
+  const [placeholder] = await db
+    .select({
+      organizationId: documents.organizationId,
+      collectionRequestId: documents.collectionRequestId,
+      fileName: documents.fileName,
+      pendingFileContent: documents.pendingFileContent,
+      pendingFileMimeType: documents.pendingFileMimeType,
+      whatsappMessageId: documents.whatsappMessageId,
+    })
+    .from(documents)
+    .where(eq(documents.id, documentId))
+    .limit(1);
+  if (!placeholder) return;
+
+  const [collectionRequest] = await db
+    .select({ clientId: collectionRequests.clientId })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, placeholder.collectionRequestId))
+    .limit(1);
+  if (!collectionRequest) return;
+
+  const conversation = await ensureConversation(placeholder.organizationId, placeholder.collectionRequestId, collectionRequest.clientId);
+
+  await db.delete(documents).where(eq(documents.id, documentId));
+
+  await processInboundAttachment(
+    placeholder.organizationId,
+    placeholder.collectionRequestId,
+    conversation.id,
+    collectionRequest.clientId,
+    placeholder.fileName,
+    null,
+    placeholder.pendingFileContent ?? undefined,
+    placeholder.pendingFileMimeType ?? undefined,
+    placeholder.whatsappMessageId ?? undefined
+  );
+}
+
 // The manual stand-in for "N minutes of inactivity" firing (Ch.16 FR-16.4)
 // — a real scheduler will call the same evaluateAndPrompt in M6.
 export async function evaluateNow(collectionRequestId: string) {
