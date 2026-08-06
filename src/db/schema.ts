@@ -941,6 +941,14 @@ export const documents = pgTable("documents", {
   // > 1, e.g. "3 תלושי שכר") sharing the same label count as one satisfied
   // unit, not two — see computeRequirementSatisfaction.
   extractedPeriodLabel: text("extracted_period_label"),
+  // Multi-signal multi-page detection (src/lib/documentContinuation.ts) —
+  // best-effort signals read off the document itself, corroborating (or
+  // ruling out) that a later document is another page of this one, beyond
+  // just "arrived soon after." All independently nullable — never guessed
+  // when not visible on the page.
+  extractedReferenceNumber: text("extracted_reference_number"),
+  pageNumberCurrent: integer("page_number_current"),
+  pageNumberTotal: integer("page_number_total"),
   // Multi-page document merging — set when this row is an additional page
   // of another already-approved document (a burst of photos of one
   // multi-page contract, not several distinct documents), rather than its
