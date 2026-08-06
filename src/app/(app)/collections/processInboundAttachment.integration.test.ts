@@ -105,6 +105,7 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
 }));
 
 const { processInboundAttachment } = await import("./conversationActions");
+const { runCaseReview } = await import("@/lib/caseReview");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -269,8 +270,21 @@ describe("processInboundAttachment — documents arriving as separate calls for 
       expect(doc.googleDriveFileId).toBeNull();
     }
 
-    // A real "was this intentional?" question was asked for each — this is
-    // what actually replaces needs_review here.
+    // "Centro checks the case, not the document" — nothing was actually
+    // asked yet while the client might still be sending more documents;
+    // both unsolicited documents are only held (deferredReviewKind set),
+    // no pendingConfirmation exists until the case review runs.
+    expect(unsolicited.every((d) => d.deferredReviewKind === "unsolicited_document")).toBe(true);
+    const confirmationsBeforeReview = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmationsBeforeReview).toHaveLength(0);
+
+    // Only once the client signals they're done does the whole case get
+    // reviewed together — a real "was this intentional?" question for
+    // each (two different document types, so two separate groups).
+    await runCaseReview(orgId, clientId, requestId);
     const openConfirmations = await db
       .select()
       .from(schema.pendingConfirmations)

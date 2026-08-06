@@ -24,21 +24,18 @@ import {
 import {
   applyClarificationReply,
   applyUnsolicitedConfirmationDecision,
-  createClarificationRequest,
-  createUnsolicitedDocumentConfirmation,
   resolveDocumentIntakeOutcome,
 } from "@/lib/documentIntakeReview";
 import {
   applyIdentityAnomalyDecision,
   buildIdentityReferencePool,
-  createOrMergeIdentityAnomalyConfirmation,
   detectIdentityAnomaly,
   extractedIdentityForStorage,
   type IdentityAnomaly,
 } from "@/lib/documentIdentityVerification";
+import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
-import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
 import {
   checkIntegrationStatus,
   DRIVE_NOT_READY_MESSAGE,
@@ -226,6 +223,17 @@ export async function simulateInboundMessage(
           collectionRequestId,
           metadata: { kind: resolved.kind, status: resolved.status },
         });
+      } else if (isFinishedSignal(body)) {
+        // "Centro checks the case, not the document" (caseReview.ts) — the
+        // client's own words are the real, primary trigger for the whole-
+        // case review, not just the employee dashboard button.
+        await attemptFinishCollectionRequest({
+          organizationId: session.organizationId,
+          collectionRequestId,
+          conversationId: conversation.id,
+          clientId: current.clientId,
+          actorType: "client",
+        });
       }
     }
     }
@@ -354,9 +362,6 @@ export async function processInboundAttachment(
   // requirement" was never the same thing as "auto-approved." Only the
   // real classification branch below uses the new 3-way outcomes.
   let status: IntakeStatus = "needs_review";
-  // Populated only for the "unsolicited" outcome — read after the document
-  // row exists (the confirmation's payload needs its id).
-  let unsolicitedDocumentType: string | null = null;
   // Smart identity/consistency verification — populated whenever the
   // document's own content doesn't line up with the client or a sibling
   // document already on this request, regardless of whether it otherwise
@@ -369,9 +374,16 @@ export async function processInboundAttachment(
   // extractedIdentityForStorage's own gate) — never a low-confidence guess.
   let extractedIdentity: ReturnType<typeof extractedIdentityForStorage> = null;
   // What the AI called this document — used only to name the file when an
-  // identity-anomaly document is later confirmed by the client (mirrors
-  // unsolicitedDocumentType's own role for that flow).
+  // identity-anomaly document is later confirmed by the client, and
+  // carried into deferredReviewPayload below for that same purpose once
+  // runCaseReview actually asks about it.
   let identityDocumentType: string | null = null;
+  // "Centro checks the case, not the document" (caseReview.ts) — whichever
+  // of the three deferred kinds this document turned out to be, persisted
+  // so runCaseReview can ask about it later without re-running
+  // classification. Both stay null for "approved"/"needs_review".
+  let deferredReviewKind: "identity_anomaly" | "unsolicited_document" | "document_clarification" | null = null;
+  let deferredReviewPayload: unknown = null;
 
   if (!manualRequirementId) {
     // Ch.6 layer 1: this client's own confirmed history is checked before
@@ -458,29 +470,40 @@ export async function processInboundAttachment(
       console.log("[wa-inbound] identity check", { collectionRequestId, identityAnomaly });
     }
 
+    // "Centro checks the case, not the document" (caseReview.ts) — an
+    // exception found here is never asked about immediately. It's
+    // recorded (status + deferredReviewKind/Payload) and held silently
+    // until the client actually signals they're done sending documents;
+    // runCaseReview is what turns this into a real question, once, for
+    // the whole case together.
     if (identityAnomaly) {
       status = "identity_anomaly_pending_confirmation";
       requirementId = null;
+      deferredReviewKind = "identity_anomaly";
+      deferredReviewPayload = { anomaly: identityAnomaly, documentType: identityDocumentType };
     } else if (outcome.kind === "matched") {
       requirementId = outcome.requirementId;
       status = "approved";
     } else if (outcome.kind === "unsolicited") {
       status = "unsolicited_pending_confirmation";
-      unsolicitedDocumentType = outcome.documentType;
+      deferredReviewKind = "unsolicited_document";
+      deferredReviewPayload = { documentType: outcome.documentType };
     } else {
       status = "clarification_requested";
+      deferredReviewKind = "document_clarification";
+      deferredReviewPayload = {};
     }
 
     await recordAuditEvent({
       organizationId,
       eventType: "document.classified",
       description: identityAnomaly
-        ? `מסמך "${fileName}" זוהה, אך התגלתה אי-התאמת זהות (${identityAnomaly.kind}) — נשלחה שאלת אישור ללקוח`
+        ? `מסמך "${fileName}" זוהה, אך התגלתה אי-התאמת זהות (${identityAnomaly.kind}) — הוחזק לבדיקת התיק בסיום האיסוף`
         : outcome.kind === "matched"
           ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(outcome.confidence * 100).toFixed(0)}%)`
           : outcome.kind === "unsolicited"
-            ? `מסמך "${fileName}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, נשלחה שאלת אישור ללקוח`
-            : `מסמך "${fileName}" לא זוהה בביטחון מספק — נשלחה בקשת הבהרה ללקוח`,
+            ? `מסמך "${fileName}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, הוחזק לבדיקת התיק בסיום האיסוף`
+            : `מסמך "${fileName}" לא זוהה בביטחון מספק — הוחזק לבדיקת התיק בסיום האיסוף`,
       actorType: "ai",
       clientId,
       collectionRequestId,
@@ -508,6 +531,7 @@ export async function processInboundAttachment(
       ...(fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
       ...(whatsappMessageId ? { whatsappMessageId } : {}),
       ...(extractedIdentity ?? {}),
+      ...(deferredReviewKind ? { deferredReviewKind, deferredReviewPayload } : {}),
     })
     .returning();
 
@@ -532,36 +556,14 @@ export async function processInboundAttachment(
       fileBytes,
       mimeType
     );
-  } else if (status === "unsolicited_pending_confirmation" && unsolicitedDocumentType) {
-    // Never uploaded and never counted until the client actually confirms
-    // it was intentional (applyUnsolicitedConfirmationDecision) — see
-    // src/lib/documentIntakeReview.ts.
-    await createUnsolicitedDocumentConfirmation({
-      organizationId,
-      clientId,
-      collectionRequestId,
-      documentId: document.id,
-      documentType: unsolicitedDocumentType,
-    });
-  } else if (status === "clarification_requested") {
-    await createClarificationRequest({
-      organizationId,
-      clientId,
-      collectionRequestId,
-      documentId: document.id,
-    });
-  } else if (status === "identity_anomaly_pending_confirmation" && identityAnomaly) {
-    // Never uploaded and never counted until the client actually confirms
-    // it — see documentIdentityVerification.ts's applyIdentityAnomalyDecision.
-    await createOrMergeIdentityAnomalyConfirmation({
-      organizationId,
-      clientId,
-      collectionRequestId,
-      documentId: document.id,
-      anomaly: identityAnomaly,
-      documentType: identityDocumentType,
-    });
   }
+  // unsolicited_pending_confirmation / clarification_requested /
+  // identity_anomaly_pending_confirmation: never uploaded and never
+  // counted, but no question is asked here either — "Centro checks the
+  // case, not the document." deferredReviewKind/Payload (already
+  // persisted above) is what runCaseReview (caseReview.ts) needs to ask
+  // about it, once, together with everything else found in this request,
+  // the moment the client signals they're done sending documents.
 
   const reopened = await reopenIfCompleted(organizationId, collectionRequestId);
   if (reopened) {
@@ -619,25 +621,28 @@ export async function markFinished(collectionRequestId: string) {
     current.clientId
   );
 
-  const db = await getDb();
-  const result = await completeCollectionRequest(
-    session.organizationId,
-    undefined,
-    "client",
-    collectionRequestId
-  );
+  await recordInboundMessage(session.organizationId, conversation.id, "סיימתי");
 
-  if (result.ok) {
-    await db
-      .update(conversations)
-      .set({ status: "closed", updatedAt: new Date() })
-      .where(eq(conversations.id, conversation.id));
-    await recordInboundMessage(session.organizationId, conversation.id, "סיימתי");
-  } else {
+  // The employee-facing equivalent of the client texting "סיימתי" —
+  // routes through the exact same whole-case review (caseReview.ts) a
+  // real client message would, so a deferred exception is surfaced (and
+  // grouped) here too instead of just failing on "missing requirements"
+  // without explaining why.
+  const outcome = await attemptFinishCollectionRequest({
+    organizationId: session.organizationId,
+    collectionRequestId,
+    conversationId: conversation.id,
+    clientId: current.clientId,
+    actorType: "client",
+  });
+
+  if (outcome === "missing_requirements" || outcome === "blocked") {
     redirect(
-      `/collections/${collectionRequestId}?error=${encodeURIComponent(result.error ?? "שגיאה")}`
+      `/collections/${collectionRequestId}?error=${encodeURIComponent("הבקשה טרם הושלמה — יש לבדוק את השיחה עם הלקוח")}`
     );
   }
+  // "review_pending": a grouped exception question was just sent to the
+  // client — nothing more to do here but wait for their answer.
 
   redirect(`/collections/${collectionRequestId}`);
 }

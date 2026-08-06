@@ -102,17 +102,7 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
 }));
 
 const { processInboundAttachment } = await import("./conversationActions");
-const { flushDueIntakeNotifications } = await import("@/lib/pendingConfirmations");
-
-// Smart notification grouping holds the question until the grouping window
-// elapses — forces it due immediately so tests can observe the send.
-async function forceFlush(orgId: string, requestId: string) {
-  await db
-    .update(schema.pendingConfirmations)
-    .set({ notifyAfter: new Date(Date.now() - 1000) })
-    .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-  return flushDueIntakeNotifications(orgId, requestId);
-}
+const { runCaseReview } = await import("@/lib/caseReview");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -204,9 +194,19 @@ describe("processInboundAttachment — smart identity/consistency verification",
     expect(doc.requirementId).toBeNull();
     expect(fakeFiles).toHaveLength(0);
 
-    // Smart notification grouping holds the question for the grouping
-    // window — force it due to observe the actual send.
-    await forceFlush(orgId, requestId);
+    // "Centro checks the case, not the document" — nothing asked yet
+    // while collection might still be in progress; the document is only
+    // held (deferredReviewKind set), no question sent.
+    expect(doc.deferredReviewKind).toBe("identity_anomaly");
+    const confirmationsBeforeReview = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmationsBeforeReview).toHaveLength(0);
+
+    // Only once the client signals they're done does the whole case get
+    // reviewed — this sends the question and flushes immediately.
+    await runCaseReview(orgId, clientId, requestId);
 
     const [confirmation] = await db
       .select()

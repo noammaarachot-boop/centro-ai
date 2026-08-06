@@ -106,6 +106,7 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
 
 const { processInboundAttachment } = await import("@/app/(app)/collections/conversationActions");
 const { flushDueIntakeNotifications, resolveBatchedIntakeReply } = await import("./pendingConfirmations");
+const { runCaseReview } = await import("./caseReview");
 const { applyUnsolicitedConfirmationDecision } = await import("./documentIntakeReview");
 const { applyIdentityAnomalyDecision } = await import("./documentIdentityVerification");
 
@@ -124,14 +125,6 @@ beforeEach(() => {
   sendTextMessage.mockReset();
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
 });
-
-async function forceFlush(orgId: string, requestId: string) {
-  await db
-    .update(schema.pendingConfirmations)
-    .set({ notifyAfter: new Date(Date.now() - 1000) })
-    .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-  return flushDueIntakeNotifications(orgId, requestId);
-}
 
 async function seedRequest() {
   const [org] = await db
@@ -231,6 +224,18 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     expect(allDocs).toHaveLength(4);
     expect(allDocs.every((d) => d.googleDriveFileId === null)).toBe(true);
 
+    // "Centro checks the case, not the document" — nothing was asked yet
+    // while collection might still be in progress; every exception is
+    // only held (deferredReviewKind set), no pendingConfirmation exists.
+    expect(allDocs.filter((d) => d.deferredReviewKind !== null)).toHaveLength(4);
+    const beforeReview = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(beforeReview).toHaveLength(0);
+    expect(sendTextMessage).not.toHaveBeenCalled();
+
+    // Only once the client signals they're done does the whole case get
+    // reviewed together.
+    await runCaseReview(orgId, clientId, requestId);
+
     // Two distinct pending-confirmation groups (identity + unsolicited)...
     const pendingRows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(pendingRows).toHaveLength(2);
@@ -239,8 +244,8 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     expect((identityRow.payload as { documents: unknown[] }).documents).toHaveLength(2);
     expect((unsolicitedRow.payload as { documentIds: string[] }).documentIds).toHaveLength(2);
 
-    // ...but the client sees exactly ONE WhatsApp message, not four.
-    await forceFlush(orgId, requestId);
+    // ...but the client sees exactly ONE WhatsApp message, not four —
+    // runCaseReview already flushed it.
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
 
     const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
@@ -289,7 +294,7 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     });
     await processInboundAttachment(orgId, requestId, conversationId, clientId, "invoice1.pdf", null, Buffer.from("invoice1-bytes"), "application/pdf", "wamid.t2.3");
 
-    await forceFlush(orgId, requestId);
+    await runCaseReview(orgId, clientId, requestId);
     const rowsBefore = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     const identityRow = rowsBefore.find((r) => r.kind === "identity_anomaly")!;
     const unsolicitedRow = rowsBefore.find((r) => r.kind === "unsolicited_document")!;
@@ -358,7 +363,7 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     });
     await processInboundAttachment(orgId, requestId, conversationId, clientId, "invoice1.pdf", null, Buffer.from("invoice1-bytes"), "application/pdf", "wamid.t3.3");
 
-    await forceFlush(orgId, requestId);
+    await runCaseReview(orgId, clientId, requestId);
     const rowsBefore = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     const identityRow = rowsBefore.find((r) => r.kind === "identity_anomaly")!;
     const confirmOption = identityRow.groupIndex! * 2 + 1;
@@ -397,33 +402,37 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
 // first call's update landed, and send the same message again.
 describe("flushDueIntakeNotifications never sends the same combined message twice", () => {
   it("two concurrent flush calls for the same request only ever result in one real send", async () => {
-    const { orgId, clientId, requestId, conversationId, idReqId } = await seedRequest();
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const { createOrMergeIdentityAnomalyConfirmation } = await import("./documentIdentityVerification");
+    const { createUnsolicitedDocumentConfirmation } = await import("./documentIntakeReview");
+    const [idDoc] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "id.jpg", status: "identity_anomaly_pending_confirmation" })
+      .returning();
+    const [invoiceDoc] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "invoice1.pdf", status: "unsolicited_pending_confirmation" })
+      .returning();
 
-    classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      identified: true,
+    // Two groups created moments apart, exactly as runCaseReview
+    // (caseReview.ts) creates them when the client says they're done —
+    // this test targets flushDueIntakeNotifications's own atomicity
+    // directly, independent of how the groups got there.
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: idDoc.id,
+      anomaly: { kind: "name_mismatch", confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null },
       documentType: "תעודת זהות",
-      identificationConfidence: 0.98,
-      matchedRequirementId: idReqId,
-      matchConfidence: 0.98,
-      extractedPersonName: "ישראל ישראלי",
-      extractedIdNumber: "111111118",
-      extractedCompanyName: null,
-      identityExtractionConfidence: 0.95,
     });
-    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("id-bytes"), "image/jpeg", "wamid.race.1");
-
-    classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      identified: true,
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: invoiceDoc.id,
       documentType: "חשבונית מס",
-      identificationConfidence: 0.9,
-      matchedRequirementId: null,
-      matchConfidence: 0,
-      extractedPersonName: null,
-      extractedIdNumber: null,
-      extractedCompanyName: null,
-      identityExtractionConfidence: 0,
     });
-    await processInboundAttachment(orgId, requestId, conversationId, clientId, "invoice1.pdf", null, Buffer.from("invoice1-bytes"), "application/pdf", "wamid.race.2");
 
     await db
       .update(schema.pendingConfirmations)
