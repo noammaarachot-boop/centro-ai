@@ -38,6 +38,7 @@ import { StatusBadge } from "../StatusBadge";
 import {
   addManualDocument,
   assignDocumentRequirement,
+  resolveRequirementExceptionAction,
   reviewDocument,
   simulateDriveDeletion,
   transitionStatus,
@@ -209,6 +210,66 @@ export default async function CollectionRequestDetailPage({
                     </form>
                   )}
                 </div>
+
+                {requirement.exceptionStatus === "reported_missing" && (
+                  <div className="mt-3 rounded-lg border border-warning/40 bg-warning/5 p-3">
+                    <p className="text-xs font-medium text-warning">
+                      הלקוח דיווח שאין ברשותו את המסמך הזה — נדרשת החלטה
+                    </p>
+                    {requirement.exceptionNote && (
+                      <p className="mt-1 text-xs text-text-secondary">
+                        הניסוח שהלקוח כתב: &ldquo;{requirement.exceptionNote}&rdquo;
+                      </p>
+                    )}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <form action={resolveRequirementExceptionAction.bind(null, id, requirement.id)}>
+                        <input type="hidden" name="decision" value="waive" />
+                        <button
+                          type="submit"
+                          className="rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:border-success hover:text-success"
+                        >
+                          ויתור על הדרישה
+                        </button>
+                      </form>
+                      <form action={resolveRequirementExceptionAction.bind(null, id, requirement.id)}>
+                        <input type="hidden" name="decision" value="contact_client" />
+                        <button
+                          type="submit"
+                          className="rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:border-brand-blue hover:text-brand-blue"
+                        >
+                          יצירת קשר עם הלקוח
+                        </button>
+                      </form>
+                      <form action={resolveRequirementExceptionAction.bind(null, id, requirement.id)}>
+                        <input type="hidden" name="decision" value="leave_open" />
+                        <button
+                          type="submit"
+                          className="rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:border-text-muted"
+                        >
+                          השאר פתוח
+                        </button>
+                      </form>
+                    </div>
+                    <form
+                      action={resolveRequirementExceptionAction.bind(null, id, requirement.id)}
+                      className="mt-2 flex flex-wrap items-center gap-2"
+                    >
+                      <input type="hidden" name="decision" value="request_alternative" />
+                      <input
+                        type="text"
+                        name="alternativeText"
+                        placeholder="מסמך חלופי לבקש במקום..."
+                        className={fieldClass("sm", "flex-1 min-w-[180px]")}
+                      />
+                      <button
+                        type="submit"
+                        className="rounded-full border border-border px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:border-brand-blue hover:text-brand-blue"
+                      >
+                        בקשת מסמך חלופי
+                      </button>
+                    </form>
+                  </div>
+                )}
 
                 {requirement.documents.length > 0 && (
                   <ul className="mt-3 space-y-2.5">

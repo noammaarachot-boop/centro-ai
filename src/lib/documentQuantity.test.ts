@@ -23,6 +23,22 @@ function spec(overrides: Partial<RequirementSemanticSpec>): RequirementSemanticS
   };
 }
 
+describe("computeRequirementSatisfaction — 'I don't have this document' exception (exceptionStatus)", () => {
+  it("a requirement the employee waived counts as fully satisfied regardless of documents", () => {
+    expect(
+      computeRequirementSatisfaction({ requiredCount: 3, semanticSpec: null, exceptionStatus: "waived" }, [])
+    ).toEqual({ satisfiedCount: 3, satisfied: true });
+  });
+
+  it("any other exception status (reported_missing, will_contact_client, left_open) has no effect on satisfaction", () => {
+    for (const exceptionStatus of ["reported_missing", "will_contact_client", "left_open"]) {
+      expect(
+        computeRequirementSatisfaction({ requiredCount: 1, semanticSpec: null, exceptionStatus }, [])
+      ).toEqual({ satisfiedCount: 0, satisfied: false });
+    }
+  });
+});
+
 describe("computeRequirementSatisfaction — legacy fallback (no semanticSpec)", () => {
   it("a single document (requiredCount 1) satisfies exactly like before this feature existed", () => {
     expect(computeRequirementSatisfaction({ requiredCount: 1, semanticSpec: null }, [{ periodLabel: null, personName: null }])).toEqual({

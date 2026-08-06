@@ -356,6 +356,7 @@ export async function processInboundAttachment(
       sourceRequirementId: collectionRequestRequirements.sourceRequirementId,
       requiredCount: collectionRequestRequirements.requiredCount,
       semanticSpec: collectionRequestRequirements.semanticSpec,
+      exceptionStatus: collectionRequestRequirements.exceptionStatus,
     })
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
@@ -600,6 +601,17 @@ export async function processInboundAttachment(
             pageNumberCurrent: classification.pageNumberCurrent ?? null,
             pageNumberTotal: classification.pageNumberTotal ?? null,
           });
+      // "I don't have this document" exception (src/lib/requirementException.ts)
+      // — a real matching document arriving after all clears any open
+      // exception on this requirement automatically; the client found it,
+      // there's nothing left for the employee to decide.
+      const matchedRequirement = requirements.find((r) => r.id === outcome.requirementId);
+      if (matchedRequirement?.exceptionStatus) {
+        await db
+          .update(collectionRequestRequirements)
+          .set({ exceptionStatus: null, exceptionNote: null, exceptionCreatedAt: null })
+          .where(eq(collectionRequestRequirements.id, outcome.requirementId));
+      }
     } else if (outcome.kind === "unsolicited") {
       status = "unsolicited_pending_confirmation";
       deferredReviewKind = "unsolicited_document";

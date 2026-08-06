@@ -23,6 +23,7 @@ import { recordLearnedDocumentPattern } from "@/lib/documentLearning";
 import { createPendingConfirmation } from "@/lib/pendingConfirmations";
 import { uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
 import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
+import { resolveRequirementException, type RequirementExceptionDecision } from "@/lib/requirementException";
 
 // The one place every mutation in this file gets the Collection Request
 // from — every lookup by ID (client, service, document) must be proven to
@@ -506,6 +507,33 @@ export async function simulateDriveDeletion(
     description: `מסמך "${document.fileName}" נמחק ידנית מ-Google Drive`,
     actorType: "system",
     collectionRequestId,
+  });
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
+// "I don't have this document" exception (src/lib/requirementException.ts)
+// — the office employee's own decision on a requirement the client
+// explicitly reported not having. Never guesses which decision to apply;
+// always exactly what the employee picked in the panel below.
+export async function resolveRequirementExceptionAction(
+  collectionRequestId: string,
+  requirementId: string,
+  formData: FormData
+) {
+  const session = await requireSession();
+  await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
+
+  const decision = formData.get("decision") as RequirementExceptionDecision | null;
+  if (!decision) redirect(`/collections/${collectionRequestId}`);
+  const alternativeText = (formData.get("alternativeText") as string | null) ?? undefined;
+
+  await resolveRequirementException({
+    organizationId: session.organizationId,
+    actorUserId: session.userId,
+    requirementId,
+    decision,
+    alternativeText,
   });
 
   redirect(`/collections/${collectionRequestId}`);
