@@ -755,6 +755,16 @@ export const collectionRequests = pgTable("collection_requests", {
   // cycle started, matching a recurring bookkeeping/accounting workflow
   // where each month's documents are reviewed as their own batch.
   driveClientFolderId: text("drive_client_folder_id"),
+  // Post-completion extension flow (src/lib/requestExtension.ts) — true only
+  // while a client who confirmed "yes, save the extra documents" after this
+  // request already completed is actively adding more. While true, a
+  // document arriving no longer auto-completes/closes the request the
+  // instant it happens to satisfy every requirement (processInboundAttachment's
+  // immediate-completion check) — the client may still have more to add and
+  // hasn't said so yet. Cleared back to false the moment the request
+  // actually re-completes (an explicit "finished" signal, or the
+  // extension-finished-check confirmation), by attemptFinishCollectionRequest.
+  extensionActive: boolean("extension_active").notNull().default(false),
 });
 
 // The per-cycle snapshot described in BR-002 above — copied from
@@ -789,6 +799,24 @@ export const collectionRequestRequirements = pgTable(
     // template requirement at all — computeRequirementSatisfaction falls
     // back to legacy behavior in both cases.
     semanticSpec: jsonb("semantic_spec"),
+    // "I don't have this document" exception (src/lib/requirementException.ts)
+    // — null for a requirement with no open/decided exception. "reported_missing"
+    // is the client's own report, awaiting an office employee's decision;
+    // "waived" (computeRequirementSatisfaction treats this exactly like the
+    // requirement being fully satisfied, regardless of documents),
+    // "will_contact_client", and "left_open" are the employee's other three
+    // possible decisions — all three keep the requirement genuinely
+    // unsatisfied (a real matching document can still complete it normally
+    // later) but suppress automated reminder nagging about it while active.
+    // Cleared back to null automatically the moment a real document is
+    // approved against this requirement (the client found it after all) or
+    // an employee picks "request alternative" (the requirement itself is
+    // rewritten instead).
+    exceptionStatus: text("exception_status"),
+    // The client's own literal wording ("אין לי את אישור השכירות") — shown
+    // to the employee verbatim, never paraphrased, alongside the decision.
+    exceptionNote: text("exception_note"),
+    exceptionCreatedAt: timestamp("exception_created_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -963,6 +991,19 @@ export const documents = pgTable("documents", {
   // is computed (src/lib/documentQuantity.ts) so it can never inflate a
   // requirement's satisfied count.
   continuationOfDocumentId: uuid("continuation_of_document_id").references((): AnyPgColumn => documents.id),
+  // Real single-PDF merging (src/lib/documentMerge.ts) — set only on the
+  // HEAD document of a multi-page group (the one continuation pages point
+  // back to via continuationOfDocumentId above), once a second page has
+  // actually been merged. Points at a SEPARATE Drive file — the merged PDF
+  // — distinct from this row's own googleDriveFileId (each raw source page,
+  // including the head's own first image, keeps its own individual Drive
+  // file too; nothing is ever deleted). This is "the active document" a
+  // case reviewer or requirement check should prefer once set.
+  // mergedPdfVersion increments each time a later page triggers the same
+  // Drive file's content being replaced in place (never a new file — "no
+  // duplication"); both null until the first merge happens.
+  mergedPdfDriveFileId: text("merged_pdf_drive_file_id"),
+  mergedPdfVersion: integer("merged_pdf_version"),
   // Document replace/supersede (src/lib/documentReplace.ts) — set on the
   // OLD document once the client confirms a newer one replaces it; points
   // at the new document. Never set together with continuationOfDocumentId

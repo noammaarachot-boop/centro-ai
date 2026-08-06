@@ -162,6 +162,7 @@ async function listMissingRequirementNames(collectionRequestId: string): Promise
       name: collectionRequestRequirements.name,
       requiredCount: collectionRequestRequirements.requiredCount,
       semanticSpec: collectionRequestRequirements.semanticSpec,
+      exceptionStatus: collectionRequestRequirements.exceptionStatus,
     })
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));

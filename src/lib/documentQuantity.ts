@@ -52,6 +52,11 @@ export interface SatisfactionDocument {
 interface RequirementForSatisfaction {
   requiredCount: number;
   semanticSpec: unknown;
+  // "I don't have this document" exception (src/lib/requirementException.ts)
+  // — "waived" is the one exception outcome that force-satisfies a
+  // requirement regardless of documents; every other value (or undefined,
+  // for a caller that doesn't track this at all) has no effect here.
+  exceptionStatus?: string | null;
 }
 
 // Fuzzy-groups names into equivalence classes (reusing the same tolerance
@@ -95,6 +100,10 @@ export function computeRequirementSatisfaction(
 ): RequirementSatisfaction {
   const requiredCount = requirement.requiredCount;
   const spec = requirement.semanticSpec as RequirementSemanticSpec | null;
+
+  if (requirement.exceptionStatus === "waived") {
+    return { satisfiedCount: requiredCount, satisfied: true };
+  }
 
   if (!spec) {
     const distinctLabels = new Set(documents.map((d) => d.periodLabel).filter((label): label is string => label !== null));

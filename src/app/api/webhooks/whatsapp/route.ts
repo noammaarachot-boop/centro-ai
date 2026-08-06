@@ -21,7 +21,10 @@ import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification
 import { applyFollowUpPromiseIfAny, attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
 import { createRequestReopenConfirmation, applyRequestReopenDecision, decidePostCompletionGate } from "@/lib/requestReopen";
-import { recordInboundMessage } from "@/lib/conversationOrchestration";
+import { classifyRequestMessageIntent } from "@/lib/ai/requestMessageIntent";
+import { answerRequestMessage, buildRequirementFacts } from "@/lib/requestQnA";
+import { askWhichDocumentMissing, openRequirementException, resolveExceptionTarget } from "@/lib/requirementException";
+import { recordInboundMessage, sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { processInboundAttachment, reprocessHeldReopenDocument } from "@/app/(app)/collections/conversationActions";
 import { downloadMedia } from "@/lib/whatsapp/media";
 import { toE164 } from "@/lib/whatsapp/phone";
@@ -473,6 +476,49 @@ async function handleInboundMessage(
         });
         if (promised) {
           console.log("[wa-inbound] follow-up promise recognized, reminder deferred", { collectionRequestId });
+        } else {
+          // Message-relevance gate — the final fallback, only reached once
+          // every earlier resolver (open confirmation, "finished", "I'll
+          // send it later") found nothing to claim. Centro is not a general
+          // chatbot: it answers a question about the *active* document
+          // request, routes an explicit "I don't have this document" to an
+          // employee decision, and otherwise stays completely silent — see
+          // classifyRequestMessageIntent's own doc comment.
+          const facts = await buildRequirementFacts(collectionRequestId);
+          const intent = await classifyRequestMessageIntent(
+            body,
+            facts.map((f) => f.description)
+          );
+          console.log("[wa-inbound] request-message intent classified", { collectionRequestId, category: intent.category });
+
+          if (
+            intent.category === "request_overview" ||
+            intent.category === "receipt_check" ||
+            intent.category === "supporting_document" ||
+            intent.category === "file_format"
+          ) {
+            const answer = await answerRequestMessage(intent.category, collectionRequestId);
+            await sendOutboundMessage(organization.id, conversation.id, answer, "ai", "manual", undefined, true);
+          } else if (intent.category === "no_document_exception") {
+            const outstanding = facts.filter((f) => !f.satisfied).map((f) => ({ id: f.id, name: f.description }));
+            const target = resolveExceptionTarget(outstanding, intent.mentionedDocumentType);
+            if (target.kind === "matched") {
+              await openRequirementException({
+                organizationId: organization.id,
+                clientId: client.id,
+                conversationId: conversation.id,
+                collectionRequestId,
+                requirementId: target.requirementId,
+                clientWording: body,
+              });
+            } else if (target.kind === "ambiguous") {
+              await askWhichDocumentMissing({ organizationId: organization.id, conversationId: conversation.id });
+            }
+            // "none_outstanding" — nothing is actually missing right now;
+            // stay silent rather than open an exception against nothing.
+          }
+          // "unrelated" — the safe default: no reply, no state change,
+          // message already recorded above for an employee to see.
         }
       }
     }

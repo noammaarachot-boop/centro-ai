@@ -64,6 +64,7 @@ export async function checkCompletionGate(
       id: collectionRequestRequirements.id,
       requiredCount: collectionRequestRequirements.requiredCount,
       semanticSpec: collectionRequestRequirements.semanticSpec,
+      exceptionStatus: collectionRequestRequirements.exceptionStatus,
     })
     .from(collectionRequestRequirements)
     .where(
