@@ -46,13 +46,31 @@ function checkAuth(request: Request): boolean {
 }
 
 // The one and only client this entire route is ever allowed to touch —
-// resolved fresh on every call, never trusted from a request body. Matches
-// by digits-only suffix so it's robust to however the phone happens to be
-// formatted in the database (055-9858685, +972559858685, etc.).
+// resolved fresh on every call, never trusted from a request body. This is
+// a heavily-reused test/dev database (19 organizations, several unrelated
+// clients sharing the same test phone number's last digits across old
+// experiments) — matching on phone digits ALONE picked the wrong client in
+// practice (a same-suffix client in a disconnected org). Requires BOTH the
+// exact name "רז שלום" AND a phone digit match, and among any remaining
+// candidates prefers the one in an organization that's actually connected
+// (real Drive folder + real WhatsApp number) — never just "the first row
+// found."
 async function resolveTestClient() {
   const db = await getDb();
   const all = await db.select().from(clients);
-  return all.find((c) => c.phone.replace(/\D/g, "").endsWith(TEST_CLIENT_PHONE_SUFFIX)) ?? null;
+  const candidates = all.filter(
+    (c) => c.name.trim() === "רז שלום" && c.phone.replace(/\D/g, "").endsWith(TEST_CLIENT_PHONE_SUFFIX)
+  );
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const allOrgs = await db.select().from(organizations);
+  const orgById = new Map(allOrgs.map((o) => [o.id, o]));
+  const connected = candidates.find((c) => {
+    const org = orgById.get(c.organizationId);
+    return !!org?.googleDriveFolderId && !!org?.whatsappPhoneNumberId;
+  });
+  return connected ?? candidates[0];
 }
 
 export async function POST(request: Request) {
