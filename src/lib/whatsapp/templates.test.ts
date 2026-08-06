@@ -38,10 +38,26 @@ describe("template definitions", () => {
   // one exception — it carries exampleParams and is always sent through the
   // explicit templateSend descriptor built by buildInitialRequestSend,
   // never through this zero-param body lookup.
-  it("any template without exampleParams has no placeholder (safe to send with zero params)", () => {
+  it("any template without exampleParams or namedExampleParams has no placeholder at all (safe to send with zero params)", () => {
     for (const template of REQUIRED_TEMPLATES) {
-      if (!template.exampleParams) {
-        expect(template.bodyText).not.toMatch(/\{\{\d+\}\}/);
+      if (!template.exampleParams && !template.namedExampleParams) {
+        expect(template.bodyText).not.toMatch(/\{\{[\w\d]+\}\}/);
+      }
+    }
+  });
+
+  // The named-parameter equivalent of the positional check above —
+  // centro_reminder_v2's {{documents}} isn't a {{n}} positional
+  // placeholder, so it needs its own regex and its own declared example
+  // shape (namedExampleParams, matched to Meta's body_text_named_params
+  // submission format).
+  it("every template with a {{word}} named placeholder declares namedExampleParams with a matching param name", () => {
+    for (const template of REQUIRED_TEMPLATES) {
+      const namedPlaceholders = [...template.bodyText.matchAll(/\{\{([a-zA-Z_][\w]*)\}\}/g)].map((m) => m[1]);
+      if (namedPlaceholders.length === 0) continue;
+      expect(template.namedExampleParams?.length ?? 0).toBeGreaterThanOrEqual(namedPlaceholders.length);
+      for (const placeholder of namedPlaceholders) {
+        expect(template.namedExampleParams?.some((p) => p.paramName === placeholder)).toBe(true);
       }
     }
   });
