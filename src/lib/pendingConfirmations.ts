@@ -62,7 +62,15 @@ export type PendingConfirmationKind =
   // arrived on a request that already completed. Yes/no ("reopen the
   // request to save this?"), sent immediately (never batched — this is a
   // one-off, time-sensitive gate, not a burst of document exceptions).
-  | "request_reopen";
+  | "request_reopen"
+  // Post-completion extension flow (src/lib/requestExtension.ts) — asked
+  // once, after 30+ minutes of inactivity following a document uploaded
+  // during an active extension, since the client never said they were
+  // done. Yes/no ("סיימת להעלות?"), sent immediately (time-sensitive, not
+  // batched); its own unanswered-reminder/escalation lifecycle reuses the
+  // exact same generic cron pass every other reminderIntervalDays-based
+  // confirmation already gets (sendConfirmationRemindersAndEscalate).
+  | "extension_finished_check";
 
 // The two kinds smart notification grouping ever batches — both are
 // yes/no questions about a specific document (or several), always with the

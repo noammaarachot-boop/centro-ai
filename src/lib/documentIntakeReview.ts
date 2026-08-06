@@ -82,7 +82,7 @@ export function resolveDocumentIntakeOutcome(
   return { kind: "unrecognized" };
 }
 
-async function getConfirmationReminderConfig(
+export async function getConfirmationReminderConfig(
   organizationId: string
 ): Promise<{ reminderIntervalDays: number; maxReminders: number; groupingWindowSeconds: number }> {
   const db = await getDb();

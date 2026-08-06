@@ -21,6 +21,7 @@ import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification
 import { applyFollowUpPromiseIfAny, attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
 import { createRequestReopenConfirmation, applyRequestReopenDecision, decidePostCompletionGate } from "@/lib/requestReopen";
+import { applyExtensionFinishedDecision } from "@/lib/requestExtension";
 import { classifyRequestMessageIntent } from "@/lib/ai/requestMessageIntent";
 import { answerRequestMessage, buildRequirementFacts } from "@/lib/requestQnA";
 import { askWhichDocumentMissing, openRequirementException, resolveExceptionTarget } from "@/lib/requirementException";
@@ -439,6 +440,7 @@ async function handleInboundMessage(
         await applyUnsolicitedConfirmationDecision(resolved);
         await applyIdentityAnomalyDecision(resolved);
         await applyRequestReopenDecision(resolved, reprocessHeldReopenDocument);
+        await applyExtensionFinishedDecision(resolved);
         await recordAuditEvent({
           organizationId: organization.id,
           eventType: "pending_confirmation.resolved",

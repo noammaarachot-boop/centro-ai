@@ -232,13 +232,17 @@ describe("createRequestReopenConfirmation / applyRequestReopenDecision", () => {
     expect(resolved!.status).toBe("confirmed");
     await applyRequestReopenDecision(resolved!, reprocessHeldReopenDocument);
 
-    // The held document turned out to be exactly what was missing — per
-    // "ברגע שכל הדרישות הושלמו... הבקשה נסגרת מיד", it re-completes
-    // immediately rather than sitting reopened.
+    // Post-completion extension flow (src/lib/requestExtension.ts) — even
+    // though the held document turned out to be exactly what was missing,
+    // a reopened request never auto-completes the instant one document
+    // satisfies it: the client may still want to add more, and only an
+    // explicit "finished" (or the extension-finished-check confirmation)
+    // closes it again.
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("completed");
+    expect(request.status).toBe("active");
+    expect(request.extensionActive).toBe(true);
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    expect(conversation.status).toBe("closed");
+    expect(conversation.status).toBe("open");
 
     // The placeholder row itself is gone — replaced by a real, classified
     // document, uploaded to Drive exactly like any normal intake.

@@ -17,6 +17,7 @@ import {
 } from "@/lib/documentIntakeReview";
 import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest } from "@/lib/caseReview";
+import { createExtensionFinishedCheckIfDue, EXTENSION_NUDGE_AFTER_MINUTES } from "@/lib/requestExtension";
 
 /**
  * The real automatic trigger Ch.5/Ch.16 describe — "after N minutes of
@@ -88,7 +89,14 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         and(
           eq(conversations.organizationId, organization.id),
           eq(conversations.status, "open"),
-          eq(collectionRequests.status, "active")
+          eq(collectionRequests.status, "active"),
+          // Post-completion extension flow (src/lib/requestExtension.ts)
+          // has its own dedicated nudge pass below, with its own timing and
+          // wording — never double-handled by this generic inactivity
+          // pass, which would otherwise auto-transition it toward
+          // "waiting_for_client" (and, from there, risk auto-completing it
+          // before the client ever confirmed they're actually done).
+          eq(collectionRequests.extensionActive, false)
         )
       );
 
@@ -139,7 +147,10 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         and(
           eq(conversations.organizationId, organization.id),
           eq(conversations.status, "waiting_for_client"),
-          eq(collectionRequests.status, "waiting_for_client")
+          eq(collectionRequests.status, "waiting_for_client"),
+          // See the matching exclusion on idleOpenConversations above — an
+          // active extension has its own dedicated nudge pass below.
+          eq(collectionRequests.extensionActive, false)
         )
       );
 
@@ -256,6 +267,38 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     // ever actually send its question.
     const { flushed } = await flushDueIntakeNotificationsForOrganization(organization.id);
     intakeNotificationsFlushed += flushed;
+
+    // Post-completion extension flow (src/lib/requestExtension.ts) — a
+    // client who confirmed they want to add documents after a completed
+    // request may upload one and go quiet without ever saying "that's
+    // all." Ask once, after EXTENSION_NUDGE_AFTER_MINUTES of inactivity,
+    // rather than waiting indefinitely or nagging immediately;
+    // createExtensionFinishedCheckIfDue is itself a no-op if a question is
+    // already open.
+    const activeExtensions = await db
+      .select({
+        collectionRequestId: collectionRequests.id,
+        clientId: collectionRequests.clientId,
+        conversationUpdatedAt: conversations.updatedAt,
+      })
+      .from(collectionRequests)
+      .innerJoin(conversations, eq(conversations.collectionRequestId, collectionRequests.id))
+      .where(
+        and(
+          eq(collectionRequests.organizationId, organization.id),
+          eq(collectionRequests.extensionActive, true),
+          eq(conversations.status, "open")
+        )
+      );
+    const extensionNudgeCutoff = new Date(Date.now() - EXTENSION_NUDGE_AFTER_MINUTES * 60 * 1000);
+    for (const ext of activeExtensions) {
+      if (ext.conversationUpdatedAt >= extensionNudgeCutoff) continue;
+      await createExtensionFinishedCheckIfDue({
+        organizationId: organization.id,
+        clientId: ext.clientId,
+        collectionRequestId: ext.collectionRequestId,
+      });
+    }
   }
 
   return {
