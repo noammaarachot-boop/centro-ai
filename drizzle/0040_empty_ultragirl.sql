@@ -1,0 +1,2 @@
+ALTER TABLE "documents" ADD COLUMN "continuation_of_document_id" uuid;--> statement-breakpoint
+ALTER TABLE "documents" ADD CONSTRAINT "documents_continuation_of_document_id_documents_id_fk" FOREIGN KEY ("continuation_of_document_id") REFERENCES "public"."documents"("id") ON DELETE no action ON UPDATE no action;

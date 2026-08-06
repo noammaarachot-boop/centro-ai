@@ -70,6 +70,7 @@ export async function checkCompletionGate(
       requirementId: documents.requirementId,
       status: documents.status,
       extractedPeriodLabel: documents.extractedPeriodLabel,
+      continuationOfDocumentId: documents.continuationOfDocumentId,
     })
     .from(documents)
     .where(eq(documents.collectionRequestId, collectionRequestId));
@@ -84,10 +85,11 @@ export async function checkCompletionGate(
   // requiredCount > 1 ("3 תלושי שכר") needs that many distinct-period
   // approved documents, not just one — every existing requirement
   // (requiredCount defaults to 1) resolves to exactly the old
-  // one-approved-document check, unchanged.
+  // one-approved-document check, unchanged. Multi-page continuation pages
+  // (continuationOfDocumentId set) are never counted as their own unit.
   const unsatisfied = requirements.filter((requirement) => {
     const periodLabels = approvedDocuments
-      .filter((doc) => doc.requirementId === requirement.id)
+      .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
       .map((doc) => doc.extractedPeriodLabel);
     return !computeRequirementSatisfaction(requirement.requiredCount, periodLabels).satisfied;
   });

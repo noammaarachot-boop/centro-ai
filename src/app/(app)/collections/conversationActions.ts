@@ -392,6 +392,10 @@ export async function processInboundAttachment(
   // classification. Both stay null for "approved"/"needs_review".
   let deferredReviewKind: "identity_anomaly" | "unsolicited_document" | "document_clarification" | null = null;
   let deferredReviewPayload: unknown = null;
+  // Multi-page document merging — set when this document is another page
+  // of an already-approved document rather than its own independent unit.
+  // See findContinuationTarget below.
+  let continuationOfDocumentId: string | null = null;
 
   if (!manualRequirementId) {
     // Ch.6 layer 1: this client's own confirmed history is checked before
@@ -437,7 +441,13 @@ export async function processInboundAttachment(
     }
 
     const existingApproved = await db
-      .select({ requirementId: documents.requirementId, extractedPeriodLabel: documents.extractedPeriodLabel })
+      .select({
+        id: documents.id,
+        requirementId: documents.requirementId,
+        extractedPeriodLabel: documents.extractedPeriodLabel,
+        receivedAt: documents.receivedAt,
+        continuationOfDocumentId: documents.continuationOfDocumentId,
+      })
       .from(documents)
       .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
     // Quantity-aware: a requirement stops being "outstanding" only once its
@@ -448,12 +458,37 @@ export async function processInboundAttachment(
     // behavior, unchanged.
     const outstandingRequirementIds = requirements
       .filter((requirement) => {
+        // Multi-page continuation pages (continuationOfDocumentId set) are
+        // never counted as their own unit — only the document they're a
+        // page of is.
         const periodLabels = existingApproved
-          .filter((doc) => doc.requirementId === requirement.id)
+          .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
           .map((doc) => doc.extractedPeriodLabel);
         return !computeRequirementSatisfaction(requirement.requiredCount, periodLabels).satisfied;
       })
       .map((requirement) => requirement.id);
+
+    // Multi-page document merging: a second confidently-matched document
+    // for a requiredCount=1 requirement that already has one approved,
+    // non-continuation document, arriving soon after, is far more likely to
+    // be another page of the same document than a genuinely separate one —
+    // requiredCount > 1 requirements (e.g. "3 תלושי שכר") are excluded
+    // entirely, since a second match there is a genuinely separate unit.
+    // Decided from the classification result below, once we know what it
+    // actually matched.
+    const MULTI_PAGE_CONTINUATION_WINDOW_SECONDS = 120;
+    function findContinuationTarget(matchedRequirementId: string): string | null {
+      const requirement = requirements.find((r) => r.id === matchedRequirementId);
+      if (!requirement || requirement.requiredCount !== 1) return null;
+      const priorPages = existingApproved
+        .filter((doc) => doc.requirementId === matchedRequirementId && !doc.continuationOfDocumentId)
+        .sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
+      const mostRecent = priorPages[0];
+      if (!mostRecent) return null;
+      const withinWindow =
+        Date.now() - mostRecent.receivedAt.getTime() <= MULTI_PAGE_CONTINUATION_WINDOW_SECONDS * 1000;
+      return withinWindow ? mostRecent.id : null;
+    }
 
     // Ch.6 3-way split (src/lib/documentIntakeReview.ts) — a document that
     // doesn't match anything open is not automatically needs_review
@@ -503,6 +538,7 @@ export async function processInboundAttachment(
     } else if (outcome.kind === "matched") {
       requirementId = outcome.requirementId;
       status = "approved";
+      continuationOfDocumentId = findContinuationTarget(outcome.requirementId);
     } else if (outcome.kind === "unsolicited") {
       status = "unsolicited_pending_confirmation";
       deferredReviewKind = "unsolicited_document";
@@ -551,6 +587,7 @@ export async function processInboundAttachment(
       ...(whatsappMessageId ? { whatsappMessageId } : {}),
       ...(extractedIdentity ?? {}),
       ...(extractedPeriodLabel ? { extractedPeriodLabel } : {}),
+      ...(continuationOfDocumentId ? { continuationOfDocumentId } : {}),
       ...(deferredReviewKind ? { deferredReviewKind, deferredReviewPayload } : {}),
     })
     .returning();
