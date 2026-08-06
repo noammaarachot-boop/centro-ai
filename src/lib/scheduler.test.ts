@@ -6,10 +6,10 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 
-// Free-text "I'll send it later" understanding (src/lib/ai/conversationReplyIntent.ts)
-// — a client's explicit promise to send more documents later must actually
-// hold back the scheduler's stale-conversation reminder until that time,
-// not just get recorded and ignored.
+// Reminder infrastructure — "ביטול תזכורת כאשר הדרישה הושלמה": the
+// scheduler's stale-conversation reminder must never nudge a client for
+// documents that already all arrived, and must complete the request
+// instead once nothing is actually missing.
 
 let db: Database;
 
@@ -44,7 +44,7 @@ beforeEach(() => {
   sendTemplateMessage.mockResolvedValue({ messageId: "wamid.out" });
 });
 
-async function seedStaleWaitingConversation(nextFollowUpAt: Date | null) {
+async function seedStaleWaitingConversation(options: { withUnsatisfiedRequirement: boolean }) {
   const [org] = await db
     .insert(schema.organizations)
     .values({
@@ -67,6 +67,9 @@ async function seedStaleWaitingConversation(nextFollowUpAt: Date | null) {
     .insert(schema.collectionRequests)
     .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "p", status: "waiting_for_client" })
     .returning();
+  if (options.withUnsatisfiedRequirement) {
+    await db.insert(schema.collectionRequestRequirements).values({ collectionRequestId: request.id, name: "תעודת זהות" });
+  }
   // Stale enough to be due regardless of the 2-day reminderIntervalDays.
   const staleUpdatedAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
   const [conversation] = await db
@@ -77,41 +80,38 @@ async function seedStaleWaitingConversation(nextFollowUpAt: Date | null) {
       collectionRequestId: request.id,
       status: "waiting_for_client",
       updatedAt: staleUpdatedAt,
-      nextFollowUpAt,
     })
     .returning();
-  return { orgId: org.id, conversationId: conversation.id };
+  return { orgId: org.id, requestId: request.id, conversationId: conversation.id };
 }
 
-describe("runScheduledTasks — nextFollowUpAt gating", () => {
-  it("holds the stale-conversation reminder while nextFollowUpAt is still in the future", async () => {
-    const futureFollowUp = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
-    const { orgId, conversationId } = await seedStaleWaitingConversation(futureFollowUp);
+describe("runScheduledTasks — stale-conversation reminder", () => {
+  it("sends the generic reminder when a requirement is genuinely still unsatisfied", async () => {
+    const { orgId } = await seedStaleWaitingConversation({ withUnsatisfiedRequirement: true });
 
     await runScheduledTasks(orgId);
 
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("runScheduledTasks — cancels the generic reminder once nothing is actually missing", () => {
+  it("completes the request instead of sending a misleading 'still waiting' reminder when every requirement is already satisfied", async () => {
+    const { orgId, requestId, conversationId } = await seedStaleWaitingConversation({ withUnsatisfiedRequirement: false });
+
+    await runScheduledTasks(orgId);
+
+    // No generic "still waiting for documents" reminder — nothing to wait for.
     expect(sendTemplateMessage).not.toHaveBeenCalled();
+    // Completed the same way an explicit "finished" signal would.
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("קיבלתי הכל");
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    // Still holds the promise — not cleared prematurely.
-    expect(conversation.nextFollowUpAt).not.toBeNull();
-  });
-
-  it("sends the reminder and clears nextFollowUpAt once the promised time has passed", async () => {
-    const pastFollowUp = new Date(Date.now() - 60 * 1000); // 1 minute ago
-    const { orgId, conversationId } = await seedStaleWaitingConversation(pastFollowUp);
-
-    await runScheduledTasks(orgId);
-
-    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
-    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    expect(conversation.nextFollowUpAt).toBeNull();
-  });
-
-  it("sends the reminder normally when no follow-up promise was ever made", async () => {
-    const { orgId } = await seedStaleWaitingConversation(null);
-
-    await runScheduledTasks(orgId);
-
-    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+    expect(conversation.status).toBe("closed");
   });
 });

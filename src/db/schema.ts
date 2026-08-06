@@ -1000,14 +1000,6 @@ export const conversations = pgTable("conversations", {
     .notNull()
     .references(() => collectionRequests.id),
   status: conversationStatus("status").notNull().default("open"),
-  // Free-text "I'll send it later" understanding (src/lib/ai/conversationReplyIntent.ts) —
-  // set when the client states an intent to send more documents later
-  // ("אשלח בערב", "בעוד שעה"). While in the future, the scheduler's stale-
-  // conversation reminder (src/lib/scheduler.ts) is held rather than sent —
-  // a reminder must never go out before a time the client explicitly
-  // committed to. Cleared once passed, whether or not the client actually
-  // followed up — never blocks a reminder forever.
-  nextFollowUpAt: timestamp("next_follow_up_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -117,7 +117,7 @@ beforeEach(() => {
   sendInteractiveButtonsMessage.mockReset();
   sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
   classifyFollowUpIntent.mockReset();
-  classifyFollowUpIntent.mockResolvedValue({ isFollowUpPromise: false, approxDelayMinutes: null });
+  classifyFollowUpIntent.mockResolvedValue(false);
 });
 
 describe("isFinishedSignal", () => {
@@ -360,12 +360,15 @@ describe("attemptFinishCollectionRequest", () => {
 });
 
 // Free-text "I'll send it later" understanding (src/lib/ai/conversationReplyIntent.ts)
+// — deliberately no precise deferral timer: the client's own message
+// already resets conversations.updatedAt, which is what the scheduler's
+// staleness check measures against (see classifyFollowUpIntent's own doc
+// comment). This just sends a short acknowledgment and logs it.
 describe("applyFollowUpPromiseIfAny", () => {
-  it("recognizes a send-later promise, defers the conversation's next follow-up, and records an audit event", async () => {
+  it("recognizes a send-later promise, sends a short acknowledgment, and records an audit event", async () => {
     const { orgId, clientId, requestId, conversationId } = await seedRequest([]);
-    classifyFollowUpIntent.mockResolvedValueOnce({ isFollowUpPromise: true, approxDelayMinutes: 240 });
+    classifyFollowUpIntent.mockResolvedValueOnce(true);
 
-    const before = Date.now();
     const result = await applyFollowUpPromiseIfAny({
       organizationId: orgId,
       conversationId,
@@ -375,11 +378,9 @@ describe("applyFollowUpPromiseIfAny", () => {
     });
     expect(result).toBe(true);
 
-    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    expect(conversation.nextFollowUpAt).not.toBeNull();
-    const deltaMinutes = (conversation.nextFollowUpAt!.getTime() - before) / 60000;
-    expect(deltaMinutes).toBeGreaterThan(200);
-    expect(deltaMinutes).toBeLessThan(280);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("בסדר");
 
     const auditEvents = await db
       .select()
@@ -388,9 +389,9 @@ describe("applyFollowUpPromiseIfAny", () => {
     expect(auditEvents).toHaveLength(1);
   });
 
-  it("is a no-op for an ordinary message — never guesses a delay", async () => {
+  it("is a no-op for an ordinary message", async () => {
     const { orgId, clientId, requestId, conversationId } = await seedRequest([]);
-    classifyFollowUpIntent.mockResolvedValueOnce({ isFollowUpPromise: false, approxDelayMinutes: null });
+    classifyFollowUpIntent.mockResolvedValueOnce(false);
 
     const result = await applyFollowUpPromiseIfAny({
       organizationId: orgId,
@@ -400,8 +401,6 @@ describe("applyFollowUpPromiseIfAny", () => {
       replyText: "תודה רבה",
     });
     expect(result).toBe(false);
-
-    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    expect(conversation.nextFollowUpAt).toBeNull();
+    expect(sendTextMessage).not.toHaveBeenCalled();
   });
 });

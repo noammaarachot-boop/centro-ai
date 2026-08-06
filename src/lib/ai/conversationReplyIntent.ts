@@ -74,51 +74,41 @@ export async function classifyYesNoReply(question: string, replyText: string): P
  * resolves to isFollowUpPromise:false — normal reminder timing applies,
  * completely unaffected.
  */
-export interface FollowUpIntentResult {
-  isFollowUpPromise: boolean;
-  // Approximate wait before the next reminder, in minutes — null unless
-  // isFollowUpPromise is true.
-  approxDelayMinutes: number | null;
-}
-
-export async function classifyFollowUpIntent(replyText: string): Promise<FollowUpIntentResult> {
+// Deliberately no delay estimation — a client's own inbound message
+// already resets conversations.updatedAt (recordInboundMessage), which is
+// exactly what the scheduler's stale-conversation reminder measures
+// against. A promise like "אשלח בעוד שעה" doesn't need its own precise
+// timer: it's never nagged before the regular reminder interval elapses
+// either way, and if the request is fully satisfied by the time that
+// interval is up, the scheduler completes it instead of reminding at all
+// (see runScheduledTasks) — so no reminder ever fires "too early" relative
+// to what the client actually said, without needing to parse how early is
+// too early.
+export async function classifyFollowUpIntent(replyText: string): Promise<boolean> {
   const trimmed = replyText.trim();
-  if (!trimmed) return { isFollowUpPromise: false, approxDelayMinutes: null };
+  if (!trimmed) return false;
 
   try {
     const model = await resolveLanguageModel();
-
     const schema = z.object({
       isFollowUpPromise: z
         .boolean()
         .describe('true רק אם ההודעה היא הבטחה ברורה לשלוח עוד מסמכים מאוחר יותר (למשל "אשלח בערב", "בעוד שעה", "מחר בבוקר"). false לכל דבר אחר.'),
-      approxDelayMinutes: z
-        .number()
-        .int()
-        .min(1)
-        .max(60 * 24 * 14)
-        .nullable()
-        .describe("הערכה גסה, בדקות, מתי הלקוח התכוון לשלוח (למשל \"בעוד שעה\" = 60, \"בערב\" = כ-240, \"מחר\" = כ-1080). null אם isFollowUpPromise הוא false."),
     });
-
     const { object } = await generateObject({
       model,
       schema,
       messages: [
         {
           role: "user",
-          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח את ההודעה הבאה: "${trimmed}"\n\nהאם זו הבטחה לשלוח עוד מסמכים מאוחר יותר? אם כן, כמה זמן בערך (בדקות) עד שהוא מתכוון לשלוח? אל תנחש אם ההודעה לא ברורה — סמן isFollowUpPromise כ-false.`,
+          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח את ההודעה הבאה: "${trimmed}"\n\nהאם זו הבטחה לשלוח עוד מסמכים מאוחר יותר? אל תנחש אם ההודעה לא ברורה — סמן false.`,
         },
       ],
     });
-
-    if (!object.isFollowUpPromise || object.approxDelayMinutes === null) {
-      return { isFollowUpPromise: false, approxDelayMinutes: null };
-    }
-    return { isFollowUpPromise: true, approxDelayMinutes: object.approxDelayMinutes };
+    return object.isFollowUpPromise;
   } catch (error) {
     console.error("[conversation-reply-intent] follow-up classification failed (ignored)", error);
-    return { isFollowUpPromise: false, approxDelayMinutes: null };
+    return false;
   }
 }
 
