@@ -337,6 +337,13 @@
       "when": 1786037058763,
       "tag": "0047_groovy_malice",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1786043419869,
+      "tag": "0048_huge_cloak",
+      "breakpoints": true
     }
   ]
 }

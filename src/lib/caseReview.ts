@@ -260,7 +260,16 @@ export async function attemptFinishCollectionRequest(params: {
   const db = await getDb();
   await db
     .update(conversations)
-    .set({ status: "closed", updatedAt: new Date() })
+    .set({
+      status: "closed",
+      updatedAt: new Date(),
+      // Reminder deferral by explicit client commitment
+      // (src/lib/reminderDeferral.ts) — a no-op for every completion that
+      // never had one; when it was set, the request completing (even
+      // before the deferred date arrives — the client sent everything
+      // early) means there's nothing left to defer a reminder about.
+      deferredReminderAt: null,
+    })
     .where(eq(conversations.id, params.conversationId));
   // Post-completion extension flow (src/lib/requestExtension.ts) — a no-op
   // for every ordinary (non-extension) completion, since it's already
