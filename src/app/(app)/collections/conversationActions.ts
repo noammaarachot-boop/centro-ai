@@ -38,6 +38,7 @@ import { computeContinuationConfidence, MIN_CONTINUATION_CONFIDENCE } from "@/li
 import { applyDocumentReplaceIntentIfCaptioned } from "@/lib/documentReplace";
 import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
+import { withdrawStaleFinishedCheck } from "@/lib/requestExtension";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import {
@@ -292,6 +293,18 @@ export async function processInboundAttachment(
   captionText?: string | null
 ) {
   const db = await getDb();
+
+  // Post-completion extension flow (src/lib/requestExtension.ts) — while
+  // active, a document arriving must never auto-complete/close the request
+  // the instant it happens to satisfy every requirement (see the immediate-
+  // completion block below): the client may still have more to add and
+  // hasn't said so yet.
+  const [collectionRequestRow] = await db
+    .select({ extensionActive: collectionRequests.extensionActive })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .limit(1);
+  const extensionActive = collectionRequestRow?.extensionActive ?? false;
 
   // Smart notification grouping's lazy flush trigger: any new activity on
   // this request is a chance to notice an earlier batch (from a document
@@ -704,28 +717,38 @@ export async function processInboundAttachment(
       });
     }
 
-    // "ברגע שכל הדרישות הושלמו... הבקשה נסגרת מיד" — closing never depends
-    // on the reminder cycle or an explicit "finished" phrase: the instant
-    // this document happens to be the last thing missing, the request
-    // completes right here. checkCompletionGate is consulted directly
-    // (never attemptFinishCollectionRequest blind) so a request that's
-    // NOT yet satisfied never gets a "still missing X" message after every
-    // single ordinary document — that's exactly the per-document
-    // interruption "Centro checks the case, not the document" rules out.
-    const gateError = await checkCompletionGate(collectionRequestId);
-    if (gateError === null) {
-      const outcome = await attemptFinishCollectionRequest({
-        organizationId,
-        collectionRequestId,
-        conversationId,
-        clientId,
-        actorType: "client",
-      });
-      // Just completed it ourselves this same call — reopenIfCompleted
-      // below exists for a genuinely late document arriving on an
-      // *already*-completed request, not this one; skip it so it doesn't
-      // immediately undo the completion that just happened.
-      if (outcome === "completed") return;
+    if (extensionActive) {
+      // Post-completion extension flow (src/lib/requestExtension.ts) — the
+      // client is actively adding documents after an already-completed
+      // request; never auto-close on a single arriving document (they may
+      // have more), and any still-open "did you finish?" question is now
+      // stale — the client is clearly still active.
+      await withdrawStaleFinishedCheck(collectionRequestId);
+    } else {
+      // "ברגע שכל הדרישות הושלמו... הבקשה נסגרת מיד" — closing never
+      // depends on the reminder cycle or an explicit "finished" phrase: the
+      // instant this document happens to be the last thing missing, the
+      // request completes right here. checkCompletionGate is consulted
+      // directly (never attemptFinishCollectionRequest blind) so a request
+      // that's NOT yet satisfied never gets a "still missing X" message
+      // after every single ordinary document — that's exactly the
+      // per-document interruption "Centro checks the case, not the
+      // document" rules out.
+      const gateError = await checkCompletionGate(collectionRequestId);
+      if (gateError === null) {
+        const outcome = await attemptFinishCollectionRequest({
+          organizationId,
+          collectionRequestId,
+          conversationId,
+          clientId,
+          actorType: "client",
+        });
+        // Just completed it ourselves this same call — reopenIfCompleted
+        // below exists for a genuinely late document arriving on an
+        // *already*-completed request, not this one; skip it so it doesn't
+        // immediately undo the completion that just happened.
+        if (outcome === "completed") return;
+      }
     }
   }
   // unsolicited_pending_confirmation / clarification_requested /

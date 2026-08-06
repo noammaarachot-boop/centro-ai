@@ -1,6 +1,6 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, conversations, documents, pendingConfirmations } from "@/db/schema";
+import { collectionRequestRequirements, collectionRequests, conversations, documents, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
@@ -262,6 +262,16 @@ export async function attemptFinishCollectionRequest(params: {
     .update(conversations)
     .set({ status: "closed", updatedAt: new Date() })
     .where(eq(conversations.id, params.conversationId));
+  // Post-completion extension flow (src/lib/requestExtension.ts) — a no-op
+  // for every ordinary (non-extension) completion, since it's already
+  // false there. Cleared here, centrally, rather than at each of the
+  // several places that can trigger a completion (an explicit "finished"
+  // message, the extension-finished-check confirmation, the scheduler),
+  // so none of them has to remember to do it themselves.
+  await db
+    .update(collectionRequests)
+    .set({ extensionActive: false })
+    .where(eq(collectionRequests.id, params.collectionRequestId));
 
   return "completed";
 }

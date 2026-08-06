@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { collectionRequests, conversations, documents } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage, reopenIfCompleted } from "@/lib/conversationOrchestration";
+import { activateExtension } from "@/lib/requestExtension";
 import {
   CONFIRM_NO_BUTTON_ID,
   CONFIRM_YES_BUTTON_ID,
@@ -154,6 +155,12 @@ export async function applyRequestReopenDecision(
       .update(conversations)
       .set({ status: "open", updatedAt: new Date() })
       .where(eq(conversations.id, resolved.conversationId));
+    // Post-completion extension flow (src/lib/requestExtension.ts) — a
+    // reopened request never auto-closes again the instant one document
+    // happens to satisfy it; the client may still want to add more, and
+    // only an explicit "finished" (or the extension-finished-check
+    // confirmation) closes it again.
+    await activateExtension(resolved.collectionRequestId);
   }
   console.log("[request-reopen] confirmed — request reopened", { collectionRequestId: resolved.collectionRequestId, reopened });
 
