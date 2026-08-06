@@ -8,6 +8,7 @@ import {
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { detectMissingRequirements, resolveEffectiveRequirementNames } from "@/lib/clientDocumentProfile";
+import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
 
 export type CollectionRequestStatus =
   | "draft"
@@ -58,7 +59,7 @@ export async function checkCompletionGate(
   const db = await getDb();
 
   const requirements = await db
-    .select({ id: collectionRequestRequirements.id })
+    .select({ id: collectionRequestRequirements.id, requiredCount: collectionRequestRequirements.requiredCount })
     .from(collectionRequestRequirements)
     .where(
       eq(collectionRequestRequirements.collectionRequestId, collectionRequestId)
@@ -68,6 +69,7 @@ export async function checkCompletionGate(
     .select({
       requirementId: documents.requirementId,
       status: documents.status,
+      extractedPeriodLabel: documents.extractedPeriodLabel,
     })
     .from(documents)
     .where(eq(documents.collectionRequestId, collectionRequestId));
@@ -76,15 +78,19 @@ export async function checkCompletionGate(
     return "לא ניתן להשלים בקשה כאשר יש מסמכים בעיבוד.";
   }
 
-  const approvedRequirementIds = new Set(
-    requestDocuments
-      .filter((doc) => doc.status === "approved" && doc.requirementId)
-      .map((doc) => doc.requirementId)
-  );
+  const approvedDocuments = requestDocuments.filter((doc) => doc.status === "approved" && doc.requirementId);
 
-  const unsatisfied = requirements.filter(
-    (req) => !approvedRequirementIds.has(req.id)
-  );
+  // Quantity-aware (src/lib/documentQuantity.ts): a requirement with
+  // requiredCount > 1 ("3 תלושי שכר") needs that many distinct-period
+  // approved documents, not just one — every existing requirement
+  // (requiredCount defaults to 1) resolves to exactly the old
+  // one-approved-document check, unchanged.
+  const unsatisfied = requirements.filter((requirement) => {
+    const periodLabels = approvedDocuments
+      .filter((doc) => doc.requirementId === requirement.id)
+      .map((doc) => doc.extractedPeriodLabel);
+    return !computeRequirementSatisfaction(requirement.requiredCount, periodLabels).satisfied;
+  });
   if (unsatisfied.length > 0) {
     return `יש ${unsatisfied.length} דרישות מסמכים שטרם אושרו.`;
   }

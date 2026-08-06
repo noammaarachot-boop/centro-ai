@@ -889,6 +889,15 @@ export const documents = pgTable("documents", {
   extractedPersonName: text("extracted_person_name"),
   extractedIdNumber: text("extracted_id_number"),
   extractedCompanyName: text("extracted_company_name"),
+  // Quantity-aware requirement engine (src/lib/documentQuantity.ts) — the
+  // dated period this document covers, normalized as "MM/YYYY" (a payslip's
+  // or bank statement's own month, an invoice's own date), when the vision
+  // model could confidently tell. Null for anything undated or below
+  // MIN_PERIOD_EXTRACTION_CONFIDENCE — never a guessed period. Two approved
+  // documents for the same multi-unit requirement (collectionRequestRequirements.requiredCount
+  // > 1, e.g. "3 תלושי שכר") sharing the same label count as one satisfied
+  // unit, not two — see computeRequirementSatisfaction.
+  extractedPeriodLabel: text("extracted_period_label"),
   // "Centro checks the case, not the document" (caseReview.ts) — a
   // document classified as an identity anomaly, unsolicited, or
   // unrecognized no longer gets its client-facing question asked the

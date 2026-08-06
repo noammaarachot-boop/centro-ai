@@ -106,6 +106,7 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
 
 const { processInboundAttachment } = await import("./conversationActions");
 const { runCaseReview } = await import("@/lib/caseReview");
+const { checkCompletionGate } = await import("@/lib/collectionRequestStateMachine");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -348,5 +349,111 @@ describe("processInboundAttachment — documents arriving as separate calls for 
       .from(schema.auditLogs)
       .where(and(eq(schema.auditLogs.collectionRequestId, requestId), eq(schema.auditLogs.eventType, "document.duplicate_detected")));
     expect(auditEvents).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quantity-aware requirement engine (src/lib/documentQuantity.ts) — a
+// requirement can ask for more than one unit (collectionRequestRequirements.requiredCount),
+// e.g. "3 תלושי שכר". Mandatory scenarios #11/#12 from the product spec.
+// ---------------------------------------------------------------------------
+describe("processInboundAttachment — quantity-aware requirements (requiredCount > 1)", () => {
+  it("3 payslips for 3 different months satisfy a requiredCount of 3", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תלוש שכר"]);
+    const payslipReq = requirements[0];
+    await db
+      .update(schema.collectionRequestRequirements)
+      .set({ requiredCount: 3 })
+      .where(eq(schema.collectionRequestRequirements.id, payslipReq.id));
+
+    for (const [wamid, period] of [
+      ["wamid.p1", "01/2026"],
+      ["wamid.p2", "02/2026"],
+      ["wamid.p3", "03/2026"],
+    ] as const) {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "תלוש שכר",
+        identificationConfidence: 0.95,
+        matchedRequirementId: payslipReq.id,
+        matchConfidence: 0.95,
+        extractedPersonName: null,
+        extractedIdNumber: null,
+        extractedCompanyName: null,
+        identityExtractionConfidence: 0,
+        documentPeriodLabel: period,
+        periodExtractionConfidence: 0.9,
+      });
+      await processInboundAttachment(
+        orgId,
+        requestId,
+        conversationId,
+        clientId,
+        `image_${wamid}.jpg`,
+        null,
+        Buffer.from(period),
+        "image/jpeg",
+        wamid
+      );
+    }
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(3);
+    expect(docs.every((d) => d.status === "approved")).toBe(true);
+    expect(new Set(docs.map((d) => d.extractedPeriodLabel))).toEqual(new Set(["01/2026", "02/2026", "03/2026"]));
+
+    expect(await checkCompletionGate(requestId)).toBeNull();
+  });
+
+  it("3 payslips for the SAME month do not satisfy a requiredCount of 3 — every document is still approved silently, but the requirement stays open", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תלוש שכר"]);
+    const payslipReq = requirements[0];
+    await db
+      .update(schema.collectionRequestRequirements)
+      .set({ requiredCount: 3 })
+      .where(eq(schema.collectionRequestRequirements.id, payslipReq.id));
+
+    for (const wamid of ["wamid.s1", "wamid.s2", "wamid.s3"]) {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "תלוש שכר",
+        identificationConfidence: 0.95,
+        matchedRequirementId: payslipReq.id,
+        matchConfidence: 0.95,
+        extractedPersonName: null,
+        extractedIdNumber: null,
+        extractedCompanyName: null,
+        identityExtractionConfidence: 0,
+        documentPeriodLabel: "01/2026", // same month every time
+        periodExtractionConfidence: 0.9,
+      });
+      await processInboundAttachment(
+        orgId,
+        requestId,
+        conversationId,
+        clientId,
+        `image_${wamid}.jpg`,
+        null,
+        Buffer.from(wamid),
+        "image/jpeg",
+        wamid
+      );
+    }
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(3);
+    // Level 1 principle: Centro never refuses or interrupts about the
+    // same-month repeats — all three are still auto-approved and uploaded.
+    expect(docs.every((d) => d.status === "approved")).toBe(true);
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(0);
+
+    // But the *quantity* gate stays honest: only 1 distinct month is
+    // actually represented, so the requirement is still short 2 — the
+    // request cannot complete yet.
+    expect(await checkCompletionGate(requestId)).not.toBeNull();
   });
 });

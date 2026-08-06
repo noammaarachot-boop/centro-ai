@@ -6,6 +6,7 @@ import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
 import { createClarificationRequest, createUnsolicitedDocumentConfirmation } from "@/lib/documentIntakeReview";
 import { createOrMergeIdentityAnomalyConfirmation, type IdentityAnomaly } from "@/lib/documentIdentityVerification";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
+import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
 
 /**
  * "Centro checks the case, not the document" — a document classified as an
@@ -145,18 +146,41 @@ export async function runCaseReview(
   return { hasPendingReview: true, groupCount: flushResult.groupCount };
 }
 
+// Quantity-aware (src/lib/documentQuantity.ts): a requirement asking for
+// more than one unit ("3 תלושי שכר") that's only partly satisfied is named
+// with how many are still needed, not just listed as flatly "missing" —
+// e.g. "תלוש שכר (התקבלו 1 מתוך 3)" instead of losing that nuance entirely.
+// A requirement with zero approved documents at all keeps the plain name,
+// same wording as before this feature existed.
 async function listMissingRequirementNames(collectionRequestId: string): Promise<string[]> {
   const db = await getDb();
   const requirements = await db
-    .select({ id: collectionRequestRequirements.id, name: collectionRequestRequirements.name })
+    .select({
+      id: collectionRequestRequirements.id,
+      name: collectionRequestRequirements.name,
+      requiredCount: collectionRequestRequirements.requiredCount,
+    })
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
   const approvedDocs = await db
-    .select({ requirementId: documents.requirementId })
+    .select({ requirementId: documents.requirementId, extractedPeriodLabel: documents.extractedPeriodLabel })
     .from(documents)
     .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
-  const approvedIds = new Set(approvedDocs.map((d) => d.requirementId));
-  return requirements.filter((r) => !approvedIds.has(r.id)).map((r) => r.name);
+
+  const missing: string[] = [];
+  for (const requirement of requirements) {
+    const periodLabels = approvedDocs
+      .filter((doc) => doc.requirementId === requirement.id)
+      .map((doc) => doc.extractedPeriodLabel);
+    const { satisfiedCount, satisfied } = computeRequirementSatisfaction(requirement.requiredCount, periodLabels);
+    if (satisfied) continue;
+    missing.push(
+      satisfiedCount > 0 && requirement.requiredCount > 1
+        ? `${requirement.name} (התקבלו ${satisfiedCount} מתוך ${requirement.requiredCount})`
+        : requirement.name
+    );
+  }
+  return missing;
 }
 
 function buildMissingRequirementsMessage(missing: string[]): string {

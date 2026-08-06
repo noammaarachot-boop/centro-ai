@@ -34,6 +34,12 @@ export interface VisionClassificationResult {
   // caller's job is deciding whether to trust extraction enough to act on
   // it, not to reason about partial reliability.
   identityExtractionConfidence: number;
+  // Quantity-aware requirement engine (src/lib/documentQuantity.ts) — the
+  // dated period this document covers ("MM/YYYY"), when the document type
+  // has an obvious one (a payslip's own month, a bank statement's own
+  // month, an invoice's own date) — null for anything undated or unclear.
+  documentPeriodLabel: string | null;
+  periodExtractionConfidence: number;
 }
 
 // WhatsApp never supplies a real filename for an inbound photo (Meta's
@@ -131,6 +137,17 @@ export async function classifyDocumentViaVisionAI(
         .describe(
           "רמת ביטחון כללית בשדות הזיהוי שחילצת למעלה (שם/מספר זהות/שם חברה) — 0 אם לא הצלחת לחלץ שום פרט מזהה אמין."
         ),
+      documentPeriodLabel: z
+        .string()
+        .nullable()
+        .describe(
+          'אם המסמך מתייחס בבירור לתקופה או תאריך מסוימים (חודש התלוש, חודש דף הבנק, תאריך החשבונית) — ציין בפורמט "MM/YYYY" (למשל "01/2026"). null אם אין תאריך/תקופה ברור/ה במסמך, או שהמסמך אינו מסוג מסמך תקופתי.'
+        ),
+      periodExtractionConfidence: z
+        .number()
+        .min(0)
+        .max(1)
+        .describe('רמת ביטחון בתקופה/תאריך שחילצת ב-documentPeriodLabel. 0 אם documentPeriodLabel הוא null.'),
     });
 
     console.log("[wa-inbound] vision classification REQUEST", {
@@ -148,7 +165,7 @@ export async function classifyDocumentViaVisionAI(
           content: [
             {
               type: "text",
-              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. יש כמה שאלות נפרדות: (1) האם אתה יכול לזהות בבירור איזה סוג מסמך זה בפועל, גם אם הוא לא קשור לרשימה? (2) בהנחה שזיהית אותו, האם הוא בפועל עונה על אחת מהדרישות ברשימה, או שהוא סוג מסמך אחר לגמרי (כמו חשבונית, קבלה, או כל דבר אחר שלא התבקש)? אל תסמן התאמה רק כי המסמך זוהה — התאמה נדרשת רק כשהוא באמת מהסוג המבוקש. (3) אם מופיעים במסמך שם אדם, מספר תעודת זהות, או שם חברה — חלץ אותם בדיוק כפי שהם כתובים. אל תנחש ואל תשלים פרטים שלא כתובים בבירור במסמך עצמו.`,
+              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. יש כמה שאלות נפרדות: (1) האם אתה יכול לזהות בבירור איזה סוג מסמך זה בפועל, גם אם הוא לא קשור לרשימה? (2) בהנחה שזיהית אותו, האם הוא בפועל עונה על אחת מהדרישות ברשימה, או שהוא סוג מסמך אחר לגמרי (כמו חשבונית, קבלה, או כל דבר אחר שלא התבקש)? אל תסמן התאמה רק כי המסמך זוהה — התאמה נדרשת רק כשהוא באמת מהסוג המבוקש. (3) אם מופיעים במסמך שם אדם, מספר תעודת זהות, או שם חברה — חלץ אותם בדיוק כפי שהם כתובים. אל תנחש ואל תשלים פרטים שלא כתובים בבירור במסמך עצמו. (4) אם המסמך מתייחס בבירור לתקופה/תאריך מסוימים (חודש תלוש שכר, חודש דף בנק, תאריך חשבונית) — ציין אותם. אל תנחש תאריך שלא כתוב בבירור במסמך.`,
             },
             { type: "file", data: fileBytes, mediaType: mimeType },
           ],
@@ -185,6 +202,15 @@ export async function classifyDocumentViaVisionAI(
       extractedIdNumber: object.extractedIdNumber ? object.extractedIdNumber.replace(/\D/g, "") || null : null,
       extractedCompanyName: object.extractedCompanyName,
       identityExtractionConfidence: object.identityExtractionConfidence,
+      // Only trusted in the exact "MM/YYYY" shape the prompt asked for — a
+      // malformed value from the model is treated the same as "no period",
+      // never passed through as-is, since documentQuantity.ts's dedup logic
+      // depends on exact string equality between sibling documents.
+      documentPeriodLabel:
+        object.documentPeriodLabel && /^(0[1-9]|1[0-2])\/\d{4}$/.test(object.documentPeriodLabel)
+          ? object.documentPeriodLabel
+          : null,
+      periodExtractionConfidence: object.periodExtractionConfidence,
     };
   } catch (error) {
     console.error("[wa-inbound] vision classification FAILED (falling back to unrecognized)", error);
