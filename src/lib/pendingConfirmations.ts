@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { organizations, pendingConfirmations } from "@/db/schema";
 import { ensureConversation, sendOutboundMessage } from "@/lib/conversationOrchestration";
@@ -168,12 +168,16 @@ export async function createPendingConfirmation(params: {
 // identity_anomaly) question uses — identical wording regardless of kind,
 // which is what lets flushDueIntakeNotifications combine rows of different
 // kinds into one message with one shared numbering scheme. Group i's
-// options are always 2*i+1 (yes) and 2*i+2 (no).
-const YES_OPTION_LABEL = "כן, שלחתי בכוונה";
-const NO_OPTION_LABEL = "לא, שלחתי בטעות";
+// options are always 2*i+1 (yes) and 2*i+2 (no). Keycap emoji + a single
+// word each — short and immediately scannable, not a repeated full
+// sentence per option.
+const KEYCAP_NUMBERS = ["", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+function keycapLabel(n: number): string {
+  return KEYCAP_NUMBERS[n] ?? `${n}.`;
+}
 
 function formatGroupOptions(groupIndex: number): string {
-  return `${groupIndex * 2 + 1}. ${YES_OPTION_LABEL}\n${groupIndex * 2 + 2}. ${NO_OPTION_LABEL}`;
+  return `${keycapLabel(groupIndex * 2 + 1)} כן\n${keycapLabel(groupIndex * 2 + 2)} לא`;
 }
 
 // Reused by the reminder resend (documentIntakeReview.ts's
@@ -217,8 +221,17 @@ export async function flushDueIntakeNotifications(
   collectionRequestId: string
 ): Promise<FlushResult> {
   const db = await getDb();
-  const pending = await db
-    .select()
+
+  // Cheap, race-prone pre-check — this alone is NOT what prevents a
+  // duplicate send (see the atomic claim below); it only avoids the
+  // claiming UPDATE's write on every call for the overwhelmingly common
+  // case where there's nothing due yet.
+  const preview = await db
+    .select({
+      id: pendingConfirmations.id,
+      kind: pendingConfirmations.kind,
+      notifyAfter: pendingConfirmations.notifyAfter,
+    })
     .from(pendingConfirmations)
     .where(
       and(
@@ -227,15 +240,48 @@ export async function flushDueIntakeNotifications(
         isNull(pendingConfirmations.notifiedAt)
       )
     );
+  const batchablePreview = preview.filter((row) => BATCHABLE_KINDS.includes(row.kind as PendingConfirmationKind));
+  if (batchablePreview.length === 0) return { sent: false, groupCount: 0 };
+  const previewNow = new Date();
+  if (!batchablePreview.some((row) => row.notifyAfter && row.notifyAfter <= previewNow)) {
+    return { sent: false, groupCount: 0 };
+  }
 
-  const batchable = pending.filter((row) => BATCHABLE_KINDS.includes(row.kind as PendingConfirmationKind));
-  if (batchable.length === 0) return { sent: false, groupCount: 0 };
-
+  // The actual correctness boundary: a single UPDATE...RETURNING claims
+  // every still-unnotified batchable row for this request in one atomic
+  // statement. Two flush calls racing (confirmed in production: two
+  // scheduleAfterResponse timers landing ~100ms apart both saw the same
+  // unnotified rows under the old select-then-send-then-update sequence,
+  // and both sent the same combined message to the client) can never both
+  // claim the same row — Postgres's own row-level locking during the
+  // UPDATE means whichever call's statement runs second simply matches
+  // zero rows (notifiedAt is no longer null by then) and safely no-ops
+  // instead of sending a duplicate.
   const now = new Date();
-  const isDue = batchable.some((row) => row.notifyAfter && row.notifyAfter <= now);
-  if (!isDue) return { sent: false, groupCount: 0 };
+  const claimed = await db
+    .update(pendingConfirmations)
+    .set({ notifiedAt: now })
+    .where(
+      and(
+        eq(pendingConfirmations.collectionRequestId, collectionRequestId),
+        eq(pendingConfirmations.status, "pending"),
+        isNull(pendingConfirmations.notifiedAt),
+        or(
+          eq(pendingConfirmations.kind, "unsolicited_document" satisfies PendingConfirmationKind),
+          eq(pendingConfirmations.kind, "identity_anomaly" satisfies PendingConfirmationKind)
+        )
+      )
+    )
+    .returning();
 
-  const ordered = [...batchable].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  if (claimed.length === 0) {
+    console.log("[pending-confirmation] flush lost the claim race — another call already sent this batch", {
+      collectionRequestId,
+    });
+    return { sent: false, groupCount: 0 };
+  }
+
+  const ordered = [...claimed].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
   const [org] = await db
     .select({ reminderIntervalDays: organizations.reminderIntervalDays })
@@ -244,16 +290,19 @@ export async function flushDueIntakeNotifications(
     .limit(1);
   const reminderIntervalDays = org?.reminderIntervalDays ?? 2;
 
-  // A single group needs no preamble or section numbering — the common
-  // case (one document, one anomaly) reads exactly like a standalone
-  // question, unchanged from before grouping existed.
+  // A single group needs no preamble — the common case (one document, one
+  // anomaly) reads exactly like a standalone question. Several groups get
+  // one short, friendly opener and then each question as its own
+  // paragraph — no numbered "1. / 2." section prefix, since every
+  // question already opens with its own 📄 line; the blank-line spacing
+  // and the questions' own numbered yes/no options are what keep each
+  // group visually separate and independently answerable.
   const messageBody =
     ordered.length === 1
       ? formatQuestionWithOptions(ordered[0].question, 0)
       : [
-          "קיבלנו את המסמכים הבאים:",
-          "",
-          ...ordered.map((row, i) => `${i + 1}. ${formatQuestionWithOptions(row.question, i)}`),
+          "מצאתי כמה מסמכים שדורשים הבהרה 😊",
+          ...ordered.map((row, i) => formatQuestionWithOptions(row.question, i)),
         ].join("\n\n");
 
   console.log("[pending-confirmation] flushing batched intake notification", {
@@ -277,12 +326,13 @@ export async function flushDueIntakeNotifications(
     gatedSent: sent,
   });
 
+  // notifiedAt is already set (the claim above) — this only fills in the
+  // two fields that depend on the final combined ordering/send outcome.
   for (const [index, row] of ordered.entries()) {
     await db
       .update(pendingConfirmations)
       .set({
         groupIndex: index,
-        notifiedAt: now,
         nextReminderAt: new Date(now.getTime() + reminderIntervalDays * 24 * 60 * 60 * 1000),
       })
       .where(eq(pendingConfirmations.id, row.id));

@@ -288,11 +288,17 @@ export async function processInboundAttachment(
   // FR-11.2: unsupported file types are rejected automatically.
   const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
   if (!manualRequirementId && !SUPPORTED_EXTENSIONS.includes(extension)) {
+    // Direct reaction to the file the client just sent, within the same
+    // session window — same allowFreeform/trigger reasoning as every other
+    // reactive intake message (see sendViaWhatsApp's own doc comment).
     await sendOutboundMessage(
       organizationId,
       conversationId,
-      "מצטערים, סוג הקובץ אינו נתמך. נא לשלוח PDF או תמונה (JPG/PNG).",
-      "ai"
+      "הקובץ הזה לא נתמך 🙁 אפשר לשלוח PDF או תמונה (JPG/PNG)?",
+      "ai",
+      "manual",
+      undefined,
+      true
     );
     await recordAuditEvent({
       organizationId,
@@ -393,8 +399,11 @@ export async function processInboundAttachment(
       await sendOutboundMessage(
         organizationId,
         conversationId,
-        "לא הצלחנו לקרוא את הקובץ שנשלח. נא לשלוח עותק ברור יותר.",
-        "ai"
+        "לא הצלחתי לקרוא את הקובץ 🙁 אפשר לשלוח שוב, בצילום קצת יותר ברור?",
+        "ai",
+        "manual",
+        undefined,
+        true
       );
       await recordAuditEvent({
         organizationId,
@@ -548,7 +557,6 @@ export async function processInboundAttachment(
       organizationId,
       clientId,
       collectionRequestId,
-      clientName: identityClientName,
       documentId: document.id,
       anomaly: identityAnomaly,
       documentType: identityDocumentType,
@@ -663,8 +671,11 @@ export async function markMoreDocuments(collectionRequestId: string) {
   await sendOutboundMessage(
     session.organizationId,
     conversation.id,
-    "בסדר, נמתין למסמכים הנוספים.",
-    "ai"
+    "מעולה, ממתין למסמכים הנוספים 😊",
+    "ai",
+    "manual",
+    undefined,
+    true
   );
 
   redirect(`/collections/${collectionRequestId}`);
