@@ -575,6 +575,131 @@ describe("processInboundAttachment — multi-page document merging", () => {
     expect(docs).toHaveLength(2);
     expect(docs.every((d) => d.continuationOfDocumentId === null)).toBe(true);
   });
+
+  // Multi-signal multi-page detection (src/lib/documentContinuation.ts): a
+  // matching contract/case number extracted from both pages is enough to
+  // still trust the merge even well past the old fixed 120-second window,
+  // as long as it's inside the hard 10-minute cutoff.
+  it("merges a later page (past the old 2-minute window) when both pages share the same extracted reference number", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["חוזה שכירות"]);
+    const leaseReq = requirements[0];
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חוזה שכירות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: leaseReq.id,
+      matchConfidence: 0.95,
+      documentReferenceNumber: "AGR-4471",
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.ref1.jpg", null, Buffer.from("page1"), "image/jpeg", "wamid.ref1");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 7 * 60 * 1000)); // 7 minutes later — past the old 120s window
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "חוזה שכירות",
+        identificationConfidence: 0.94,
+        matchedRequirementId: leaseReq.id,
+        matchConfidence: 0.94,
+        documentReferenceNumber: "AGR-4471",
+      });
+      await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.ref2.jpg", null, Buffer.from("page2"), "image/jpeg", "wamid.ref2");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const docs = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.collectionRequestId, requestId))
+      .orderBy(schema.documents.receivedAt);
+    expect(docs).toHaveLength(2);
+    expect(docs[1].continuationOfDocumentId).toBe(docs[0].id);
+  });
+
+  // Same idea, driven by sequential printed page numbers ("עמוד 2 מתוך 2"
+  // following "עמוד 1 מתוך 2") instead of a reference number.
+  it("merges a later page when its printed page number sequentially follows the prior page's", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["חוזה שכירות"]);
+    const leaseReq = requirements[0];
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חוזה שכירות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: leaseReq.id,
+      matchConfidence: 0.95,
+      pageNumberCurrent: 1,
+      pageNumberTotal: 2,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.pg1.jpg", null, Buffer.from("page1"), "image/jpeg", "wamid.pg1");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 7 * 60 * 1000)); // 7 minutes later — past the old 120s window
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "חוזה שכירות",
+        identificationConfidence: 0.94,
+        matchedRequirementId: leaseReq.id,
+        matchConfidence: 0.94,
+        pageNumberCurrent: 2,
+        pageNumberTotal: 2,
+      });
+      await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.pg2.jpg", null, Buffer.from("page2"), "image/jpeg", "wamid.pg2");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const docs = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.collectionRequestId, requestId))
+      .orderBy(schema.documents.receivedAt);
+    expect(docs).toHaveLength(2);
+    expect(docs[1].continuationOfDocumentId).toBe(docs[0].id);
+  });
+
+  // Two genuinely different documents of the same type, sent a few minutes
+  // apart with mismatched reference numbers and no other corroborating
+  // signal, must never be wrongly merged as continuation pages of one
+  // another — each stays its own independent unit.
+  it("never merges two distinct documents that happen to share a type but carry mismatched reference numbers and no other corroborating signal", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["חוזה שכירות"]);
+    const leaseReq = requirements[0];
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חוזה שכירות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: leaseReq.id,
+      matchConfidence: 0.95,
+      documentReferenceNumber: "AGR-1000",
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.distinctA.jpg", null, Buffer.from("docA"), "image/jpeg", "wamid.distinctA");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 7 * 60 * 1000)); // 7 minutes later — past the old 120s window
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "חוזה שכירות",
+        identificationConfidence: 0.95,
+        matchedRequirementId: leaseReq.id,
+        matchConfidence: 0.95,
+        documentReferenceNumber: "AGR-2000",
+      });
+      await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.distinctB.jpg", null, Buffer.from("docB"), "image/jpeg", "wamid.distinctB");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(2);
+    expect(docs.every((d) => d.continuationOfDocumentId === null)).toBe(true);
+  });
 });
 
 // Mandatory scenario #10: an unreadable file (FR-11.3) is never silently

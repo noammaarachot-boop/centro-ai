@@ -75,6 +75,11 @@ export interface DocumentClassification {
   // aiRan-gated carry-through as the identity fields above.
   extractedPeriodLabel?: string | null;
   periodExtractionConfidence?: number;
+  // Multi-signal multi-page detection (src/lib/documentContinuation.ts) —
+  // same aiRan-gated carry-through as the fields above.
+  extractedReferenceNumber?: string | null;
+  pageNumberCurrent?: number | null;
+  pageNumberTotal?: number | null;
 }
 
 export interface LearnedDocumentPattern {
@@ -239,6 +244,9 @@ interface AiClassificationResult {
   identityExtractionConfidence: number;
   extractedPeriodLabel: string | null;
   periodExtractionConfidence: number;
+  extractedReferenceNumber: string | null;
+  pageNumberCurrent: number | null;
+  pageNumberTotal: number | null;
 }
 
 async function classifyDocumentViaAI(
@@ -259,6 +267,9 @@ async function classifyDocumentViaAI(
     identityExtractionConfidence: result.identityExtractionConfidence,
     extractedPeriodLabel: result.documentPeriodLabel,
     periodExtractionConfidence: result.periodExtractionConfidence,
+    extractedReferenceNumber: result.documentReferenceNumber,
+    pageNumberCurrent: result.pageNumberCurrent,
+    pageNumberTotal: result.pageNumberTotal,
   };
 }
 
@@ -317,6 +328,9 @@ export async function classifyDocumentWithLearning(
       identityExtractionConfidence: aiResult.identityExtractionConfidence,
       extractedPeriodLabel: aiResult.extractedPeriodLabel,
       periodExtractionConfidence: aiResult.periodExtractionConfidence,
+      extractedReferenceNumber: aiResult.extractedReferenceNumber,
+      pageNumberCurrent: aiResult.pageNumberCurrent,
+      pageNumberTotal: aiResult.pageNumberTotal,
     };
   }
   if (aiResult) {
@@ -336,6 +350,9 @@ export async function classifyDocumentWithLearning(
       identityExtractionConfidence: aiResult.identityExtractionConfidence,
       extractedPeriodLabel: aiResult.extractedPeriodLabel,
       periodExtractionConfidence: aiResult.periodExtractionConfidence,
+      extractedReferenceNumber: aiResult.extractedReferenceNumber,
+      pageNumberCurrent: aiResult.pageNumberCurrent,
+      pageNumberTotal: aiResult.pageNumberTotal,
     };
   }
 

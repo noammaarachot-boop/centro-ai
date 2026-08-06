@@ -40,6 +40,13 @@ export interface VisionClassificationResult {
   // month, an invoice's own date) — null for anything undated or unclear.
   documentPeriodLabel: string | null;
   periodExtractionConfidence: number;
+  // Multi-signal multi-page detection (src/lib/documentContinuation.ts) —
+  // corroborating signals for "is this another page of a document already
+  // received," beyond just arrival timing. All independently nullable —
+  // never guessed when not visible.
+  documentReferenceNumber: string | null; // a contract/invoice/case number printed on the page, if any
+  pageNumberCurrent: number | null; // this page's own number, if printed (e.g. "עמוד 2 מתוך 3" -> 2)
+  pageNumberTotal: number | null; // the total page count, if printed (e.g. "עמוד 2 מתוך 3" -> 3)
 }
 
 // WhatsApp never supplies a real filename for an inbound photo (Meta's
@@ -148,6 +155,20 @@ export async function classifyDocumentViaVisionAI(
         .min(0)
         .max(1)
         .describe('רמת ביטחון בתקופה/תאריך שחילצת ב-documentPeriodLabel. 0 אם documentPeriodLabel הוא null.'),
+      documentReferenceNumber: z
+        .string()
+        .nullable()
+        .describe("מספר חוזה/חשבון/תיק/הזמנה המודפס על המסמך, אם קיים. null אם אין מספר כזה גלוי."),
+      pageNumberCurrent: z
+        .number()
+        .int()
+        .nullable()
+        .describe('מספר העמוד הנוכחי, אם מודפס על המסמך (למשל "עמוד 2 מתוך 3" -> 2). null אם לא מצוין.'),
+      pageNumberTotal: z
+        .number()
+        .int()
+        .nullable()
+        .describe('סך כל העמודים, אם מודפס על המסמך (למשל "עמוד 2 מתוך 3" -> 3). null אם לא מצוין.'),
     });
 
     console.log("[wa-inbound] vision classification REQUEST", {
@@ -165,7 +186,7 @@ export async function classifyDocumentViaVisionAI(
           content: [
             {
               type: "text",
-              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. יש כמה שאלות נפרדות: (1) האם אתה יכול לזהות בבירור איזה סוג מסמך זה בפועל, גם אם הוא לא קשור לרשימה? (2) בהנחה שזיהית אותו, האם הוא בפועל עונה על אחת מהדרישות ברשימה, או שהוא סוג מסמך אחר לגמרי (כמו חשבונית, קבלה, או כל דבר אחר שלא התבקש)? אל תסמן התאמה רק כי המסמך זוהה — התאמה נדרשת רק כשהוא באמת מהסוג המבוקש. (3) אם מופיעים במסמך שם אדם, מספר תעודת זהות, או שם חברה — חלץ אותם בדיוק כפי שהם כתובים. אל תנחש ואל תשלים פרטים שלא כתובים בבירור במסמך עצמו. (4) אם המסמך מתייחס בבירור לתקופה/תאריך מסוימים (חודש תלוש שכר, חודש דף בנק, תאריך חשבונית) — ציין אותם. אל תנחש תאריך שלא כתוב בבירור במסמך.`,
+              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. יש כמה שאלות נפרדות: (1) האם אתה יכול לזהות בבירור איזה סוג מסמך זה בפועל, גם אם הוא לא קשור לרשימה? (2) בהנחה שזיהית אותו, האם הוא בפועל עונה על אחת מהדרישות ברשימה, או שהוא סוג מסמך אחר לגמרי (כמו חשבונית, קבלה, או כל דבר אחר שלא התבקש)? אל תסמן התאמה רק כי המסמך זוהה — התאמה נדרשת רק כשהוא באמת מהסוג המבוקש. (3) אם מופיעים במסמך שם אדם, מספר תעודת זהות, או שם חברה — חלץ אותם בדיוק כפי שהם כתובים. אל תנחש ואל תשלים פרטים שלא כתובים בבירור במסמך עצמו. (4) אם המסמך מתייחס בבירור לתקופה/תאריך מסוימים (חודש תלוש שכר, חודש דף בנק, תאריך חשבונית) — ציין אותם. אל תנחש תאריך שלא כתוב בבירור במסמך. (5) אם מודפס על המסמך מספר חוזה/חשבון/תיק, או מספר עמוד (כמו "עמוד 2 מתוך 3") — ציין אותם בדיוק. אלה עוזרים לזהות אם כמה קבצים הם למעשה עמודים של אותו מסמך רב-עמודים. אל תנחש מספרים שלא מודפסים בבירור.`,
             },
             { type: "file", data: fileBytes, mediaType: mimeType },
           ],
@@ -211,6 +232,9 @@ export async function classifyDocumentViaVisionAI(
           ? object.documentPeriodLabel
           : null,
       periodExtractionConfidence: object.periodExtractionConfidence,
+      documentReferenceNumber: object.documentReferenceNumber,
+      pageNumberCurrent: object.pageNumberCurrent,
+      pageNumberTotal: object.pageNumberTotal,
     };
   } catch (error) {
     console.error("[wa-inbound] vision classification FAILED (falling back to unrecognized)", error);

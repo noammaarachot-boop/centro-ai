@@ -34,6 +34,7 @@ import {
   type IdentityAnomaly,
 } from "@/lib/documentIdentityVerification";
 import { computeRequirementSatisfaction, extractedPeriodLabelForStorage } from "@/lib/documentQuantity";
+import { computeContinuationConfidence, MIN_CONTINUATION_CONFIDENCE } from "@/lib/documentContinuation";
 import { applyDocumentReplaceIntentIfCaptioned } from "@/lib/documentReplace";
 import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
@@ -389,6 +390,12 @@ export async function processInboundAttachment(
   // extraction was confident enough (same aiRan-gated discipline as
   // extractedIdentity above). Null for anything undated or below-threshold.
   let extractedPeriodLabel: string | null = null;
+  // Multi-signal multi-page detection (src/lib/documentContinuation.ts) —
+  // persisted whenever the AI extracted them, so a later document can be
+  // scored against this one as a prior page, regardless of arrival timing.
+  let extractedReferenceNumber: string | null = null;
+  let pageNumberCurrent: number | null = null;
+  let pageNumberTotal: number | null = null;
   // What the AI called this document — used only to name the file when an
   // identity-anomaly document is later confirmed by the client, and
   // carried into deferredReviewPayload below for that same purpose once
@@ -454,6 +461,10 @@ export async function processInboundAttachment(
         requirementId: documents.requirementId,
         extractedPeriodLabel: documents.extractedPeriodLabel,
         extractedPersonName: documents.extractedPersonName,
+        extractedCompanyName: documents.extractedCompanyName,
+        extractedReferenceNumber: documents.extractedReferenceNumber,
+        pageNumberCurrent: documents.pageNumberCurrent,
+        pageNumberTotal: documents.pageNumberTotal,
         receivedAt: documents.receivedAt,
         continuationOfDocumentId: documents.continuationOfDocumentId,
       })
@@ -485,19 +496,43 @@ export async function processInboundAttachment(
     // requiredCount > 1 requirements (e.g. "3 תלושי שכר") are excluded
     // entirely, since a second match there is a genuinely separate unit.
     // Decided from the classification result below, once we know what it
-    // actually matched.
-    const MULTI_PAGE_CONTINUATION_WINDOW_SECONDS = 120;
-    function findContinuationTarget(matchedRequirementId: string): string | null {
+    // actually matched. Confidence is scored from several corroborating
+    // signals (src/lib/documentContinuation.ts) rather than arrival timing
+    // alone, so the best-matching prior document — not just the most
+    // recent one — is picked among candidates.
+    function findContinuationTarget(
+      matchedRequirementId: string,
+      candidateSignals: {
+        personName: string | null;
+        companyName: string | null;
+        referenceNumber: string | null;
+        pageNumberCurrent: number | null;
+        pageNumberTotal: number | null;
+      }
+    ): string | null {
       const requirement = requirements.find((r) => r.id === matchedRequirementId);
       if (!requirement || requirement.requiredCount !== 1) return null;
-      const priorPages = existingApproved
-        .filter((doc) => doc.requirementId === matchedRequirementId && !doc.continuationOfDocumentId)
-        .sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
-      const mostRecent = priorPages[0];
-      if (!mostRecent) return null;
-      const withinWindow =
-        Date.now() - mostRecent.receivedAt.getTime() <= MULTI_PAGE_CONTINUATION_WINDOW_SECONDS * 1000;
-      return withinWindow ? mostRecent.id : null;
+      const priorPages = existingApproved.filter(
+        (doc) => doc.requirementId === matchedRequirementId && !doc.continuationOfDocumentId
+      );
+      let best: { id: string; score: number } | null = null;
+      for (const prior of priorPages) {
+        const score = computeContinuationConfidence(
+          {
+            personName: prior.extractedPersonName,
+            companyName: prior.extractedCompanyName,
+            referenceNumber: prior.extractedReferenceNumber,
+            pageNumberCurrent: prior.pageNumberCurrent,
+            pageNumberTotal: prior.pageNumberTotal,
+            receivedAt: prior.receivedAt,
+          },
+          { ...candidateSignals, receivedAt: new Date() }
+        );
+        if (score >= MIN_CONTINUATION_CONFIDENCE && (!best || score > best.score)) {
+          best = { id: prior.id, score };
+        }
+      }
+      return best?.id ?? null;
     }
 
     // Ch.6 3-way split (src/lib/documentIntakeReview.ts) — a document that
@@ -510,6 +545,9 @@ export async function processInboundAttachment(
     console.log("[wa-inbound] intake outcome", { collectionRequestId, outcome });
     extractedIdentity = extractedIdentityForStorage(classification);
     extractedPeriodLabel = extractedPeriodLabelForStorage(classification);
+    extractedReferenceNumber = classification.extractedReferenceNumber ?? null;
+    pageNumberCurrent = classification.pageNumberCurrent ?? null;
+    pageNumberTotal = classification.pageNumberTotal ?? null;
     identityDocumentType = classification.aiDocumentType ?? null;
 
     // Smart identity/consistency verification: runs whenever the document
@@ -553,7 +591,15 @@ export async function processInboundAttachment(
       // exact file, never just another page of the same document — never
       // merge it as a continuation page (the two concepts are mutually
       // exclusive; see documents.supersededByDocumentId's own doc comment).
-      continuationOfDocumentId = captionText ? null : findContinuationTarget(outcome.requirementId);
+      continuationOfDocumentId = captionText
+        ? null
+        : findContinuationTarget(outcome.requirementId, {
+            personName: classification.extractedPersonName ?? null,
+            companyName: classification.extractedCompanyName ?? null,
+            referenceNumber: classification.extractedReferenceNumber ?? null,
+            pageNumberCurrent: classification.pageNumberCurrent ?? null,
+            pageNumberTotal: classification.pageNumberTotal ?? null,
+          });
     } else if (outcome.kind === "unsolicited") {
       status = "unsolicited_pending_confirmation";
       deferredReviewKind = "unsolicited_document";
@@ -602,6 +648,9 @@ export async function processInboundAttachment(
       ...(whatsappMessageId ? { whatsappMessageId } : {}),
       ...(extractedIdentity ?? {}),
       ...(extractedPeriodLabel ? { extractedPeriodLabel } : {}),
+      ...(extractedReferenceNumber ? { extractedReferenceNumber } : {}),
+      ...(pageNumberCurrent !== null ? { pageNumberCurrent } : {}),
+      ...(pageNumberTotal !== null ? { pageNumberTotal } : {}),
       ...(continuationOfDocumentId ? { continuationOfDocumentId } : {}),
       ...(deferredReviewKind ? { deferredReviewKind, deferredReviewPayload } : {}),
     })
