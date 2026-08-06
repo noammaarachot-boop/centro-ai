@@ -283,4 +283,94 @@ describe("processInboundAttachment — smart identity/consistency verification",
     expect(anomalies).toHaveLength(1);
     expect(anomalies[0].fileName).toBe("payslip-outlier.jpg");
   });
+
+  // Mandatory scenarios #13/#14: ת"ז + ספח (ID card + its matching appendix).
+  // No dedicated "linked requirement" mechanism exists for this — it's
+  // covered for free by the identity-anomaly engine already comparing
+  // every document's extracted ID number against every sibling document's
+  // in the same request (buildIdentityReferencePool), regardless of which
+  // two requirement types they answer.
+  it("scenario 13: ID card + its matching appendix (ספח) — same ID number on both — both approved, no anomaly raised", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "ספח תעודת זהות"]);
+    const idReq = requirements.find((r) => r.name === "תעודת זהות")!;
+    const appendixReq = requirements.find((r) => r.name === "ספח תעודת זהות")!;
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.98,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.98,
+      extractedPersonName: "נועם שלום",
+      extractedIdNumber: "111111118",
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("bytes"), "image/jpeg", "wamid.id");
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "ספח תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: appendixReq.id,
+      matchConfidence: 0.95,
+      extractedPersonName: "נועם שלום",
+      extractedIdNumber: "111111118", // same number as the ID card
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "appendix.jpg", null, Buffer.from("bytes"), "image/jpeg", "wamid.appendix");
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(2);
+    expect(docs.every((d) => d.status === "approved")).toBe(true);
+    expect(docs.every((d) => d.deferredReviewKind === null)).toBe(true);
+  });
+
+  it("scenario 14: appendix (ספח) with a DIFFERENT ID number than the ID card — flagged as an identity anomaly, never uploaded", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "ספח תעודת זהות"]);
+    const idReq = requirements.find((r) => r.name === "תעודת זהות")!;
+    const appendixReq = requirements.find((r) => r.name === "ספח תעודת זהות")!;
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.98,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.98,
+      extractedPersonName: "נועם שלום",
+      extractedIdNumber: "111111118",
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("bytes"), "image/jpeg", "wamid.id2");
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "ספח תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: appendixReq.id,
+      matchConfidence: 0.95,
+      extractedPersonName: "נועם שלום",
+      extractedIdNumber: "999999991", // a different number than the ID card
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "appendix-mismatch.jpg", null, Buffer.from("bytes"), "image/jpeg", "wamid.appendix2");
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    const idDoc = docs.find((d) => d.fileName === "id.jpg")!;
+    const appendixDoc = docs.find((d) => d.fileName === "appendix-mismatch.jpg")!;
+    expect(idDoc.status).toBe("approved");
+    expect(appendixDoc.status).toBe("identity_anomaly_pending_confirmation");
+    expect(appendixDoc.googleDriveFileId).toBeNull();
+
+    await runCaseReview(orgId, clientId, requestId);
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmation.kind).toBe("identity_anomaly");
+    expect(confirmation.question).toContain("1118"); // last-4 of the ID card's number, never the full number
+  });
 });

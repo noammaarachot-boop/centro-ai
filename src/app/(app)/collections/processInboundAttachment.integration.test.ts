@@ -565,3 +565,30 @@ describe("processInboundAttachment — multi-page document merging", () => {
     expect(docs.every((d) => d.continuationOfDocumentId === null)).toBe(true);
   });
 });
+
+// Mandatory scenario #10: an unreadable file (FR-11.3) is never silently
+// filed or sent to needs_review — the client is asked for a clearer copy,
+// and no document row is created at all (nothing to review yet).
+describe("processInboundAttachment — unreadable file", () => {
+  it("asks for a clearer copy and never creates a document row", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
+
+    // Base filename shorter than 2 characters trips checkFileGate's
+    // readable:false gate before any AI classification is even attempted.
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "a.pdf", null, Buffer.from("x"), "application/pdf", "wamid.unreadable");
+
+    expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled();
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(0);
+
+    const messages = await db.select().from(schema.messages).where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(messages).toHaveLength(1);
+    expect(messages[0].body).toContain("לא הצלחתי לקרוא את הקובץ");
+
+    const auditEvents = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(and(eq(schema.auditLogs.collectionRequestId, requestId), eq(schema.auditLogs.eventType, "document.unreadable")));
+    expect(auditEvents).toHaveLength(1);
+  });
+});
