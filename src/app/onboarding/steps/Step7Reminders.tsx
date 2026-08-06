@@ -21,6 +21,7 @@ interface OrganizationDefaults {
   businessHoursStart: string;
   businessHoursEnd: string;
   businessDays: string;
+  timezone: string;
   reminderIntervalDays: number;
   inactivityTimeoutMinutes: number;
   collectionDayOfMonth: number;

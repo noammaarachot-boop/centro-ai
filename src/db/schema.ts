@@ -136,6 +136,13 @@ export const organizations = pgTable("organizations", {
   businessHoursStart: text("business_hours_start").notNull().default("09:00"),
   businessHoursEnd: text("business_hours_end").notNull().default("18:00"),
   businessDays: text("business_days").notNull().default("0,1,2,3,4"),
+  // IANA zone name — business-hours/reminder scheduling (src/lib/businessHours.ts)
+  // evaluates businessHoursStart/End against wall-clock time in THIS zone,
+  // never the server process's own local time (Vercel serverless functions
+  // run in UTC; without this, "09:00-18:00" silently meant 09:00-18:00 UTC,
+  // not Israel local time, for every organization). Defaults to Israel
+  // since every organization on this platform is an Israeli firm today.
+  timezone: text("timezone").notNull().default("Asia/Jerusalem"),
   reminderIntervalDays: integer("reminder_interval_days").notNull().default(2),
   inactivityTimeoutMinutes: integer("inactivity_timeout_minutes")
     .notNull()

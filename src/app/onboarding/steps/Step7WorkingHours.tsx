@@ -13,10 +13,12 @@ export function Step7WorkingHours({
   businessHoursStart,
   businessHoursEnd,
   businessDays,
+  timezone,
 }: {
   businessHoursStart: string;
   businessHoursEnd: string;
   businessDays: string;
+  timezone: string;
 }) {
   const activeDays = new Set(businessDays.split(",").map(Number));
 
@@ -75,6 +77,25 @@ export function Step7WorkingHours({
             className={fieldClass("md")}
           />
         </div>
+      </div>
+
+      <div>
+        <label
+          htmlFor="timezone"
+          className="mb-1.5 block text-sm font-medium text-text-secondary"
+        >
+          אזור זמן
+        </label>
+        <select
+          id="timezone"
+          name="timezone"
+          defaultValue={timezone}
+          dir="ltr"
+          className={fieldClass("md")}
+        >
+          <option value="Asia/Jerusalem">שעון ישראל (Asia/Jerusalem)</option>
+          <option value="UTC">UTC</option>
+        </select>
       </div>
 
       <button
