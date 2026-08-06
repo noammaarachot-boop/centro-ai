@@ -85,6 +85,25 @@ describe("mandatory #16: reminder outside the 24h window uses the Meta template"
     const send = await buildReminderSend(conversationId, requestId, "רז שלום");
     expect(send.allowFreeform).toBe(false);
   });
+
+  it("once centro_reminder_v2 is approved (v2Enabled), selects the new dynamic Template with the real missing-document list as its params", async () => {
+    const { conversationId, requestId } = await seedRequestWithMissingRequirement(30);
+
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", true);
+    expect(send.templateSend).toEqual({
+      templateName: "centro_reminder_v2",
+      language: "he",
+      params: ["רז שלום", "אישור שכירות"],
+    });
+    expect(send.body).toContain("אישור שכירות");
+  });
+
+  it("still falls back to the static template while v2 is not yet enabled (today's live default)", async () => {
+    const { conversationId, requestId } = await seedRequestWithMissingRequirement(30);
+
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", false);
+    expect(send.templateSend).toBeUndefined();
+  });
 });
 
 describe("buildReminderSend — never invents a missing document that isn't real", () => {
