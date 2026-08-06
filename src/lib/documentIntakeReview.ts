@@ -9,6 +9,7 @@ import {
   resolveRequirementAssignment,
 } from "@/lib/ai/documentClassifier";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
+import { isWithinBusinessHours, nextBusinessOpenTime, type BusinessHoursConfig } from "@/lib/businessHours";
 import {
   createPendingConfirmation,
   flushDueIntakeNotifications,
@@ -98,6 +99,32 @@ async function getConfirmationReminderConfig(
     reminderIntervalDays: org?.reminderIntervalDays ?? 2,
     maxReminders: org?.confirmationMaxReminders ?? 2,
     groupingWindowSeconds: org?.documentGroupingWindowSeconds ?? 15,
+  };
+}
+
+// Org-level business hours only (no per-service override lookup here — a
+// pending confirmation's payload doesn't carry a serviceId). Used only as a
+// pre-check to decide whether to even attempt a reminder send; the real,
+// authoritative gate (which does resolve per-service overrides) still runs
+// inside sendOutboundMessage itself, so a mismatch here only ever costs a
+// skipped attempt this tick, never an incorrectly-sent one.
+async function getOrganizationBusinessHours(organizationId: string): Promise<BusinessHoursConfig> {
+  const db = await getDb();
+  const [org] = await db
+    .select({
+      businessHoursStart: organizations.businessHoursStart,
+      businessHoursEnd: organizations.businessHoursEnd,
+      businessDays: organizations.businessDays,
+      timezone: organizations.timezone,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  return {
+    businessHoursStart: org?.businessHoursStart ?? "09:00",
+    businessHoursEnd: org?.businessHoursEnd ?? "18:00",
+    businessDays: org?.businessDays ?? "0,1,2,3,4",
+    timezone: org?.timezone ?? "Asia/Jerusalem",
   };
 }
 
@@ -467,6 +494,7 @@ export async function sendConfirmationRemindersAndEscalate(
 ): Promise<{ reminded: number; escalated: number }> {
   const db = await getDb();
   const { reminderIntervalDays, maxReminders } = await getConfirmationReminderConfig(organizationId);
+  const businessHours = await getOrganizationBusinessHours(organizationId);
 
   const due = await db
     .select()
@@ -521,6 +549,25 @@ export async function sendConfirmationRemindersAndEscalate(
         metadata: { pendingConfirmationId: row.id, kind: row.kind },
       });
       escalated += 1;
+      continue;
+    }
+
+    // BR-18.1 / product requirement: an automatic reminder never goes out
+    // while the office is closed — and, critically, a reminder that becomes
+    // due while closed isn't just silently retried on whatever tick happens
+    // to run next (which, with a once-daily cron, could itself always land
+    // outside business hours and never send at all — a real gap this closes).
+    // Reschedule it to the next real business-hours opening instead, and
+    // skip the send attempt entirely this tick.
+    if (!isWithinBusinessHours(businessHours)) {
+      await db
+        .update(pendingConfirmations)
+        .set({ nextReminderAt: nextBusinessOpenTime(businessHours) })
+        .where(eq(pendingConfirmations.id, row.id));
+      console.log("[document-intake] reminder deferred to next business-hours opening", {
+        pendingConfirmationId: row.id,
+        deferredTo: nextBusinessOpenTime(businessHours).toISOString(),
+      });
       continue;
     }
 

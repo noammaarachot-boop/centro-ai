@@ -583,6 +583,52 @@ describe("sendConfirmationRemindersAndEscalate", () => {
     const result = await sendConfirmationRemindersAndEscalate(orgId);
     expect(result).toEqual({ reminded: 0, escalated: 0 });
   });
+
+  it("defers a reminder to the next business-hours opening instead of leaving it stuck while the office is closed", async () => {
+    // Default hours: 09:00-18:00, Sun-Thu, Asia/Jerusalem (schema defaults —
+    // NOT businessHoursAlwaysOpen).
+    const { orgId, clientId, requestId, documentId } = await seedRequest();
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+
+    vi.useFakeTimers();
+    try {
+      // Sunday 06:00 Israel local time — before the 09:00 opening.
+      vi.setSystemTime(new Date("2026-01-11T04:00:00Z"));
+      await db
+        .update(schema.pendingConfirmations)
+        .set({ nextReminderAt: new Date(Date.now() - 1000) })
+        .where(eq(schema.pendingConfirmations.id, confirmation.id));
+
+      const result = await sendConfirmationRemindersAndEscalate(orgId);
+      // Never actually attempted — not just gated after the fact.
+      expect(result).toEqual({ reminded: 0, escalated: 0 });
+
+      const [after] = await db
+        .select()
+        .from(schema.pendingConfirmations)
+        .where(eq(schema.pendingConfirmations.id, confirmation.id));
+      expect(after.remindersSent).toBe(0);
+      expect(after.status).toBe("pending");
+      // Rescheduled to 09:00 Israel local the same day (07:00 UTC in
+      // winter) — not left stuck in the past for every future tick to keep
+      // failing on (the real production gap this closes: a once-daily cron
+      // that never happens to land inside business hours would otherwise
+      // never send this reminder at all).
+      expect(after.nextReminderAt?.toISOString()).toBe("2026-01-11T07:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

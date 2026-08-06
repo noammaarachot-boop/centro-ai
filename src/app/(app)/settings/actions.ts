@@ -18,6 +18,7 @@ export async function updateBusinessHours(formData: FormData) {
   const businessHoursStart = String(formData.get("businessHoursStart") ?? "09:00");
   const businessHoursEnd = String(formData.get("businessHoursEnd") ?? "18:00");
   const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
+  const timezone = String(formData.get("timezone") ?? "Asia/Jerusalem");
   const reminderIntervalDays = Number(formData.get("reminderIntervalDays") ?? 2);
   const inactivityTimeoutMinutes = Number(formData.get("inactivityTimeoutMinutes") ?? 15);
   const collectionDayOfMonth = clampCollectionDay(formData.get("collectionDayOfMonth"));
@@ -29,6 +30,7 @@ export async function updateBusinessHours(formData: FormData) {
       businessHoursStart,
       businessHoursEnd,
       businessDays: businessDays || "0,1,2,3,4",
+      timezone,
       reminderIntervalDays,
       inactivityTimeoutMinutes,
       collectionDayOfMonth,

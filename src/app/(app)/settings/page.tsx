@@ -194,6 +194,26 @@ export default async function SettingsPage({
             </div>
           </div>
 
+          <div>
+            <label
+              htmlFor="timezone"
+              className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
+            >
+              אזור זמן
+              <HelpTip label="">שעות הפעילות למעלה נמדדות לפי אזור הזמן הזה, לא לפי שעון השרת.</HelpTip>
+            </label>
+            <select
+              id="timezone"
+              name="timezone"
+              defaultValue={organization.timezone}
+              dir="ltr"
+              className={fieldClass("md")}
+            >
+              <option value="Asia/Jerusalem">שעון ישראל (Asia/Jerusalem)</option>
+              <option value="UTC">UTC</option>
+            </select>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label
