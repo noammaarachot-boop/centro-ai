@@ -56,6 +56,48 @@ export async function sendTextMessage(phoneNumberId: string, to: string, body: s
   });
 }
 
+export interface InteractiveButton {
+  // Echoed back verbatim as message.interactive.button_reply.id on the
+  // client's tap (see the webhook route) — never shown to the client,
+  // only the title is. Kept short/generic ("confirm_yes"/"confirm_no")
+  // since resolveConfirmationFromReply's own "exactly one open
+  // confirmation" discipline is what actually disambiguates which
+  // question a tap answers, not the button id itself.
+  id: string;
+  title: string; // WhatsApp hard limit: 20 characters.
+}
+
+// WhatsApp Interactive Reply Buttons — real tappable buttons, not typed
+// numbers. Same free-form/24h-session-window constraint as sendTextMessage
+// (an "interactive" message is not a pre-approved Template): only ever used
+// for an "ai" send that's a direct reaction to a message the client just
+// sent (see sendOutboundMessage's allowFreeform param). Meta caps this at 3
+// buttons per message — callers needing more options (a combined multi-
+// group question) fall back to plain numbered text instead; see
+// pendingConfirmations.ts's flushDueIntakeNotifications.
+export async function sendInteractiveButtonsMessage(
+  phoneNumberId: string,
+  to: string,
+  bodyText: string,
+  buttons: InteractiveButton[]
+): Promise<SendResult> {
+  return postMessage(phoneNumberId, {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: bodyText },
+      action: {
+        buttons: buttons.map((button) => ({
+          type: "reply",
+          reply: { id: button.id, title: button.title },
+        })),
+      },
+    },
+  });
+}
+
 // Pre-approved Message Template — required for every automated ("ai")
 // send, since WhatsApp forbids free-form messages to anyone who hasn't
 // messaged the business first (see templates.ts and the WhatsApp plan's

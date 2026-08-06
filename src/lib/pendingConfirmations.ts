@@ -2,6 +2,19 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { organizations, pendingConfirmations } from "@/db/schema";
 import { ensureConversation, sendOutboundMessage } from "@/lib/conversationOrchestration";
+import type { InteractiveButton } from "@/lib/whatsapp/send";
+
+// WhatsApp Interactive Reply Buttons — the ids echoed back on
+// message.interactive.button_reply.id (see the webhook route, which
+// normalizes a tap into the exact same "כן"/"לא" text the existing
+// resolveConfirmationFromReply/parseConfirmationReply already understand —
+// no separate resolution path needed for a button tap vs typed text).
+export const CONFIRM_YES_BUTTON_ID = "confirm_yes";
+export const CONFIRM_NO_BUTTON_ID = "confirm_no";
+const YES_NO_BUTTONS: InteractiveButton[] = [
+  { id: CONFIRM_YES_BUTTON_ID, title: "כן" },
+  { id: CONFIRM_NO_BUTTON_ID, title: "לא" },
+];
 
 /**
  * Milestone 5 — Architecture Ch.3's "Confirm with the client, through
@@ -305,9 +318,16 @@ export async function flushDueIntakeNotifications(
   const identityAnomalyGroupCount = ordered.filter((row) => row.kind === "identity_anomaly").length;
   const opener =
     identityAnomalyGroupCount >= 2 ? "נראה שהמסמכים בתיק שייכים ליותר מאדם אחד 🤔" : "מצאתי כמה מסמכים שדורשים הבהרה 😊";
+  // A single question is sent as a real WhatsApp Interactive Reply Buttons
+  // message — the buttons themselves carry the yes/no options, so the body
+  // is just the bare question, no numbered-keycap suffix. A combined
+  // multi-group message still uses plain numbered text: Meta caps an
+  // interactive message at 3 buttons, structurally too few to represent
+  // several independent yes/no toggles in one message — see
+  // sendInteractiveButtonsMessage's own doc comment.
   const messageBody =
     ordered.length === 1
-      ? formatQuestionWithOptions(ordered[0].question, 0)
+      ? ordered[0].question
       : [opener, ...ordered.map((row, i) => formatQuestionWithOptions(row.question, i))].join("\n\n");
 
   console.log("[pending-confirmation] flushing batched intake notification", {
@@ -324,7 +344,8 @@ export async function flushDueIntakeNotifications(
     "ai",
     "manual",
     undefined,
-    true
+    true,
+    ordered.length === 1 ? YES_NO_BUTTONS : undefined
   );
   console.log("[pending-confirmation] batched send result", {
     collectionRequestId,

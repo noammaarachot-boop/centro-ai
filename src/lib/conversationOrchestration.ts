@@ -20,7 +20,13 @@ import { OperationFailedError } from "@/lib/resilience";
 import { getRequestRequirementNames } from "@/lib/documentRequestList";
 import { toE164 } from "@/lib/whatsapp/phone";
 import { buildInitialRequestSend } from "@/lib/whatsapp/initialRequestMessage";
-import { sendTemplateMessage, sendTextMessage, WhatsAppSendError } from "@/lib/whatsapp/send";
+import {
+  type InteractiveButton,
+  sendInteractiveButtonsMessage,
+  sendTemplateMessage,
+  sendTextMessage,
+  WhatsAppSendError,
+} from "@/lib/whatsapp/send";
 import { TEMPLATE_BY_BODY, THANK_YOU_BODY as THANK_YOU_TEMPLATE } from "@/lib/whatsapp/templates";
 
 /**
@@ -129,7 +135,15 @@ async function sendViaWhatsApp(
   // send that could go out days after the client's last message (a
   // reminder) — the window may well have closed by then; see
   // documentIntakeReview.ts's own comment on that tradeoff.
-  allowFreeform = false
+  allowFreeform = false,
+  // WhatsApp Interactive Reply Buttons — real tappable buttons instead of
+  // "1️⃣ כן / 2️⃣ לא" typed-number text. Only takes effect on the same
+  // free-form path allowFreeform already gates (a Template can't carry
+  // buttons here, and a reminder days later risks the closed session
+  // window the same way free text does) — see sendInteractiveButtonsMessage's
+  // own doc comment for the 3-button Meta cap that's why this is only used
+  // for a single yes/no question, never a combined multi-group one.
+  interactiveButtons?: InteractiveButton[]
 ): Promise<{ whatsappMessageId: string | null; deliveryStatus: string }> {
   // [wa-diag] TEMPORARY — no logic changed, recipient number not logged (PII).
   console.log("[wa-diag] sendViaWhatsApp ENTER", {
@@ -186,6 +200,15 @@ async function sendViaWhatsApp(
       console.log("[wa-diag] REACHED Meta call (ai free-form, 24h session window)", {
         phoneNumberId: organization.whatsappPhoneNumberId,
       });
+    }
+    if (interactiveButtons && interactiveButtons.length > 0) {
+      console.log("[wa-diag] REACHED Meta call (interactive buttons)", {
+        phoneNumberId: organization.whatsappPhoneNumberId,
+        buttonCount: interactiveButtons.length,
+      });
+      const result = await sendInteractiveButtonsMessage(organization.whatsappPhoneNumberId, to, body, interactiveButtons);
+      console.log("[wa-diag] interactive buttons send returned OK", { messageId: result.messageId });
+      return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
     }
     console.log("[wa-diag] REACHED Meta call (text)", { phoneNumberId: organization.whatsappPhoneNumberId });
     const result = await sendTextMessage(organization.whatsappPhoneNumberId, to, body);
@@ -252,7 +275,10 @@ export async function sendOutboundMessage(
   // a direct reaction to a message the client just sent, within the 24h
   // WhatsApp session window, with no pre-approved template for its dynamic
   // text (e.g. a document-intake confirmation/clarification question).
-  allowFreeform = false
+  allowFreeform = false,
+  // WhatsApp Interactive Reply Buttons — see sendViaWhatsApp's own doc
+  // comment.
+  interactiveButtons?: InteractiveButton[]
 ): Promise<{ sent: boolean }> {
   const db = await getDb();
   const organization = await getOrganizationConfig(organizationId);
@@ -306,7 +332,8 @@ export async function sendOutboundMessage(
     body,
     senderType,
     templateSend,
-    allowFreeform
+    allowFreeform,
+    interactiveButtons
   );
 
   if (deliveryStatus === "sent") {

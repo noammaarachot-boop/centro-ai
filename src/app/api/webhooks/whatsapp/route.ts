@@ -6,6 +6,8 @@ import { recordAuditEvent } from "@/lib/audit";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
 import {
+  CONFIRM_NO_BUTTON_ID,
+  CONFIRM_YES_BUTTON_ID,
   resolveBatchedIntakeReply,
   resolveConfirmationFromReply,
   resolveOpenClarificationReply,
@@ -66,6 +68,9 @@ interface WhatsAppInboundMessage {
   text?: { body: string };
   image?: { id: string; mime_type: string };
   document?: { id: string; mime_type: string; filename?: string };
+  // WhatsApp Interactive Reply Buttons — a client's tap on a button Centro
+  // sent (see pendingConfirmations.ts's flushDueIntakeNotifications).
+  interactive?: { type: string; button_reply?: { id: string; title: string } };
 }
 
 interface WhatsAppWebhookPayload {
@@ -185,6 +190,22 @@ async function isMessageAlreadyProcessed(messageId: string): Promise<boolean> {
   return !!existing;
 }
 
+// WhatsApp Interactive Reply Buttons — a button tap has no message.text at
+// all, only message.interactive.button_reply. Normalized here, once, into
+// the exact same "כן"/"לא" free text every existing resolver
+// (resolveConfirmationFromReply, resolveBatchedIntakeReply, isFinishedSignal)
+// already understands — no separate button-aware resolution path needed
+// anywhere else. An unrecognized button id (should never happen — Centro
+// only ever sends its own two ids) resolves to null, same as no text at
+// all, rather than guessing.
+export function resolveInteractiveReplyText(message: WhatsAppInboundMessage): string | null {
+  if (message.interactive?.type !== "button" || !message.interactive.button_reply) return null;
+  const { id } = message.interactive.button_reply;
+  if (id === CONFIRM_YES_BUTTON_ID) return "כן";
+  if (id === CONFIRM_NO_BUTTON_ID) return "לא";
+  return null;
+}
+
 function resolveAttachment(
   message: WhatsAppInboundMessage
 ): { fileName: string; mimeType: string; mediaId: string } | null {
@@ -231,7 +252,7 @@ async function handleInboundMessage(
   const { client, conversation } = match;
   const collectionRequestId = conversation.collectionRequestId;
 
-  const body = message.text?.body ?? null;
+  const body = message.text?.body ?? resolveInteractiveReplyText(message);
   const attachment = resolveAttachment(message);
   console.log("[wa-inbound] resolveAttachment", {
     messageType: message.type,

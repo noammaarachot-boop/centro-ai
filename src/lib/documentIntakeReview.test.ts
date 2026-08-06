@@ -16,12 +16,14 @@ vi.mock("@/db", () => ({
 
 const sendTextMessage = vi.fn();
 const sendTemplateMessage = vi.fn();
+const sendInteractiveButtonsMessage = vi.fn();
 vi.mock("@/lib/whatsapp/send", async () => {
   const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
   return {
     ...actual,
     sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
     sendTemplateMessage: (...args: unknown[]) => sendTemplateMessage(...args),
+    sendInteractiveButtonsMessage: (...args: unknown[]) => sendInteractiveButtonsMessage(...args),
   };
 });
 
@@ -107,6 +109,7 @@ beforeEach(() => {
   getValidAccessToken.mockResolvedValue("fake-token");
   sendTextMessage.mockReset();
   sendTemplateMessage.mockReset();
+  sendInteractiveButtonsMessage.mockReset();
 });
 
 // ---------------------------------------------------------------------------
@@ -302,9 +305,9 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
     expect(row.notifyAfter).not.toBeNull();
   });
 
-  it("flushing sends the question and only then schedules a reminder", async () => {
+  it("flushing sends the question (as real Interactive Reply Buttons, a solo group) and only then schedules a reminder", async () => {
     const { orgId, clientId, requestId, documentId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
-    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,
       clientId,
@@ -320,7 +323,8 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
     expect(row.notifiedAt).not.toBeNull();
     expect(row.nextReminderAt).not.toBeNull();
     expect(row.groupIndex).toBe(0);
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).not.toHaveBeenCalled();
   });
 
   it("clarification request payload references the document, no yes/no options in a matching name", async () => {
@@ -342,7 +346,7 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
       .insert(schema.documents)
       .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "invoice2.jpg", status: "unsolicited_pending_confirmation" })
       .returning();
-    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
 
     await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId, documentType: "חשבונית מס" });
     await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: secondDoc.id, documentType: "חשבונית מס" });
@@ -352,8 +356,10 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
     expect((rows[0].payload as { documentIds: string[] }).documentIds).toEqual([documentId, secondDoc.id]);
     expect(rows[0].question).toContain("2");
 
+    // Still one group -> sent as a solo interactive-buttons question, not
+    // plain numbered text.
     await forceFlush(orgId, requestId);
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
     const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
     expect(messages).toHaveLength(1);
   });
@@ -374,10 +380,10 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
 
   it("a new document of the same type arriving after the group's question was already sent starts a fresh group instead of reopening the sent one", async () => {
     const { orgId, clientId, requestId, documentId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
-    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
     await createUnsolicitedDocumentConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId, documentType: "חשבונית מס" });
     await forceFlush(orgId, requestId);
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
 
     const [thirdDoc] = await db
       .insert(schema.documents)
@@ -393,7 +399,7 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
     expect((stillPending.payload as { documentIds: string[] }).documentIds).toEqual([thirdDoc.id]);
     // No second message yet — the new document only opened a new pending
     // group, it didn't reopen or resend the one already delivered.
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -644,13 +650,13 @@ describe("sendConfirmationRemindersAndEscalate", () => {
 // ---------------------------------------------------------------------------
 
 describe("WhatsApp delivery of the confirmation question (the messaging fix)", () => {
-  it("sends the question as free-form text, bypassing the no-template block and the business-hours gate", async () => {
+  it("sends the question via Interactive Reply Buttons, bypassing the no-template block and the business-hours gate", async () => {
     // Deliberately NOT businessHoursAlwaysOpen — proves trigger:\"manual\"
     // really does bypass that gate for this immediate, reactive send.
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
       whatsappPhoneNumberId: "phone-1",
     });
-    sendTextMessage.mockResolvedValueOnce({ messageId: "wamid.out.1" });
+    sendInteractiveButtonsMessage.mockResolvedValueOnce({ messageId: "wamid.out.1" });
 
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,
@@ -661,7 +667,8 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     });
     await forceFlush(orgId, requestId);
 
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).not.toHaveBeenCalled();
     expect(sendTemplateMessage).not.toHaveBeenCalled();
 
     const [message] = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
@@ -682,10 +689,11 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     expect(message.deliveryStatus).toBe("sent");
   });
 
-  it("sends the thank-you after a 'yes' reply as free-form text too", async () => {
+  it("sends the thank-you after a 'yes' reply as free-form text (the question itself went out via buttons)", async () => {
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
       whatsappPhoneNumberId: "phone-1",
     });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
     sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,
@@ -702,17 +710,19 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
 
     await applyUnsolicitedConfirmationDecision({ ...confirmation, status: "confirmed", conversationId });
 
-    // One for the original question, one for the thank-you.
-    expect(sendTextMessage).toHaveBeenCalledTimes(2);
+    // The question itself (interactive buttons) + the thank-you (plain text).
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const sentMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
     expect(sentMessages.every((m) => m.deliveryStatus === "sent")).toBe(true);
   });
 
-  it("reminder resend also goes out as free-form text (no pre-approved template exists for this dynamic question)", async () => {
+  it("reminder resend goes out as free-form numbered text (no pre-approved template exists for this dynamic question, and only the original send uses buttons)", async () => {
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
       businessHoursAlwaysOpen: true,
       whatsappPhoneNumberId: "phone-1",
     });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
     sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,
@@ -734,8 +744,10 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     const result = await sendConfirmationRemindersAndEscalate(orgId);
 
     expect(result.reminded).toBe(1);
-    // Original question (via flush) + the reminder resend, both free-form text.
-    expect(sendTextMessage).toHaveBeenCalledTimes(2);
+    // Original question via interactive buttons, the reminder resend as
+    // plain free-form text.
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
     expect(sendTemplateMessage).not.toHaveBeenCalled();
     const sentMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
     expect(sentMessages).toHaveLength(2);
@@ -746,7 +758,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
       whatsappPhoneNumberId: "phone-1",
     });
     const { WhatsAppSendError } = await import("@/lib/whatsapp/send");
-    sendTextMessage.mockRejectedValueOnce(new WhatsAppSendError("simulated Meta failure"));
+    sendInteractiveButtonsMessage.mockRejectedValueOnce(new WhatsAppSendError("simulated Meta failure"));
 
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,

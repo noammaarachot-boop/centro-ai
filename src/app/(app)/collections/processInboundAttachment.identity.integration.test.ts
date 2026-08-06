@@ -86,11 +86,13 @@ vi.mock("@/lib/googleAuth/drive", async () => {
 });
 
 const sendTextMessage = vi.fn();
+const sendInteractiveButtonsMessage = vi.fn();
 vi.mock("@/lib/whatsapp/send", async () => {
   const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
   return {
     ...actual,
     sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
+    sendInteractiveButtonsMessage: (...args: unknown[]) => sendInteractiveButtonsMessage(...args),
     sendTemplateMessage: vi.fn(),
   };
 });
@@ -118,6 +120,8 @@ beforeEach(() => {
   classifyDocumentViaVisionAI.mockReset();
   sendTextMessage.mockReset();
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+  sendInteractiveButtonsMessage.mockReset();
+  sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
 });
 
 async function seedRequest(requirementNames: string[], clientName = "נועם שלום") {
@@ -214,8 +218,9 @@ describe("processInboundAttachment — smart identity/consistency verification",
       .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(confirmation.kind).toBe("identity_anomaly");
     expect(confirmation.question).toContain("ישראל ישראלי");
-    // The question actually went out over WhatsApp — not silently dropped.
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    // The question actually went out over WhatsApp (a solo group, via
+    // Interactive Reply Buttons) — not silently dropped.
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
   });
 
   it("scenario 3: ten documents for the client, then one for a different person — the outlier alone is flagged, the other ten are approved", async () => {

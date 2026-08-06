@@ -3,7 +3,55 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
-import { isUniqueViolation } from "./route";
+import { CONFIRM_NO_BUTTON_ID, CONFIRM_YES_BUTTON_ID } from "@/lib/pendingConfirmations";
+import { isUniqueViolation, resolveInteractiveReplyText } from "./route";
+
+// WhatsApp Interactive Reply Buttons — mandatory scenario "הלקוח לוחץ על
+// כפתור". A button tap arrives with no message.text at all; this proves
+// the normalization into plain "כן"/"לא" text (which every existing
+// resolver already understands) is correct, without needing a full
+// signed-webhook-POST integration harness.
+describe("resolveInteractiveReplyText", () => {
+  it("normalizes the confirm-yes button id to \"כן\"", () => {
+    const message = {
+      from: "972500000000",
+      id: "wamid.1",
+      type: "interactive",
+      interactive: { type: "button", button_reply: { id: CONFIRM_YES_BUTTON_ID, title: "כן" } },
+    };
+    expect(resolveInteractiveReplyText(message)).toBe("כן");
+  });
+
+  it("normalizes the confirm-no button id to \"לא\"", () => {
+    const message = {
+      from: "972500000000",
+      id: "wamid.2",
+      type: "interactive",
+      interactive: { type: "button", button_reply: { id: CONFIRM_NO_BUTTON_ID, title: "לא" } },
+    };
+    expect(resolveInteractiveReplyText(message)).toBe("לא");
+  });
+
+  it("returns null for a plain text message (no interactive payload)", () => {
+    const message = { from: "972500000000", id: "wamid.3", type: "text", text: { body: "כן" } };
+    expect(resolveInteractiveReplyText(message)).toBeNull();
+  });
+
+  it("never guesses an unrecognized button id", () => {
+    const message = {
+      from: "972500000000",
+      id: "wamid.4",
+      type: "interactive",
+      interactive: { type: "button", button_reply: { id: "some_other_id", title: "?" } },
+    };
+    expect(resolveInteractiveReplyText(message)).toBeNull();
+  });
+
+  it("returns null for a non-button interactive type (e.g. a list reply)", () => {
+    const message = { from: "972500000000", id: "wamid.5", type: "interactive", interactive: { type: "list_reply" } };
+    expect(resolveInteractiveReplyText(message)).toBeNull();
+  });
+});
 
 // isUniqueViolation is the backstop behind the webhook's fast-path
 // idempotency check (see handleInboundMessage) — it decides whether a

@@ -89,11 +89,13 @@ vi.mock("@/lib/googleAuth/drive", async () => {
 });
 
 const sendTextMessage = vi.fn();
+const sendInteractiveButtonsMessage = vi.fn();
 vi.mock("@/lib/whatsapp/send", async () => {
   const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
   return {
     ...actual,
     sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
+    sendInteractiveButtonsMessage: (...args: unknown[]) => sendInteractiveButtonsMessage(...args),
     sendTemplateMessage: vi.fn(),
   };
 });
@@ -124,6 +126,8 @@ beforeEach(() => {
   classifyDocumentViaVisionAI.mockReset();
   sendTextMessage.mockReset();
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+  sendInteractiveButtonsMessage.mockReset();
+  sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
 });
 
 async function seedRequest() {
