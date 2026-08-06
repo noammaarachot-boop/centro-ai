@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   customType,
   integer,
@@ -898,6 +899,20 @@ export const documents = pgTable("documents", {
   // > 1, e.g. "3 תלושי שכר") sharing the same label count as one satisfied
   // unit, not two — see computeRequirementSatisfaction.
   extractedPeriodLabel: text("extracted_period_label"),
+  // Multi-page document merging — set when this row is an additional page
+  // of another already-approved document (a burst of photos of one
+  // multi-page contract, not several distinct documents), rather than its
+  // own independent unit. Only ever considered for a requiredCount=1
+  // requirement that already has one approved, non-continuation document —
+  // a requirement asking for several distinct units (requiredCount > 1,
+  // e.g. "3 תלושי שכר") never merges, since a second matching document
+  // there is a genuinely separate unit, not another page of the first. A
+  // continuation page is uploaded to the same Drive folder as an extra
+  // file (never merged into a single PDF — no PDF-processing dependency
+  // exists in this codebase) and excluded everywhere quantity/completion
+  // is computed (src/lib/documentQuantity.ts) so it can never inflate a
+  // requirement's satisfied count.
+  continuationOfDocumentId: uuid("continuation_of_document_id").references((): AnyPgColumn => documents.id),
   // "Centro checks the case, not the document" (caseReview.ts) — a
   // document classified as an identity anomaly, unsolicited, or
   // unrecognized no longer gets its client-facing question asked the

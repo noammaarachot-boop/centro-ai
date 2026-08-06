@@ -163,14 +163,19 @@ async function listMissingRequirementNames(collectionRequestId: string): Promise
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
   const approvedDocs = await db
-    .select({ requirementId: documents.requirementId, extractedPeriodLabel: documents.extractedPeriodLabel })
+    .select({
+      requirementId: documents.requirementId,
+      extractedPeriodLabel: documents.extractedPeriodLabel,
+      continuationOfDocumentId: documents.continuationOfDocumentId,
+    })
     .from(documents)
     .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
 
   const missing: string[] = [];
   for (const requirement of requirements) {
+    // Multi-page continuation pages never count as their own unit.
     const periodLabels = approvedDocs
-      .filter((doc) => doc.requirementId === requirement.id)
+      .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
       .map((doc) => doc.extractedPeriodLabel);
     const { satisfiedCount, satisfied } = computeRequirementSatisfaction(requirement.requiredCount, periodLabels);
     if (satisfied) continue;

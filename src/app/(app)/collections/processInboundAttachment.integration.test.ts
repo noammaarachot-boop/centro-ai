@@ -457,3 +457,111 @@ describe("processInboundAttachment — quantity-aware requirements (requiredCoun
     expect(await checkCompletionGate(requestId)).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Multi-page document merging — mandatory scenarios #7/#8: a multi-page
+// document, and several images sent together.
+// ---------------------------------------------------------------------------
+describe("processInboundAttachment — multi-page document merging", () => {
+  it("a second confidently-matched page for a requiredCount=1 requirement, arriving soon after, merges as a continuation page instead of a separate unit", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["חוזה שכירות"]);
+    const leaseReq = requirements[0];
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חוזה שכירות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: leaseReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.page1.jpg", null, Buffer.from("page1"), "image/jpeg", "wamid.page1");
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חוזה שכירות",
+      identificationConfidence: 0.94,
+      matchedRequirementId: leaseReq.id,
+      matchConfidence: 0.94,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.page2.jpg", null, Buffer.from("page2"), "image/jpeg", "wamid.page2");
+
+    const docs = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.collectionRequestId, requestId))
+      .orderBy(schema.documents.receivedAt);
+    expect(docs).toHaveLength(2);
+    expect(docs[0].status).toBe("approved");
+    expect(docs[0].continuationOfDocumentId).toBeNull();
+    expect(docs[1].status).toBe("approved");
+    expect(docs[1].continuationOfDocumentId).toBe(docs[0].id);
+
+    // Both pages were still uploaded to Drive — never lost.
+    expect(docs.every((d) => d.googleDriveFileId !== null)).toBe(true);
+
+    // The requirement reads as satisfied by exactly one unit — the
+    // continuation page never inflates it to "2 documents received" for a
+    // requiredCount=1 requirement, and no "was this intentional?" question
+    // was ever raised about the second page.
+    expect(await checkCompletionGate(requestId)).toBeNull();
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(0);
+  });
+
+  it("never merges a second match for a requiredCount > 1 requirement — each is a genuinely separate unit", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תלוש שכר"]);
+    const payslipReq = requirements[0];
+    await db.update(schema.collectionRequestRequirements).set({ requiredCount: 3 }).where(eq(schema.collectionRequestRequirements.id, payslipReq.id));
+
+    for (const wamid of ["wamid.q1", "wamid.q2"]) {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "תלוש שכר",
+        identificationConfidence: 0.95,
+        matchedRequirementId: payslipReq.id,
+        matchConfidence: 0.95,
+      });
+      await processInboundAttachment(orgId, requestId, conversationId, clientId, `image_${wamid}.jpg`, null, Buffer.from(wamid), "image/jpeg", wamid);
+    }
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(2);
+    expect(docs.every((d) => d.continuationOfDocumentId === null)).toBe(true);
+  });
+
+  it("does not merge a second match arriving well outside the continuation window — becomes its own independent unit", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["חוזה שכירות"]);
+    const leaseReq = requirements[0];
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חוזה שכירות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: leaseReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.old.jpg", null, Buffer.from("page1"), "image/jpeg", "wamid.old");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 10 * 60 * 1000)); // 10 minutes later — well past the 120s window
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "חוזה שכירות",
+        identificationConfidence: 0.95,
+        matchedRequirementId: leaseReq.id,
+        matchConfidence: 0.95,
+      });
+      await processInboundAttachment(orgId, requestId, conversationId, clientId, "image_wamid.new.jpg", null, Buffer.from("page2"), "image/jpeg", "wamid.new");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(2);
+    expect(docs.every((d) => d.continuationOfDocumentId === null)).toBe(true);
+  });
+});
