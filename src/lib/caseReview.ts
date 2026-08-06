@@ -161,6 +161,7 @@ async function listMissingRequirementNames(collectionRequestId: string): Promise
       id: collectionRequestRequirements.id,
       name: collectionRequestRequirements.name,
       requiredCount: collectionRequestRequirements.requiredCount,
+      semanticSpec: collectionRequestRequirements.semanticSpec,
     })
     .from(collectionRequestRequirements)
     .where(eq(collectionRequestRequirements.collectionRequestId, collectionRequestId));
@@ -168,6 +169,7 @@ async function listMissingRequirementNames(collectionRequestId: string): Promise
     .select({
       requirementId: documents.requirementId,
       extractedPeriodLabel: documents.extractedPeriodLabel,
+      extractedPersonName: documents.extractedPersonName,
       continuationOfDocumentId: documents.continuationOfDocumentId,
     })
     .from(documents)
@@ -176,10 +178,10 @@ async function listMissingRequirementNames(collectionRequestId: string): Promise
   const missing: string[] = [];
   for (const requirement of requirements) {
     // Multi-page continuation pages never count as their own unit.
-    const periodLabels = approvedDocs
+    const docs = approvedDocs
       .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
-      .map((doc) => doc.extractedPeriodLabel);
-    const { satisfiedCount, satisfied } = computeRequirementSatisfaction(requirement.requiredCount, periodLabels);
+      .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
+    const { satisfiedCount, satisfied } = computeRequirementSatisfaction(requirement, docs);
     if (satisfied) continue;
     missing.push(
       satisfiedCount > 0 && requirement.requiredCount > 1

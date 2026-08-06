@@ -592,3 +592,106 @@ describe("processInboundAttachment — unreadable file", () => {
     expect(auditEvents).toHaveLength(1);
   });
 });
+
+// Semantic requirement engine (src/lib/ai/requirementSemantics.ts) — end to
+// end through the real intake pipeline, not just the pure
+// computeRequirementSatisfaction function (already exhaustively covered in
+// documentQuantity.test.ts). Mandatory scenarios #1-#3 from the spec.
+describe("processInboundAttachment — semantic requirement engine end to end", () => {
+  it("'3 payslips of June' + 3 payslips all for June -> satisfied (same period expected, not a red flag)", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תלוש שכר"]);
+    const payslipReq = requirements[0];
+    await db
+      .update(schema.collectionRequestRequirements)
+      .set({
+        requiredCount: 3,
+        semanticSpec: {
+          originalText: "3 תלושי שכר של חודש יוני",
+          documentType: "תלוש שכר",
+          requiredCount: 3,
+          periodType: "explicit",
+          explicitPeriods: ["06/2026"],
+          relativePeriod: null,
+          samePeriodAllowed: true,
+          distinctPeriodsRequired: false,
+          distinctPeopleRequired: false,
+          expectedPersonOrCompany: null,
+          validityRequirement: null,
+          supportingDocumentRelationship: null,
+          freeTextConstraints: null,
+          interpretationConfidence: 0.9,
+          clarifyingQuestion: null,
+        },
+      })
+      .where(eq(schema.collectionRequestRequirements.id, payslipReq.id));
+
+    for (const wamid of ["wamid.j1", "wamid.j2", "wamid.j3"]) {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "תלוש שכר",
+        identificationConfidence: 0.95,
+        matchedRequirementId: payslipReq.id,
+        matchConfidence: 0.95,
+        extractedPersonName: null,
+        extractedIdNumber: null,
+        extractedCompanyName: null,
+        identityExtractionConfidence: 0,
+        documentPeriodLabel: "06/2026", // same June every time — expected here
+        periodExtractionConfidence: 0.9,
+      });
+      await processInboundAttachment(orgId, requestId, conversationId, clientId, `image_${wamid}.jpg`, null, Buffer.from(wamid), "image/jpeg", wamid);
+    }
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docs).toHaveLength(3);
+    expect(docs.every((d) => d.status === "approved")).toBe(true);
+    expect(await checkCompletionGate(requestId)).toBeNull();
+  });
+
+  it("'3 payslips of 3 last months' + 3 payslips all for the SAME month -> still open (distinct periods genuinely required)", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תלוש שכר"]);
+    const payslipReq = requirements[0];
+    await db
+      .update(schema.collectionRequestRequirements)
+      .set({
+        requiredCount: 3,
+        semanticSpec: {
+          originalText: "3 תלושי שכר של 3 החודשים האחרונים",
+          documentType: "תלוש שכר",
+          requiredCount: 3,
+          periodType: "relative",
+          explicitPeriods: null,
+          relativePeriod: { kind: "last_n_months", n: 3 },
+          samePeriodAllowed: false,
+          distinctPeriodsRequired: true,
+          distinctPeopleRequired: false,
+          expectedPersonOrCompany: null,
+          validityRequirement: null,
+          supportingDocumentRelationship: null,
+          freeTextConstraints: null,
+          interpretationConfidence: 0.9,
+          clarifyingQuestion: null,
+        },
+      })
+      .where(eq(schema.collectionRequestRequirements.id, payslipReq.id));
+
+    for (const wamid of ["wamid.r1", "wamid.r2", "wamid.r3"]) {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "תלוש שכר",
+        identificationConfidence: 0.95,
+        matchedRequirementId: payslipReq.id,
+        matchConfidence: 0.95,
+        extractedPersonName: null,
+        extractedIdNumber: null,
+        extractedCompanyName: null,
+        identityExtractionConfidence: 0,
+        documentPeriodLabel: "06/2026", // same month every time
+        periodExtractionConfidence: 0.9,
+      });
+      await processInboundAttachment(orgId, requestId, conversationId, clientId, `image_${wamid}.jpg`, null, Buffer.from(wamid), "image/jpeg", wamid);
+    }
+
+    expect(await checkCompletionGate(requestId)).not.toBeNull();
+  });
+});

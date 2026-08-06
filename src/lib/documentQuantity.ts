@@ -1,4 +1,6 @@
 import type { DocumentClassification } from "@/lib/ai/documentClassifier";
+import type { RequirementSemanticSpec } from "@/lib/ai/requirementSemantics";
+import { nameMatchScore } from "@/lib/documentIdentityVerification";
 
 /**
  * Quantity-aware requirement engine — a requirement can ask for more than
@@ -6,10 +8,17 @@ import type { DocumentClassification } from "@/lib/ai/documentClassifier";
  * collectionRequestRequirements.requiredCount (default 1, preserving
  * today's exactly-one-document behavior for every existing requirement
  * unchanged). This module is the one place that decides whether a
- * requirement's units are actually satisfied, from the dated period each
- * approved document was extracted to cover — never from a raw document
- * count alone, which would let three payslips for the same month look like
- * three distinct months.
+ * requirement's units are actually satisfied.
+ *
+ * Since the semantic requirement engine (src/lib/ai/requirementSemantics.ts),
+ * "satisfied" is decided against the office user's own stated meaning
+ * (RequirementSemanticSpec) — never a single global rule. "3 payslips for 3
+ * different months" and "3 payslips for June" are different requirements
+ * with different satisfaction rules, both expressed through the same
+ * requiredCount; a requirement with no parsed spec (a legacy row, or an
+ * ad-hoc client-profile addition — see clientDocumentProfile.ts) falls back
+ * to the original distinct-period-or-undated-counts-as-one-unit algorithm
+ * this module shipped with before the semantic engine existed.
  */
 
 // Below this, the vision model's own period extraction is too unreliable to
@@ -35,28 +44,88 @@ export interface RequirementSatisfaction {
   satisfied: boolean;
 }
 
-// The one place "is this requirement done?" is decided once more than one
-// unit can be required. Two approved documents sharing the same extracted
-// period label count as ONE satisfied unit, not two (the "3 payslips, but 2
-// are for the same month" scenario — the requirement stays open until a
-// genuinely distinct third period arrives, no client interruption needed:
-// see caseReview.ts's missing-requirements wording, which is what actually
-// surfaces this to the client, only once, at finish time).
+export interface SatisfactionDocument {
+  periodLabel: string | null;
+  personName: string | null;
+}
+
+interface RequirementForSatisfaction {
+  requiredCount: number;
+  semanticSpec: unknown;
+}
+
+// Fuzzy-groups names into equivalence classes (reusing the same tolerance
+// documentIdentityVerification.ts's identity-anomaly detection already
+// relies on — reversed word order, OCR noise, partial spelling all still
+// count as "the same person") and returns how many distinct people that
+// produces. A document with no extracted name at all is never assumed to
+// be a duplicate of another undated/unnamed one — each counts as its own
+// distinct unit, the same permissive default computeRequirementSatisfaction
+// applies to undated documents.
+function countDistinctPeople(names: string[]): number {
+  const clusters: string[][] = [];
+  for (const name of names) {
+    const cluster = clusters.find((c) => nameMatchScore(name, c[0]) >= 0.6);
+    if (cluster) cluster.push(name);
+    else clusters.push([name]);
+  }
+  return clusters.length;
+}
+
+// The one place "is this requirement done?" is decided. `requirement.semanticSpec`
+// (RequirementSemanticSpec | null) drives everything:
 //
-// A document with no period label at all (extraction failed, or this
-// requirement's documents just aren't the dated kind) is never treated as a
-// potential duplicate of another such document — there's no reliable signal
-// to compare, and silently under-counting real documents because extraction
-// has a gap would be a worse failure mode than the rare case of two
-// genuinely-same-period documents both counting as distinct units when
-// neither could be dated. This keeps the fallback permissive: never block
-// completion on an AI extraction limitation.
+//   - no spec (legacy/ad-hoc): distinct period labels count as separate
+//     units, undated documents each count as their own unit too (never
+//     block completion on an extraction gap).
+//   - periodType "explicit" with explicitPeriods set: only documents whose
+//     period matches one of the explicit periods count at all (an
+//     undated document is still given the benefit of the doubt and counted).
+//   - distinctPeopleRequired: units are counted by distinct person
+//     (fuzzy-matched), not by document or period.
+//   - distinctPeriodsRequired: units are counted by distinct period label
+//     (same as the legacy algorithm, but only ever applied when the office
+//     user's own wording actually asked for distinct periods).
+//   - samePeriodAllowed (or no distinctness constraint at all): every
+//     matching document counts as its own unit — duplicates of the same
+//     period are expected, not a red flag.
 export function computeRequirementSatisfaction(
-  requiredCount: number,
-  periodLabels: Array<string | null>
+  requirement: RequirementForSatisfaction,
+  documents: SatisfactionDocument[]
 ): RequirementSatisfaction {
-  const distinctLabels = new Set(periodLabels.filter((label): label is string => label !== null));
-  const undatedCount = periodLabels.filter((label) => label === null).length;
-  const satisfiedCount = distinctLabels.size + undatedCount;
+  const requiredCount = requirement.requiredCount;
+  const spec = requirement.semanticSpec as RequirementSemanticSpec | null;
+
+  if (!spec) {
+    const distinctLabels = new Set(documents.map((d) => d.periodLabel).filter((label): label is string => label !== null));
+    const undatedCount = documents.filter((d) => d.periodLabel === null).length;
+    const satisfiedCount = distinctLabels.size + undatedCount;
+    return { satisfiedCount, satisfied: satisfiedCount >= requiredCount };
+  }
+
+  let relevant = documents;
+  if (spec.periodType === "explicit" && spec.explicitPeriods && spec.explicitPeriods.length > 0) {
+    const allowed = new Set(spec.explicitPeriods);
+    relevant = documents.filter((d) => d.periodLabel === null || allowed.has(d.periodLabel));
+  }
+
+  if (spec.distinctPeopleRequired) {
+    const named = relevant.filter((d): d is SatisfactionDocument & { personName: string } => !!d.personName);
+    const unnamedCount = relevant.length - named.length;
+    const satisfiedCount = countDistinctPeople(named.map((d) => d.personName)) + unnamedCount;
+    return { satisfiedCount, satisfied: satisfiedCount >= requiredCount };
+  }
+
+  if (spec.distinctPeriodsRequired) {
+    const distinctLabels = new Set(relevant.map((d) => d.periodLabel).filter((label): label is string => label !== null));
+    const undatedCount = relevant.filter((d) => d.periodLabel === null).length;
+    const satisfiedCount = distinctLabels.size + undatedCount;
+    return { satisfiedCount, satisfied: satisfiedCount >= requiredCount };
+  }
+
+  // samePeriodAllowed, or no distinctness constraint stated at all —
+  // duplicates are fine/expected, just count how many relevant documents
+  // there are.
+  const satisfiedCount = relevant.length;
   return { satisfiedCount, satisfied: satisfiedCount >= requiredCount };
 }
