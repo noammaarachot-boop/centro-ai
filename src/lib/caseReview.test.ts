@@ -80,11 +80,13 @@ vi.mock("@/lib/googleAuth/drive", async () => {
 });
 
 const sendTextMessage = vi.fn();
+const sendInteractiveButtonsMessage = vi.fn();
 vi.mock("@/lib/whatsapp/send", async () => {
   const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
   return {
     ...actual,
     sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
+    sendInteractiveButtonsMessage: (...args: unknown[]) => sendInteractiveButtonsMessage(...args),
     sendTemplateMessage: vi.fn(),
   };
 });
@@ -105,6 +107,8 @@ beforeEach(() => {
   getValidAccessToken.mockResolvedValue("fake-token");
   sendTextMessage.mockReset();
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+  sendInteractiveButtonsMessage.mockReset();
+  sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
 });
 
 describe("isFinishedSignal", () => {
@@ -186,7 +190,10 @@ describe("runCaseReview", () => {
     const result = await runCaseReview(orgId, clientId, requestId);
     expect(result.hasPendingReview).toBe(true);
     expect(result.groupCount).toBe(1);
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    // A single question is sent as real WhatsApp Interactive Reply
+    // Buttons, not plain numbered text.
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).not.toHaveBeenCalled();
 
     const [after] = await db.select().from(schema.documents).where(eq(schema.documents.id, doc.id));
     expect(after.deferredReviewKind).toBeNull();
@@ -311,10 +318,12 @@ describe("attemptFinishCollectionRequest", () => {
     expect(outcome).toBe("review_pending");
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(request.status).not.toBe("completed");
-    // Only the grouped review question — no separate "completed" or
-    // "missing requirements" message was also sent.
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    const body = sendTextMessage.mock.calls[0][2] as string;
+    // Only the grouped review question (a solo group, sent via Interactive
+    // Reply Buttons) — no separate "completed" or "missing requirements"
+    // message was also sent.
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).not.toHaveBeenCalled();
+    const body = sendInteractiveButtonsMessage.mock.calls[0][2] as string;
     expect(body).toContain("אורית לוי");
 
     const [after] = await db.select().from(schema.documents).where(eq(schema.documents.id, doc.id));

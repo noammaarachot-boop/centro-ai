@@ -75,12 +75,14 @@ vi.mock("@/lib/googleAuth/drive", async () => {
 
 const sendTextMessage = vi.fn();
 const sendTemplateMessage = vi.fn();
+const sendInteractiveButtonsMessage = vi.fn();
 vi.mock("@/lib/whatsapp/send", async () => {
   const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
   return {
     ...actual,
     sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
     sendTemplateMessage: (...args: unknown[]) => sendTemplateMessage(...args),
+    sendInteractiveButtonsMessage: (...args: unknown[]) => sendInteractiveButtonsMessage(...args),
   };
 });
 
@@ -118,6 +120,8 @@ beforeEach(() => {
   getValidAccessToken.mockResolvedValue("fake-token");
   sendTextMessage.mockReset();
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+  sendInteractiveButtonsMessage.mockReset();
+  sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
   sendTemplateMessage.mockReset();
 });
 
@@ -319,9 +323,10 @@ describe("createOrMergeIdentityAnomalyConfirmation — grouping", () => {
     expect(rows[0].question).toContain("ישראל ישראלי");
 
     // Only one question actually sent over WhatsApp — not one per document.
+    // A solo group, sent as real Interactive Reply Buttons.
     await forceFlush(orgId, requestId);
     const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
     expect(messages).toHaveLength(1);
   });
 
