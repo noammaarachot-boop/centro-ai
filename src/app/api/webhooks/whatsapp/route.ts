@@ -8,6 +8,7 @@ import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
 import {
   CONFIRM_NO_BUTTON_ID,
   CONFIRM_YES_BUTTON_ID,
+  listOpenConfirmationsForCollectionRequest,
   resolveBatchedIntakeReply,
   resolveConfirmationFromReply,
   resolveOpenClarificationReply,
@@ -18,8 +19,10 @@ import {
 } from "@/lib/documentIntakeReview";
 import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification";
 import { applyFollowUpPromiseIfAny, attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
+import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
+import { createRequestReopenConfirmation, applyRequestReopenDecision, decidePostCompletionGate } from "@/lib/requestReopen";
 import { recordInboundMessage } from "@/lib/conversationOrchestration";
-import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
+import { processInboundAttachment, reprocessHeldReopenDocument } from "@/app/(app)/collections/conversationActions";
 import { downloadMedia } from "@/lib/whatsapp/media";
 import { toE164 } from "@/lib/whatsapp/phone";
 import { verifyWebhookSignature } from "@/lib/whatsapp/webhookSignature";
@@ -274,6 +277,83 @@ async function handleInboundMessage(
     body || (attachment ? `[קובץ: ${attachment.fileName}]` : "[הודעה מסוג לא נתמך]")
   );
 
+  // Post-completion intent gate (src/lib/requestReopen.ts) — "Centro only
+  // manages the conversation from the moment a request is sent until it's
+  // finally completed." A closed conversation with nothing already pending
+  // is never silently acted on: an attachment is stashed and asked about,
+  // a text message is only acted on if it explicitly references the
+  // finished request, and anything else is fully silent — no reply, no
+  // state change, message already recorded above for an employee to see.
+  // An already-open confirmation (most commonly this exact reopen
+  // question, still awaiting an answer) is deliberately excluded here and
+  // falls through to the normal resolver chain below instead.
+  if (conversation.status === "closed") {
+    const openConfirmations = await listOpenConfirmationsForCollectionRequest(collectionRequestId);
+    // Only actually invokes the AI classifier in the one case where its
+    // result matters — see decidePostCompletionGate's own doc comment.
+    const wantsReopen =
+      openConfirmations.length === 0 && !attachment && body ? await classifyReopenIntent(body) : false;
+    const decision = decidePostCompletionGate({
+      conversationStatus: conversation.status,
+      hasOpenConfirmations: openConfirmations.length > 0,
+      hasAttachment: !!attachment,
+      wantsReopen,
+    });
+    console.log("[wa-inbound] post-completion gate decision", { collectionRequestId, decision });
+
+    if (decision === "stash_attachment" && attachment) {
+      let media: Awaited<ReturnType<typeof downloadMedia>>;
+      try {
+        media = await downloadMedia(attachment.mediaId);
+      } catch (error) {
+        console.error("[wa-inbound] downloadMedia FAILED (post-completion reopen path)", error);
+        await recordAuditEvent({
+          organizationId: organization.id,
+          eventType: "whatsapp.inbound_media_download_failed",
+          description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+          actorType: "system",
+          clientId: client.id,
+          collectionRequestId,
+        });
+        return;
+      }
+      const db = await getDb();
+      const [placeholder] = await db
+        .insert(documents)
+        .values({
+          organizationId: organization.id,
+          collectionRequestId,
+          fileName: attachment.fileName,
+          status: "reopen_pending_confirmation",
+          pendingFileContent: media.bytes,
+          pendingFileMimeType: media.mimeType,
+          whatsappMessageId: message.id,
+        })
+        .returning();
+      await createRequestReopenConfirmation({
+        organizationId: organization.id,
+        clientId: client.id,
+        collectionRequestId,
+        documentId: placeholder.id,
+      });
+      return;
+    }
+    if (decision === "ask_reopen") {
+      await createRequestReopenConfirmation({
+        organizationId: organization.id,
+        clientId: client.id,
+        collectionRequestId,
+        documentId: null,
+      });
+      return;
+    }
+    if (decision === "silent") {
+      return; // no reply, no state change — message already recorded above.
+    }
+    // "fall_through" — not closed, or an existing pending confirmation is
+    // still awaiting an answer; continue into the normal resolver chain.
+  }
+
   // Mirrors simulateInboundMessage's own intent-classification + pending-
   // confirmation-resolution block (conversationActions.ts) — kept as a
   // separate copy rather than a shared extraction, since the approved
@@ -344,10 +424,11 @@ async function handleInboundMessage(
       const resolved = await resolveConfirmationFromReply(conversation.id, body);
       if (resolved) {
         console.log("[wa-inbound] confirmation reply resolved", { pendingConfirmationId: resolved.id, kind: resolved.kind, status: resolved.status });
-        // Both are no-ops for any kind that isn't their own.
+        // Each is a no-op for any kind that isn't its own.
         await applyDocumentProfileConfirmation(resolved);
         await applyUnsolicitedConfirmationDecision(resolved);
         await applyIdentityAnomalyDecision(resolved);
+        await applyRequestReopenDecision(resolved, reprocessHeldReopenDocument);
         await recordAuditEvent({
           organizationId: organization.id,
           eventType: "pending_confirmation.resolved",

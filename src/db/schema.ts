@@ -837,6 +837,16 @@ export const documentStatus = pgEnum("document_status", [
   // pendingFileContent cleared, same retention policy as
   // unsolicited_rejected.
   "identity_anomaly_rejected",
+  // Post-completion intent gate (src/lib/requestReopen.ts) — a document
+  // arrived on a conversation whose request already completed. Never
+  // auto-filed and never auto-reopens the request; held here while the
+  // client is asked whether to reopen the (already-finished) request to
+  // save it. See caseReview.ts's own "intervention window" doc comment.
+  "reopen_pending_confirmation",
+  // Client said not to — never uploaded, the completed request stays
+  // completed; pendingFileContent cleared, same retention policy as
+  // unsolicited_rejected.
+  "reopen_declined",
 ]);
 
 // Metadata + a Google Drive file reference (EPS Ch.4/Ch.8 — Drive stores

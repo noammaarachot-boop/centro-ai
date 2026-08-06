@@ -57,7 +57,12 @@ export type PendingConfirmationKind =
   // sibling document already received (wrong person's name/ID, mismatched
   // ID between two documents, wrong company). Yes/no, resolved the same
   // way as unsolicited_document.
-  | "identity_anomaly";
+  | "identity_anomaly"
+  // Post-completion intent gate (src/lib/requestReopen.ts) — a message
+  // arrived on a request that already completed. Yes/no ("reopen the
+  // request to save this?"), sent immediately (never batched — this is a
+  // one-off, time-sensitive gate, not a burst of document exceptions).
+  | "request_reopen";
 
 // The two kinds smart notification grouping ever batches — both are
 // yes/no questions about a specific document (or several), always with the
@@ -101,6 +106,9 @@ export async function createPendingConfirmation(params: {
   // request. Omit for every kind that isn't unsolicited_document/
   // identity_anomaly — those keep sending immediately exactly as before.
   notifyAfter?: Date;
+  // WhatsApp Interactive Reply Buttons for an immediate (non-batched) send
+  // — see sendViaWhatsApp's own doc comment. Ignored in batched mode.
+  interactiveButtons?: InteractiveButton[];
 }) {
   const conversation = await ensureConversation(
     params.organizationId,
@@ -146,7 +154,8 @@ export async function createPendingConfirmation(params: {
     "ai",
     params.trigger ?? "automated",
     undefined,
-    params.allowFreeform ?? false
+    params.allowFreeform ?? false,
+    params.interactiveButtons
   );
   console.log("[pending-confirmation] send result", {
     kind: params.kind,

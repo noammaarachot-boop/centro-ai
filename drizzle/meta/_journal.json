@@ -302,6 +302,13 @@
       "when": 1786027231198,
       "tag": "0042_stiff_true_believers",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1786028777153,
+      "tag": "0043_safe_husk",
+      "breakpoints": true
     }
   ]
 }

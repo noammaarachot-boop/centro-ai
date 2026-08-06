@@ -121,3 +121,45 @@ export async function classifyFollowUpIntent(replyText: string): Promise<FollowU
     return { isFollowUpPromise: false, approxDelayMinutes: null };
   }
 }
+
+/**
+ * Post-completion intent gate (src/lib/requestReopen.ts) — "Centro only
+ * intervenes from when the request is sent until it's finally completed."
+ * Once a request has completed, Centro stays completely silent UNLESS the
+ * client explicitly references the finished request or a document in it
+ * ("שכחתי לשלוח עוד מסמך", "המסמך הקודם היה לא נכון", "זה מסמך מעודכן",
+ * "תוסיף גם את הקובץ הזה", "שלחתי עכשיו את החסר") — only then does Centro
+ * ask a short reopening confirmation instead of staying silent. Never
+ * guesses: a message that doesn't clearly reference the finished
+ * request/document resolves to false, and requestReopen.ts stays silent,
+ * exactly the safe default this whole gate exists to enforce.
+ */
+export async function classifyReopenIntent(replyText: string): Promise<boolean> {
+  const trimmed = replyText.trim();
+  if (!trimmed) return false;
+
+  try {
+    const model = await resolveLanguageModel();
+    const schema = z.object({
+      isReopenIntent: z
+        .boolean()
+        .describe(
+          'true רק אם ההודעה מתייחסת במפורש לבקשת מסמכים שכבר הסתיימה או למסמך שכבר נשלח בה (למשל "שכחתי לשלוח עוד מסמך", "המסמך הקודם היה לא נכון", "זה מסמך מעודכן", "תוסיף גם את הקובץ הזה", "שלחתי עכשיו את החסר"). false לכל הודעה אחרת, כולל שיחת חולין או שאלות כלליות שלא קשורות למסמכים.'
+        ),
+    });
+    const { object } = await generateObject({
+      model,
+      schema,
+      messages: [
+        {
+          role: "user",
+          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח הודעה לאחר שבקשת המסמכים שלו כבר הסתיימה: "${trimmed}"\n\nהאם ההודעה מתייחסת במפורש לבקשה שהסתיימה או למסמך שכבר נשלח בה (רוצה להוסיף/לתקן/להשלים משהו)? אל תנחש — אם זו הודעה כללית שלא קשורה במפורש למסמכים, סמן false.`,
+        },
+      ],
+    });
+    return object.isReopenIntent;
+  } catch (error) {
+    console.error("[conversation-reply-intent] reopen-intent classification failed (falling back to no intent — stays silent)", error);
+    return false;
+  }
+}
