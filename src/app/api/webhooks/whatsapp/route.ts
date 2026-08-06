@@ -69,8 +69,12 @@ interface WhatsAppInboundMessage {
   id: string;
   type: string;
   text?: { body: string };
-  image?: { id: string; mime_type: string };
-  document?: { id: string; mime_type: string; filename?: string };
+  // Document replace/supersede (src/lib/documentReplace.ts) — Meta lets a
+  // client attach free text alongside media in the same message ("זה
+  // מחליף את הקודם" as the caption of a newly-sent photo). Previously
+  // never read at all.
+  image?: { id: string; mime_type: string; caption?: string };
+  document?: { id: string; mime_type: string; filename?: string; caption?: string };
   // WhatsApp Interactive Reply Buttons — a client's tap on a button Centro
   // sent (see pendingConfirmations.ts's flushDueIntakeNotifications).
   interactive?: { type: string; button_reply?: { id: string; title: string } };
@@ -255,7 +259,10 @@ async function handleInboundMessage(
   const { client, conversation } = match;
   const collectionRequestId = conversation.collectionRequestId;
 
-  const body = message.text?.body ?? resolveInteractiveReplyText(message);
+  // Document replace/supersede (src/lib/documentReplace.ts) — Meta lets a
+  // client attach free text alongside media in the same message.
+  const captionText = message.image?.caption ?? message.document?.caption ?? null;
+  const body = message.text?.body ?? resolveInteractiveReplyText(message) ?? captionText;
   const attachment = resolveAttachment(message);
   console.log("[wa-inbound] resolveAttachment", {
     messageType: message.type,
@@ -512,7 +519,8 @@ async function handleInboundMessage(
       null,
       media.bytes,
       media.mimeType,
-      message.id
+      message.id,
+      captionText
     );
     console.log("[wa-inbound] processInboundAttachment DONE");
   } catch (error) {

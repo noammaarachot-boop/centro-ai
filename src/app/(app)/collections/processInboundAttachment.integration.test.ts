@@ -95,6 +95,10 @@ vi.mock("@/lib/googleAuth/drive", async () => {
       fakeFiles.push({ id, name: options.name, parentId: options.parentId });
       return { id, name: options.name, webViewLink: `https://drive.example/${id}` };
     }),
+    renameDriveFile: vi.fn(async (_token: string, fileId: string, newName: string) => {
+      const file = fakeFiles.find((f) => f.id === fileId);
+      if (file) file.name = newName;
+    }),
   };
 });
 
@@ -102,6 +106,11 @@ const classifyDocumentViaVisionAI = vi.fn();
 vi.mock("@/lib/ai/documentVisionClassifier", () => ({
   classifyDocumentViaVisionAI: (...args: unknown[]) => classifyDocumentViaVisionAI(...args),
   isVisionClassifiableMimeType: () => true,
+}));
+
+const classifyDocumentRelationIntent = vi.fn();
+vi.mock("@/lib/ai/conversationReplyIntent", () => ({
+  classifyDocumentRelationIntent: (...args: unknown[]) => classifyDocumentRelationIntent(...args),
 }));
 
 const { processInboundAttachment } = await import("./conversationActions");
@@ -120,6 +129,8 @@ beforeEach(() => {
   nextId = 1;
   getValidAccessToken.mockResolvedValue("fake-token");
   classifyDocumentViaVisionAI.mockReset();
+  classifyDocumentRelationIntent.mockReset();
+  classifyDocumentRelationIntent.mockResolvedValue("none");
 });
 
 async function seedRequest(requirementNames: string[]) {
@@ -693,5 +704,153 @@ describe("processInboundAttachment — semantic requirement engine end to end", 
     }
 
     expect(await checkCompletionGate(requestId)).not.toBeNull();
+  });
+});
+
+// Document replace/supersede (src/lib/documentReplace.ts) — mandatory
+// scenarios #7/#8: "this replaces the previous" vs "this is additional,
+// not a replacement."
+describe("processInboundAttachment — document replace/supersede via caption", () => {
+  it("'זה מחליף את הקודם' supersedes the prior approved document — never deleted, renamed in Drive, excluded from active counts", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    const idReq = requirements[0];
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id-v1.jpg", null, Buffer.from("v1"), "image/jpeg", "wamid.v1");
+
+    const [original] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(original.status).toBe("approved");
+    const originalDriveFileId = original.googleDriveFileId!;
+
+    classifyDocumentRelationIntent.mockResolvedValueOnce("replace");
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "id-v2.jpg",
+      null,
+      Buffer.from("v2"),
+      "image/jpeg",
+      "wamid.v2",
+      "זה מחליף את הקודם"
+    );
+
+    const allDocs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(allDocs).toHaveLength(2); // never deleted — both rows still exist
+    const supersededDoc = allDocs.find((d) => d.id === original.id)!;
+    const newDoc = allDocs.find((d) => d.id !== original.id)!;
+    expect(supersededDoc.status).toBe("superseded");
+    expect(supersededDoc.supersededByDocumentId).toBe(newDoc.id);
+    expect(newDoc.status).toBe("approved");
+
+    // Renamed in Drive, not deleted or moved out of the client's folder.
+    const renamedFile = fakeFiles.find((f) => f.id === originalDriveFileId)!;
+    expect(renamedFile.name).toContain("הוחלף");
+
+    // Only the new document counts as satisfying the requirement now.
+    expect(await checkCompletionGate(requestId)).toBeNull();
+
+    const auditEvents = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(and(eq(schema.auditLogs.collectionRequestId, requestId), eq(schema.auditLogs.eventType, "document.superseded")));
+    expect(auditEvents).toHaveLength(1);
+  });
+
+  it("'זה מסמך נוסף, לא מחליף' never supersedes anything — both documents stay active", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תלוש שכר"]);
+    const payslipReq = requirements[0];
+    await db.update(schema.collectionRequestRequirements).set({ requiredCount: 2 }).where(eq(schema.collectionRequestRequirements.id, payslipReq.id));
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תלוש שכר",
+      identificationConfidence: 0.95,
+      matchedRequirementId: payslipReq.id,
+      matchConfidence: 0.95,
+      documentPeriodLabel: "01/2026",
+      periodExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "payslip1.jpg", null, Buffer.from("p1"), "image/jpeg", "wamid.repl-add1");
+
+    classifyDocumentRelationIntent.mockResolvedValueOnce("additional");
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תלוש שכר",
+      identificationConfidence: 0.95,
+      matchedRequirementId: payslipReq.id,
+      matchConfidence: 0.95,
+      documentPeriodLabel: "02/2026",
+      periodExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "payslip2.jpg",
+      null,
+      Buffer.from("p2"),
+      "image/jpeg",
+      "wamid.repl-add2",
+      "זה מסמך נוסף, לא מחליף"
+    );
+
+    const allDocs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(allDocs).toHaveLength(2);
+    expect(allDocs.every((d) => d.status === "approved")).toBe(true);
+    expect(allDocs.every((d) => d.supersededByDocumentId === null)).toBe(true);
+  });
+
+  it("a caption present but with no clear relation ('none') never supersedes — same as no caption at all", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    const idReq = requirements[0];
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id-v1.jpg", null, Buffer.from("v1"), "image/jpeg", "wamid.n1");
+
+    classifyDocumentRelationIntent.mockResolvedValueOnce("none");
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "id-v2.jpg",
+      null,
+      Buffer.from("v2"),
+      "image/jpeg",
+      "wamid.n2",
+      "הנה התלוש"
+    );
+
+    const allDocs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(allDocs.every((d) => d.supersededByDocumentId === null)).toBe(true);
   });
 });

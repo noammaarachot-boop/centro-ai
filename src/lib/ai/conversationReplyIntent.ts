@@ -163,3 +163,45 @@ export async function classifyReopenIntent(replyText: string): Promise<boolean> 
     return false;
   }
 }
+
+/**
+ * Document replace/supersede (src/lib/documentReplace.ts) — a client
+ * sending a new document alongside a caption/message like "זה מחליף את
+ * הקודם", "תתעלם מהקובץ הקודם", "המסמך הראשון היה לא נכון" means the new
+ * file should replace an already-approved one, not add to it. "זה מסמך
+ * נוסף", "שניהם נכונים" explicitly mean the opposite — both are real,
+ * kept independently. Anything that doesn't clearly say either resolves
+ * to "none" — the new document is just classified normally, exactly as if
+ * no such message had been sent at all (the default, safe behavior).
+ */
+export type DocumentRelationIntent = "replace" | "additional" | "none";
+
+export async function classifyDocumentRelationIntent(text: string): Promise<DocumentRelationIntent> {
+  const trimmed = text.trim();
+  if (!trimmed) return "none";
+
+  try {
+    const model = await resolveLanguageModel();
+    const schema = z.object({
+      relation: z
+        .enum(["replace", "additional", "none"])
+        .describe(
+          '"replace" רק אם ההודעה אומרת בבירור שהמסמך הזה מחליף/מתקן/במקום מסמך קודם (למשל "זה מחליף את הקודם", "תתעלם מהקודם", "המסמך הראשון היה לא נכון", "זה הגרסה הנכונה"). "additional" אם ההודעה אומרת בבירור שזה מסמך נוסף ולא תחליף (למשל "זה מסמך נוסף", "שניהם נכונים"). "none" אם ההודעה לא מתייחסת בבירור ליחס בין המסמך הזה למסמך קודם כלשהו — אל תנחש.'
+        ),
+    });
+    const { object } = await generateObject({
+      model,
+      schema,
+      messages: [
+        {
+          role: "user",
+          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח מסמך חדש יחד עם ההודעה: "${trimmed}"\n\nהאם ההודעה אומרת שהמסמך הזה מחליף מסמך קודם, שהוא מסמך נוסף בנפרד, או שאינה מתייחסת ליחס בין מסמכים כלל?`,
+        },
+      ],
+    });
+    return object.relation;
+  } catch (error) {
+    console.error("[conversation-reply-intent] document-relation classification failed (falling back to none — classified normally)", error);
+    return "none";
+  }
+}

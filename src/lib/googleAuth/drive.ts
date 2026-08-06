@@ -154,6 +154,21 @@ export async function moveDriveFile(
   }
 }
 
+// Document replace/supersede (src/lib/requestReopen.ts's sibling,
+// documentReplace.ts) — a superseded document is never deleted or moved
+// out of the client's folder, just renamed to make its status visible at
+// a glance in Drive itself, matching the "archive/mark, never delete
+// without need" requirement.
+export async function renameDriveFile(accessToken: string, fileId: string, newName: string): Promise<void> {
+  const response = await driveFetch(accessToken, `/files/${encodeURIComponent(fileId)}?fields=id`, {
+    method: "PATCH",
+    body: JSON.stringify({ name: newName }),
+  });
+  if (!response.ok) {
+    throw new DriveApiError(`Failed to rename Drive file (${response.status})`);
+  }
+}
+
 // Tags (or re-tags) an existing folder with the app's private client-id
 // property — used both to adopt a legacy pre-tagging folder and to
 // guarantee the surviving folder after a duplicate merge is tagged, whether
