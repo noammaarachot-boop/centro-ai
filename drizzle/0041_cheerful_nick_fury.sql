@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "next_follow_up_at" timestamp with time zone;

@@ -288,6 +288,13 @@
       "when": 1786011993545,
       "tag": "0040_empty_ultragirl",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1786013638918,
+      "tag": "0041_cheerful_nick_fury",
+      "breakpoints": true
     }
   ]
 }

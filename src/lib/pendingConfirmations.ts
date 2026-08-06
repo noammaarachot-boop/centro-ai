@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { organizations, pendingConfirmations } from "@/db/schema";
 import { ensureConversation, sendOutboundMessage } from "@/lib/conversationOrchestration";
 import type { InteractiveButton } from "@/lib/whatsapp/send";
+import { classifyYesNoReply } from "@/lib/ai/conversationReplyIntent";
 
 // WhatsApp Interactive Reply Buttons — the ids echoed back on
 // message.interactive.button_reply.id (see the webhook route, which
@@ -509,7 +510,16 @@ export async function resolveConfirmationFromReply(conversationId: string, reply
   // something there was never a yes/no question about.
   if (open.kind === ("document_clarification" satisfies PendingConfirmationKind)) return null;
 
-  const intent = parseConfirmationReply(replyText);
+  let intent = parseConfirmationReply(replyText);
+  // Free-text understanding beyond a literal leading "כן"/"לא" — "זה של
+  // אשתי", "שלחתי בטעות", "תתעלמו מזה" never lead with a YES_WORDS/NO_WORDS
+  // token, so the deterministic check alone always left these "unclear."
+  // Only ever consulted once the deterministic check has already failed —
+  // never overrides a confident deterministic result. See
+  // classifyYesNoReply's own doc comment for why this still never guesses.
+  if (intent === "unclear") {
+    intent = await classifyYesNoReply(open.question, replyText);
+  }
   if (intent === "unclear") return null;
 
   return resolve(open.organizationId, open.id, intent === "yes", replyText);

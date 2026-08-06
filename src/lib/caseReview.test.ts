@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -23,6 +23,11 @@ vi.mock("@/lib/googleAuth/driveTokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/googleAuth/driveTokens")>("@/lib/googleAuth/driveTokens");
   return { ...actual, getValidAccessToken: (...args: unknown[]) => getValidAccessToken(...args) };
 });
+
+const classifyFollowUpIntent = vi.fn();
+vi.mock("@/lib/ai/conversationReplyIntent", () => ({
+  classifyFollowUpIntent: (...args: unknown[]) => classifyFollowUpIntent(...args),
+}));
 
 interface FakeFolder {
   id: string;
@@ -91,7 +96,9 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
-const { isFinishedSignal, runCaseReview, attemptFinishCollectionRequest } = await import("./caseReview");
+const { isFinishedSignal, runCaseReview, attemptFinishCollectionRequest, applyFollowUpPromiseIfAny } = await import(
+  "./caseReview"
+);
 const { createOrMergeIdentityAnomalyConfirmation } = await import("./documentIdentityVerification");
 
 beforeAll(async () => {
@@ -109,6 +116,8 @@ beforeEach(() => {
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
   sendInteractiveButtonsMessage.mockReset();
   sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
+  classifyFollowUpIntent.mockReset();
+  classifyFollowUpIntent.mockResolvedValue({ isFollowUpPromise: false, approxDelayMinutes: null });
 });
 
 describe("isFinishedSignal", () => {
@@ -347,5 +356,52 @@ describe("attemptFinishCollectionRequest", () => {
     });
 
     expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+});
+
+// Free-text "I'll send it later" understanding (src/lib/ai/conversationReplyIntent.ts)
+describe("applyFollowUpPromiseIfAny", () => {
+  it("recognizes a send-later promise, defers the conversation's next follow-up, and records an audit event", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest([]);
+    classifyFollowUpIntent.mockResolvedValueOnce({ isFollowUpPromise: true, approxDelayMinutes: 240 });
+
+    const before = Date.now();
+    const result = await applyFollowUpPromiseIfAny({
+      organizationId: orgId,
+      conversationId,
+      collectionRequestId: requestId,
+      clientId,
+      replyText: "אשלח בערב",
+    });
+    expect(result).toBe(true);
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.nextFollowUpAt).not.toBeNull();
+    const deltaMinutes = (conversation.nextFollowUpAt!.getTime() - before) / 60000;
+    expect(deltaMinutes).toBeGreaterThan(200);
+    expect(deltaMinutes).toBeLessThan(280);
+
+    const auditEvents = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(and(eq(schema.auditLogs.collectionRequestId, requestId), eq(schema.auditLogs.eventType, "conversation.follow_up_promised")));
+    expect(auditEvents).toHaveLength(1);
+  });
+
+  it("is a no-op for an ordinary message — never guesses a delay", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest([]);
+    classifyFollowUpIntent.mockResolvedValueOnce({ isFollowUpPromise: false, approxDelayMinutes: null });
+
+    const result = await applyFollowUpPromiseIfAny({
+      organizationId: orgId,
+      conversationId,
+      collectionRequestId: requestId,
+      clientId,
+      replyText: "תודה רבה",
+    });
+    expect(result).toBe(false);
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.nextFollowUpAt).toBeNull();
   });
 });
