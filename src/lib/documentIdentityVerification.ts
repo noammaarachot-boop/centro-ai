@@ -4,8 +4,13 @@ import { documents, organizations, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import type { DocumentClassification } from "@/lib/ai/documentClassifier";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
-import { createPendingConfirmation, type PendingConfirmationKind } from "@/lib/pendingConfirmations";
+import {
+  createPendingConfirmation,
+  flushDueIntakeNotifications,
+  type PendingConfirmationKind,
+} from "@/lib/pendingConfirmations";
 import { fileExtension, uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
+import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
 
 /**
  * Smart identity/consistency verification — a document can be exactly the
@@ -422,6 +427,16 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     } satisfies IdentityAnomalyPayload,
     question: buildAnomalyQuestion(params.anomaly, [params.documentType], params.clientName),
     notifyAfter: new Date(Date.now() + groupingWindowSeconds * 1000),
+  });
+
+  // The actual send trigger — see flushDueIntakeNotifications's own doc
+  // comment (pendingConfirmations.ts) for why the lazy "next document"
+  // check and the cron backstop alone were not enough. Scheduled only
+  // here, on the group's creation — a document that merges into this
+  // group later doesn't need its own timer, this one still covers it.
+  scheduleAfterResponse(async () => {
+    await new Promise((resolve) => setTimeout(resolve, groupingWindowSeconds * 1000));
+    await flushDueIntakeNotifications(params.organizationId, params.collectionRequestId);
   });
 }
 
