@@ -1,12 +1,14 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { collectionRequestRequirements, conversations, documents, pendingConfirmations } from "@/db/schema";
+import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
 import { createClarificationRequest, createUnsolicitedDocumentConfirmation } from "@/lib/documentIntakeReview";
 import { createOrMergeIdentityAnomalyConfirmation, type IdentityAnomaly } from "@/lib/documentIdentityVerification";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
+import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
 
 /**
  * "Centro checks the case, not the document" — a document classified as an
@@ -259,4 +261,42 @@ export async function attemptFinishCollectionRequest(params: {
     .where(eq(conversations.id, params.conversationId));
 
   return "completed";
+}
+
+// Free-text "I'll send it later" understanding — called only when the
+// client's message didn't resolve any open confirmation and wasn't a
+// "finished" signal (see the webhook route / simulateInboundMessage), so
+// this never competes with either. A real send-later promise
+// ("אשלח בערב") sets conversations.nextFollowUpAt, which
+// runScheduledTasks (scheduler.ts) checks before sending its stale-
+// conversation reminder — a reminder must never go out before a time the
+// client explicitly committed to. Returns whether a promise was actually
+// recognized, purely for the caller's own logging.
+export async function applyFollowUpPromiseIfAny(params: {
+  organizationId: string;
+  conversationId: string;
+  collectionRequestId: string;
+  clientId: string;
+  replyText: string;
+}): Promise<boolean> {
+  const { isFollowUpPromise, approxDelayMinutes } = await classifyFollowUpIntent(params.replyText);
+  if (!isFollowUpPromise || approxDelayMinutes === null) return false;
+
+  const db = await getDb();
+  const nextFollowUpAt = new Date(Date.now() + approxDelayMinutes * 60 * 1000);
+  await db
+    .update(conversations)
+    .set({ nextFollowUpAt })
+    .where(eq(conversations.id, params.conversationId));
+
+  await recordAuditEvent({
+    organizationId: params.organizationId,
+    eventType: "conversation.follow_up_promised",
+    description: "הלקוח ציין שישלח מסמכים נוספים בהמשך — התזכורת האוטומטית תידחה עד אז",
+    actorType: "client",
+    clientId: params.clientId,
+    collectionRequestId: params.collectionRequestId,
+    metadata: { approxDelayMinutes },
+  });
+  return true;
 }

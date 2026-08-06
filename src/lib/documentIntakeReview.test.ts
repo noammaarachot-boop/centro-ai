@@ -27,6 +27,11 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
+const classifyYesNoReply = vi.fn();
+vi.mock("@/lib/ai/conversationReplyIntent", () => ({
+  classifyYesNoReply: (...args: unknown[]) => classifyYesNoReply(...args),
+}));
+
 const getValidAccessToken = vi.fn();
 vi.mock("@/lib/googleAuth/driveTokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/googleAuth/driveTokens")>("@/lib/googleAuth/driveTokens");
@@ -110,6 +115,8 @@ beforeEach(() => {
   sendTextMessage.mockReset();
   sendTemplateMessage.mockReset();
   sendInteractiveButtonsMessage.mockReset();
+  classifyYesNoReply.mockReset();
+  classifyYesNoReply.mockResolvedValue("unclear");
 });
 
 // ---------------------------------------------------------------------------
@@ -472,6 +479,67 @@ describe("applyUnsolicitedConfirmationDecision", () => {
     expect(doc.status).toBe("unsolicited_rejected");
     expect(doc.pendingFileContent).toBeNull();
     expect(fakeFiles).toHaveLength(0);
+  });
+});
+
+// Free-text conversational understanding (src/lib/ai/conversationReplyIntent.ts)
+// — a natural-language reply that never leads with a literal "כן"/"לא"
+// ("זה של אשתי") must still actually affect the document's fate (never
+// uploaded to Drive), not just sit unresolved for a human.
+describe("resolveConfirmationFromReply — free-text AI fallback", () => {
+  it("a natural-language decline ('זה של אשתי') that never leads with a NO_WORD still resolves as declined and blocks the upload", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest();
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "תעודת זהות",
+    });
+    classifyYesNoReply.mockResolvedValueOnce("no");
+
+    const resolved = await resolveConfirmationFromReply(conversationId, "זה של אשתי");
+    expect(resolved).not.toBeNull();
+    expect(resolved!.status).toBe("declined");
+    expect(classifyYesNoReply).toHaveBeenCalledTimes(1);
+
+    await applyUnsolicitedConfirmationDecision({ ...resolved!, conversationId });
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.id, documentId));
+    expect(doc.status).toBe("unsolicited_rejected");
+    expect(fakeFiles).toHaveLength(0);
+  });
+
+  it("never guesses — a genuinely unclear AI result leaves the confirmation pending, exactly like before this feature existed", async () => {
+    const { clientId, requestId, conversationId, documentId, orgId } = await seedRequest();
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "תעודת זהות",
+    });
+    classifyYesNoReply.mockResolvedValueOnce("unclear");
+
+    const resolved = await resolveConfirmationFromReply(conversationId, "אולי");
+    expect(resolved).toBeNull();
+
+    const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(row.status).toBe("pending");
+  });
+
+  it("never even calls the AI fallback when the deterministic check already found a clear answer", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest();
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "תעודת זהות",
+    });
+
+    const resolved = await resolveConfirmationFromReply(conversationId, "כן");
+    expect(resolved!.status).toBe("confirmed");
+    expect(classifyYesNoReply).not.toHaveBeenCalled();
   });
 });
 

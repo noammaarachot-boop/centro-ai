@@ -17,7 +17,7 @@ import {
   applyUnsolicitedConfirmationDecision,
 } from "@/lib/documentIntakeReview";
 import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification";
-import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
+import { applyFollowUpPromiseIfAny, attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { recordInboundMessage } from "@/lib/conversationOrchestration";
 import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
 import { downloadMedia } from "@/lib/whatsapp/media";
@@ -370,6 +370,22 @@ async function handleInboundMessage(
           actorType: "client",
         });
         console.log("[wa-inbound] case review outcome", { collectionRequestId, outcome });
+      } else {
+        // Free-text "I'll send it later" understanding — only reached once
+        // nothing else claimed this message (no open confirmation, not a
+        // finished signal). A no-op for the overwhelming majority of
+        // ordinary messages; see applyFollowUpPromiseIfAny's own doc
+        // comment.
+        const promised = await applyFollowUpPromiseIfAny({
+          organizationId: organization.id,
+          conversationId: conversation.id,
+          collectionRequestId,
+          clientId: client.id,
+          replyText: body,
+        });
+        if (promised) {
+          console.log("[wa-inbound] follow-up promise recognized, reminder deferred", { collectionRequestId });
+        }
       }
     }
     }

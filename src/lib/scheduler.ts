@@ -124,6 +124,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         id: conversations.id,
         collectionRequestId: conversations.collectionRequestId,
         updatedAt: conversations.updatedAt,
+        nextFollowUpAt: conversations.nextFollowUpAt,
         service: services,
       })
       .from(conversations)
@@ -149,6 +150,22 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         Date.now() - reminderIntervalDays * 24 * 60 * 60 * 1000
       );
       if (conversation.updatedAt >= reminderCutoff) continue;
+
+      // Free-text "I'll send it later" understanding
+      // (src/lib/ai/conversationReplyIntent.ts) — the client explicitly
+      // committed to a later time; a reminder must never go out before
+      // then. Still due once that time has passed — cleared here so it
+      // never holds a reminder back forever if the client doesn't follow
+      // up after all.
+      if (conversation.nextFollowUpAt && conversation.nextFollowUpAt > new Date()) {
+        continue;
+      }
+      if (conversation.nextFollowUpAt) {
+        await db
+          .update(conversations)
+          .set({ nextFollowUpAt: null })
+          .where(eq(conversations.id, conversation.id));
+      }
 
       const { sent } = await sendOutboundMessage(
         organization.id,
