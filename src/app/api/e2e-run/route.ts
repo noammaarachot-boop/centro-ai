@@ -174,7 +174,11 @@ export async function POST(request: Request) {
 
       case "create_request": {
         const requirementNames = (body.requirementNames as string[] | undefined) ?? ["מסמך בדיקה"];
-        const requiredCounts = (body.requiredCounts as number[] | undefined) ?? [];
+        // Real semantic parsing (real AI call) per requirement, exactly the
+        // same as the office-user-facing "add requirement" flow — never a
+        // raw name-only row, so this genuinely exercises the semantic
+        // requirement engine too, not just a hand-set requiredCount.
+        const { parseRequirementSemantics } = await import("@/lib/ai/requirementSemantics");
         const [org] = await db.select().from(organizations).where(eq(organizations.id, testClient!.organizationId));
         let [service] = await db.select().from(services).where(eq(services.organizationId, org.id)).limit(1);
         if (!service) {
@@ -190,15 +194,22 @@ export async function POST(request: Request) {
             status: "active",
           })
           .returning();
-        for (let i = 0; i < requirementNames.length; i++) {
-          await db.insert(collectionRequestRequirements).values({
-            collectionRequestId: newRequest.id,
-            name: requirementNames[i],
-            requiredCount: requiredCounts[i] ?? 1,
-          });
+        const parsedSpecs = [];
+        for (const name of requirementNames) {
+          const spec = await parseRequirementSemantics(name);
+          const [row] = await db
+            .insert(collectionRequestRequirements)
+            .values({
+              collectionRequestId: newRequest.id,
+              name,
+              requiredCount: spec.requiredCount,
+              semanticSpec: spec,
+            })
+            .returning();
+          parsedSpecs.push({ requirementId: row.id, name, spec });
         }
         const { conversation, sent } = await startConversation(org.id, newRequest.id, testClient!.id, "manual");
-        return NextResponse.json({ ok: true, requestId: newRequest.id, conversationId: conversation.id, initialMessageSent: sent });
+        return NextResponse.json({ ok: true, requestId: newRequest.id, conversationId: conversation.id, initialMessageSent: sent, parsedSpecs });
       }
 
       case "set_deferred_reminder_at": {
