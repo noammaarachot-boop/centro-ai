@@ -63,12 +63,29 @@ export interface ResolvedDeferral {
   // The real UTC instant to check/send at — already resolved to a
   // business-hours-open moment (preferring the start of that day).
   date: Date;
-  // A short Hebrew label for the resolved calendar date, e.g. "8 באוגוסט".
+  // A short Hebrew label for the calendar date the client's phrase itself
+  // refers to (e.g. "8 באוגוסט") — this is the date as literally named,
+  // even when it falls on a closed day; kept for audit/debugging context
+  // about what was understood.
   dateLabel: string;
+  // A short Hebrew label for the date `date` actually falls on (i.e.
+  // dateLabel rolled forward to the next business opening, when needed).
+  // Use this whenever telling the client when the reminder will really
+  // arrive — using dateLabel there for a rolled case names a closed day
+  // as if the reminder goes out then, which is simply wrong.
+  finalDateLabel: string;
   // Human-readable explanation of what was understood and why, stored as
-  // the deferral's own "reason" and used to build the client-facing
-  // confirmation.
+  // the deferral's own "reason" (DB audit trail) — kept verbose/technical.
   humanPhrase: string;
+  // Just the relative-concept part of humanPhrase with no date attached
+  // (e.g. "מחר", "בשבוע הבא"), or null when the hint itself was already a
+  // specific day (explicit date / named weekday) with no separate concept
+  // to name. Used to build the short, natural client-facing confirmation.
+  conceptPhrase: string | null;
+  // Hebrew weekday label (e.g. "יום שישי", or "שבת") for the date `date`
+  // actually falls on — for the client-facing confirmation, always paired
+  // with finalDateLabel rather than dateLabel, for the same reason.
+  finalWeekdayLabel: string;
   rolledToNextBusinessDay: boolean;
 }
 
@@ -84,6 +101,7 @@ export function resolveDeferralDate(
   const nowParts = zonedDateParts(now, businessHours.timezone);
   let target: { year: number; month: number; day: number };
   let humanPhrase: string;
+  let conceptPhrase: string | null;
 
   if (hint.explicitDay !== null && hint.explicitMonth !== null) {
     let year = hint.explicitYear;
@@ -94,26 +112,31 @@ export function resolveDeferralDate(
     }
     target = { year, month: hint.explicitMonth, day: hint.explicitDay };
     humanPhrase = `בתאריך ${formatHebrewDateLabel(target.year, target.month, target.day)}`;
+    conceptPhrase = null;
   } else if (hint.weekday !== null) {
     const targetWeekday = HEBREW_WEEKDAY_INDEX[hint.weekday];
     let daysAhead = (targetWeekday - nowParts.weekday + 7) % 7;
     if (daysAhead === 0) daysAhead = 7; // naming today's own weekday means next week's occurrence
     target = addDaysUtc(nowParts.year, nowParts.month, nowParts.day, daysAhead);
     humanPhrase = HEBREW_WEEKDAY_LABEL[targetWeekday];
+    conceptPhrase = null;
   } else if (hint.relativeDays !== null) {
     target = addDaysUtc(nowParts.year, nowParts.month, nowParts.day, hint.relativeDays);
     const rel = hint.relativeDays === 1 ? "מחר" : hint.relativeDays === 2 ? "מחרתיים" : `בעוד ${hint.relativeDays} ימים`;
     humanPhrase = `${rel}, בתאריך ${formatHebrewDateLabel(target.year, target.month, target.day)}`;
+    conceptPhrase = rel;
   } else if (hint.relativeWeeks !== null) {
     target = addDaysUtc(nowParts.year, nowParts.month, nowParts.day, hint.relativeWeeks * 7);
     const rel = hint.relativeWeeks === 1 ? "בשבוע הבא" : `בעוד ${hint.relativeWeeks} שבועות`;
     humanPhrase = `${rel}, בתאריך ${formatHebrewDateLabel(target.year, target.month, target.day)}`;
+    conceptPhrase = rel;
   } else if (hint.namedPeriod !== null) {
     if (hint.namedPeriod === "start_of_next_week") {
       let daysAhead = (0 - nowParts.weekday + 7) % 7;
       if (daysAhead === 0) daysAhead = 7;
       target = addDaysUtc(nowParts.year, nowParts.month, nowParts.day, daysAhead);
       humanPhrase = `בתחילת השבוע הבא, בתאריך ${formatHebrewDateLabel(target.year, target.month, target.day)}`;
+      conceptPhrase = "בתחילת השבוע הבא";
     } else if (hint.namedPeriod === "end_of_week") {
       const allowedDays = businessHours.businessDays.split(",").map((d) => Number(d.trim()));
       const maxAllowedThisWeek = Math.max(...allowedDays);
@@ -121,15 +144,18 @@ export function resolveDeferralDate(
       if (daysAhead <= 0) daysAhead += 7;
       target = addDaysUtc(nowParts.year, nowParts.month, nowParts.day, daysAhead);
       humanPhrase = `בסוף השבוע, בתאריך ${formatHebrewDateLabel(target.year, target.month, target.day)}`;
+      conceptPhrase = "בסוף השבוע";
     } else if (hint.namedPeriod === "start_of_month") {
       const month = nowParts.month === 12 ? 1 : nowParts.month + 1;
       const year = nowParts.month === 12 ? nowParts.year + 1 : nowParts.year;
       target = { year, month, day: 1 };
       humanPhrase = `בתחילת החודש הבא, בתאריך ${formatHebrewDateLabel(target.year, target.month, target.day)}`;
+      conceptPhrase = "בתחילת החודש הבא";
     } else {
       const lastDay = new Date(Date.UTC(nowParts.year, nowParts.month, 0)).getUTCDate();
       target = { year: nowParts.year, month: nowParts.month, day: lastDay };
       humanPhrase = `בסוף החודש, בתאריך ${formatHebrewDateLabel(target.year, target.month, target.day)}`;
+      conceptPhrase = "בסוף החודש";
     }
   } else {
     return null;
@@ -139,18 +165,33 @@ export function resolveDeferralDate(
   const naiveTarget = zonedWallTimeToUtc(target.year, target.month, target.day, startHour, startMinute, businessHours.timezone);
   const rolledToNextBusinessDay = !isWithinBusinessHours(businessHours, naiveTarget);
   const finalDate = rolledToNextBusinessDay ? nextBusinessOpenTime(businessHours, naiveTarget) : naiveTarget;
+  const finalParts = zonedDateParts(finalDate, businessHours.timezone);
 
   return {
     date: finalDate,
     dateLabel: formatHebrewDateLabel(target.year, target.month, target.day),
+    finalDateLabel: formatHebrewDateLabel(finalParts.year, finalParts.month, finalParts.day),
     humanPhrase,
+    conceptPhrase,
+    finalWeekdayLabel: HEBREW_WEEKDAY_LABEL[finalParts.weekday],
     rolledToNextBusinessDay,
   };
 }
 
+// Short weekday label with the leading "יום " stripped (e.g. "יום שישי" ->
+// "שישי"; "שבת" stays "שבת") — used only in the rolled-forward sentence,
+// where "יום" already appears once in "יום העבודה הקרוב" and repeating it
+// right after reads awkwardly.
+function shortWeekdayLabel(weekdayLabel: string): string {
+  return weekdayLabel.startsWith("יום ") ? weekdayLabel.slice(4) : weekdayLabel;
+}
+
 export function buildDeferralConfirmationMessage(resolved: ResolvedDeferral): string {
-  const rolledNote = resolved.rolledToNextBusinessDay ? " (המשרד סגור באותו יום, אז זו ההזדמנות הקרובה ביותר)" : "";
-  return `בסדר, אשלח לך תזכורת ${resolved.humanPhrase}${rolledNote} 😊`;
+  if (resolved.rolledToNextBusinessDay) {
+    return `בשמחה 😊 המשרד לא פעיל ביום הזה, אז אשלח לך תזכורת ביום העבודה הקרוב, ${shortWeekdayLabel(resolved.finalWeekdayLabel)} ${resolved.finalDateLabel}.`;
+  }
+  const prefix = resolved.conceptPhrase ? `${resolved.conceptPhrase}, ` : "";
+  return `בסדר, אשלח לך תזכורת ${prefix}ב${resolved.finalWeekdayLabel} ${resolved.finalDateLabel} 😊`;
 }
 
 async function getOrgBusinessHoursConfig(organizationId: string): Promise<BusinessHoursConfig> {
@@ -256,7 +297,7 @@ export async function applyDeferralIfAny(params: {
   await recordAuditEvent({
     organizationId: params.organizationId,
     eventType: "conversation.reminder_deferred",
-    description: `הלקוח התחייב לשלוח מסמכים במועד עתידי — תזכורות הושהו עד ${resolved.dateLabel}`,
+    description: `הלקוח התחייב לשלוח מסמכים במועד עתידי — תזכורות הושהו עד ${resolved.finalDateLabel}`,
     actorType: "client",
     clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,
