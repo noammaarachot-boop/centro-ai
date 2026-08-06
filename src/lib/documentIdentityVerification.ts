@@ -294,34 +294,41 @@ function joinHebrewList(items: string[]): string {
   return `${items.slice(0, -1).join(", ")} ו${items[items.length - 1]}`;
 }
 
-// Tailored wording per anomaly kind/confidence — never a generic "something
-// doesn't match" message, and never just a bare count when the actual
-// document types are known ("תעודת זהות ודרכון", not "2 מסמכים"). Only the
-// descriptive statement — numbered yes/no options are appended later, once
-// this group's final position in a (possibly combined, possibly solo)
-// outbound message is decided by flushDueIntakeNotifications
-// (pendingConfirmations.ts).
-function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<string | null>, clientName: string): string {
+// Short, warm, human wording — never a formal/technical restatement of the
+// request, never explains itself twice. Only the descriptive statement —
+// numbered yes/no options are appended later, once this group's final
+// position in a (possibly combined, possibly solo) outbound message is
+// decided by flushDueIntakeNotifications (pendingConfirmations.ts).
+//
+// The name/company shown is always exactly what was extracted from the
+// document itself (anomaly.conflictingName, sourced from the vision
+// model's own extractedPersonName/extractedCompanyName — see
+// detectIdentityAnomaly) — never a hardcoded or example name. When
+// extraction wasn't confident enough to name anyone (anomaly.confident is
+// false), the wording stays deliberately generic rather than guess at a
+// name — see detectIdentityAnomaly's own confidence bands.
+function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<string | null>): string {
   const count = documentTypes.length;
   const plural = count > 1;
   const knownTypes = documentTypes.filter((t): t is string => !!t);
-  const subject = knownTypes.length === count ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
+  const typeLabel = knownTypes.length === count ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
+  const askLine = plural ? "האם שלחת אותם בכוונה?" : "האם שלחת אותו בכוונה?";
 
-  let statement: string;
   if (anomaly.kind === "id_mismatch") {
-    statement = `קיבלנו ${subject}, אך מספר תעודת הזהות שמופיע ב${plural ? "הם" : "ו"} שונה מהמסמכים הקודמים שהתקבלו בבקשה הזאת (מסתיים ב-${anomaly.maskedIdNumber}).`;
-  } else if (anomaly.kind === "name_mismatch") {
-    statement = anomaly.confident
-      ? `קיבלנו ${subject} על שם ${anomaly.conflictingName}, בעוד שהבקשה היא עבור ${clientName}.`
-      : `לא הצלחנו לוודא בבירור למי שייכ${plural ? "ים" : ""} ${subject} ששלחת.`;
-  } else {
-    statement = anomaly.confident
-      ? `קיבלנו ${subject}, ${plural ? "ששייכים" : "ששייך"} ככל הנראה לחברה אחרת (${anomaly.conflictingName}).`
-      : `לא הצלחנו לוודא בבירור לאיזו חברה ${plural ? "שייכים" : "שייך"} ${subject} ששלחת.`;
+    return `📄 ${typeLabel}\nמספר תעודת הזהות (מסתיים ב-${anomaly.maskedIdNumber}) שונה מהמסמכים הקודמים שקיבלתי.\n\n${askLine}`;
   }
 
-  const question = plural ? "האם המסמכים נשלחו בכוונה?" : "האם שלחת אותו בכוונה?";
-  return `${statement}\n${question}`;
+  if (!anomaly.confident) {
+    return plural
+      ? `מצאתי מסמכים שנראה שהם שייכים לאדם אחר.\n${askLine}`
+      : `מצאתי מסמך שנראה שהוא שייך לאדם אחר.\n${askLine}`;
+  }
+
+  if (anomaly.kind === "company_mismatch") {
+    return `📄 ${typeLabel}\n${plural ? "נראה ששייכים" : "נראה ששייך"} לחברה אחרת (${anomaly.conflictingName}).\n\n${askLine}`;
+  }
+
+  return `📄 ${typeLabel}\n${plural ? "המסמכים הם" : "המסמך הוא"} על שם ${anomaly.conflictingName}.\n\n${askLine}`;
 }
 
 // Groups documents that share the same underlying anomaly into one signature
@@ -361,7 +368,6 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
   organizationId: string;
   clientId: string;
   collectionRequestId: string;
-  clientName: string;
   documentId: string;
   anomaly: IdentityAnomaly;
   documentType: string | null;
@@ -394,8 +400,7 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
         payload: { ...payload, documents: documentsInGroup } satisfies IdentityAnomalyPayload,
         question: buildAnomalyQuestion(
           params.anomaly,
-          documentsInGroup.map((d) => d.documentType),
-          params.clientName
+          documentsInGroup.map((d) => d.documentType)
         ),
       })
       .where(eq(pendingConfirmations.id, existing.id));
@@ -425,7 +430,7 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
       documents: [{ id: params.documentId, documentType: params.documentType }],
       anomaly: params.anomaly,
     } satisfies IdentityAnomalyPayload,
-    question: buildAnomalyQuestion(params.anomaly, [params.documentType], params.clientName),
+    question: buildAnomalyQuestion(params.anomaly, [params.documentType]),
     notifyAfter: new Date(Date.now() + groupingWindowSeconds * 1000),
   });
 
@@ -544,7 +549,7 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
   await sendOutboundMessage(
     resolved.organizationId,
     resolved.conversationId,
-    documentsInGroup.length > 1 ? "תודה, שמרנו את המסמכים בתיקייה שלך." : "תודה, שמרנו את המסמך בתיקייה שלך.",
+    documentsInGroup.length > 1 ? "תודה! שמרתי את המסמכים אצלך." : "תודה! שמרתי את המסמך אצלך.",
     "ai",
     "manual",
     undefined,

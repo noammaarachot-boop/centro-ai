@@ -397,6 +397,32 @@ describe("createUnsolicitedDocumentConfirmation / createClarificationRequest", (
   });
 });
 
+// UX rewrite: short, warm, human wording — no formal/legal phrasing, no
+// repeating the same fact twice, and the document type shown is always
+// whatever the AI actually identified (never a hardcoded example type).
+describe("unsolicited-document question wording", () => {
+  it("is short and free of formal phrasing, using the real identified document type", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest();
+    // Deliberately not "חשבונית" (used everywhere else in this file) —
+    // proves the type comes from the call's own documentType argument
+    // (itself sourced from the AI's own classification), never a
+    // hardcoded literal in the wording function.
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "אישור ניהול חשבון",
+    });
+
+    const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(row.question).toContain("אישור ניהול חשבון");
+    expect(row.question).not.toContain("זיהינו ש");
+    expect(row.question).not.toContain("ברשימת המסמכים שהתבקשת לשלוח");
+    expect(row.question.length).toBeLessThan(100);
+  });
+});
+
 describe("applyUnsolicitedConfirmationDecision", () => {
   it("client confirms intentional — uploads to the existing client folder, names the file by the identified type, never a duplicate folder", async () => {
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest();

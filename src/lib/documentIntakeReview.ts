@@ -101,15 +101,16 @@ async function getConfirmationReminderConfig(
   };
 }
 
-// Smart notification grouping (Ch.6 fix): several unsolicited documents of
-// the exact same type arriving in a short burst (e.g. two invoices) must
-// read as one question, not one per file. count=1 keeps the original
-// single-document wording verbatim.
+// Smart notification grouping: several unsolicited documents of the exact
+// same type arriving in a short burst (e.g. two invoices) must read as one
+// short question, not one per file. Short, warm wording — no legal/formal
+// phrasing, no restating the original request. documentType is always
+// whatever the AI actually identified the document as (never hardcoded).
 function buildUnsolicitedQuestion(documentType: string, count: number): string {
   if (count === 1) {
-    return `זיהינו ששלחת מסמך מסוג ${documentType}, אך מסמך זה לא נכלל כרגע ברשימת המסמכים שהתבקשת לשלוח.\nהאם שלחת אותו בכוונה?`;
+    return `📄 ${documentType}\nלא היה חלק מהמסמכים שביקשתי.\n\nהאם שלחת אותו בכוונה?`;
   }
-  return `זיהינו ש-${count} מהמסמכים ששלחת הם מסוג ${documentType}, אך הם אינם נכללים כרגע ברשימת המסמכים שהתבקשת לשלוח.\nהאם שלחת אותם בכוונה?`;
+  return `📄 ${count} מסמכים מסוג ${documentType}\nלא היו חלק מהמסמכים שביקשתי.\n\nהאם שלחת אותם בכוונה?`;
 }
 
 // Case 2 (unsolicited): "did you mean to send this?" — a yes/no question,
@@ -207,7 +208,7 @@ export async function createClarificationRequest(params: {
   documentId: string;
 }): Promise<void> {
   const { reminderIntervalDays } = await getConfirmationReminderConfig(params.organizationId);
-  const question = "לא הצלחנו לזהות בוודאות את המסמך ששלחת. אנא כתוב איזה מסמך זה או שלח צילום ברור יותר.";
+  const question = "לא הצלחתי לזהות את המסמך שקיבלתי 🤔\nאיזה מסמך זה? אפשר גם לשלוח צילום ברור יותר.";
 
   console.log("[document-intake] pending confirmation created (document_clarification)", {
     organizationId: params.organizationId,
@@ -348,7 +349,7 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
   await sendOutboundMessage(
     resolved.organizationId,
     resolved.conversationId,
-    documentIds.length > 1 ? "תודה, שמרנו את המסמכים בתיקייה שלך." : `תודה, שמרנו את המסמך "${documentType}" בתיקייה שלך.`,
+    documentIds.length > 1 ? "תודה! שמרתי את המסמכים אצלך." : "תודה! שמרתי את המסמך אצלך.",
     "ai",
     "manual",
     undefined,
@@ -432,7 +433,7 @@ export async function applyClarificationReply(resolved: ResolvedConfirmationRow,
     await sendOutboundMessage(
       resolved.organizationId,
       resolved.conversationId,
-      `תודה על ההבהרה! שמרנו את המסמך כ"${matchedRequirement.name}".`,
+      `תודה על ההבהרה! שמרתי את זה כ${matchedRequirement.name}.`,
       "ai",
       "manual",
       undefined,
@@ -539,8 +540,8 @@ export async function sendConfirmationRemindersAndEscalate(
     // open-ended and was never given options to begin with.
     const resendBody =
       row.kind === ("document_clarification" satisfies PendingConfirmationKind)
-        ? `תזכורת: ${row.question}`
-        : `תזכורת: ${formatQuestionWithOptions(row.question, row.groupIndex)}`;
+        ? `רק תזכורת קטנה 🙂\n${row.question}`
+        : `רק תזכורת קטנה 🙂\n${formatQuestionWithOptions(row.question, row.groupIndex)}`;
     const { sent } = await sendOutboundMessage(
       organizationId,
       row.conversationId,

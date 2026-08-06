@@ -253,11 +253,11 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     expect(body).toContain("דרכון");
     expect(body).toContain("ישראל ישראלי");
     expect(body).toContain("חשבונית");
-    // Numbered sections with independent yes/no options.
-    expect(body).toContain("1.");
-    expect(body).toContain("2.");
-    expect(body).toContain("3.");
-    expect(body).toContain("4.");
+    // Numbered sections with independent yes/no options (keycap emoji).
+    expect(body).toContain("1️⃣");
+    expect(body).toContain("2️⃣");
+    expect(body).toContain("3️⃣");
+    expect(body).toContain("4️⃣");
   });
 
   it("confirming one group and declining the other applies independently, each with its own audit trail, and only the confirmed group is uploaded", async () => {
@@ -383,5 +383,72 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     expect(secondReply).not.toBeNull();
     expect(secondReply!.kind).toBe("unsolicited_document");
     expect(secondReply!.status).toBe("declined");
+  });
+});
+
+// Regression: a real production incident where the client received the
+// exact same combined message twice. Root cause, confirmed from
+// production logs: two independent triggers (two scheduleAfterResponse
+// timers, from two groups created moments apart) both called
+// flushDueIntakeNotifications for the same request within ~100ms of each
+// other; the old implementation read the still-unnotified rows, sent, and
+// only *then* marked them notified — leaving a window where a second,
+// concurrent call could read the exact same unnotified rows before the
+// first call's update landed, and send the same message again.
+describe("flushDueIntakeNotifications never sends the same combined message twice", () => {
+  it("two concurrent flush calls for the same request only ever result in one real send", async () => {
+    const { orgId, clientId, requestId, conversationId, idReqId } = await seedRequest();
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.98,
+      matchedRequirementId: idReqId,
+      matchConfidence: 0.98,
+      extractedPersonName: "ישראל ישראלי",
+      extractedIdNumber: "111111118",
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("id-bytes"), "image/jpeg", "wamid.race.1");
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חשבונית מס",
+      identificationConfidence: 0.9,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+      extractedPersonName: null,
+      extractedIdNumber: null,
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "invoice1.pdf", null, Buffer.from("invoice1-bytes"), "application/pdf", "wamid.race.2");
+
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ notifyAfter: new Date(Date.now() - 1000) })
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+
+    // Two flush calls racing for the exact same request, exactly as
+    // happened in production (two separate scheduleAfterResponse timers
+    // firing moments apart). Only one may actually claim and send.
+    const [resultA, resultB] = await Promise.all([
+      flushDueIntakeNotifications(orgId, requestId),
+      flushDueIntakeNotifications(orgId, requestId),
+    ]);
+    const results = [resultA, resultB];
+    expect(results.filter((r) => r.sent)).toHaveLength(1);
+    expect(results.filter((r) => !r.sent)).toHaveLength(1);
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messages).toHaveLength(1);
+
+    // A third call (e.g. the cron backstop, later) finds nothing left to
+    // do — everything is already notified.
+    const resultC = await flushDueIntakeNotifications(orgId, requestId);
+    expect(resultC).toEqual({ sent: false, groupCount: 0 });
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
   });
 });
