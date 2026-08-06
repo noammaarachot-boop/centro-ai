@@ -188,16 +188,30 @@ export interface FlushResult {
   groupCount: number;
 }
 
-// The other half of smart notification grouping: called after any new
-// batched row might have been created/merged on a collection request
-// (processInboundAttachment) and once per organization per cron tick
-// (scheduler.ts) — a no-op unless at least one still-unnotified batched row
-// on this request has actually crossed its notifyAfter deadline. When one
-// has, EVERY still-unnotified batched row on the request is sent together
-// in one message, not just the row that became due — a second anomaly that
-// arrived a few seconds after the first, still well within its own window,
-// is folded into the same send rather than triggering a second message
-// moments later.
+// The other half of smart notification grouping — a no-op unless at least
+// one still-unnotified batched row on this request has actually crossed
+// its notifyAfter deadline. When one has, EVERY still-unnotified batched
+// row on the request is sent together in one message, not just the row
+// that became due — a second anomaly that arrived a few seconds after the
+// first, still well within its own window, is folded into the same send
+// rather than triggering a second message moments later.
+//
+// Called from three places, in decreasing order of how much they're
+// actually relied on:
+//   1. scheduleAfterResponse (documentIntakeReview.ts /
+//      documentIdentityVerification.ts), on the group's own creation —
+//      the *real* trigger: sleeps for the grouping window, in the
+//      background, then flushes. This is what actually delivers the
+//      message; production once shipped without it (relying only on #2/#3
+//      below) and a burst with nothing arriving after it was never
+//      flushed at all — a full outage, not just a delay.
+//   2. processInboundAttachment, lazily, before handling any new document
+//      on the same request — catches a batch the moment further activity
+//      touches the request, in case #1 was somehow lost (a cold start
+//      eviction, a redeploy mid-wait).
+//   3. The cron pass (flushDueIntakeNotificationsForOrganization,
+//      scheduler.ts) — the last-resort backstop, bounded only by how
+//      often the external scheduler actually calls /api/cron/tick.
 export async function flushDueIntakeNotifications(
   organizationId: string,
   collectionRequestId: string

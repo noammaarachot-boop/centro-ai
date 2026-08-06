@@ -22,6 +22,18 @@ import { toE164 } from "@/lib/whatsapp/phone";
 import { verifyWebhookSignature } from "@/lib/whatsapp/webhookSignature";
 
 export const dynamic = "force-dynamic";
+// Smart notification grouping (pendingConfirmations.ts's
+// flushDueIntakeNotifications) schedules a background wait — via
+// scheduleAfterResponse/Next's after() — for the organization's grouping
+// window (organizations.documentGroupingWindowSeconds, default 15s) before
+// actually sending a batched confirmation question. after() only runs for
+// as long as this route's own maxDuration allows; the platform default
+// (10s on Vercel's Hobby tier) is shorter than the default grouping
+// window, so without this the background flush would be killed before it
+// ever sends. 30s comfortably covers the default window plus normal
+// classification/upload work, and is well within every Vercel plan's
+// maxDuration ceiling.
+export const maxDuration = 30;
 
 const MIME_EXTENSIONS: Record<string, string> = {
   "application/pdf": "pdf",
