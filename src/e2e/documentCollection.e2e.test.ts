@@ -1,0 +1,924 @@
+import { createHmac } from "node:crypto";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
+import * as schema from "@/db/schema";
+import type { Database } from "@/db";
+import { makeTestDocument, type TestDocument } from "./fixtures";
+
+/**
+ * Document-collection engine — comprehensive, re-runnable, end-to-end
+ * suite. Unlike the unit/integration tests scattered across src/lib/**,
+ * every scenario here goes through the REAL exported webhook POST handler
+ * (src/app/api/webhooks/whatsapp/route.ts), including REAL HMAC-SHA256
+ * signature verification against a test app secret — this is the same
+ * code path a genuine Meta webhook delivery hits in production, not an
+ * internal function called directly.
+ *
+ * What's real: every business-logic module (classification routing,
+ * requirement satisfaction, identity checks, case review, completion,
+ * extension, deferral, PDF merging, audit trail) runs unmocked, against a
+ * real Postgres-compatible database (PGlite).
+ *
+ * What's simulated (and exactly why): the three genuinely external
+ * boundaries this process cannot reach from an automated test run —
+ *   1. Meta's real Graph API (no real WHATSAPP_SYSTEM_USER_TOKEN exists in
+ *      this environment; see the session's final report for confirmation
+ *      this was verified, not assumed) — sendTextMessage/sendTemplateMessage/
+ *      sendInteractiveButtonsMessage and downloadMedia are mocked at their
+ *      own module boundary, with every call still recorded and asserted on.
+ *   2. Google Drive's real API (same reasoning — no real Drive access
+ *      token available here) — mocked with a realistic in-memory
+ *      filesystem model (folders, files, real content bytes, real merged
+ *      PDFs via the actual pdf-lib code path) so folder-structure and
+ *      file-content assertions are still meaningful, not just "was called."
+ *   3. The AI model provider — mocked via generateObject, with each
+ *      scenario declaring the exact classification result a real model
+ *      would very plausibly return for that message, in the same style
+ *      every other test in this codebase already uses.
+ *
+ * Every "document" sent in these scenarios is a synthetic fixture (see
+ * ./fixtures.ts), clearly labeled "מסמך בדיקה בלבד — לא מסמך אמיתי".
+ */
+
+let db: Database;
+vi.mock("@/db", () => ({ getDb: async () => db }));
+
+const TEST_APP_SECRET = "e2e-test-app-secret-not-real";
+vi.mock("@/lib/whatsapp/config", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/whatsapp/config")>("@/lib/whatsapp/config");
+  return {
+    ...actual,
+    getWhatsAppConfig: () => ({
+      appId: "e2e-test-app-id",
+      appSecret: TEST_APP_SECRET,
+      systemUserToken: "e2e-test-system-user-token",
+      oauthRedirectUri: null,
+      webhookVerifyToken: "e2e-test-verify-token",
+    }),
+  };
+});
+
+// ---- WhatsApp send/media boundary -----------------------------------
+const sentMessages: Array<{ kind: "text" | "template" | "interactive"; to: string; body: string; extra?: unknown }> = [];
+const sendTextMessage = vi.fn(async (_phoneNumberId: string, to: string, body: string) => {
+  sentMessages.push({ kind: "text", to, body });
+  console.log("[e2e] outbound text", { to: to.slice(-4), body });
+  return { messageId: `wamid.out.${sentMessages.length}` };
+});
+const sendTemplateMessage = vi.fn(async (_phoneNumberId: string, to: string, templateName: string, _lang: string, params?: unknown) => {
+  sentMessages.push({ kind: "template", to, body: templateName, extra: params });
+  console.log("[e2e] outbound template", { to: to.slice(-4), templateName, params });
+  return { messageId: `wamid.out.${sentMessages.length}` };
+});
+const sendInteractiveButtonsMessage = vi.fn(async (_phoneNumberId: string, to: string, bodyText: string, buttons: unknown) => {
+  sentMessages.push({ kind: "interactive", to, body: bodyText, extra: buttons });
+  console.log("[e2e] outbound interactive", { to: to.slice(-4), bodyText });
+  return { messageId: `wamid.out.${sentMessages.length}` };
+});
+vi.mock("@/lib/whatsapp/send", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
+  return {
+    ...actual,
+    sendTextMessage: (...args: Parameters<typeof sendTextMessage>) => sendTextMessage(...args),
+    sendTemplateMessage: (...args: Parameters<typeof sendTemplateMessage>) => sendTemplateMessage(...args),
+    sendInteractiveButtonsMessage: (...args: Parameters<typeof sendInteractiveButtonsMessage>) => sendInteractiveButtonsMessage(...args),
+  };
+});
+
+const mediaByWamid = new Map<string, { bytes: Buffer; mimeType: string }>();
+vi.mock("@/lib/whatsapp/media", () => ({
+  downloadMedia: async (mediaId: string) => {
+    const found = mediaByWamid.get(mediaId);
+    if (!found) throw new Error(`[e2e] no fixture registered for media id ${mediaId}`);
+    console.log("[e2e] downloadMedia", { mediaId, byteLength: found.bytes.length, mimeType: found.mimeType });
+    return found;
+  },
+}));
+
+// ---- Google Drive boundary (realistic in-memory filesystem) ---------
+interface FakeFolder {
+  id: string;
+  name: string;
+  parentId: string;
+  properties?: Record<string, string>;
+  trashed?: boolean;
+}
+interface FakeFile {
+  id: string;
+  name: string;
+  parentId: string;
+  content?: Buffer;
+  mimeType?: string;
+}
+let fakeFolders: FakeFolder[] = [];
+let fakeFiles: FakeFile[] = [];
+let nextDriveId = 1;
+// Deliberately NEVER reset in beforeEach (unlike nextDriveId, which is
+// purely cosmetic for readable fake Drive ids) — the PGlite instance is
+// shared across every test in this file (beforeAll, not beforeEach), so
+// each seeded organization needs a genuinely unique whatsappPhoneNumberId
+// or two journeys' webhook traffic can resolve to the wrong organization
+// entirely (a real bug this fixture bug would otherwise mask, not surface).
+let nextOrgSeq = 1;
+
+vi.mock("@/lib/googleAuth/driveTokens", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/googleAuth/driveTokens")>("@/lib/googleAuth/driveTokens");
+  return { ...actual, getValidAccessToken: async () => "e2e-fake-drive-token" };
+});
+
+vi.mock("@/lib/googleAuth/drive", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/googleAuth/drive")>("@/lib/googleAuth/drive");
+  return {
+    ...actual,
+    createDriveFolder: vi.fn(async (_t: string, name: string, parentId?: string, properties?: Record<string, string>) => {
+      const id = `folder-${nextDriveId++}`;
+      fakeFolders.push({ id, name, parentId: parentId ?? "", properties });
+      console.log("[e2e] Drive createFolder", { id, name, parentId });
+      return { id, name };
+    }),
+    findFoldersByName: vi.fn(async (_t: string, parentId: string, name: string) =>
+      fakeFolders.filter((f) => f.parentId === parentId && f.name === name && !f.trashed).map((f) => ({ id: f.id, name: f.name }))
+    ),
+    findFolderByClientProperty: vi.fn(async (_t: string, parentId: string, clientId: string) => {
+      const found = fakeFolders.find((f) => f.parentId === parentId && !f.trashed && f.properties?.centroClientId === clientId);
+      return found ? { id: found.id, name: found.name } : null;
+    }),
+    setFolderClientProperty: vi.fn(async (_t: string, folderId: string, clientId: string) => {
+      const folder = fakeFolders.find((f) => f.id === folderId);
+      if (folder) folder.properties = { ...folder.properties, centroClientId: clientId };
+    }),
+    listFolderFiles: vi.fn(async (_t: string, folderId: string) =>
+      fakeFiles.filter((f) => f.parentId === folderId).map((f) => ({ id: f.id, name: f.name, webViewLink: null }))
+    ),
+    moveDriveFile: vi.fn(async (_t: string, fileId: string, _from: string, toParentId: string) => {
+      const file = fakeFiles.find((f) => f.id === fileId);
+      if (file) file.parentId = toParentId;
+    }),
+    trashDriveFolder: vi.fn(async (_t: string, folderId: string) => {
+      const folder = fakeFolders.find((f) => f.id === folderId);
+      if (folder) folder.trashed = true;
+    }),
+    uploadDriveFile: vi.fn(async (_t: string, options: { name: string; parentId: string; mimeType?: string; content?: Buffer }) => {
+      const id = `file-${nextDriveId++}`;
+      fakeFiles.push({ id, name: options.name, parentId: options.parentId, content: options.content, mimeType: options.mimeType });
+      console.log("[e2e] Drive uploadFile", { id, name: options.name, parentId: options.parentId, mimeType: options.mimeType });
+      return { id, name: options.name, webViewLink: `https://drive.example/${id}` };
+    }),
+    renameDriveFile: vi.fn(async (_t: string, fileId: string, newName: string) => {
+      const file = fakeFiles.find((f) => f.id === fileId);
+      if (file) file.name = newName;
+      console.log("[e2e] Drive renameFile", { fileId, newName });
+    }),
+    downloadDriveFile: vi.fn(async (_t: string, fileId: string) => {
+      const file = fakeFiles.find((f) => f.id === fileId);
+      if (!file) throw new Error(`[e2e] fake drive file ${fileId} not found`);
+      return { bytes: file.content ?? Buffer.from(""), mimeType: file.mimeType ?? "application/octet-stream" };
+    }),
+    updateDriveFileContent: vi.fn(async (_t: string, fileId: string, content: Buffer, mimeType: string) => {
+      const file = fakeFiles.find((f) => f.id === fileId);
+      if (file) {
+        file.content = content;
+        file.mimeType = mimeType;
+      }
+      console.log("[e2e] Drive updateFileContent", { fileId, mimeType, byteLength: content.length });
+    }),
+  };
+});
+
+// ---- AI vision classifier boundary (document classification) --------
+const classifyDocumentViaVisionAI = vi.fn();
+vi.mock("@/lib/ai/documentVisionClassifier", () => ({
+  classifyDocumentViaVisionAI: (...args: unknown[]) => classifyDocumentViaVisionAI(...args),
+  isVisionClassifiableMimeType: () => true,
+}));
+
+// ---- Shared text-classifier boundary (generateObject/resolveLanguageModel) ----
+// Every AI-backed text classifier in this codebase (deferral intent,
+// follow-up intent, reopen intent, document-relation intent, yes/no,
+// request-message intent, requirement semantics) goes through this one
+// pair — queued per call, in the exact order route.ts's own resolver
+// chain invokes them, matching this whole codebase's established test
+// convention (vitest's own mockResolvedValueOnce queue) rather than
+// content-sniffing the prompt text.
+const resolveLanguageModel = vi.fn();
+const generateObject = vi.fn();
+vi.mock("@/lib/aiCore/providers/resolveModel", () => ({
+  resolveLanguageModel: (...args: unknown[]) => resolveLanguageModel(...args),
+}));
+vi.mock("ai", () => ({
+  generateObject: (...args: unknown[]) => generateObject(...args),
+}));
+
+const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+
+beforeAll(async () => {
+  const client = new PGlite();
+  db = drizzle(client, { schema }) as unknown as Database;
+  await migrate(db as never, { migrationsFolder: "./drizzle" });
+}, 60_000);
+
+beforeEach(() => {
+  fakeFolders = [];
+  fakeFiles = [];
+  nextDriveId = 1;
+  mediaByWamid.clear();
+  sentMessages.length = 0;
+  sendTextMessage.mockClear();
+  sendTemplateMessage.mockClear();
+  sendInteractiveButtonsMessage.mockClear();
+  classifyDocumentViaVisionAI.mockReset();
+  resolveLanguageModel.mockReset();
+  resolveLanguageModel.mockResolvedValue({ modelId: "e2e-fake-model" });
+  generateObject.mockReset();
+});
+
+// ---- Test client — the one Meta/WhatsApp test number authorized for
+// this session's testing, per explicit instruction. Never used to send
+// anything for real in this file (the transport is fully mocked above);
+// used here purely as a realistic, consistently-normalized phone value.
+const TEST_CLIENT_PHONE = "055-9858685";
+const TEST_CLIENT_WA_ID = "972559858685"; // same number, Meta's own from-field format (no leading +)
+
+let wamidCounter = 1;
+function nextWamid(): string {
+  return `wamid.e2e.${wamidCounter++}`;
+}
+
+function signPayload(rawBody: string): string {
+  return `sha256=${createHmac("sha256", TEST_APP_SECRET).update(rawBody, "utf-8").digest("hex")}`;
+}
+
+async function postWebhook(payload: unknown): Promise<void> {
+  const rawBody = JSON.stringify(payload);
+  const request = new Request("https://e2e-test.local/api/webhooks/whatsapp", {
+    method: "POST",
+    headers: { "x-hub-signature-256": signPayload(rawBody), "content-type": "application/json" },
+    body: rawBody,
+  });
+  const response = await POST(request as never);
+  expect(response.status).toBe(200);
+}
+
+function textMessagePayload(phoneNumberId: string, from: string, body: string) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              metadata: { phone_number_id: phoneNumberId },
+              messages: [{ from, id: nextWamid(), type: "text", text: { body } }],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function sendText(phoneNumberId: string, body: string): Promise<void> {
+  console.log("[e2e] inbound text", { body });
+  await postWebhook(textMessagePayload(phoneNumberId, TEST_CLIENT_WA_ID, body));
+}
+
+async function sendDocument(phoneNumberId: string, doc: TestDocument, caption?: string): Promise<void> {
+  const mediaId = `media-${nextWamid()}`;
+  mediaByWamid.set(mediaId, { bytes: doc.bytes, mimeType: doc.mimeType });
+  const messageId = nextWamid();
+  const isImage = doc.mimeType === "image/png";
+  console.log("[e2e] inbound document", { kind: doc.kind, fileName: doc.fileName, caption });
+  await postWebhook({
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              metadata: { phone_number_id: phoneNumberId },
+              messages: [
+                {
+                  from: TEST_CLIENT_WA_ID,
+                  id: messageId,
+                  type: isImage ? "image" : "document",
+                  ...(isImage
+                    ? { image: { id: mediaId, mime_type: doc.mimeType, ...(caption ? { caption } : {}) } }
+                    : { document: { id: mediaId, mime_type: doc.mimeType, filename: doc.fileName, ...(caption ? { caption } : {}) } }),
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
+interface SeededRequest {
+  orgId: string;
+  clientId: string;
+  serviceId: string;
+  requestId: string;
+  conversationId: string;
+  phoneNumberId: string;
+  requirements: (typeof schema.collectionRequestRequirements.$inferSelect)[];
+}
+
+async function seedActiveRequest(
+  requirementNames: string[],
+  requirementOverrides: Partial<typeof schema.collectionRequestRequirements.$inferInsert>[] = []
+): Promise<SeededRequest> {
+  const phoneNumberId = `e2e-phone-${nextOrgSeq++}`;
+  const [org] = await db
+    .insert(schema.organizations)
+    .values({
+      name: "משרד בדיקה E2E",
+      googleDriveFolderId: "e2e-root-folder",
+      whatsappPhoneNumberId: phoneNumberId,
+      documentCollectionEnabled: true,
+      businessHoursStart: "00:00",
+      businessHoursEnd: "23:59",
+      businessDays: "0,1,2,3,4,5,6",
+      timezone: "Asia/Jerusalem",
+      reminderIntervalDays: 2,
+    })
+    .returning();
+  const [client] = await db
+    .insert(schema.clients)
+    // Matches the fixture documents' own extractedPersonName (fixtures.ts)
+    // so the golden-path journey doesn't trip identity-anomaly detection
+    // by accident — a real, deliberate identity mismatch is its own
+    // dedicated journey below.
+    .values({ organizationId: org.id, name: "ישראל ישראלי בדיקה", phone: TEST_CLIENT_PHONE })
+    .returning();
+  const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות בדיקה" }).returning();
+  const [request] = await db
+    .insert(schema.collectionRequests)
+    .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "E2E", status: "active" })
+    .returning();
+  const [conversation] = await db
+    .insert(schema.conversations)
+    .values({ organizationId: org.id, clientId: client.id, collectionRequestId: request.id, status: "open" })
+    .returning();
+
+  const requirements = [];
+  for (let i = 0; i < requirementNames.length; i++) {
+    const [req] = await db
+      .insert(schema.collectionRequestRequirements)
+      .values({ collectionRequestId: request.id, name: requirementNames[i], ...requirementOverrides[i] })
+      .returning();
+    requirements.push(req);
+  }
+
+  return { orgId: org.id, clientId: client.id, serviceId: service.id, requestId: request.id, conversationId: conversation.id, phoneNumberId, requirements };
+}
+
+async function currentRequestStatus(requestId: string) {
+  const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+  return request.status;
+}
+
+async function approvedDocuments(requestId: string) {
+  return db
+    .select()
+    .from(schema.documents)
+    .where(and(eq(schema.documents.collectionRequestId, requestId), eq(schema.documents.status, "approved")));
+}
+
+// ======================================================================
+// Journey 1 — the golden path: creation, two ordinary documents (one
+// image, one PDF, sent minutes apart), auto-completion, Drive folder
+// structure and audit trail.
+// ======================================================================
+describe("E2E Journey 1 — simple two-document request, golden path", () => {
+  it("collects an ID card and a driver's license, auto-completes, and files both correctly in Drive", async () => {
+    const { requestId, phoneNumberId, requirements } = await seedActiveRequest(["תעודת זהות", "רישיון נהיגה"]);
+    const [idReq, licenseReq] = requirements;
+
+    const idDoc = await makeTestDocument("id_card");
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.97,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.95,
+      extractedPersonName: "ישראל ישראלי בדיקה",
+      identityExtractionConfidence: 0.9,
+    });
+    await sendDocument(phoneNumberId, idDoc);
+
+    const [docsAfterFirst] = [await approvedDocuments(requestId)];
+    expect(docsAfterFirst).toHaveLength(1);
+    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+
+    const licenseDoc = await makeTestDocument("drivers_license");
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "רישיון נהיגה",
+      identificationConfidence: 0.96,
+      matchedRequirementId: licenseReq.id,
+      matchConfidence: 0.94,
+      extractedPersonName: "ישראל ישראלי בדיקה",
+      identityExtractionConfidence: 0.9,
+    });
+    await sendDocument(phoneNumberId, licenseDoc);
+
+    // "ברגע שכל הדרישות הושלמו... הבקשה נסגרת מיד" — immediate completion,
+    // no explicit "finished" message needed.
+    expect(await currentRequestStatus(requestId)).toBe("completed");
+    const finalDocs = await approvedDocuments(requestId);
+    expect(finalDocs).toHaveLength(2);
+    expect(finalDocs.every((d) => d.googleDriveFileId !== null)).toBe(true);
+
+    // Drive structure: an org-level month folder, a client folder nested
+    // under it, and the two files nested under the client folder.
+    const clientFolder = fakeFolders.find((f) => f.name.includes("ישראל ישראלי"));
+    expect(clientFolder).toBeDefined();
+    const filesInClientFolder = fakeFiles.filter((f) => f.parentId === clientFolder!.id);
+    expect(filesInClientFolder).toHaveLength(2);
+
+    // A real "thank you" message was actually sent (mocked transport, real
+    // send-decision logic).
+    expect(sentMessages.some((m) => m.body.includes("קיבלתי הכל"))).toBe(true);
+
+    // Full audit trail exists for both documents.
+    const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows.some((r) => r.eventType === "document.classified")).toBe(true);
+    expect(auditRows.some((r) => r.eventType === "collection_request.status_changed")).toBe(true);
+  });
+});
+
+// Every plain-text message with no open confirmation runs through
+// classifyDeferralIntent then (if not a dated commitment) the existing
+// vague-promise classifier before ever reaching Q&A/exception routing —
+// see route.ts's own resolver chain. Queues the two boilerplate "no, not
+// this" results so each scenario only has to declare the interesting
+// (third) classification.
+function queueNotDatedThenNoFollowUp() {
+  generateObject.mockResolvedValueOnce({
+    object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
+  });
+  generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false } });
+}
+
+// ======================================================================
+// Journey 2 — quantity-aware requirement ("3 תלושי שכר של 3 חודשים
+// שונים"), client Q&A before and during collection, an "I don't have it"
+// exception with an employee decision, duplicate-file detection, an
+// unrelated message producing no response, and completion via an explicit
+// "finished" signal.
+// ======================================================================
+describe("E2E Journey 2 — quantity requirement + Q&A + exception + duplicate + unrelated + explicit finish", () => {
+  it("walks the full client conversation around a 3-different-months payslip requirement", async () => {
+    const { requestId, phoneNumberId, requirements } = await seedActiveRequest(
+      ["3 תלושי שכר של 3 החודשים האחרונים"],
+      [
+        {
+          requiredCount: 3,
+          semanticSpec: {
+            originalText: "3 תלושי שכר של 3 החודשים האחרונים",
+            documentType: "תלוש שכר",
+            requiredCount: 3,
+            periodType: "relative",
+            explicitPeriods: null,
+            relativePeriod: { kind: "last_n_months", n: 3 },
+            samePeriodAllowed: false,
+            distinctPeriodsRequired: true,
+            distinctPeopleRequired: false,
+            expectedPersonOrCompany: null,
+            validityRequirement: null,
+            supportingDocumentRelationship: null,
+            freeTextConstraints: null,
+            interpretationConfidence: 0.92,
+            clarifyingQuestion: null,
+          },
+        },
+      ]
+    );
+    const [payslipReq] = requirements;
+
+    // 1) Client asks "כמה מסמכים חסרים לי?" before sending anything — must
+    // reflect real (zero-progress) state, never invented.
+    queueNotDatedThenNoFollowUp();
+    generateObject.mockResolvedValueOnce({ object: { category: "request_overview", mentionedDocumentType: null } });
+    await sendText(phoneNumberId, "כמה מסמכים חסרים לי?");
+    expect(sentMessages.at(-1)!.body).toContain("תלושי שכר");
+    expect(sentMessages.at(-1)!.body).toContain("טרם התקבל");
+
+    // 2) Two payslips for two distinct months arrive.
+    const payslip1 = await makeTestDocument("payslip", { fileName: "payslip_june.pdf" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תלוש שכר",
+      identificationConfidence: 0.93,
+      matchedRequirementId: payslipReq.id,
+      matchConfidence: 0.9,
+      documentPeriodLabel: "06/2026",
+      periodExtractionConfidence: 0.9,
+    });
+    await sendDocument(phoneNumberId, payslip1);
+
+    const payslip2 = await makeTestDocument("payslip", { fileName: "payslip_july.pdf" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תלוש שכר",
+      identificationConfidence: 0.93,
+      matchedRequirementId: payslipReq.id,
+      matchConfidence: 0.9,
+      documentPeriodLabel: "07/2026",
+      periodExtractionConfidence: 0.9,
+    });
+    await sendDocument(phoneNumberId, payslip2);
+
+    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+    expect(await approvedDocuments(requestId)).toHaveLength(2);
+
+    // 3) The exact same file sent again — duplicate detection, never a
+    // third approved document.
+    await sendDocument(phoneNumberId, payslip2);
+    expect(await approvedDocuments(requestId)).toHaveLength(2);
+
+    // 4) Client asks again — must now reflect real partial progress (2 of 3).
+    queueNotDatedThenNoFollowUp();
+    generateObject.mockResolvedValueOnce({ object: { category: "request_overview", mentionedDocumentType: null } });
+    await sendText(phoneNumberId, "כמה עוד חסר?");
+    expect(sentMessages.at(-1)!.body).toContain("2 מתוך 3");
+
+    // 5) A completely unrelated message — Centro must stay silent (no new
+    // outbound message, no state change).
+    const sentCountBeforeUnrelated = sentMessages.length;
+    queueNotDatedThenNoFollowUp();
+    generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
+    await sendText(phoneNumberId, "מה שעות הפעילות שלכם?");
+    expect(sentMessages).toHaveLength(sentCountBeforeUnrelated);
+
+    // 6) "אין לי את התלוש השלישי" — opens a real employee exception rather
+    // than being invented or silently dropped.
+    queueNotDatedThenNoFollowUp();
+    generateObject.mockResolvedValueOnce({ object: { category: "no_document_exception", mentionedDocumentType: null } });
+    await sendText(phoneNumberId, "אין לי את התלוש השלישי, איבדתי אותו");
+
+    const [reqAfterException] = await db
+      .select()
+      .from(schema.collectionRequestRequirements)
+      .where(eq(schema.collectionRequestRequirements.id, payslipReq.id));
+    expect(reqAfterException.exceptionStatus).toBe("reported_missing");
+    expect(reqAfterException.exceptionNote).toContain("איבדתי");
+
+    // 7) The employee waives the requirement — the request recomputes and,
+    // since that was the only thing missing, completes immediately.
+    const { resolveRequirementException } = await import("@/lib/requirementException");
+    const waiveResult = await resolveRequirementException({
+      organizationId: (await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId)))[0].organizationId,
+      requirementId: payslipReq.id,
+      decision: "waive",
+    });
+    expect(waiveResult.ok).toBe(true);
+    expect(await currentRequestStatus(requestId)).toBe("completed");
+
+    const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows.some((r) => r.eventType === "requirement.exception_reported")).toBe(true);
+    expect(auditRows.some((r) => r.eventType === "requirement.exception_waived")).toBe(true);
+  });
+});
+
+// ======================================================================
+// Journey 3 — a multi-page document sent as three images (real PDF
+// merging via pdf-lib, verified by loading the actual resulting bytes), a
+// document replaced via caption, and reminder deferral to a real future
+// date suppressing (then correctly resuming) the scheduler.
+// ======================================================================
+describe("E2E Journey 3 — multi-page PDF merge, document replace, reminder deferral", () => {
+  it("merges 3 images of one contract into a real PDF, replaces a document via caption, and honors a dated reminder deferral", async () => {
+    // A third, deliberately never-satisfied requirement keeps the request
+    // open through the whole journey — otherwise it would auto-complete
+    // right after the ID card (lease + ID both done), closing the
+    // conversation before the replacement photo below ever arrives, and
+    // routing it through the post-completion reopen flow instead of the
+    // document-replace flow this scenario is actually testing.
+    const { requestId, phoneNumberId, requirements } = await seedActiveRequest(["חוזה שכירות", "תעודת זהות", "אישור עבודה"]);
+    const [leaseReq, idReq] = requirements;
+
+    for (let page = 1; page <= 3; page++) {
+      const doc = await makeTestDocument("lease_certificate", { fileName: `lease_page${page}.pdf` });
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "חוזה שכירות",
+        identificationConfidence: 0.95,
+        matchedRequirementId: leaseReq.id,
+        matchConfidence: 0.93,
+        pageNumberCurrent: page,
+        pageNumberTotal: 3,
+      });
+      await sendDocument(phoneNumberId, doc);
+    }
+
+    const leaseDocs = await db
+      .select()
+      .from(schema.documents)
+      .where(and(eq(schema.documents.collectionRequestId, requestId), eq(schema.documents.requirementId, leaseReq.id)));
+    const head = leaseDocs.find((d) => d.continuationOfDocumentId === null)!;
+    expect(leaseDocs).toHaveLength(3);
+    expect(head.mergedPdfDriveFileId).not.toBeNull();
+    expect(head.mergedPdfVersion).toBe(2); // created at page 2, updated once at page 3
+
+    const { PDFDocument } = await import("pdf-lib");
+    const mergedFile = fakeFiles.find((f) => f.id === head.mergedPdfDriveFileId)!;
+    const mergedPdf = await PDFDocument.load(mergedFile.content!);
+    expect(mergedPdf.getPageCount()).toBe(3);
+
+    // The lease still reads as one satisfied unit (requiredCount 1), not
+    // three separate documents.
+    expect(
+      (await approvedDocuments(requestId)).filter((d) => d.requirementId === leaseReq.id && !d.continuationOfDocumentId)
+    ).toHaveLength(1);
+
+    // An ID card arrives, then the client says the FIRST id photo they
+    // meant to send was wrong and this one replaces it — but here it's the
+    // very first ID document, so "replace" has nothing to supersede;
+    // instead this exercises the ordinary matched-and-approved path with a
+    // caption present (never wrongly treated as a continuation page).
+    const idDoc = await makeTestDocument("id_card");
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.93,
+      extractedPersonName: "ישראל ישראלי בדיקה",
+      identityExtractionConfidence: 0.9,
+    });
+    await sendDocument(phoneNumberId, idDoc);
+    const [firstIdDoc] = await db
+      .select()
+      .from(schema.documents)
+      .where(and(eq(schema.documents.collectionRequestId, requestId), eq(schema.documents.requirementId, idReq.id)));
+    expect(firstIdDoc.status).toBe("approved");
+
+    // A second ID photo arrives with a caption saying it replaces the
+    // first. Real, worth noting: a WhatsApp caption is read as this
+    // message's own `body` too (route.ts has no separate "caption-only"
+    // channel), so it first runs the ordinary conversational chain
+    // (deferral -> follow-up -> Q&A/exception, all naturally "no" for this
+    // text) before classifyDocumentRelationIntent gets its turn against
+    // the attachment itself.
+    queueNotDatedThenNoFollowUp();
+    generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
+    generateObject.mockResolvedValueOnce({ object: { relation: "replace" } });
+    const idDoc2 = await makeTestDocument("id_card", { fileName: "test_id_card_v2.png" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.93,
+      extractedPersonName: "ישראל ישראלי בדיקה",
+      identityExtractionConfidence: 0.9,
+    });
+    await sendDocument(phoneNumberId, idDoc2, "זה מחליף את הקודם, טעיתי בצילום");
+
+    const [oldId, newId] = await db
+      .select()
+      .from(schema.documents)
+      .where(and(eq(schema.documents.collectionRequestId, requestId), eq(schema.documents.requirementId, idReq.id)))
+      .orderBy(schema.documents.receivedAt);
+    expect(oldId.status).toBe("superseded");
+    expect(newId.status).toBe("approved");
+    // Superseded, never deleted — the old file is still in Drive, renamed.
+    const oldFile = fakeFiles.find((f) => f.id === oldId.googleDriveFileId);
+    expect(oldFile?.name).toContain("הוחלף");
+
+    // The lease and ID are both satisfied, but the third requirement never
+    // was — the request correctly stays open rather than completing.
+    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+  });
+
+  it("suppresses the normal reminder until a client's dated commitment, then reminds once it's genuinely due", async () => {
+    const { requestId, phoneNumberId, conversationId } = await seedActiveRequest(["דף בנק"]);
+
+    // "אני בחו״ל, אשלח עוד יומיים" — a real dated commitment (2 days),
+    // resolved deterministically, never trusted to the model's own math.
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: 2, relativeWeeks: null, namedPeriod: null },
+    });
+    await sendText(phoneNumberId, "אני בחו\"ל, אשלח עוד יומיים");
+
+    const [conversationAfterPromise] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversationAfterPromise.deferredReminderAt).not.toBeNull();
+    // relativeDays: 2 -> "מחרתיים" (see resolveDeferralDate's own phrasing).
+    expect(sentMessages.at(-1)!.body).toContain("מחרתיים");
+
+    // Force the collection request into the reminder-eligible state
+    // (waiting_for_client) the way a real inactivity evaluation would, and
+    // simulate the deferred date already having arrived.
+    await db
+      .update(schema.collectionRequests)
+      .set({ status: "waiting_for_client" })
+      .where(eq(schema.collectionRequests.id, requestId));
+    await db
+      .update(schema.conversations)
+      .set({ status: "waiting_for_client", deferredReminderAt: new Date(Date.now() - 60_000) })
+      .where(eq(schema.conversations.id, conversationId));
+
+    // A recent inbound message keeps the free-form session window open so
+    // the reminder's real (non-template) content is visible for assertion.
+    await db.insert(schema.messages).values({
+      organizationId: (await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId)))[0].organizationId,
+      conversationId,
+      direction: "inbound",
+      senderType: "client",
+      body: "אני בחו\"ל, אשלח עוד יומיים",
+    });
+
+    const sentCountBeforeDue = sentMessages.length;
+    const { runScheduledTasks } = await import("@/lib/scheduler");
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    await runScheduledTasks(request.organizationId);
+
+    expect(sentMessages.length).toBeGreaterThan(sentCountBeforeDue);
+    expect(sentMessages.at(-1)!.body).toContain("דף בנק");
+    const [conversationAfterDue] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversationAfterDue.deferredReminderAt).toBeNull();
+  });
+});
+
+// ======================================================================
+// Journey 4 — an identity mismatch deferred to whole-case review, a
+// genuinely unrecognized document resolved by the client's own words,
+// "Centro checks the case, not the document" at the "finished" signal,
+// and the full post-completion extension flow (multiple uploads without
+// saying "finished," then an explicit close).
+// ======================================================================
+describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-completion extension", () => {
+  it("defers an identity mismatch and an unrecognized document to case review at 'finished', then supports adding more after completion", async () => {
+    const { requestId, phoneNumberId, conversationId, requirements } = await seedActiveRequest(["תעודת זהות", "אישור שכירות"]);
+    const [idReq] = requirements;
+
+    // A document whose extracted name doesn't match the client on file —
+    // never asked about immediately; held for the whole-case review.
+    const mismatchedId = await makeTestDocument("id_card", { fileName: "someone_elses_id.png" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.93,
+      extractedPersonName: "מישהו אחר לגמרי",
+      identityExtractionConfidence: 0.85,
+    });
+    await sendDocument(phoneNumberId, mismatchedId);
+
+    const [heldDoc] = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.collectionRequestId, requestId));
+    expect(heldDoc.status).toBe("identity_anomaly_pending_confirmation");
+    expect(heldDoc.deferredReviewKind).toBe("identity_anomaly");
+    // Held silently — no question sent yet, client not interrupted mid-collection.
+    expect(sentMessages).toHaveLength(0);
+
+    // A genuinely unrecognized file — also deferred, not asked about yet.
+    const mysteryDoc = await makeTestDocument("unrelated_document", { fileName: "mystery.pdf" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.1,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
+    await sendDocument(phoneNumberId, mysteryDoc);
+    expect(sentMessages).toHaveLength(0);
+
+    // The client says they're done — this is what actually turns both
+    // deferred exceptions into real questions, together, once. "סיימתי"
+    // is matched by pure-text isFinishedSignal, before the AI-backed
+    // deferral/Q&A chain is ever reached — no generateObject call at all.
+    await sendText(phoneNumberId, "סיימתי");
+
+    const openConfirmations = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
+    expect(openConfirmations.length).toBeGreaterThanOrEqual(1);
+    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+
+    // The employee (or client, via the same generic yes/no resolver)
+    // resolves the identity anomaly as correct/intentional and the
+    // clarification by naming the document — for this journey, simulate
+    // the client answering the (batched or single) question directly, then
+    // apply the real domain handlers exactly like route.ts's own resolver
+    // chain does (resolving the pendingConfirmation row alone is not
+    // enough — these are what actually update the document's own status).
+    const { respondToPendingConfirmationManually } = await import("@/lib/pendingConfirmations");
+    const { applyIdentityAnomalyDecision } = await import("@/lib/documentIdentityVerification");
+    const { applyUnsolicitedConfirmationDecision } = await import("@/lib/documentIntakeReview");
+    const orgIdForResolve = (await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId)))[0].organizationId;
+    // A clarification reply can itself surface a NEW question (e.g. "did
+    // you mean to send this unrelated document?") — loop until genuinely
+    // nothing is left open rather than assuming a fixed count.
+    for (let round = 0; round < 5; round++) {
+      const stillOpen = await db
+        .select()
+        .from(schema.pendingConfirmations)
+        .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
+      if (stillOpen.length === 0) break;
+      for (const confirmation of stillOpen) {
+        const resolvedRow = await respondToPendingConfirmationManually(orgIdForResolve, confirmation.id, true);
+        if (!resolvedRow) continue;
+        await applyIdentityAnomalyDecision(resolvedRow);
+        await applyUnsolicitedConfirmationDecision(resolvedRow);
+      }
+    }
+    // document_clarification is open-ended free text, not yes/no — resolve
+    // any that's still open (declared "not a document type we recognize,
+    // filed as-is") without confirming/declining semantics.
+    const remainingClarifications = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
+    for (const confirmation of remainingClarifications) {
+      await respondToPendingConfirmationManually(orgIdForResolve, confirmation.id, true);
+    }
+
+    // By design, a document flagged as belonging to someone else never
+    // silently satisfies the ID requirement just because the client
+    // confirmed it was sent on purpose — "never auto-treated as fulfilling
+    // the requirement it doesn't actually match" (documentIdentityVerification.ts).
+    // The requirement genuinely still needs a real matching document.
+    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+
+    // ---- Post-completion extension -----------------------------------
+    // Manually bring the request to completed+closed to set up the
+    // extension scenario cleanly (the resolution above doesn't itself
+    // re-run completion in this synthetic flow).
+    await db.update(schema.collectionRequests).set({ status: "completed" }).where(eq(schema.collectionRequests.id, requestId));
+    await db.update(schema.conversations).set({ status: "closed" }).where(eq(schema.conversations.id, conversationId));
+
+    // "שכחתי עוד מסמך" after completion — the post-completion gate's own
+    // classifyReopenIntent call is the ONLY classification that runs here
+    // (a closed conversation short-circuits before ever reaching the
+    // normal deferral/Q&A chain) — asks before doing anything.
+    generateObject.mockResolvedValueOnce({ object: { isReopenIntent: true } });
+    await sendText(phoneNumberId, "שכחתי לשלוח את אישור השכירות, אשלח עכשיו");
+    const reopenConfirmation = (
+      await db.select().from(schema.pendingConfirmations).where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")))
+    )[0];
+    expect(reopenConfirmation?.kind).toBe("request_reopen");
+
+    // Client confirms "כן, לשמור" — extension begins.
+    const { resolveConfirmationFromReply } = await import("@/lib/pendingConfirmations");
+    const { applyRequestReopenDecision } = await import("@/lib/requestReopen");
+    const resolved = await resolveConfirmationFromReply(conversationId, "כן");
+    expect(resolved?.status).toBe("confirmed");
+    await applyRequestReopenDecision(resolved!, async () => {});
+
+    const [requestDuringExtension] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(requestDuringExtension.extensionActive).toBe(true);
+
+    // Uploads a document without ever saying "finished" — must not
+    // auto-close.
+    const leaseDoc = await makeTestDocument("lease_certificate");
+    const leaseReqRow = (
+      await db.select().from(schema.collectionRequestRequirements).where(eq(schema.collectionRequestRequirements.collectionRequestId, requestId))
+    ).find((r) => r.name === "אישור שכירות")!;
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "אישור שכירות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: leaseReqRow.id,
+      matchConfidence: 0.93,
+    });
+    await sendDocument(phoneNumberId, leaseDoc);
+    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+
+    // A real, correctly-matching ID card — the requirement the earlier
+    // mismatched document never satisfied — arrives too, still without
+    // the client saying "finished."
+    const realIdDoc = await makeTestDocument("id_card", { fileName: "real_matching_id.png" });
+    const idReqRow = (
+      await db.select().from(schema.collectionRequestRequirements).where(eq(schema.collectionRequestRequirements.collectionRequestId, requestId))
+    ).find((r) => r.name === "תעודת זהות")!;
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.96,
+      matchedRequirementId: idReqRow.id,
+      matchConfidence: 0.94,
+      extractedPersonName: "ישראל ישראלי בדיקה",
+      identityExtractionConfidence: 0.9,
+    });
+    await sendDocument(phoneNumberId, realIdDoc);
+    // Still extension-active — even a document that happens to complete
+    // everything never auto-closes mid-extension.
+    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+
+    // Explicit "סיימתי" closes it again — Case Review + completion.
+    await sendText(phoneNumberId, "סיימתי");
+    expect(await currentRequestStatus(requestId)).toBe("completed");
+    const [finalConversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(finalConversation.status).toBe("closed");
+    const [finalRequest] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(finalRequest.extensionActive).toBe(false);
+  });
+});
