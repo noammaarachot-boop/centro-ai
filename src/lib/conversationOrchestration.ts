@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { desc, eq, and } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   clients,
@@ -113,7 +113,7 @@ async function getClientPhoneForConversation(conversationId: string): Promise<st
 // provided, it overrides the exact-body TEMPLATE_BY_BODY lookup, so a
 // rendered body that isn't itself a template key (e.g. the v2 body with the
 // document list substituted in) is still sent through the right template.
-interface TemplateSend {
+export interface TemplateSend {
   templateName: string;
   language: string;
   params: string[];
@@ -384,6 +384,27 @@ export async function recordInboundMessage(
     .update(conversations)
     .set({ updatedAt: new Date() })
     .where(eq(conversations.id, conversationId));
+}
+
+// WhatsApp's 24-hour customer service session window — free-form text is
+// only permitted within 24h of the client's own most recent inbound
+// message (see sendViaWhatsApp's own allowFreeform doc comment). Checked
+// against messages.direction === "inbound" specifically, never
+// conversations.updatedAt — that field is bumped by outbound sends too
+// (see recordInboundMessage/sendOutboundMessage above), so it can't tell
+// "the client wrote recently" apart from "Centro sent something recently."
+// Used by src/lib/reminderContent.ts to decide whether a reminder can use
+// natural free text or must fall back to a pre-approved Template.
+export async function isWithinFreeformSessionWindow(conversationId: string): Promise<boolean> {
+  const db = await getDb();
+  const [lastInbound] = await db
+    .select({ createdAt: messages.createdAt })
+    .from(messages)
+    .where(and(eq(messages.conversationId, conversationId), eq(messages.direction, "inbound")))
+    .orderBy(desc(messages.createdAt))
+    .limit(1);
+  if (!lastInbound) return false;
+  return Date.now() - lastInbound.createdAt.getTime() < 24 * 60 * 60 * 1000;
 }
 
 // Ch.10 flow step 1: "Send one initial request."

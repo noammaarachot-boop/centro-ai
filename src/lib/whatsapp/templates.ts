@@ -46,6 +46,21 @@ export const INITIAL_REQUEST_V2_ENABLED = true;
 export const THANK_YOU_BODY =
   "תודה, קיבלנו את המסמכים! האם סיימתם לשלוח את כל המסמכים? השיבו 'סיימתי' או 'יש עוד מסמכים'.";
 export const REMINDER_BODY = "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";
+// Dynamic reminder — lists exactly which documents are still missing,
+// instead of the static REMINDER_BODY's generic "still waiting for your
+// answer." {{1}} is the client's name, {{2}} is a single-line,
+// comma-separated list of missing document names (same constraint as
+// INITIAL_REQUEST_V2_BODY's {{1}} — Meta forbids newlines in a template
+// parameter). Submitted to Meta for approval now (in REQUIRED_TEMPLATES
+// below), but NOT yet used for real sends — see REMINDER_V2_ENABLED.
+export const REMINDER_V2_BODY = "היי {{1}}, עדיין חסרים לנו: {{2}}. אפשר לשלוח אותם כאן. תודה!";
+export const REMINDER_V2_TEMPLATE_NAME = "centro_reminder_v2";
+// Master switch for actually SENDING the parameterized v2 reminder
+// template over WhatsApp — false until centro_reminder_v2 is APPROVED on
+// the WABA (see the acceptance-testing report for the exact submission
+// details). Until then, src/lib/reminderContent.ts falls back to the
+// already-approved static REMINDER_BODY, exactly today's behavior.
+export const REMINDER_V2_ENABLED = false;
 export const DUPLICATE_BODY = "קיבלנו מסמך זה כבר, תודה.";
 
 // WhatsApp forbids free-form messages to anyone who hasn't messaged the
@@ -68,6 +83,13 @@ export const REQUIRED_TEMPLATES: TemplateDefinition[] = [
   },
   { name: "centro_thank_you_confirm", language: "he", category: "UTILITY", bodyText: THANK_YOU_BODY },
   { name: "centro_reminder", language: "he", category: "UTILITY", bodyText: REMINDER_BODY },
+  {
+    name: REMINDER_V2_TEMPLATE_NAME,
+    language: "he",
+    category: "UTILITY",
+    bodyText: REMINDER_V2_BODY,
+    exampleParams: ["ישראל ישראלי", "תעודת זהות, אישור שכירות"],
+  },
   { name: "centro_duplicate_document", language: "he", category: "UTILITY", bodyText: DUPLICATE_BODY },
 ];
 

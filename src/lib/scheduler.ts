@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, lte } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequests, conversations, organizations, services } from "@/db/schema";
+import { clients, collectionRequests, conversations, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { resolveScheduleConfig } from "@/lib/businessHours";
 import {
@@ -8,7 +8,7 @@ import {
   sendOutboundMessage,
 } from "@/lib/conversationOrchestration";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
-import { REMINDER_BODY as REMINDER_MESSAGE } from "@/lib/whatsapp/templates";
+import { buildReminderSend } from "@/lib/reminderContent";
 import { retryFailedDriveUploads } from "@/lib/storage/driveAdapter";
 import { runRecurringCycleCreation } from "@/lib/recurringScheduler";
 import {
@@ -134,6 +134,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         id: conversations.id,
         collectionRequestId: conversations.collectionRequestId,
         clientId: collectionRequests.clientId,
+        clientName: clients.name,
         updatedAt: conversations.updatedAt,
         service: services,
       })
@@ -143,6 +144,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         eq(conversations.collectionRequestId, collectionRequests.id)
       )
       .innerJoin(services, eq(collectionRequests.serviceId, services.id))
+      .innerJoin(clients, eq(collectionRequests.clientId, clients.id))
       .where(
         and(
           eq(conversations.organizationId, organization.id),
@@ -191,11 +193,15 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         continue;
       }
 
+      const reminderSend = await buildReminderSend(conversation.id, conversation.collectionRequestId, conversation.clientName);
       const { sent } = await sendOutboundMessage(
         organization.id,
         conversation.id,
-        REMINDER_MESSAGE,
-        "ai"
+        reminderSend.body,
+        "ai",
+        "automated",
+        reminderSend.templateSend,
+        reminderSend.allowFreeform
       );
       if (sent) {
         reminded += 1;
