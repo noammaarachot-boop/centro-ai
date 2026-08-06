@@ -154,7 +154,7 @@ export async function runCaseReview(
 // e.g. "תלוש שכר (התקבלו 1 מתוך 3)" instead of losing that nuance entirely.
 // A requirement with zero approved documents at all keeps the plain name,
 // same wording as before this feature existed.
-async function listMissingRequirementNames(collectionRequestId: string): Promise<string[]> {
+export async function listMissingRequirementNames(collectionRequestId: string): Promise<string[]> {
   const db = await getDb();
   const requirements = await db
     .select({
