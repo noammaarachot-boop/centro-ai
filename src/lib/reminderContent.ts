@@ -26,10 +26,15 @@ export interface ReminderSend {
   allowFreeform: boolean;
 }
 
+// v2Enabled is injectable (same pattern as buildInitialRequestSend's own
+// v2Enabled parameter) so the Template-selection branch stays independently
+// unit-testable regardless of the live REMINDER_V2_ENABLED flag — real
+// callers never pass it and get today's live flag value.
 export async function buildReminderSend(
   conversationId: string,
   collectionRequestId: string,
-  clientName: string
+  clientName: string,
+  v2Enabled: boolean = REMINDER_V2_ENABLED
 ): Promise<ReminderSend> {
   const missing = await listMissingRequirementNames(collectionRequestId);
   if (missing.length === 0) {
@@ -49,7 +54,7 @@ export async function buildReminderSend(
     };
   }
 
-  if (REMINDER_V2_ENABLED) {
+  if (v2Enabled) {
     const listParam = formatRequirementListForTemplateParam(missing);
     return {
       body: REMINDER_V2_BODY.replace("{{1}}", clientName).replace("{{2}}", listParam),
