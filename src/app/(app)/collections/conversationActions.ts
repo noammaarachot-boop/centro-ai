@@ -46,7 +46,6 @@ import {
   evaluateAndPrompt,
   recordInboundMessage,
   reopenIfCompleted,
-  sendDuplicateAcknowledgement,
   sendOutboundMessage,
   startConversation,
 } from "@/lib/conversationOrchestration";
@@ -325,9 +324,11 @@ export async function processInboundAttachment(
     .where(eq(documents.collectionRequestId, collectionRequestId));
 
   // Ch.9 duplicate detection: fuzzy match on filename tokens (renamed
-  // copies), not just an exact string match.
+  // copies), not just an exact string match. "Level 1" per the decision-
+  // engine principle — the system resolves this alone, silently; the
+  // client never even needs to know there was a dilemma, so no WhatsApp
+  // message is sent (still fully audited below).
   if (existingDocuments.some((doc) => isFuzzyDuplicate(doc.fileName, fileName))) {
-    await sendDuplicateAcknowledgement(organizationId, conversationId);
     await recordAuditEvent({
       organizationId,
       eventType: "document.duplicate_detected",

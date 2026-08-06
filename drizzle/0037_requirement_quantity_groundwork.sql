@@ -1,0 +1,1 @@
+ALTER TABLE "collection_request_requirements" ADD COLUMN "required_count" integer DEFAULT 1 NOT NULL;

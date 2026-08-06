@@ -297,13 +297,18 @@ export async function flushDueIntakeNotifications(
   // question already opens with its own 📄 line; the blank-line spacing
   // and the questions' own numbered yes/no options are what keep each
   // group visually separate and independently answerable.
+  //
+  // Two or more *distinct* identity_anomaly groups in the same flush means
+  // the request's documents don't all point to one person — a genuine
+  // whole-case pattern (e.g. "5 documents for X, 5 for Y"), not just one
+  // outlier. That's worth naming up front instead of the generic opener.
+  const identityAnomalyGroupCount = ordered.filter((row) => row.kind === "identity_anomaly").length;
+  const opener =
+    identityAnomalyGroupCount >= 2 ? "נראה שהמסמכים בתיק שייכים ליותר מאדם אחד 🤔" : "מצאתי כמה מסמכים שדורשים הבהרה 😊";
   const messageBody =
     ordered.length === 1
       ? formatQuestionWithOptions(ordered[0].question, 0)
-      : [
-          "מצאתי כמה מסמכים שדורשים הבהרה 😊",
-          ...ordered.map((row, i) => formatQuestionWithOptions(row.question, i)),
-        ].join("\n\n");
+      : [opener, ...ordered.map((row, i) => formatQuestionWithOptions(row.question, i))].join("\n\n");
 
   console.log("[pending-confirmation] flushing batched intake notification", {
     organizationId,
