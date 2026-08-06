@@ -162,7 +162,20 @@ describe("buildDeferralConfirmationMessage", () => {
   it("notes when the date was rolled forward because the office is closed", () => {
     const result = resolveDeferralDate(emptyHint({ relativeDays: 5 }), NOW, DEFAULT_CONFIG)!;
     const message = buildDeferralConfirmationMessage(result);
-    expect(message).toContain("סגור");
+    expect(message).toContain("לא פעיל");
+  });
+
+  it("when rolled forward, names the actual send date rather than the closed day the client mentioned", () => {
+    // NOW + 5 days = Friday, Jan 16 2026 — closed; the real reminder goes
+    // out the next business opening, Sunday Jan 18. A confirmation that
+    // names the 16th as when the reminder will arrive would be simply
+    // false — this is the exact bug found via live production testing.
+    const result = resolveDeferralDate(emptyHint({ relativeDays: 5 }), NOW, DEFAULT_CONFIG)!;
+    expect(result.rolledToNextBusinessDay).toBe(true);
+    expect(result.finalDateLabel).toBe("18 בינואר");
+    const message = buildDeferralConfirmationMessage(result);
+    expect(message).toContain("18 בינואר");
+    expect(message).not.toContain("אשלח לך תזכורת בעוד 5 ימים, בתאריך 16 בינואר 😊");
   });
 });
 
