@@ -246,11 +246,15 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     // Silence-window case review (src/lib/caseReview.ts's
     // runAutomaticCaseStatusReview) — a completely different timescale and
     // trigger from the reminderIntervalDays pass just above: this fires
-    // once, ~5 minutes after the LAST document arrived (conversationActions.ts
+    // once, ~2 minutes after the LAST document arrived (conversationActions.ts
     // resets pendingCaseReviewAt on every attachment), never waiting for a
-    // "סיימתי" from the client. Never touches deferredReminderAt/the
-    // staleness reminder above — a request can be silence-summarized and
-    // still separately reminded days later if it's still incomplete by
+    // "סיימתי" from the client. Deliberately NOT business-hours-gated —
+    // unlike the staleness reminder above, this is a direct reaction to
+    // activity the client themselves just initiated, not a cold nudge, so
+    // it runs 24/7 (runAutomaticCaseStatusReview's own send uses "manual"
+    // trigger for exactly this reason). Never touches deferredReminderAt/
+    // the staleness reminder above — a request can be silence-summarized
+    // and still separately reminded days later if it's still incomplete by
     // then. Extension-active requests are excluded (their own
     // extension_finished_check nudge covers that case) and never even get
     // pendingCaseReviewAt set to begin with.
@@ -260,11 +264,9 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         collectionRequestId: conversations.collectionRequestId,
         clientId: collectionRequests.clientId,
         pendingCaseReviewAt: conversations.pendingCaseReviewAt,
-        service: services,
       })
       .from(conversations)
       .innerJoin(collectionRequests, eq(conversations.collectionRequestId, collectionRequests.id))
-      .innerJoin(services, eq(collectionRequests.serviceId, services.id))
       .where(
         and(
           eq(conversations.organizationId, organization.id),
@@ -293,15 +295,6 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         .returning({ id: conversations.id });
       if (claimed.length === 0) continue; // lost the race to another tick
 
-      const scheduleConfig = resolveScheduleConfig(organization, conversation.service);
-      if (!isWithinBusinessHours(scheduleConfig)) {
-        await db
-          .update(conversations)
-          .set({ pendingCaseReviewAt: nextBusinessOpenTime(scheduleConfig) })
-          .where(eq(conversations.id, conversation.id));
-        continue;
-      }
-
       const outcome = await runAutomaticCaseStatusReview({
         organizationId: organization.id,
         collectionRequestId: conversation.collectionRequestId,
@@ -312,7 +305,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       await recordAuditEvent({
         organizationId: organization.id,
         eventType: "scheduler.case_status_review_run",
-        description: `סיכום מצב אוטומטי לאחר 5 דקות שקט: ${outcome}`,
+        description: `סיכום מצב אוטומטי לאחר 2 דקות שקט: ${outcome}`,
         actorType: "system",
         collectionRequestId: conversation.collectionRequestId,
       });

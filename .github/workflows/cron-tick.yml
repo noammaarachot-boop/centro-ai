@@ -2,17 +2,25 @@ name: Scheduled tasks tick
 
 # Vercel's own Cron Jobs feature is capped at once/day on the Hobby plan
 # this project is on — far too coarse for time-sensitive mechanics like the
-# 5-minute silence-window case review (src/lib/caseReview.ts) or the
+# 2-minute silence-window case review (src/lib/caseReview.ts) or the
 # reminder-deferral due-date check. GitHub Actions' scheduled workflows are
-# free on a public repo and can run every 5 minutes, so this is the actual
-# production trigger for POST /api/cron/tick; Vercel's own once-daily cron
-# entry (vercel.json) stays as a low-cost backstop in case this workflow is
-# ever paused or fails to run.
+# free on a public repo, so this is the actual production trigger for
+# POST /api/cron/tick; Vercel's own once-daily cron entry (vercel.json)
+# stays as a low-cost backstop in case this workflow is ever paused or
+# fails to run.
 #
-# GitHub explicitly does not guarantee scheduled workflows fire at the
+# Every 5 minutes — GitHub Actions' own documented minimum granularity for
+# `schedule:` (a shorter expression like */2 is silently clamped, not
+# honored), so a due 2-minute case-review window is picked up on this
+# tick's next pass rather than the instant it becomes due: up to ~5 extra
+# minutes worst case on top of the 2-minute window itself, not a wait for
+# the window to literally expire down to the second.
+#
+# GitHub also explicitly does not guarantee scheduled workflows fire at the
 # exact minute during periods of high platform load — an occasional few
-# extra minutes of delay is expected and fine here; a wildly late shift
-# (hours) is not, and would be worth investigating via the Actions tab.
+# extra minutes of delay beyond that is expected and fine here; a wildly
+# late shift (hours) is not, and would be worth investigating via the
+# Actions tab.
 on:
   schedule:
     - cron: "*/5 * * * *"

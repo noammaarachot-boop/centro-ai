@@ -1076,7 +1076,7 @@ export const conversations = pgTable("conversations", {
   // the client-facing confirmation and kept here for audit/debugging.
   deferredReminderReason: text("deferred_reminder_reason"),
   // Silence-window case review (src/lib/caseReview.ts's
-  // runAutomaticCaseStatusReview) — set to "now + 5 minutes" every time a
+  // runAutomaticCaseStatusReview) — set to "now + 2 minutes" every time a
   // document arrives on an active (non-extension) collection request,
   // pushed forward again by every further document, so a burst of several
   // files never triggers more than one summary. Once genuinely due (no

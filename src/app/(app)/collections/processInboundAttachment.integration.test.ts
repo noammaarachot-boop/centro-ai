@@ -139,7 +139,7 @@ const MINIMAL_PNG = Buffer.from(
 );
 
 const { processInboundAttachment } = await import("./conversationActions");
-const { runCaseReview } = await import("@/lib/caseReview");
+const { runCaseReview, CASE_REVIEW_SILENCE_WINDOW_MS } = await import("@/lib/caseReview");
 const { checkCompletionGate } = await import("@/lib/collectionRequestStateMachine");
 
 beforeAll(async () => {
@@ -1197,7 +1197,7 @@ describe("processInboundAttachment — immediate completion the instant nothing 
 });
 
 describe("processInboundAttachment — silence-window case review timer (conversations.pendingCaseReviewAt)", () => {
-  it("a single document pushes the due-at roughly 5 minutes out", async () => {
+  it("a single document pushes the due-at roughly CASE_REVIEW_SILENCE_WINDOW_MS out", async () => {
     const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
       identified: true,
@@ -1212,8 +1212,8 @@ describe("processInboundAttachment — silence-window case review timer (convers
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.pendingCaseReviewAt).not.toBeNull();
     const deltaMs = conversation.pendingCaseReviewAt!.getTime() - before;
-    expect(deltaMs).toBeGreaterThan(4.5 * 60 * 1000);
-    expect(deltaMs).toBeLessThan(5.5 * 60 * 1000);
+    expect(deltaMs).toBeGreaterThan(CASE_REVIEW_SILENCE_WINDOW_MS - 30_000);
+    expect(deltaMs).toBeLessThan(CASE_REVIEW_SILENCE_WINDOW_MS + 30_000);
   });
 
   it("a second document arriving shortly after pushes the due-at further out (debounce/reset)", async () => {
