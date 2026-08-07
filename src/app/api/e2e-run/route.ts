@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
@@ -32,6 +32,11 @@ import { trashDriveFolder } from "@/lib/googleAuth/drive";
  */
 
 export const dynamic = "force-dynamic";
+// Temporary, for the after()-duration empirical test below only — proves
+// (or disproves) whether a background after() task on this exact Hobby +
+// Fluid Compute project can really keep running past the old 60s ceiling.
+// Removed along with the rest of this file once the live E2E pass ends.
+export const maxDuration = 150;
 
 const TEST_CLIENT_PHONE_SUFFIX = "9858685"; // 055-9858685, the one authorized test number
 
@@ -97,6 +102,24 @@ export async function POST(request: Request) {
         );
         const installed = await db.execute(sql`SELECT extname, extversion FROM pg_extension ORDER BY extname`);
         return NextResponse.json({ ok: true, available: JSON.parse(JSON.stringify(available)), installed: JSON.parse(JSON.stringify(installed)) });
+      }
+
+      // Empirical proof (not just docs) that after() genuinely keeps
+      // running, on THIS production project, well past the old 60s
+      // maxDuration ceiling — the real premise the 2-minute delayed-job
+      // design depends on. Logs only (no DB write) — checked afterward via
+      // `vercel logs`. Returns immediately; the after() task sleeps ~100s
+      // (comfortably beyond 60s, comfortably under this route's own 150s
+      // maxDuration) and logs completion + measured elapsed time.
+      case "test_after_duration": {
+        const startedAt = Date.now();
+        console.log("[e2e][after-duration-test] START", new Date(startedAt).toISOString());
+        after(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100_000));
+          const elapsedMs = Date.now() - startedAt;
+          console.log("[e2e][after-duration-test] END", new Date().toISOString(), "elapsedMs=", elapsedMs);
+        });
+        return NextResponse.json({ ok: true, startedAt: new Date(startedAt).toISOString() });
       }
 
       case "ping": {
