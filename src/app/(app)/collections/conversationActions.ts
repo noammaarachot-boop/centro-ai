@@ -38,7 +38,7 @@ import { computeContinuationConfidence, MIN_CONTINUATION_CONFIDENCE } from "@/li
 import { applyDocumentReplaceIntentIfCaptioned } from "@/lib/documentReplace";
 import { mergeContinuationGroupToPdf } from "@/lib/documentMerge";
 import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
-import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
+import { attemptFinishCollectionRequest, CASE_REVIEW_SILENCE_WINDOW_MS, isFinishedSignal } from "@/lib/caseReview";
 import { withdrawStaleFinishedCheck } from "@/lib/requestExtension";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
@@ -306,6 +306,25 @@ export async function processInboundAttachment(
     .where(eq(collectionRequests.id, collectionRequestId))
     .limit(1);
   const extensionActive = collectionRequestRow?.extensionActive ?? false;
+
+  // Silence-window case review (src/lib/caseReview.ts's
+  // runAutomaticCaseStatusReview) — every attachment that reaches this
+  // function at all (regardless of how it's later classified: approved,
+  // held for review, unreadable, a duplicate, an unsupported type) is real
+  // activity on this request, so it always pushes the "go quiet and then
+  // summarize" deadline forward by the same fixed window. A burst of
+  // several files each reset it in turn, so only the last one's deadline
+  // ever actually matters — exactly the debounce the client-facing
+  // behavior needs. Skipped entirely during an active post-completion
+  // extension: that flow already has its own dedicated "סיימת להעלות?"
+  // nudge (requestExtension.ts) on a completed request with no open
+  // requirement list left for this mechanism to evaluate against.
+  if (!extensionActive) {
+    await db
+      .update(conversations)
+      .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
+      .where(eq(conversations.id, conversationId));
+  }
 
   // Smart notification grouping's lazy flush trigger: any new activity on
   // this request is a chance to notice an earlier batch (from a document

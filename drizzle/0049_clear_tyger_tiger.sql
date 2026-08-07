@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "pending_case_review_at" timestamp with time zone;
