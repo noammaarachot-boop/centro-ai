@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   auditLogs,
@@ -87,6 +87,20 @@ export async function POST(request: Request) {
 
   try {
     switch (action) {
+      // Read-only diagnostic — checks whether pg_cron/pg_net are available
+      // on this Neon instance, to evaluate a genuinely-free, existing-
+      // infrastructure alternative to GitHub Actions' unreliable scheduled-
+      // workflow timing for the 2-minute silence-window case review.
+      case "check_pg_extensions": {
+        const available = (await db.execute(
+          sql`SELECT name, default_version, installed_version FROM pg_available_extensions WHERE name IN ('pg_cron','pg_net') ORDER BY name`
+        )) as { rows: unknown[] };
+        const installed = (await db.execute(sql`SELECT extname, extversion FROM pg_extension ORDER BY extname`)) as {
+          rows: unknown[];
+        };
+        return NextResponse.json({ ok: true, available: available.rows, installed: installed.rows });
+      }
+
       case "ping": {
         const [org] = testClient
           ? await db.select().from(organizations).where(eq(organizations.id, testClient.organizationId))
