@@ -24,6 +24,8 @@ import {
 import {
   applyClarificationReply,
   applyUnsolicitedConfirmationDecision,
+  buildResendGuidanceMessage,
+  createClarificationRequest,
   resolveDocumentIntakeOutcome,
 } from "@/lib/documentIntakeReview";
 import {
@@ -198,7 +200,13 @@ export async function simulateInboundMessage(
     // it's checked first via its own resolver; everything else (including
     // the new unsolicited_document kind) goes through the generic yes/no
     // resolver, same as before.
-    const clarificationResolved = await resolveOpenClarificationReply(conversation.id, body);
+    //
+    // See the identical guard in the webhook route's own copy of this
+    // logic for why isFinishedSignal is checked first — an explicit
+    // "סיימתי" must never be swallowed as the answer to an unrelated open
+    // clarification (resolveOpenClarificationReply has no semantic gating
+    // at all; it accepts any non-empty reply as a genuine description).
+    const clarificationResolved = isFinishedSignal(body) ? null : await resolveOpenClarificationReply(conversation.id, body);
     if (clarificationResolved) {
       await applyClarificationReply(clarificationResolved, body);
       await recordAuditEvent({
@@ -436,11 +444,23 @@ export async function processInboundAttachment(
   // runCaseReview actually asks about it.
   let identityDocumentType: string | null = null;
   // "Centro checks the case, not the document" (caseReview.ts) — whichever
-  // of the three deferred kinds this document turned out to be, persisted
-  // so runCaseReview can ask about it later without re-running
-  // classification. Both stay null for "approved"/"needs_review".
-  let deferredReviewKind: "identity_anomaly" | "unsolicited_document" | "document_clarification" | null = null;
+  // of the two genuinely-deferrable business exceptions this document
+  // turned out to be, persisted so runCaseReview can ask about it later
+  // without re-running classification. A document that isn't usable as
+  // received (needs_resend) is never deferred — see needsResendMessage
+  // below — so "document_clarification" is no longer assigned here at all;
+  // it only still appears in the schema/runCaseReview for backward
+  // compatibility with rows created before this change.
+  let deferredReviewKind: "identity_anomaly" | "unsolicited_document" | null = null;
   let deferredReviewPayload: unknown = null;
+  // Immediate problematic-document handling (documentIntakeReview.ts's
+  // resolveDocumentIntakeOutcome "needs_resend" outcome) — set below when
+  // this document isn't usable as received (a real quality defect, or
+  // genuinely unidentifiable). Sent right after the document row is
+  // inserted (needs its id for the pendingConfirmation payload), never
+  // deferred to case-review time — the client can still fix it while
+  // they're in the chat.
+  let needsResendMessage: string | null = null;
   // Multi-page document merging — set when this document is another page
   // of an already-approved document rather than its own independent unit.
   // See findContinuationTarget below.
@@ -585,12 +605,12 @@ export async function processInboundAttachment(
     identityDocumentType = classification.aiDocumentType ?? null;
 
     // Smart identity/consistency verification: runs whenever the document
-    // was actually identified (matched or unsolicited — "unrecognized"
-    // already routes to its own clarification question, which has nothing
-    // yet to compare identity against). Can override even a confident
-    // "matched" outcome — see documentIdentityVerification.ts's own doc
-    // comment.
-    if (outcome.kind !== "unrecognized" && (classification.identityExtractionConfidence ?? 0) > 0) {
+    // was actually identified (matched or unsolicited — "needs_resend"
+    // already routes to its own immediate resend request, which has
+    // nothing reliable yet to compare identity against). Can override even
+    // a confident "matched" outcome — see documentIdentityVerification.ts's
+    // own doc comment.
+    if (outcome.kind !== "needs_resend" && (classification.identityExtractionConfidence ?? 0) > 0) {
       const [clientRow] = await db.select({ name: clients.name }).from(clients).where(eq(clients.id, clientId)).limit(1);
       identityClientName = clientRow?.name ?? "";
       const pool = await buildIdentityReferencePool(collectionRequestId, null, identityClientName);
@@ -606,13 +626,22 @@ export async function processInboundAttachment(
       console.log("[wa-inbound] identity check", { collectionRequestId, identityAnomaly });
     }
 
-    // "Centro checks the case, not the document" (caseReview.ts) — an
-    // exception found here is never asked about immediately. It's
-    // recorded (status + deferredReviewKind/Payload) and held silently
-    // until the client actually signals they're done sending documents;
-    // runCaseReview is what turns this into a real question, once, for
-    // the whole case together.
-    if (identityAnomaly) {
+    // "Centro checks the case, not the document" (caseReview.ts) — a
+    // genuine BUSINESS exception (wrong person, or identified-but-not-
+    // needed) is never asked about immediately: recorded (status +
+    // deferredReviewKind/Payload) and held silently until the client
+    // signals they're done; runCaseReview turns it into a real question
+    // once, for the whole case together. A document that simply isn't
+    // usable as received (needs_resend — a quality defect, or genuinely
+    // unidentifiable) is different in kind: the client can still fix it
+    // right now while they're in the chat, so that gets an immediate reply
+    // instead, checked first, ahead of even the identity check (there's
+    // nothing reliable to check identity against on an unusable file).
+    if (outcome.kind === "needs_resend") {
+      status = "clarification_requested";
+      requirementId = null;
+      needsResendMessage = buildResendGuidanceMessage(outcome, fileName);
+    } else if (identityAnomaly) {
       status = "identity_anomaly_pending_confirmation";
       requirementId = null;
       deferredReviewKind = "identity_anomaly";
@@ -649,22 +678,19 @@ export async function processInboundAttachment(
       status = "unsolicited_pending_confirmation";
       deferredReviewKind = "unsolicited_document";
       deferredReviewPayload = { documentType: outcome.documentType };
-    } else {
-      status = "clarification_requested";
-      deferredReviewKind = "document_clarification";
-      deferredReviewPayload = {};
     }
 
     await recordAuditEvent({
       organizationId,
       eventType: "document.classified",
-      description: identityAnomaly
-        ? `מסמך "${fileName}" זוהה, אך התגלתה אי-התאמת זהות (${identityAnomaly.kind}) — הוחזק לבדיקת התיק בסיום האיסוף`
-        : outcome.kind === "matched"
-          ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(outcome.confidence * 100).toFixed(0)}%)`
-          : outcome.kind === "unsolicited"
-            ? `מסמך "${fileName}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, הוחזק לבדיקת התיק בסיום האיסוף`
-            : `מסמך "${fileName}" לא זוהה בביטחון מספק — הוחזק לבדיקת התיק בסיום האיסוף`,
+      description:
+        outcome.kind === "needs_resend"
+          ? `מסמך "${fileName}" ${outcome.reason === "unreadable_quality" ? "התקבל עם בעיית איכות" : "לא זוהה בביטחון מספק"} — נשלחה בקשת שליחה חוזרת מיידית`
+          : identityAnomaly
+            ? `מסמך "${fileName}" זוהה, אך התגלתה אי-התאמת זהות (${identityAnomaly.kind}) — הוחזק לבדיקת התיק בסיום האיסוף`
+            : outcome.kind === "matched"
+              ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(outcome.confidence * 100).toFixed(0)}%)`
+              : `מסמך "${fileName}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, הוחזק לבדיקת התיק בסיום האיסוף`,
       actorType: "ai",
       clientId,
       collectionRequestId,
@@ -711,6 +737,21 @@ export async function processInboundAttachment(
     clientId,
     collectionRequestId,
   });
+
+  if (needsResendMessage) {
+    // Immediate, specific, AI-grounded (never a generic "couldn't read it")
+    // — and creates the same resolvable pendingConfirmation a deferred
+    // document_clarification always did, so whatever the client sends back
+    // (a corrected photo, or just an explanation) still resolves normally
+    // via resolveOpenClarificationReply/applyClarificationReply.
+    await createClarificationRequest({
+      organizationId,
+      clientId,
+      collectionRequestId,
+      documentId: document.id,
+      question: needsResendMessage,
+    });
+  }
 
   if (status === "approved") {
     await uploadDocumentResiliently(

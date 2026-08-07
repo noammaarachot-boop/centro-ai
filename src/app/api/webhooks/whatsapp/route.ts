@@ -419,7 +419,17 @@ async function handleInboundMessage(
     // question. Everything else (document_profile_*, and the new
     // unsolicited_document — "did you mean to send this?") goes through
     // the generic yes/no resolver exactly as before.
-    const clarificationResolved = await resolveOpenClarificationReply(conversation.id, body);
+    //
+    // An explicit "סיימתי"/"finished" is never swallowed as the answer to
+    // an open clarification, even when one happens to be pending (a real
+    // scenario since needs_resend — documentIntakeReview.ts — now asks
+    // about a problematic document immediately instead of waiting for
+    // case-review time, so an unrelated "finished" can easily arrive while
+    // one is still open) — resolveOpenClarificationReply has no semantic
+    // gating at all (any non-empty reply counts as an answer, by design,
+    // for a genuine document description), so without this check a client
+    // saying "finished" would be filed as if it described the document.
+    const clarificationResolved = isFinishedSignal(body) ? null : await resolveOpenClarificationReply(conversation.id, body);
     if (clarificationResolved) {
       console.log("[wa-inbound] clarification reply resolved", { pendingConfirmationId: clarificationResolved.id });
       await applyClarificationReply(clarificationResolved, body);

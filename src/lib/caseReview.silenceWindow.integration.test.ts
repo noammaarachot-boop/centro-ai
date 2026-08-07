@@ -276,4 +276,29 @@ describe("scheduler — silence-window due-check (mandatory: debounce, then act,
     expect(result.caseStatusReviewsRun).toBe(0);
     expect(sendTextMessage).not.toHaveBeenCalled();
   });
+
+  it("a document arriving after a summary already went out starts a fresh window and produces a second, updated summary", async () => {
+    const { orgId, requestId, conversationId, requirements } = await seedWaitingRequest(["תעודת זהות", "רישיון נהיגה"]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    const past = new Date(Date.now() - 60 * 1000);
+    await db.update(schema.conversations).set({ pendingCaseReviewAt: past }).where(eq(schema.conversations.id, conversationId));
+
+    const first = await runScheduledTasks(orgId);
+    expect(first.caseStatusReviewsRun).toBe(1);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage.mock.calls[0][2]).toContain("רישיון נהיגה"); // still missing
+
+    // The client sends the missing document, then goes quiet again — a
+    // fresh window, exactly as conversationActions.ts would set on real
+    // document receipt.
+    await approveDocument(orgId, requestId, requirements[1].id, "license.pdf");
+    const secondPast = new Date(Date.now() - 60 * 1000);
+    await db.update(schema.conversations).set({ pendingCaseReviewAt: secondPast }).where(eq(schema.conversations.id, conversationId));
+
+    const second = await runScheduledTasks(orgId);
+    expect(second.caseStatusReviewsRun).toBe(1);
+    // Second summary is the completion message, not a repeat of the first.
+    expect(sendTextMessage).toHaveBeenCalledTimes(2);
+    expect(sendTextMessage.mock.calls[1][2]).toContain("קיבלתי הכל");
+  });
 });

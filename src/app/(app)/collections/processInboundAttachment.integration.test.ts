@@ -1196,6 +1196,110 @@ describe("processInboundAttachment — immediate completion the instant nothing 
   });
 });
 
+describe("processInboundAttachment — needs_resend: an unusable document gets an immediate, specific reply, never a silent hold", () => {
+  it("a blurry document never auto-approves, replies immediately with the AI's own crafted message, and is never deferred", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.9,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.88,
+      readabilityIssue: "blurry",
+      readabilityIssueDetail: "האותיות לא קריאות",
+      clientMessageIfProblematic: "קיבלתי את תעודת הזהות, אבל התמונה מטושטשת מדי. אפשר לצלם שוב, בבירור?",
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.blur1");
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("clarification_requested");
+    expect(doc.requirementId).toBeNull();
+    expect(doc.deferredReviewKind).toBeNull(); // never deferred — this is the whole point
+
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].body).toBe("קיבלתי את תעודת הזהות, אבל התמונה מטושטשת מדי. אפשר לצלם שוב, בבירור?");
+
+    const openConfirmation = (
+      await db
+        .select()
+        .from(schema.pendingConfirmations)
+        .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")))
+    )[0];
+    expect(openConfirmation?.kind).toBe("document_clarification");
+  });
+
+  it("a genuinely unrecognized document also replies immediately, naming the file so the client knows which one", async () => {
+    // Two outstanding requirements — with only one, the sole-outstanding
+    // fallback (resolveRequirementAssignment) would auto-match this file
+    // regardless of identified=false; that's a different, already-covered
+    // scenario (see the unit tests in documentIntakeReview.test.ts).
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.1,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "IMG_9931.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.unrec1");
+
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].body).toContain("IMG_9931.jpg");
+    expect(outbound[0].body).not.toContain("שלחת אותו בכוונה"); // never the wrong question for this case
+  });
+
+  it("a clean document and a blurry document in the same burst behave independently — one silent, one immediate", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
+    const idReq = requirements.find((r) => r.name === "תעודת זהות")!;
+    const licenseReq = requirements.find((r) => r.name === "רישיון נהיגה")!;
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.97,
+      matchedRequirementId: idReq.id,
+      matchConfidence: 0.97,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.mix1");
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "רישיון נהיגה",
+      identificationConfidence: 0.9,
+      matchedRequirementId: licenseReq.id,
+      matchConfidence: 0.85,
+      readabilityIssue: "cropped_or_incomplete",
+      readabilityIssueDetail: "רק חצי מהמסמך נראה בתמונה",
+      clientMessageIfProblematic: "קיבלתי את רישיון הנהיגה, אבל רק חצי ממנו נראה בתמונה. אפשר לצלם מחדש את המסמך במלואו?",
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "license.jpg", null, Buffer.from("y"), "image/jpeg", "wamid.mix2");
+
+    const docs = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    const idDoc = docs.find((d) => d.fileName === "id.jpg")!;
+    const licenseDoc = docs.find((d) => d.fileName === "license.jpg")!;
+    expect(idDoc.status).toBe("approved");
+    expect(licenseDoc.status).toBe("clarification_requested");
+
+    // Exactly one outbound message — the immediate resend request for the
+    // license photo. The valid ID card never gets its own per-document
+    // acknowledgment (that's the 2-minute batch summary's job).
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].body).toContain("רישיון הנהיגה");
+  });
+});
+
 describe("processInboundAttachment — silence-window case review timer (conversations.pendingCaseReviewAt)", () => {
   it("a single document pushes the due-at roughly CASE_REVIEW_SILENCE_WINDOW_MS out", async () => {
     const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
