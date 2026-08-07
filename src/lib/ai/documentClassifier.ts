@@ -320,8 +320,23 @@ export async function classifyDocumentWithLearning(
     }
   }
 
+  // A filename match only earns the right to skip real content
+  // classification when it's strong and confident enough to auto-approve
+  // on its own — the same bar every other path in this file already has
+  // to clear. Found via a real production case: "3 תלושי שכר של 3 החודשים
+  // האחרונים" (a long, descriptive requirement name) gave a genuinely
+  // correct file ("05_תלוש_שכר_יולי.pdf") only a 0.286 filename-token-
+  // overlap score — well below the auto-approve bar, since a longer
+  // candidate name mechanically dilutes the overlap ratio even for a
+  // perfect semantic match. The old code treated *any* matchedRequirementId
+  // here as reason enough to never even ask the AI to look at the actual
+  // file content, so a readable, correctly-named payslip was filed as
+  // "couldn't identify this at all" — the AI was never given the chance to
+  // confirm what a human looking at the image would have seen immediately.
   const deterministic = await classifyDocument(fileName, candidates);
-  if (deterministic.matchedRequirementId) return deterministic;
+  if (deterministic.matchedRequirementId && deterministic.confidence >= AUTO_APPROVE_CONFIDENCE) {
+    return deterministic;
+  }
 
   const aiResult = await classifyDocumentViaAI(candidates, fileContent);
   if (aiResult?.matchedRequirementId) {

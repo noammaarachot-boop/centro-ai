@@ -1,10 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const classifyDocumentViaVisionAI = vi.fn();
 vi.mock("./documentVisionClassifier", () => ({
   classifyDocumentViaVisionAI: (...args: unknown[]) => classifyDocumentViaVisionAI(...args),
 }));
 
+beforeEach(() => {
+  classifyDocumentViaVisionAI.mockReset();
+});
+
+import { resolveDocumentIntakeOutcome } from "../documentIntakeReview";
 import {
   AUTO_APPROVE_CONFIDENCE,
   classifyDocument,
@@ -189,6 +194,126 @@ describe("classifyDocumentWithLearning — full 4-layer pipeline", () => {
     expect(result.matchedRequirementId).toBeNull();
     expect(result.aiRan).toBe(true);
     expect(result.aiIdentified).toBe(false);
+  });
+
+  // A real production case: a long, descriptive requirement name mechanically
+  // dilutes the deterministic filename-token-overlap score even for a
+  // perfectly correct file, so a weak (but present) matchedRequirementId
+  // must never, on its own, be trusted enough to skip real content
+  // classification — only a match that actually clears AUTO_APPROVE_CONFIDENCE
+  // earns that. See classifyDocumentWithLearning's own doc comment for the
+  // full incident.
+  describe("weak filename matches always defer to real AI content classification", () => {
+    const VERBOSE_CANDIDATES: DocumentClassificationCandidate[] = [
+      ...CANDIDATES,
+      { id: "req-payslip", name: "3 תלושי שכר של 3 החודשים האחרונים", sourceRequirementId: "src-payslip" },
+    ];
+
+    it("1. a strong, correct filename match still skips AI entirely (unaffected by the fix)", async () => {
+      const result = await classifyDocumentWithLearning("bank-statement-january.pdf", VERBOSE_CANDIDATES, []);
+      expect(result.matchedRequirementId).toBe("req-bank");
+      expect(result.confidence).toBeGreaterThanOrEqual(AUTO_APPROVE_CONFIDENCE);
+      expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled();
+    });
+
+    it("2. a weak filename match whose content genuinely matches the same requirement is confirmed by AI, not filed as unrecognized", async () => {
+      const weak = await classifyDocument("05_תלוש_שכר_יולי.pdf", VERBOSE_CANDIDATES);
+      expect(weak.matchedRequirementId).toBe("req-payslip"); // present, but...
+      expect(weak.confidence).toBeLessThan(AUTO_APPROVE_CONFIDENCE); // ...too weak to trust alone
+
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "תלוש שכר",
+        identificationConfidence: 0.95,
+        matchedRequirementId: "req-payslip",
+        matchConfidence: 0.92,
+      });
+      const result = await classifyDocumentWithLearning(
+        "05_תלוש_שכר_יולי.pdf",
+        VERBOSE_CANDIDATES,
+        [],
+        { bytes: Buffer.from("fake-bytes"), mimeType: "application/pdf" }
+      );
+      expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1); // the actual bug: this must run
+      expect(result.matchedRequirementId).toBe("req-payslip");
+      expect(result.confidence).toBe(0.92);
+      expect(result.aiRan).toBe(true);
+    });
+
+    it("3. a weak filename match whose content is a genuinely different, unrequested document routes to unsolicited, not unrecognized", async () => {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "קבלה על תיקון רכב",
+        identificationConfidence: 0.93,
+        matchedRequirementId: null,
+        matchConfidence: 0,
+      });
+      const result = await classifyDocumentWithLearning(
+        "תלוש_על_זה_ולא_על_זה.pdf", // weak/no filename overlap by itself
+        VERBOSE_CANDIDATES,
+        [],
+        { bytes: Buffer.from("fake-bytes"), mimeType: "application/pdf" }
+      );
+      expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1);
+      expect(result.aiRan).toBe(true);
+      expect(result.aiIdentified).toBe(true);
+      expect(result.aiDocumentType).toBe("קבלה על תיקון רכב");
+      // The end-to-end contract that actually matters: whatever weak
+      // matchedRequirementId lingers on the raw classification (kept only
+      // for the sole-outstanding-requirement fallback), the real intake
+      // decision must still be "unsolicited" — the AI's confident
+      // identification always wins over a leftover weak filename guess.
+      expect(resolveDocumentIntakeOutcome(result, ["req-bank", "req-invoice", "req-payslip"])).toEqual({
+        kind: "unsolicited",
+        documentType: "קבלה על תיקון רכב",
+      });
+    });
+
+    it("4. a misleading weak filename match never wins over the AI's own real classification of the actual document", async () => {
+      // Filename happens to weakly overlap with "Income Invoices" (via
+      // "income"), but the real file is actually a bank statement.
+      const misleading = await classifyDocument("income-related-scan.pdf", CANDIDATES);
+      expect(misleading.confidence).toBeLessThan(AUTO_APPROVE_CONFIDENCE);
+
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: true,
+        documentType: "Bank Statement",
+        identificationConfidence: 0.94,
+        matchedRequirementId: "req-bank",
+        matchConfidence: 0.9,
+      });
+      const result = await classifyDocumentWithLearning(
+        "income-related-scan.pdf",
+        CANDIDATES,
+        [],
+        { bytes: Buffer.from("fake-bytes"), mimeType: "application/pdf" }
+      );
+      expect(result.matchedRequirementId).toBe("req-bank"); // the AI's real answer, not the misleading filename guess
+      expect(result.confidence).toBe(0.9);
+    });
+
+    it("5. a weak filename hint never blocks AI from running, and the AI genuinely failing to identify still reaches needs_resend territory (null match)", async () => {
+      classifyDocumentViaVisionAI.mockResolvedValueOnce({
+        identified: false,
+        documentType: null,
+        identificationConfidence: 0.1,
+        matchedRequirementId: null,
+        matchConfidence: 0,
+      });
+      const result = await classifyDocumentWithLearning(
+        "05_תלוש_שכר_יולי.pdf",
+        VERBOSE_CANDIDATES,
+        [],
+        { bytes: Buffer.from("fake-bytes"), mimeType: "application/pdf" }
+      );
+      expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1);
+      expect(result.aiRan).toBe(true);
+      expect(result.aiIdentified).toBe(false);
+      // End-to-end: with more than one requirement still outstanding, the
+      // leftover weak filename guess must never be trusted as a real
+      // match — this must reach needs_resend, not a silent auto-approve.
+      expect(resolveDocumentIntakeOutcome(result, ["req-bank", "req-invoice", "req-payslip"]).kind).toBe("needs_resend");
+    });
   });
 });
 
