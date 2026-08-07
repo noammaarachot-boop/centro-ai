@@ -92,13 +92,11 @@ export async function POST(request: Request) {
       // infrastructure alternative to GitHub Actions' unreliable scheduled-
       // workflow timing for the 2-minute silence-window case review.
       case "check_pg_extensions": {
-        const available = (await db.execute(
+        const available = await db.execute(
           sql`SELECT name, default_version, installed_version FROM pg_available_extensions WHERE name IN ('pg_cron','pg_net') ORDER BY name`
-        )) as { rows: unknown[] };
-        const installed = (await db.execute(sql`SELECT extname, extversion FROM pg_extension ORDER BY extname`)) as {
-          rows: unknown[];
-        };
-        return NextResponse.json({ ok: true, available: available.rows, installed: installed.rows });
+        );
+        const installed = await db.execute(sql`SELECT extname, extversion FROM pg_extension ORDER BY extname`);
+        return NextResponse.json({ ok: true, available: JSON.parse(JSON.stringify(available)), installed: JSON.parse(JSON.stringify(installed)) });
       }
 
       case "ping": {
