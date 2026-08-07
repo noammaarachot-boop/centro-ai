@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte } from "drizzle-orm";
+import { and, eq, isNotNull, lte, notInArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -16,7 +16,7 @@ import {
   sendConfirmationRemindersAndEscalate,
 } from "@/lib/documentIntakeReview";
 import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
-import { attemptFinishCollectionRequest } from "@/lib/caseReview";
+import { attemptFinishCollectionRequest, runAutomaticCaseStatusReview } from "@/lib/caseReview";
 import { createExtensionFinishedCheckIfDue, EXTENSION_NUDGE_AFTER_MINUTES } from "@/lib/requestExtension";
 
 /**
@@ -53,6 +53,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   confirmationsReminded: number;
   confirmationsEscalated: number;
   intakeNotificationsFlushed: number;
+  caseStatusReviewsRun: number;
 }> {
   const db = await getDb();
   const allOrganizations = organizationId
@@ -67,6 +68,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   let delivered = 0;
   let driveRetried = 0;
   let recurringCyclesCreated = 0;
+  let caseStatusReviewsRun = 0;
 
   for (const organization of allOrganizations) {
     // Ch.16 FR-16.4: after inactivity, evaluate whether known requirements
@@ -241,6 +243,81 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       }
     }
 
+    // Silence-window case review (src/lib/caseReview.ts's
+    // runAutomaticCaseStatusReview) — a completely different timescale and
+    // trigger from the reminderIntervalDays pass just above: this fires
+    // once, ~5 minutes after the LAST document arrived (conversationActions.ts
+    // resets pendingCaseReviewAt on every attachment), never waiting for a
+    // "סיימתי" from the client. Never touches deferredReminderAt/the
+    // staleness reminder above — a request can be silence-summarized and
+    // still separately reminded days later if it's still incomplete by
+    // then. Extension-active requests are excluded (their own
+    // extension_finished_check nudge covers that case) and never even get
+    // pendingCaseReviewAt set to begin with.
+    const dueCaseReviews = await db
+      .select({
+        id: conversations.id,
+        collectionRequestId: conversations.collectionRequestId,
+        clientId: collectionRequests.clientId,
+        pendingCaseReviewAt: conversations.pendingCaseReviewAt,
+        service: services,
+      })
+      .from(conversations)
+      .innerJoin(collectionRequests, eq(conversations.collectionRequestId, collectionRequests.id))
+      .innerJoin(services, eq(collectionRequests.serviceId, services.id))
+      .where(
+        and(
+          eq(conversations.organizationId, organization.id),
+          isNotNull(conversations.pendingCaseReviewAt),
+          lte(conversations.pendingCaseReviewAt, new Date()),
+          eq(collectionRequests.extensionActive, false),
+          // finalizeCompletion (caseReview.ts) already clears
+          // pendingCaseReviewAt the moment a request completes, but this
+          // is excluded defensively too — a completed/cancelled request
+          // should never get a status summary regardless of how its
+          // pendingCaseReviewAt column ended up still set.
+          notInArray(collectionRequests.status, ["completed", "cancelled"])
+        )
+      );
+
+    for (const conversation of dueCaseReviews) {
+      // Atomic claim — same compare-and-swap pattern as the deferred-
+      // reminder due-check above and flushDueIntakeNotifications: two
+      // concurrent scheduler ticks can never both act on the same due
+      // window, so a burst of documents followed by silence always
+      // produces exactly one summary, never two.
+      const claimed = await db
+        .update(conversations)
+        .set({ pendingCaseReviewAt: null })
+        .where(and(eq(conversations.id, conversation.id), eq(conversations.pendingCaseReviewAt, conversation.pendingCaseReviewAt!)))
+        .returning({ id: conversations.id });
+      if (claimed.length === 0) continue; // lost the race to another tick
+
+      const scheduleConfig = resolveScheduleConfig(organization, conversation.service);
+      if (!isWithinBusinessHours(scheduleConfig)) {
+        await db
+          .update(conversations)
+          .set({ pendingCaseReviewAt: nextBusinessOpenTime(scheduleConfig) })
+          .where(eq(conversations.id, conversation.id));
+        continue;
+      }
+
+      const outcome = await runAutomaticCaseStatusReview({
+        organizationId: organization.id,
+        collectionRequestId: conversation.collectionRequestId,
+        conversationId: conversation.id,
+        clientId: conversation.clientId,
+      });
+      caseStatusReviewsRun += 1;
+      await recordAuditEvent({
+        organizationId: organization.id,
+        eventType: "scheduler.case_status_review_run",
+        description: `סיכום מצב אוטומטי לאחר 5 דקות שקט: ${outcome}`,
+        actorType: "system",
+        collectionRequestId: conversation.collectionRequestId,
+      });
+    }
+
     // Product Evolution M7 — due scheduled Template sends (Workflow B's
     // "Send Request: Now or Schedule"). `scheduledAt` is null for every
     // recurring-workflow request, so this never touches anything from
@@ -342,5 +419,6 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     confirmationsReminded,
     confirmationsEscalated,
     intakeNotificationsFlushed,
+    caseStatusReviewsRun,
   };
 }

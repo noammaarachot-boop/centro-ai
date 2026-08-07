@@ -1075,6 +1075,18 @@ export const conversations = pgTable("conversations", {
   // חמישי" or "בעוד יומיים, בתאריך 8 באוגוסט") — reused verbatim to build
   // the client-facing confirmation and kept here for audit/debugging.
   deferredReminderReason: text("deferred_reminder_reason"),
+  // Silence-window case review (src/lib/caseReview.ts's
+  // runAutomaticCaseStatusReview) — set to "now + 5 minutes" every time a
+  // document arrives on an active (non-extension) collection request,
+  // pushed forward again by every further document, so a burst of several
+  // files never triggers more than one summary. Once genuinely due (no
+  // further document arrived in the window), the scheduler sends one
+  // consolidated "here's what I got / here's what's still missing"
+  // message — this replaces relying on the client ever typing "סיימתי"
+  // for an ordinary active request; that phrase is now only meaningful for
+  // the separate post-completion extension flow. Cleared (null) the
+  // moment it's acted on or the request completes.
+  pendingCaseReviewAt: timestamp("pending_case_review_at", { withTimezone: true }),
 });
 
 export const messageDirection = pgEnum("message_direction", [

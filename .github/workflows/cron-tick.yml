@@ -1,0 +1,45 @@
+name: Scheduled tasks tick
+
+# Vercel's own Cron Jobs feature is capped at once/day on the Hobby plan
+# this project is on — far too coarse for time-sensitive mechanics like the
+# 5-minute silence-window case review (src/lib/caseReview.ts) or the
+# reminder-deferral due-date check. GitHub Actions' scheduled workflows are
+# free on a public repo and can run every 5 minutes, so this is the actual
+# production trigger for POST /api/cron/tick; Vercel's own once-daily cron
+# entry (vercel.json) stays as a low-cost backstop in case this workflow is
+# ever paused or fails to run.
+#
+# GitHub explicitly does not guarantee scheduled workflows fire at the
+# exact minute during periods of high platform load — an occasional few
+# extra minutes of delay is expected and fine here; a wildly late shift
+# (hours) is not, and would be worth investigating via the Actions tab.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+# No permissions are needed beyond reading the repo checkout-free — this
+# workflow only makes one outbound HTTP call and never touches repo
+# contents, so the default GITHUB_TOKEN is left at read-only.
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: POST /api/cron/tick
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        # --fail makes curl exit non-zero on a non-2xx response, so a real
+        # failure shows up as a failed Actions run rather than being
+        # silently swallowed. The secret is passed only via the untraced
+        # -H argument (not echoed, not logged) — GitHub Actions also masks
+        # any literal occurrence of a secret's value in step output as a
+        # second layer of protection.
+        run: |
+          curl --fail --silent --show-error \
+            -X POST "https://www.centro-ai.co.il/api/cron/tick" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -o /dev/null -w "cron tick responded: %{http_code}\n"

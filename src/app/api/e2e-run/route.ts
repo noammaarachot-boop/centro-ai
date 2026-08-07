@@ -230,6 +230,23 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: true });
       }
 
+      case "set_pending_case_review_at": {
+        const isoDate = body.isoDate as string;
+        const [latest] = await db
+          .select()
+          .from(collectionRequests)
+          .where(eq(collectionRequests.clientId, testClient!.id))
+          .orderBy(desc(collectionRequests.createdAt))
+          .limit(1);
+        if (!latest) return NextResponse.json({ error: "no request found" }, { status: 404 });
+        const [conversation] = await db.select().from(conversations).where(eq(conversations.collectionRequestId, latest.id));
+        await db
+          .update(conversations)
+          .set({ pendingCaseReviewAt: new Date(isoDate) })
+          .where(eq(conversations.id, conversation.id));
+        return NextResponse.json({ ok: true });
+      }
+
       case "run_scheduler": {
         const [latest] = await db
           .select()

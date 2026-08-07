@@ -10,6 +10,13 @@ import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
 import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
 
+// Silence-window case review (runAutomaticCaseStatusReview, below) — how
+// long a collection request's conversation must go without a new document
+// before Centro proactively reports status, instead of requiring the
+// client to ever say "סיימתי". Exported so the scheduler and its tests
+// share one source of truth for the window length.
+export const CASE_REVIEW_SILENCE_WINDOW_MS = 5 * 60 * 1000;
+
 /**
  * "Centro checks the case, not the document" — a document classified as an
  * identity anomaly, unsolicited, or unrecognized is never asked about the
@@ -148,13 +155,23 @@ export async function runCaseReview(
   return { hasPendingReview: true, groupCount: flushResult.groupCount };
 }
 
-// Quantity-aware (src/lib/documentQuantity.ts): a requirement asking for
-// more than one unit ("3 תלושי שכר") that's only partly satisfied is named
-// with how many are still needed, not just listed as flatly "missing" —
-// e.g. "תלוש שכר (התקבלו 1 מתוך 3)" instead of losing that nuance entirely.
-// A requirement with zero approved documents at all keeps the plain name,
-// same wording as before this feature existed.
-export async function listMissingRequirementNames(collectionRequestId: string): Promise<string[]> {
+interface CaseStatusLists {
+  // Every requirement with at least one approved document, labeled with
+  // progress when partially satisfied — e.g. "תלוש שכר (התקבלו 1 מתוך 3)"
+  // — same annotation convention as `missing` below, so the two lists read
+  // consistently side by side.
+  received: string[];
+  missing: string[];
+}
+
+// Quantity-aware (src/lib/documentQuantity.ts): shared core of both
+// listMissingRequirementNames (below, unchanged public behavior) and the
+// silence-window case summary (buildCaseStatusSummaryMessage) — one pass
+// over every requirement, classifying each into `received`/`missing`
+// (a partially-satisfied requirement appears in both, annotated with
+// progress in each). Multi-page continuation pages never count as their
+// own unit.
+async function computeCaseStatusLists(collectionRequestId: string): Promise<CaseStatusLists> {
   const db = await getDb();
   const requirements = await db
     .select({
@@ -176,21 +193,27 @@ export async function listMissingRequirementNames(collectionRequestId: string): 
     .from(documents)
     .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
 
+  const received: string[] = [];
   const missing: string[] = [];
   for (const requirement of requirements) {
-    // Multi-page continuation pages never count as their own unit.
     const docs = approvedDocs
       .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
       .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
     const { satisfiedCount, satisfied } = computeRequirementSatisfaction(requirement, docs);
-    if (satisfied) continue;
-    missing.push(
-      satisfiedCount > 0 && requirement.requiredCount > 1
-        ? `${requirement.name} (התקבלו ${satisfiedCount} מתוך ${requirement.requiredCount})`
-        : requirement.name
-    );
+    const progressSuffix =
+      satisfiedCount > 0 && requirement.requiredCount > 1 ? ` (התקבלו ${satisfiedCount} מתוך ${requirement.requiredCount})` : "";
+    if (satisfiedCount > 0) {
+      received.push(`${requirement.name}${progressSuffix}`);
+    }
+    if (!satisfied) {
+      missing.push(`${requirement.name}${progressSuffix}`);
+    }
   }
-  return missing;
+  return { received, missing };
+}
+
+export async function listMissingRequirementNames(collectionRequestId: string): Promise<string[]> {
+  return (await computeCaseStatusLists(collectionRequestId)).missing;
 }
 
 function buildMissingRequirementsMessage(missing: string[]): string {
@@ -200,7 +223,76 @@ function buildMissingRequirementsMessage(missing: string[]): string {
   return `קיבלתי, תודה! עדיין חסרים לי:\n${missing.map((name) => `• ${name}`).join("\n")}`;
 }
 
+// The silence-window summary's own message — unlike
+// buildMissingRequirementsMessage (a reply to the client's own "סיימתי"),
+// this is a proactive report the client never asked for, so it names both
+// what actually arrived and what's still outstanding rather than assuming
+// "קיבלתי" context from a reply.
+export function buildCaseStatusSummaryMessage(received: string[], missing: string[]): string {
+  const parts: string[] = [];
+  if (received.length > 0) {
+    parts.push(
+      received.length === 1
+        ? `קיבלתי את המסמך הבא:\n• ${received[0]}`
+        : `קיבלתי את המסמכים הבאים:\n${received.map((name) => `• ${name}`).join("\n")}`
+    );
+  }
+  if (missing.length > 0) {
+    parts.push(
+      missing.length === 1
+        ? `עדיין חסר לי:\n• ${missing[0]}`
+        : `עדיין חסרים לי:\n${missing.map((name) => `• ${name}`).join("\n")}`
+    );
+  }
+  return parts.join("\n\n");
+}
+
 export type FinishOutcome = "review_pending" | "missing_requirements" | "completed" | "blocked";
+
+// Shared by both attemptFinishCollectionRequest (explicit "סיימתי") and
+// runAutomaticCaseStatusReview (silence-window trigger, below) — the exact
+// same completion send + conversation-close + deferral/extension cleanup
+// either path needs the moment completeCollectionRequest actually succeeds.
+async function finalizeCompletion(params: { organizationId: string; collectionRequestId: string; conversationId: string }): Promise<void> {
+  await sendOutboundMessage(
+    params.organizationId,
+    params.conversationId,
+    "מעולה, קיבלתי הכל! תודה 😊",
+    "ai",
+    "manual",
+    undefined,
+    true
+  );
+
+  const db = await getDb();
+  await db
+    .update(conversations)
+    .set({
+      status: "closed",
+      updatedAt: new Date(),
+      // Reminder deferral by explicit client commitment
+      // (src/lib/reminderDeferral.ts) — a no-op for every completion that
+      // never had one; when it was set, the request completing (even
+      // before the deferred date arrives — the client sent everything
+      // early) means there's nothing left to defer a reminder about.
+      deferredReminderAt: null,
+      // Silence-window case review — a no-op for every completion that
+      // never had one pending; when it was set, the request completing
+      // means there's nothing left to summarize.
+      pendingCaseReviewAt: null,
+    })
+    .where(eq(conversations.id, params.conversationId));
+  // Post-completion extension flow (src/lib/requestExtension.ts) — a no-op
+  // for every ordinary (non-extension) completion, since it's already
+  // false there. Cleared here, centrally, rather than at each of the
+  // several places that can trigger a completion (an explicit "finished"
+  // message, the extension-finished-check confirmation, the scheduler),
+  // so none of them has to remember to do it themselves.
+  await db
+    .update(collectionRequests)
+    .set({ extensionActive: false })
+    .where(eq(collectionRequests.id, params.collectionRequestId));
+}
 
 // The single entry point for "the client is done sending documents" —
 // used identically whether that came from the client's own WhatsApp text
@@ -247,42 +339,69 @@ export async function attemptFinishCollectionRequest(params: {
     return "missing_requirements";
   }
 
+  await finalizeCompletion(params);
+  return "completed";
+}
+
+export type CaseStatusReviewOutcome = "completed" | "review_pending" | "summary_sent" | "nothing_to_report";
+
+// The silence-window counterpart to attemptFinishCollectionRequest — same
+// underlying evaluation (review the whole case, then check completion),
+// triggered by 5 minutes of document inactivity (the scheduler, via
+// conversations.pendingCaseReviewAt) rather than the client ever typing
+// "סיימתי". An ordinary active collection request has no dependency on
+// that phrase at all anymore; it remains meaningful only for the separate
+// post-completion extension flow (requestExtension.ts), which still asks
+// its own "סיימת להעלות?" question because a completed request has no
+// requirement list left to silently evaluate against.
+//
+// Held/ambiguous documents (deferredReviewKind) never block this from
+// running: runCaseReview below already turns them into their own real
+// question the moment AI genuinely couldn't resolve them — by definition
+// the point they were deferred to begin with — so this function itself
+// never needs a separate "still under review" placeholder line. When a
+// question was just asked, that's this tick's entire output; the summary
+// naturally follows on a later tick once the client replies (which resets
+// the silence window like any other activity) or once nothing more is
+// pending.
+export async function runAutomaticCaseStatusReview(params: {
+  organizationId: string;
+  collectionRequestId: string;
+  conversationId: string;
+  clientId: string;
+}): Promise<CaseStatusReviewOutcome> {
+  const { hasPendingReview } = await runCaseReview(params.organizationId, params.clientId, params.collectionRequestId);
+  if (hasPendingReview) {
+    return "review_pending";
+  }
+
+  const result = await completeCollectionRequest(
+    params.organizationId,
+    undefined,
+    "client",
+    params.collectionRequestId
+  );
+  if (result.ok) {
+    await finalizeCompletion(params);
+    return "completed";
+  }
+
+  const { received, missing } = await computeCaseStatusLists(params.collectionRequestId);
+  if (missing.length === 0) {
+    // Blocked for some other reason (e.g. a document still mid-upload
+    // retry) — nothing concrete to report yet, never guess.
+    return "nothing_to_report";
+  }
   await sendOutboundMessage(
     params.organizationId,
     params.conversationId,
-    "מעולה, קיבלתי הכל! תודה 😊",
+    buildCaseStatusSummaryMessage(received, missing),
     "ai",
-    "manual",
+    "automated",
     undefined,
     true
   );
-
-  const db = await getDb();
-  await db
-    .update(conversations)
-    .set({
-      status: "closed",
-      updatedAt: new Date(),
-      // Reminder deferral by explicit client commitment
-      // (src/lib/reminderDeferral.ts) — a no-op for every completion that
-      // never had one; when it was set, the request completing (even
-      // before the deferred date arrives — the client sent everything
-      // early) means there's nothing left to defer a reminder about.
-      deferredReminderAt: null,
-    })
-    .where(eq(conversations.id, params.conversationId));
-  // Post-completion extension flow (src/lib/requestExtension.ts) — a no-op
-  // for every ordinary (non-extension) completion, since it's already
-  // false there. Cleared here, centrally, rather than at each of the
-  // several places that can trigger a completion (an explicit "finished"
-  // message, the extension-finished-check confirmation, the scheduler),
-  // so none of them has to remember to do it themselves.
-  await db
-    .update(collectionRequests)
-    .set({ extensionActive: false })
-    .where(eq(collectionRequests.id, params.collectionRequestId));
-
-  return "completed";
+  return "summary_sent";
 }
 
 // Free-text "I'll send it later" understanding — called only when the

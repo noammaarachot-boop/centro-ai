@@ -1195,3 +1195,83 @@ describe("processInboundAttachment — immediate completion the instant nothing 
     expect(outbound).toHaveLength(0); // completely silent — never interrupts mid-collection
   });
 });
+
+describe("processInboundAttachment — silence-window case review timer (conversations.pendingCaseReviewAt)", () => {
+  it("a single document pushes the due-at roughly 5 minutes out", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+    });
+    const before = Date.now();
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.timer1");
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.pendingCaseReviewAt).not.toBeNull();
+    const deltaMs = conversation.pendingCaseReviewAt!.getTime() - before;
+    expect(deltaMs).toBeGreaterThan(4.5 * 60 * 1000);
+    expect(deltaMs).toBeLessThan(5.5 * 60 * 1000);
+  });
+
+  it("a second document arriving shortly after pushes the due-at further out (debounce/reset)", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.timer2a");
+    const [firstConversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    const firstDueAt = firstConversation.pendingCaseReviewAt!.getTime();
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "רישיון נהיגה",
+      identificationConfidence: 0.9,
+      matchedRequirementId: requirements[1].id,
+      matchConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "license.jpg", null, Buffer.from("y"), "image/jpeg", "wamid.timer2b");
+    const [secondConversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+
+    expect(secondConversation.pendingCaseReviewAt!.getTime()).toBeGreaterThanOrEqual(firstDueAt);
+  });
+
+  it("never sets the timer while a post-completion extension is active — that flow uses its own nudge instead", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["דף חשבון בנק"]);
+    await db.update(schema.collectionRequests).set({ extensionActive: true }).where(eq(schema.collectionRequests.id, requestId));
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "דף חשבון בנק",
+      identificationConfidence: 0.9,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "bank.jpg", null, Buffer.from("z"), "image/jpeg", "wamid.timer3");
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.pendingCaseReviewAt).toBeNull();
+  });
+
+  it("a document that completes the request right away clears any pendingCaseReviewAt rather than leaving it dangling", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    await db.update(schema.collectionRequests).set({ status: "active" }).where(eq(schema.collectionRequests.id, requestId));
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("x"), "image/jpeg", "wamid.timer4");
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.status).toBe("closed");
+    expect(conversation.pendingCaseReviewAt).toBeNull();
+  });
+});
