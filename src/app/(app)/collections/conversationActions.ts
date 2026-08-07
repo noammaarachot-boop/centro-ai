@@ -334,34 +334,31 @@ export async function processInboundAttachment(
   // nudge (requestExtension.ts) on a completed request with no open
   // requirement list left for this mechanism to evaluate against.
   if (!extensionActive) {
-    // Precise real-time trigger for the write below (scheduleCaseReviewRelay,
-    // caseReview.ts) — only started once per burst, not once per document:
-    // a relay already in flight re-reads pendingCaseReviewAt itself on
-    // every wake, so a later document in the same burst just needs to push
-    // the column forward (below, unconditionally, exactly as before) for
-    // the already-running relay to pick up automatically. Racing two
-    // documents landing at nearly the same instant can still start two
-    // relays — harmless (see scheduleCaseReviewRelay's own doc comment on
-    // its claim), just occasionally slightly redundant.
-    const [beforeReview] = await db
-      .select({ pendingCaseReviewAt: conversations.pendingCaseReviewAt })
-      .from(conversations)
-      .where(eq(conversations.id, conversationId))
-      .limit(1);
-    const relayAlreadyLikelyInFlight = !!(
-      beforeReview?.pendingCaseReviewAt && beforeReview.pendingCaseReviewAt.getTime() > Date.now()
-    );
-
     await db
       .update(conversations)
       .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
       .where(eq(conversations.id, conversationId));
 
-    if (!relayAlreadyLikelyInFlight) {
-      scheduleAfterResponse(() =>
-        scheduleCaseReviewRelay({ organizationId, conversationId, collectionRequestId, clientId })
-      );
-    }
+    // Precise real-time trigger for the write above (scheduleCaseReviewRelay,
+    // caseReview.ts) — deliberately started on EVERY document, not just the
+    // first one in a burst. An earlier version only started one relay per
+    // burst (skipped if a still-future pendingCaseReviewAt suggested one was
+    // already in flight) — that broke in ordinary use: a real 3-document
+    // burst spread over ~21 seconds pushed the actual due time to 120s+21s
+    // past the FIRST document's own arrival, which exceeded that one relay's
+    // fixed wait budget, so it gave up ~14 seconds before the real due time.
+    // Every relay here only ever needs to cover ~2 minutes from ITS OWN
+    // start (CASE_REVIEW_RELAY_MAX_WAIT_MS has comfortable margin over
+    // that), regardless of how long the overall burst runs — a later
+    // document's own relay always has a fresh, short budget to reliably
+    // cover the tail even if an earlier one in the same burst times out.
+    // Redundant relays in the same burst all race the exact same atomic
+    // claim (see scheduleCaseReviewRelay's own doc comment) — cheap
+    // (Fluid Compute doesn't charge for idle wait time) and always safe,
+    // never a double-send.
+    scheduleAfterResponse(() =>
+      scheduleCaseReviewRelay({ organizationId, conversationId, collectionRequestId, clientId })
+    );
   }
 
   // Smart notification grouping's lazy flush trigger: any new activity on
