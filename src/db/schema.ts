@@ -1114,6 +1114,49 @@ export const messages = pgTable("messages", {
     .defaultNow(),
 });
 
+// Webhook idempotency/claim tracking — a real production incident showed
+// Meta redelivering the same inbound webhook up to 4 times when a single
+// attempt's AI classification call ran long enough to hit the route's
+// maxDuration (Vercel killing the function before it could respond 2xx).
+// documents.whatsappMessageId alone wasn't enough to prevent this: it's
+// only written once a document row is successfully inserted, at the very
+// END of the (slow) classification pipeline, so a retry arriving *while*
+// the first attempt is still mid-flight sails right past that check and
+// reprocesses from scratch — redundant AI calls, and (since inbound
+// `messages` rows carried no WhatsApp message id at all) duplicate message-
+// log entries too. This table claims the message id atomically as the
+// very first thing the webhook does, before any expensive work.
+//
+// "processing" is deliberately a combined received+claimed+in-flight
+// state — the unique claim row's mere existence already proves both
+// "received" and "claimed" happened atomically together; there's no
+// separate window between them worth its own persisted state. A
+// "processing" row older than a bounded staleness window (see
+// webhookIdempotency.ts's CLAIM_STALE_MS) is treated as an abandoned/
+// crashed attempt and may be reclaimed — a claim can never permanently
+// block reprocessing just because the attempt that made it died.
+export const webhookClaimStatus = pgEnum("webhook_claim_status", [
+  "processing",
+  "completed",
+  "failed",
+]);
+
+export const webhookMessageClaims = pgTable(
+  "webhook_message_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    whatsappMessageId: text("whatsapp_message_id").notNull(),
+    status: webhookClaimStatus("status").notNull().default("processing"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    // Never a stack trace (could carry sensitive request data) — just
+    // enough to see in the audit trail that a specific message genuinely
+    // failed processing and was retried, per "never hide a failure."
+    lastError: text("last_error"),
+  },
+  (table) => [uniqueIndex("webhook_message_claims_whatsapp_message_id_idx").on(table.whatsappMessageId)]
+);
+
 export const pendingConfirmationStatus = pgEnum("pending_confirmation_status", [
   "pending",
   "confirmed",

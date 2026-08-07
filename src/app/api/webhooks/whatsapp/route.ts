@@ -31,20 +31,25 @@ import { processInboundAttachment, reprocessHeldReopenDocument } from "@/app/(ap
 import { downloadMedia } from "@/lib/whatsapp/media";
 import { toE164 } from "@/lib/whatsapp/phone";
 import { verifyWebhookSignature } from "@/lib/whatsapp/webhookSignature";
+import { claimWebhookMessage, markWebhookMessageCompleted, markWebhookMessageFailed } from "@/lib/webhookIdempotency";
+import { after } from "next/server";
 
 export const dynamic = "force-dynamic";
-// Smart notification grouping (pendingConfirmations.ts's
-// flushDueIntakeNotifications) schedules a background wait — via
-// scheduleAfterResponse/Next's after() — for the organization's grouping
-// window (organizations.documentGroupingWindowSeconds, default 15s) before
-// actually sending a batched confirmation question. after() only runs for
-// as long as this route's own maxDuration allows; the platform default
-// (10s on Vercel's Hobby tier) is shorter than the default grouping
-// window, so without this the background flush would be killed before it
-// ever sends. 30s comfortably covers the default window plus normal
-// classification/upload work, and is well within every Vercel plan's
-// maxDuration ceiling.
-export const maxDuration = 30;
+// A real production incident: a single message's AI vision classification
+// call sometimes ran long enough to hit this route's own maxDuration,
+// Vercel killed the function before it could respond 2xx, and Meta
+// redelivered the same webhook repeatedly (see webhook_message_claims's
+// own doc comment in schema.ts for the full incident and fix). Raised from
+// 30s to 60s to give real classification calls more headroom before ever
+// hitting the ceiling — Vercel's Hobby plan's own documented maximum for a
+// serverless function's duration, so this is already at the platform's
+// ceiling, not an arbitrary number. The actual fix for the redelivery
+// problem itself is the claim-then-defer restructuring below: Meta gets
+// its 2xx the moment every message in the payload is claimed, long before
+// classification even starts, so a slow AI call can no longer cause a
+// retry storm — this higher ceiling is just extra safety margin for the
+// background work itself to actually finish.
+export const maxDuration = 60;
 
 const MIME_EXTENSIONS: Record<string, string> = {
   "application/pdf": "pdf",
@@ -615,8 +620,25 @@ async function handleInboundMessage(
   }
 }
 
-async function processWebhookPayload(payload: WhatsAppWebhookPayload) {
+interface ClaimedMessage {
+  organization: typeof organizations.$inferSelect;
+  message: WhatsAppInboundMessage;
+  claimId: string;
+}
+
+// Phase 1 — fast and fully synchronous: resolve which organization each
+// change belongs to, apply cheap delivery-status updates inline, and
+// atomically claim every real inbound message (webhookIdempotency.ts).
+// Deliberately does none of the expensive work (classification, AI,
+// outbound sends) — that's phase 2, run only after Meta already has its
+// 2xx (see POST below). A message that loses its claim (already being
+// processed by a still-live attempt, or already completed) is simply
+// never added to the returned list — no error, no log spam beyond one
+// line, since a Meta redelivery hitting this is the expected/desired case,
+// not a failure.
+async function claimWebhookPayload(payload: WhatsAppWebhookPayload): Promise<ClaimedMessage[]> {
   const db = await getDb();
+  const claimed: ClaimedMessage[] = [];
 
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
@@ -640,7 +662,8 @@ async function processWebhookPayload(payload: WhatsAppWebhookPayload) {
         continue;
       }
 
-      // Delivery/read status updates for messages Centro itself sent.
+      // Delivery/read status updates for messages Centro itself sent —
+      // cheap, no AI, safe to keep synchronous.
       for (const status of value.statuses ?? []) {
         await db
           .update(messages)
@@ -648,23 +671,39 @@ async function processWebhookPayload(payload: WhatsAppWebhookPayload) {
           .where(eq(messages.whatsappMessageId, status.id));
       }
 
-      // Each message gets its own try/catch — Meta can (and, per the
-      // original bug report, sometimes does) batch several attachments
-      // into one payload, or send several messages seconds apart. Before
-      // this, a single throw from message N aborted the loop and silently
-      // dropped every message after it in the same payload; a document
-      // failure must never cost a sibling attachment its own chance to be
-      // received.
       for (const message of value.messages ?? []) {
-        try {
-          await handleInboundMessage(organization, message);
-        } catch (error) {
-          console.error("[wa-inbound] handleInboundMessage FAILED (isolated — other messages in this payload still process)", {
-            messageId: message.id,
-            error,
-          });
+        const claim = await claimWebhookMessage(message.id);
+        if (claim.outcome !== "claimed") {
+          console.log("[wa-inbound] SKIPPED (claim)", { messageId: message.id, outcome: claim.outcome });
+          continue;
         }
+        claimed.push({ organization, message, claimId: claim.claimId });
       }
+    }
+  }
+
+  return claimed;
+}
+
+// Phase 2 — the actual (slow) work, run in the background via after()
+// once Meta already has its response. Each message keeps its own
+// try/catch (Meta can batch several attachments into one payload, or send
+// several messages seconds apart — a single throw must never cost a
+// sibling message its own chance to be processed), and every outcome is
+// recorded on its claim row: completed on success, failed (retryable —
+// see webhookIdempotency.ts) on any error, so a genuine crash never
+// leaves a message silently stuck as "processing" forever.
+async function processClaimedMessages(claimedMessages: ClaimedMessage[]): Promise<void> {
+  for (const { organization, message, claimId } of claimedMessages) {
+    try {
+      await handleInboundMessage(organization, message);
+      await markWebhookMessageCompleted(claimId);
+    } catch (error) {
+      console.error("[wa-inbound] handleInboundMessage FAILED (isolated — other messages in this payload still process)", {
+        messageId: message.id,
+        error,
+      });
+      await markWebhookMessageFailed(claimId, error);
     }
   }
 }
@@ -674,8 +713,12 @@ async function processWebhookPayload(payload: WhatsAppWebhookPayload) {
 // simulator stays, unchanged, as a manual-override tool; see the
 // WhatsApp plan). Meta requires a fast 2xx regardless of internal
 // outcome — a slow or non-2xx response causes Meta to retry the same
-// webhook repeatedly, multiplying duplicate-processing risk — so every
-// failure below is caught and logged, never thrown back to Meta.
+// webhook repeatedly (confirmed in production: a single slow AI
+// classification call was enough to trigger 4 redeliveries of the same
+// message over ~75 seconds). Claiming every message up front (fast, no
+// AI) and deferring the actual processing to run after the response is
+// sent means Meta's own retry timer never has a reason to fire in the
+// first place, regardless of how long classification ends up taking.
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   const signature = request.headers.get("x-hub-signature-256");
@@ -691,9 +734,27 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    await processWebhookPayload(payload);
+    const claimedMessages = await claimWebhookPayload(payload);
+    if (claimedMessages.length > 0) {
+      try {
+        // Real production path: schedules the work to run after this
+        // response is already sent — Meta's 2xx is never delayed by
+        // classification, however long it takes.
+        after(() => processClaimedMessages(claimedMessages));
+      } catch {
+        // after() requires an active request scope and throws without one
+        // — the case for this route's own E2E suite (and any other test)
+        // that calls POST directly with no real Next.js request context.
+        // Falling back to processing inline (still before this function
+        // returns) keeps those tests' synchronous "POST, then assert on
+        // the outcome" pattern working exactly as it did before the
+        // claim/defer restructuring; production always has a real request
+        // scope on this route, so this branch never runs there.
+        await processClaimedMessages(claimedMessages);
+      }
+    }
   } catch (error) {
-    console.error("[whatsapp-webhook] processing failed", error);
+    console.error("[whatsapp-webhook] claim phase failed", error);
   }
 
   return NextResponse.json({ status: "ok" });
