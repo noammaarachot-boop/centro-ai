@@ -95,6 +95,7 @@ vi.mock("@/lib/googleAuth/drive", async () => {
 
 const {
   resolveDocumentIntakeOutcome,
+  buildResendGuidanceMessage,
   createUnsolicitedDocumentConfirmation,
   createClarificationRequest,
   applyUnsolicitedConfirmationDecision,
@@ -180,7 +181,34 @@ describe("resolveDocumentIntakeOutcome", () => {
       aiIdentified: false,
       aiDocumentType: null,
     };
-    expect(resolveDocumentIntakeOutcome(classification, ["req-1", "req-2"])).toEqual({ kind: "unrecognized" });
+    expect(resolveDocumentIntakeOutcome(classification, ["req-1", "req-2"])).toEqual({
+      kind: "needs_resend",
+      reason: "unrecognized",
+      suspectedDocumentType: null,
+      issueDetail: null,
+      aiClientMessage: null,
+    });
+  });
+
+  it("a real quality defect always wins, even over a confident match — never silently auto-approves a blurry document", () => {
+    const classification: DocumentClassification = {
+      ...readable,
+      matchedRequirementId: "req-1",
+      confidence: 0.95,
+      aiRan: true,
+      aiIdentified: true,
+      aiDocumentType: "תעודת זהות",
+      readabilityIssue: "blurry",
+      readabilityIssueDetail: "האותיות לא קריאות",
+      clientMessageIfProblematic: "קיבלתי את תעודת הזהות שלך, אבל התמונה מטושטשת מדי. אפשר לשלוח שוב צילום ברור?",
+    };
+    expect(resolveDocumentIntakeOutcome(classification, ["req-1"])).toEqual({
+      kind: "needs_resend",
+      reason: "unreadable_quality",
+      suspectedDocumentType: "תעודת זהות",
+      issueDetail: "האותיות לא קריאות",
+      aiClientMessage: "קיבלתי את תעודת הזהות שלך, אבל התמונה מטושטשת מדי. אפשר לשלוח שוב צילום ברור?",
+    });
   });
 
   it("sole-outstanding fallback still applies when there is no AI signal at all (filename-only path)", () => {
@@ -199,7 +227,13 @@ describe("resolveDocumentIntakeOutcome", () => {
       matchedRequirementId: "req-1",
       confidence: 0.3,
     };
-    expect(resolveDocumentIntakeOutcome(classification, ["req-1", "req-2"])).toEqual({ kind: "unrecognized" });
+    expect(resolveDocumentIntakeOutcome(classification, ["req-1", "req-2"])).toEqual({
+      kind: "needs_resend",
+      reason: "unrecognized",
+      suspectedDocumentType: null,
+      issueDetail: null,
+      aiClientMessage: null,
+    });
   });
 
   it("never guesses when the AI found nothing and more than one requirement is still open", () => {
@@ -210,7 +244,48 @@ describe("resolveDocumentIntakeOutcome", () => {
       aiRan: true,
       aiIdentified: false,
     };
-    expect(resolveDocumentIntakeOutcome(classification, ["req-1", "req-2"])).toEqual({ kind: "unrecognized" });
+    expect(resolveDocumentIntakeOutcome(classification, ["req-1", "req-2"])).toEqual({
+      kind: "needs_resend",
+      reason: "unrecognized",
+      suspectedDocumentType: null,
+      issueDetail: null,
+      aiClientMessage: null,
+    });
+  });
+});
+
+describe("buildResendGuidanceMessage", () => {
+  it("prefers the AI's own crafted message when one is available", () => {
+    const message = buildResendGuidanceMessage(
+      {
+        kind: "needs_resend",
+        reason: "unreadable_quality",
+        suspectedDocumentType: "רישיון נהיגה",
+        issueDetail: "רק חצי מהמסמך נראה בתמונה",
+        aiClientMessage: "קיבלתי את רישיון הנהיגה, אבל רק חצי ממנו נראה בתמונה. אפשר לצלם מחדש את המסמך במלואו?",
+      },
+      "license.jpg"
+    );
+    expect(message).toBe("קיבלתי את רישיון הנהיגה, אבל רק חצי ממנו נראה בתמונה. אפשר לצלם מחדש את המסמך במלואו?");
+  });
+
+  it("falls back to a deterministic template naming the file and the issue when no AI message is available", () => {
+    const message = buildResendGuidanceMessage(
+      { kind: "needs_resend", reason: "unreadable_quality", suspectedDocumentType: null, issueDetail: "התמונה כהה מדי", aiClientMessage: null },
+      "photo1.jpg"
+    );
+    expect(message).toContain("photo1.jpg");
+    expect(message).toContain("התמונה כהה מדי");
+    expect(message).not.toContain("שלחת אותו בכוונה"); // never the wrong question for a technical defect
+  });
+
+  it("falls back to a generic-but-still-file-identifying template when there's no AI message and no specific issue detail", () => {
+    const message = buildResendGuidanceMessage(
+      { kind: "needs_resend", reason: "unrecognized", suspectedDocumentType: null, issueDetail: null, aiClientMessage: null },
+      "IMG_0042.jpg"
+    );
+    expect(message).toContain("IMG_0042.jpg");
+    expect(message).toContain("לא הצלחתי לזהות");
   });
 });
 

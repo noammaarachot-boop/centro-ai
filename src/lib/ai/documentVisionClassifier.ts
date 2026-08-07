@@ -47,6 +47,32 @@ export interface VisionClassificationResult {
   documentReferenceNumber: string | null; // a contract/invoice/case number printed on the page, if any
   pageNumberCurrent: number | null; // this page's own number, if printed (e.g. "עמוד 2 מתוך 3" -> 2)
   pageNumberTotal: number | null; // the total page count, if printed (e.g. "עמוד 2 מתוך 3" -> 3)
+  // Immediate problematic-document handling — a real image-quality defect
+  // (as opposed to "I just don't recognize this kind of document," which
+  // identified=false already covers on its own) that makes the file
+  // genuinely unusable even if a type/match was otherwise guessed. When
+  // set, resolveDocumentIntakeOutcome (documentIntakeReview.ts) always
+  // routes to "needs_resend" regardless of how confident the match/identify
+  // scores were — a blurry ID card must never be silently auto-approved.
+  readabilityIssue: "blurry" | "cropped_or_incomplete" | "too_dark_or_low_quality" | "damaged" | "wrong_orientation" | "other" | null;
+  // Free-text elaboration of the issue above, grounded in what's actually
+  // visible (e.g. "רק החלק העליון של המסמך נראה בתמונה") — null whenever
+  // readabilityIssue is null.
+  readabilityIssueDetail: string | null;
+  // A hedged guess at the document type, filled in only when identified is
+  // false but there's a real partial signal worth mentioning to the client
+  // (e.g. "משהו שנראה כמו תעודה רשמית") — never a confident assertion, and
+  // null when there's genuinely nothing to go on.
+  suspectedDocumentType: string | null;
+  // A ready, natural Hebrew message for the client — populated only when
+  // this document needs a resend (readabilityIssue is set, or identified is
+  // false). Grounded strictly in the fields above: never claims certainty
+  // beyond identificationConfidence, always hedges suspectedDocumentType,
+  // never invents a readabilityIssue that wasn't actually flagged, and asks
+  // for a clear resend rather than a generic "did you mean to send this?".
+  // Null whenever the document doesn't need one (it's readable and either
+  // matched or a confidently-identified-but-unsolicited type).
+  clientMessageIfProblematic: string | null;
 }
 
 // WhatsApp never supplies a real filename for an inbound photo (Meta's
@@ -169,6 +195,30 @@ export async function classifyDocumentViaVisionAI(
         .int()
         .nullable()
         .describe('סך כל העמודים, אם מודפס על המסמך (למשל "עמוד 2 מתוך 3" -> 3). null אם לא מצוין.'),
+      readabilityIssue: z
+        .enum(["blurry", "cropped_or_incomplete", "too_dark_or_low_quality", "damaged", "wrong_orientation", "other"])
+        .nullable()
+        .describe(
+          "בעיית איכות תמונה אמיתית שהופכת את הקובץ ללא שמיש, גם אם ניחשת בסבירות טובה מה זה — למשל מטושטש מדי לקריאה, רק חלק מהמסמך נראה בתמונה, כהה/איכות נמוכה מדי, נראה פגום/קרוע, או מסובב. null אם התמונה קריאה וברורה, גם אם לא הצלחת לזהות מה המסמך."
+        ),
+      readabilityIssueDetail: z
+        .string()
+        .nullable()
+        .describe(
+          "תיאור קצר וממוקד של הבעיה בפועל, מבוסס רק על מה שאתה רואה בפועל (למשל \"רק החלק העליון של המסמך נראה בתמונה\"). null אם readabilityIssue הוא null."
+        ),
+      suspectedDocumentType: z
+        .string()
+        .nullable()
+        .describe(
+          'ניחוש זהיר לסוג המסמך, ורק כאשר identified=false אך יש רמז חלקי אמיתי לכך שזה עשוי להיות סוג מסוים (למשל "נראה כמו מסמך רשמי, יתכן תעודת זהות"). לעולם אל תמציא ניחוש — null אם באמת אין שום רמז.'
+        ),
+      clientMessageIfProblematic: z
+        .string()
+        .nullable()
+        .describe(
+          "הודעה קצרה, טבעית ואדיבה בעברית ללקוח, המיועדת להישלח מיד — רק כאשר readabilityIssue אינו null, או ש-identified הוא false (כלומר המסמך זקוק לשליחה חוזרת). ההודעה חייבת: (1) להתייחס למסמך שהתקבל בצורה שתאפשר ללקוח להבין לאיזה קובץ הכוונה (למשל \"המסמך האחרון ששלחת\"); (2) לציין את הבעיה בפועל, מבוססת רק על readabilityIssue/readabilityIssueDetail שמילאת — לעולם אל תמציא בעיה שלא צוינה; (3) אם יש suspectedDocumentType — לנסח בזהירות ובגמישות (\"נראה כמו...\", \"יתכן ש...\"), לעולם לא בוודאות; (4) לבקש במפורש לשלוח שוב צילום ברור/מלא; (5) לעולם לא לשאול \"האם שלחת אותו בכוונה?\" — זו לא השאלה הרלוונטית כשיש בעיה טכנית. null בכל מקרה אחר — כשהמסמך זוהה בהצלחה (בין אם הוא מתאים לדרישה ובין אם לא, כל עוד אין בעיית איכות)."
+        ),
     });
 
     console.log("[wa-inbound] vision classification REQUEST", {
@@ -186,7 +236,7 @@ export async function classifyDocumentViaVisionAI(
           content: [
             {
               type: "text",
-              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. יש כמה שאלות נפרדות: (1) האם אתה יכול לזהות בבירור איזה סוג מסמך זה בפועל, גם אם הוא לא קשור לרשימה? (2) בהנחה שזיהית אותו, האם הוא בפועל עונה על אחת מהדרישות ברשימה, או שהוא סוג מסמך אחר לגמרי (כמו חשבונית, קבלה, או כל דבר אחר שלא התבקש)? אל תסמן התאמה רק כי המסמך זוהה — התאמה נדרשת רק כשהוא באמת מהסוג המבוקש. (3) אם מופיעים במסמך שם אדם, מספר תעודת זהות, או שם חברה — חלץ אותם בדיוק כפי שהם כתובים. אל תנחש ואל תשלים פרטים שלא כתובים בבירור במסמך עצמו. (4) אם המסמך מתייחס בבירור לתקופה/תאריך מסוימים (חודש תלוש שכר, חודש דף בנק, תאריך חשבונית) — ציין אותם. אל תנחש תאריך שלא כתוב בבירור במסמך. (5) אם מודפס על המסמך מספר חוזה/חשבון/תיק, או מספר עמוד (כמו "עמוד 2 מתוך 3") — ציין אותם בדיוק. אלה עוזרים לזהות אם כמה קבצים הם למעשה עמודים של אותו מסמך רב-עמודים. אל תנחש מספרים שלא מודפסים בבירור.`,
+              text: `זהו קובץ שלקוח שלח כדי לענות על אחת מהדרישות הבאות בבקשת איסוף מסמכים: ${candidateNames.join(", ")}. יש כמה שאלות נפרדות: (1) האם אתה יכול לזהות בבירור איזה סוג מסמך זה בפועל, גם אם הוא לא קשור לרשימה? (2) בהנחה שזיהית אותו, האם הוא בפועל עונה על אחת מהדרישות ברשימה, או שהוא סוג מסמך אחר לגמרי (כמו חשבונית, קבלה, או כל דבר אחר שלא התבקש)? אל תסמן התאמה רק כי המסמך זוהה — התאמה נדרשת רק כשהוא באמת מהסוג המבוקש. (3) אם מופיעים במסמך שם אדם, מספר תעודת זהות, או שם חברה — חלץ אותם בדיוק כפי שהם כתובים. אל תנחש ואל תשלים פרטים שלא כתובים בבירור במסמך עצמו. (4) אם המסמך מתייחס בבירור לתקופה/תאריך מסוימים (חודש תלוש שכר, חודש דף בנק, תאריך חשבונית) — ציין אותם. אל תנחש תאריך שלא כתוב בבירור במסמך. (5) אם מודפס על המסמך מספר חוזה/חשבון/תיק, או מספר עמוד (כמו "עמוד 2 מתוך 3") — ציין אותם בדיוק. אלה עוזרים לזהות אם כמה קבצים הם למעשה עמודים של אותו מסמך רב-עמודים. אל תנחש מספרים שלא מודפסים בבירור. (6) האם יש בעיית איכות תמונה אמיתית שהופכת את הקובץ ללא שמיש — מטושטש, רק חלק מהמסמך נראה, כהה/איכות נמוכה, פגום, או מסובב? ציין זאת רק אם זו בעיה אמיתית שאתה רואה בפועל, לא ניחוש. (7) אם המסמך זקוק לשליחה חוזרת (יש בעיית איכות, או שלא הצלחת לזהות מה זה בכלל) — נסח הודעה קצרה, טבעית ואדיבה ללקוח שמסבירה בדיוק את זה ומבקשת צילום חדש, תוך הקפדה מוחלטת שלא להמציא פרטים שאינך בטוח בהם ולנסח כל ניחוש בזהירות ("נראה כמו...").`,
             },
             { type: "file", data: fileBytes, mediaType: mimeType },
           ],
@@ -235,6 +285,10 @@ export async function classifyDocumentViaVisionAI(
       documentReferenceNumber: object.documentReferenceNumber,
       pageNumberCurrent: object.pageNumberCurrent,
       pageNumberTotal: object.pageNumberTotal,
+      readabilityIssue: object.readabilityIssue,
+      readabilityIssueDetail: object.readabilityIssueDetail,
+      suspectedDocumentType: object.suspectedDocumentType,
+      clientMessageIfProblematic: object.clientMessageIfProblematic,
     };
   } catch (error) {
     console.error("[wa-inbound] vision classification FAILED (falling back to unrecognized)", error);

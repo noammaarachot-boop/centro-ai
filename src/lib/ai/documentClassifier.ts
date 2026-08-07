@@ -80,6 +80,14 @@ export interface DocumentClassification {
   extractedReferenceNumber?: string | null;
   pageNumberCurrent?: number | null;
   pageNumberTotal?: number | null;
+  // Immediate problematic-document handling (src/lib/documentIntakeReview.ts's
+  // resolveDocumentIntakeOutcome) — same aiRan-gated carry-through as the
+  // fields above; see documentVisionClassifier.ts's own doc comments for
+  // what each means and the anti-hallucination guardrails on them.
+  readabilityIssue?: "blurry" | "cropped_or_incomplete" | "too_dark_or_low_quality" | "damaged" | "wrong_orientation" | "other" | null;
+  readabilityIssueDetail?: string | null;
+  suspectedDocumentType?: string | null;
+  clientMessageIfProblematic?: string | null;
 }
 
 export interface LearnedDocumentPattern {
@@ -247,6 +255,10 @@ interface AiClassificationResult {
   extractedReferenceNumber: string | null;
   pageNumberCurrent: number | null;
   pageNumberTotal: number | null;
+  readabilityIssue: "blurry" | "cropped_or_incomplete" | "too_dark_or_low_quality" | "damaged" | "wrong_orientation" | "other" | null;
+  readabilityIssueDetail: string | null;
+  suspectedDocumentType: string | null;
+  clientMessageIfProblematic: string | null;
 }
 
 async function classifyDocumentViaAI(
@@ -270,6 +282,10 @@ async function classifyDocumentViaAI(
     extractedReferenceNumber: result.documentReferenceNumber,
     pageNumberCurrent: result.pageNumberCurrent,
     pageNumberTotal: result.pageNumberTotal,
+    readabilityIssue: result.readabilityIssue,
+    readabilityIssueDetail: result.readabilityIssueDetail,
+    suspectedDocumentType: result.suspectedDocumentType,
+    clientMessageIfProblematic: result.clientMessageIfProblematic,
   };
 }
 
@@ -331,6 +347,10 @@ export async function classifyDocumentWithLearning(
       extractedReferenceNumber: aiResult.extractedReferenceNumber,
       pageNumberCurrent: aiResult.pageNumberCurrent,
       pageNumberTotal: aiResult.pageNumberTotal,
+      readabilityIssue: aiResult.readabilityIssue,
+      readabilityIssueDetail: aiResult.readabilityIssueDetail,
+      suspectedDocumentType: aiResult.suspectedDocumentType,
+      clientMessageIfProblematic: aiResult.clientMessageIfProblematic,
     };
   }
   if (aiResult) {
@@ -353,6 +373,10 @@ export async function classifyDocumentWithLearning(
       extractedReferenceNumber: aiResult.extractedReferenceNumber,
       pageNumberCurrent: aiResult.pageNumberCurrent,
       pageNumberTotal: aiResult.pageNumberTotal,
+      readabilityIssue: aiResult.readabilityIssue,
+      readabilityIssueDetail: aiResult.readabilityIssueDetail,
+      suspectedDocumentType: aiResult.suspectedDocumentType,
+      clientMessageIfProblematic: aiResult.clientMessageIfProblematic,
     };
   }
 

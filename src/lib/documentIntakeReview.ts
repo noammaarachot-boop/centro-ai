@@ -44,7 +44,22 @@ export const MIN_IDENTIFICATION_CONFIDENCE = 0.6;
 export type DocumentIntakeOutcome =
   | { kind: "matched"; requirementId: string; confidence: number }
   | { kind: "unsolicited"; documentType: string }
-  | { kind: "unrecognized" };
+  // A document that isn't usable as received — either a real image-quality
+  // defect (reason "unreadable_quality": blurry, cropped, damaged...) or the
+  // AI genuinely couldn't tell what it is at all (reason "unrecognized").
+  // Unlike "unsolicited" (a genuine business question — "did you mean to
+  // send this?" — that can wait for the whole-case review), this always
+  // gets an immediate reply while the client is still in the chat and can
+  // actually resend something. See processInboundAttachment
+  // (conversationActions.ts) for where that immediate send happens, and
+  // buildResendGuidanceMessage below for how its wording is composed.
+  | {
+      kind: "needs_resend";
+      reason: "unreadable_quality" | "unrecognized";
+      suspectedDocumentType: string | null;
+      issueDetail: string | null;
+      aiClientMessage: string | null;
+    };
 
 // The single decision point every real classification result (deterministic
 // filename heuristic, learned pattern, or real AI vision result) funnels
@@ -54,6 +69,20 @@ export function resolveDocumentIntakeOutcome(
   classification: DocumentClassification,
   outstandingRequirementIds: string[]
 ): DocumentIntakeOutcome {
+  // A real image-quality defect always needs a resend, however confident
+  // the AI otherwise was about the type or match — a blurry ID card must
+  // never be silently auto-approved just because the AI could still guess
+  // what it probably was. Checked first, ahead of every other signal.
+  if (classification.readabilityIssue) {
+    return {
+      kind: "needs_resend",
+      reason: "unreadable_quality",
+      suspectedDocumentType: classification.aiDocumentType ?? classification.suspectedDocumentType ?? null,
+      issueDetail: classification.readabilityIssueDetail ?? null,
+      aiClientMessage: classification.clientMessageIfProblematic ?? null,
+    };
+  }
+
   // A match only counts once it clears the same bar auto-approval always
   // required (a weak filename-token overlap, e.g. 0.3, was never enough on
   // its own) — below it, this falls through exactly like no match at all,
@@ -79,7 +108,46 @@ export function resolveDocumentIntakeOutcome(
     return { kind: "matched", requirementId: fallback.requirementId, confidence: fallback.confidence };
   }
 
-  return { kind: "unrecognized" };
+  return {
+    kind: "needs_resend",
+    reason: "unrecognized",
+    suspectedDocumentType: classification.suspectedDocumentType ?? null,
+    issueDetail: null,
+    aiClientMessage: classification.clientMessageIfProblematic ?? null,
+  };
+}
+
+// Deterministic Hebrew label per category — used only as a fallback when
+// the AI didn't craft its own clientMessageIfProblematic (e.g. the
+// pre-vision filename gate, which has no image to reason about at all), so
+// the client is never left with a bare "couldn't read it" regardless of
+// which path produced this outcome.
+const READABILITY_ISSUE_LABELS: Record<NonNullable<DocumentClassification["readabilityIssue"]>, string> = {
+  blurry: "התמונה מטושטשת מדי לקריאה ברורה",
+  cropped_or_incomplete: "רק חלק מהמסמך נראה בתמונה",
+  too_dark_or_low_quality: "איכות התמונה נמוכה מדי לקריאה ברורה",
+  damaged: "נראה שהמסמך פגום",
+  wrong_orientation: "התמונה מסובבת ולא ניתנת לקריאה כך",
+  other: "לא הצלחתי לקרוא את המסמך בבירור",
+};
+
+// The client-facing message for a "needs_resend" outcome — prefers the
+// AI's own crafted wording (grounded in what it actually saw in the image,
+// per documentVisionClassifier.ts's guardrails) and only falls back to a
+// deterministic template when none is available. Never asks "did you mean
+// to send this?" — that's not the relevant question for a technical
+// defect or an unidentifiable file.
+export function buildResendGuidanceMessage(
+  outcome: Extract<DocumentIntakeOutcome, { kind: "needs_resend" }>,
+  fileName: string
+): string {
+  if (outcome.aiClientMessage) return outcome.aiClientMessage;
+
+  const typeNote = outcome.suspectedDocumentType ? `שנראה כמו ${outcome.suspectedDocumentType} ` : "";
+  const issueNote =
+    outcome.issueDetail ??
+    (outcome.reason === "unreadable_quality" ? READABILITY_ISSUE_LABELS.other : "לא הצלחתי לזהות בוודאות איזה מסמך זה");
+  return `קיבלתי את המסמך האחרון ששלחת (${fileName}) ${typeNote}— ${issueNote}. אפשר לשלוח שוב צילום ברור ומלא?`;
 }
 
 export async function getConfirmationReminderConfig(
@@ -233,9 +301,18 @@ export async function createClarificationRequest(params: {
   clientId: string;
   collectionRequestId: string;
   documentId: string;
+  // Immediate problematic-document handling — processInboundAttachment
+  // (conversationActions.ts) passes the real, specific
+  // buildResendGuidanceMessage wording for a document it's asking about
+  // right now. Left unset only by runCaseReview's own call, which handles
+  // whatever's left over from before this document reached intake at all
+  // (there is no richer wording available for those any more, since they
+  // were never routed through resolveDocumentIntakeOutcome's needs_resend
+  // branch to begin with).
+  question?: string;
 }): Promise<void> {
   const { reminderIntervalDays } = await getConfirmationReminderConfig(params.organizationId);
-  const question = "לא הצלחתי לזהות את המסמך שקיבלתי 🤔\nאיזה מסמך זה? אפשר גם לשלוח צילום ברור יותר.";
+  const question = params.question ?? "לא הצלחתי לזהות את המסמך שקיבלתי 🤔\nאיזה מסמך זה? אפשר גם לשלוח צילום ברור יותר.";
 
   console.log("[document-intake] pending confirmation created (document_clarification)", {
     organizationId: params.organizationId,

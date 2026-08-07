@@ -751,7 +751,7 @@ describe("E2E Journey 3 — multi-page PDF merge, document replace, reminder def
 // saying "finished," then an explicit close).
 // ======================================================================
 describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-completion extension", () => {
-  it("defers an identity mismatch and an unrecognized document to case review at 'finished', then supports adding more after completion", async () => {
+  it("defers an identity mismatch to case review at 'finished' but replies immediately to an unrecognized document, then supports adding more after completion", async () => {
     const { requestId, phoneNumberId, conversationId, requirements } = await seedActiveRequest(["תעודת זהות", "אישור שכירות"]);
     const [idReq] = requirements;
 
@@ -778,7 +778,10 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
     // Held silently — no question sent yet, client not interrupted mid-collection.
     expect(sentMessages).toHaveLength(0);
 
-    // A genuinely unrecognized file — also deferred, not asked about yet.
+    // A genuinely unrecognized file — unlike the identity mismatch above,
+    // this isn't a business question that can wait; the client can still
+    // fix it while they're in the chat, so it gets an immediate reply
+    // asking for a resend instead of being deferred to case-review time.
     const mysteryDoc = await makeTestDocument("unrelated_document", { fileName: "mystery.pdf" });
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
       identified: false,
@@ -788,7 +791,9 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
       matchConfidence: 0,
     });
     await sendDocument(phoneNumberId, mysteryDoc);
-    expect(sentMessages).toHaveLength(0);
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].body).toContain("mystery.pdf");
+    expect(sentMessages[0].body).not.toContain("שלחת אותו בכוונה");
 
     // The client says they're done — this is what actually turns both
     // deferred exceptions into real questions, together, once. "סיימתי"
