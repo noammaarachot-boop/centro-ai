@@ -36,22 +36,23 @@ import { after } from "next/server";
 
 export const dynamic = "force-dynamic";
 // Was 30s, then 60s (this route's own earlier redelivery-incident fix —
-// see webhook_message_claims's doc comment in schema.ts). Raised again to
-// 150s specifically to give processInboundAttachment's own after()-based
+// see webhook_message_claims's doc comment in schema.ts), then 150s, now
+// 180s — specifically to give processInboundAttachment's own after()-based
 // case-review relay (scheduleCaseReviewRelay, caseReview.ts) enough
-// headroom to actually sleep out the 2-minute silence window and fire the
-// summary in real time, instead of only relying on the external cron
-// sweep's best-effort timing. This is NOT a guess: Fluid Compute is
-// confirmed enabled on this exact production project (Vercel API,
-// resourceConfig.fluid: true), whose docs put Hobby+Fluid's own ceiling at
-// 300s — and a real after() task was measured actually completing a 100s
-// sleep in production before this change (well past the old 60s ceiling),
-// so 150s is inside both the platform's documented limit and an empirically
-// observed one, not just the documented one. None of this changes Meta's
-// own experience: the claim-then-defer split below still returns 2xx the
-// instant every message is claimed, long before either classification or
+// headroom to actually sleep out its own CASE_REVIEW_RELAY_MAX_WAIT_MS
+// (150s) and still have time left to fire the summary in real time,
+// instead of only relying on the external cron sweep's best-effort timing.
+// This is NOT a guess: Fluid Compute is confirmed enabled on this exact
+// production project (Vercel API, resourceConfig.fluid: true), whose docs
+// put Hobby+Fluid's own ceiling at 300s — and a real after() task was
+// measured actually completing a 100s sleep in production (well past the
+// old 60s ceiling) before this was first raised, so this stays inside both
+// the platform's documented limit and an empirically observed one, not
+// just the documented one. None of this changes Meta's own experience:
+// the claim-then-defer split below still returns 2xx the instant every
+// message is claimed, long before either classification or
 // the case-review wait even starts.
-export const maxDuration = 150;
+export const maxDuration = 180;
 
 const MIME_EXTENSIONS: Record<string, string> = {
   "application/pdf": "pdf",

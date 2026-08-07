@@ -85,8 +85,7 @@ async function seedWaitingRequest(pendingCaseReviewAt: Date) {
   await db.insert(schema.collectionRequestRequirements).values({
     collectionRequestId: request.id,
     name: "תעודת זהות",
-    quantityExpected: 1,
-    quantityReceived: 0,
+    requiredCount: 1,
   });
   const [conversation] = await db
     .insert(schema.conversations)
@@ -138,6 +137,40 @@ describe("scheduleCaseReviewRelay", () => {
 
     await relayPromise;
 
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
+    expect(updated.pendingCaseReviewAt).toBeNull();
+  }, 15_000);
+
+  it("fires correctly for a burst spread over a realistic span, even though the FIRST relay's own budget alone can't cover the whole span (regression: a real production burst spread over ~21s made a single 'first document only' relay give up before the real due time — every document now spawns its own relay instead)", async () => {
+    const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 200));
+    const params = {
+      organizationId: org.id,
+      conversationId: conversation.id,
+      collectionRequestId: request.id,
+      clientId: clientRow.id,
+    };
+
+    // Document 1's relay starts immediately (its own due time: now + 200ms).
+    const relay1 = scheduleCaseReviewRelay(params);
+
+    // Document 2 arrives mid-wait (mirrors conversationActions.ts: pushes
+    // pendingCaseReviewAt forward, and — per the fix — spawns its OWN relay
+    // too, not just relying on relay1).
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await db.update(schema.conversations).set({ pendingCaseReviewAt: new Date(Date.now() + 200) }).where(eq(schema.conversations.id, conversation.id));
+    const relay2 = scheduleCaseReviewRelay(params);
+
+    // Document 3 arrives mid-wait again — same pattern.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await db.update(schema.conversations).set({ pendingCaseReviewAt: new Date(Date.now() + 200) }).where(eq(schema.conversations.id, conversation.id));
+    const relay3 = scheduleCaseReviewRelay(params);
+
+    await Promise.all([relay1, relay2, relay3]);
+
+    // Exactly one summary, fired by whichever relay's own claim won —
+    // never zero (the old bug: everyone gives up too early) and never more
+    // than one.
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
     expect(updated.pendingCaseReviewAt).toBeNull();

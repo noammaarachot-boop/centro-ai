@@ -418,21 +418,31 @@ export async function runAutomaticCaseStatusReview(params: {
 
 // How long a single relay invocation is willing to keep re-arming itself
 // before giving up and leaving the rest to scheduler.ts's own cron sweep.
-// Comfortably under the webhook route's own maxDuration (150s, itself
-// empirically confirmed on this exact production project — a real after()
-// task was measured completing a 100s sleep, well past the old 60s Hobby
-// ceiling, once Fluid Compute's per-function duration extension was
-// confirmed enabled via the Vercel API), leaving headroom for the actual
-// claim + review + WhatsApp send once the wait is over.
-export const CASE_REVIEW_RELAY_MAX_WAIT_MS = 125_000;
+// A real production burst showed this needs comfortable margin OVER the
+// 2-minute window itself, not just over zero: every document spawns its
+// own relay (conversationActions.ts) whose own due time is always ~2
+// minutes from ITS OWN arrival, so 150s (30s of margin past the 120s
+// window) covers that plus a further document or two landing shortly
+// after, while still leaving headroom under the webhook route's own
+// maxDuration (180s) for the actual claim + review + WhatsApp send once
+// the wait is over. Both this and the route's maxDuration are inside the
+// documented (and empirically confirmed — a real after() task was
+// measured completing a 100s sleep in production) Hobby+Fluid Compute
+// ceiling of 300s.
+export const CASE_REVIEW_RELAY_MAX_WAIT_MS = 150_000;
 
 // The real-time counterpart to scheduler.ts's cron sweep of
 // conversations.pendingCaseReviewAt — a precise, self-correcting delayed
 // job instead of waiting on the next (best-effort, up to several minutes
-// late in production) external cron tick. Started once via
-// scheduleAfterResponse the moment a request's silence window is first
-// armed (conversationActions.ts); deliberately NOT restarted by every
-// later document in the same burst — this loop re-reads the LIVE
+// late in production) external cron tick. Started on every document
+// (conversationActions.ts) — deliberately NOT just the first one in a
+// burst (an earlier version tried that "only arm once" optimization and it
+// broke in ordinary use: a real burst spread over ~21 seconds pushed the
+// actual due time far enough past the FIRST relay's own budget that it
+// gave up before the real due time — see conversationActions.ts's own doc
+// comment for the full incident). Redundant relays from the same burst are
+// cheap (Fluid Compute doesn't charge for idle wait) and always safe (the
+// atomic claim below); this loop re-reads the LIVE
 // pendingCaseReviewAt on every wake instead of trusting the value it
 // started with, so a later document's own (unconditional) push of that
 // column forward is picked up automatically, with no separate "cancel the
