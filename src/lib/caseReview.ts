@@ -416,6 +416,92 @@ export async function runAutomaticCaseStatusReview(params: {
   return "summary_sent";
 }
 
+// How long a single relay invocation is willing to keep re-arming itself
+// before giving up and leaving the rest to scheduler.ts's own cron sweep.
+// Comfortably under the webhook route's own maxDuration (150s, itself
+// empirically confirmed on this exact production project — a real after()
+// task was measured completing a 100s sleep, well past the old 60s Hobby
+// ceiling, once Fluid Compute's per-function duration extension was
+// confirmed enabled via the Vercel API), leaving headroom for the actual
+// claim + review + WhatsApp send once the wait is over.
+export const CASE_REVIEW_RELAY_MAX_WAIT_MS = 125_000;
+
+// The real-time counterpart to scheduler.ts's cron sweep of
+// conversations.pendingCaseReviewAt — a precise, self-correcting delayed
+// job instead of waiting on the next (best-effort, up to several minutes
+// late in production) external cron tick. Started once via
+// scheduleAfterResponse the moment a request's silence window is first
+// armed (conversationActions.ts); deliberately NOT restarted by every
+// later document in the same burst — this loop re-reads the LIVE
+// pendingCaseReviewAt on every wake instead of trusting the value it
+// started with, so a later document's own (unconditional) push of that
+// column forward is picked up automatically, with no separate "cancel the
+// old timer" step needed.
+//
+// Uses the exact same atomic compare-and-swap claim scheduler.ts's own
+// sweep already uses (SET pendingCaseReviewAt = null WHERE ... AND
+// pendingCaseReviewAt = <the value just read>) — whichever of this relay,
+// a concurrent cron tick, or another redundant relay (a burst can start
+// more than one; see the "already armed" check at the call site) gets
+// there first wins the claim; every loser's compare-and-swap matches zero
+// rows and it safely returns having sent nothing. This is also what makes
+// the exact-boundary race in the task description safe: a document
+// arriving the instant this wakes either lands its own UPDATE first (this
+// relay's stale read then fails to claim, and it returns) or the claim
+// wins first (the new document still reset pendingCaseReviewAt correctly,
+// it just won't be reflected in a review that already ran — the next
+// document's own relay/cron pass covers it like any other later activity).
+export async function scheduleCaseReviewRelay(params: {
+  organizationId: string;
+  conversationId: string;
+  collectionRequestId: string;
+  clientId: string;
+}): Promise<void> {
+  const db = await getDb();
+  const deadline = Date.now() + CASE_REVIEW_RELAY_MAX_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const [row] = await db
+      .select({ pendingCaseReviewAt: conversations.pendingCaseReviewAt })
+      .from(conversations)
+      .where(eq(conversations.id, params.conversationId))
+      .limit(1);
+    // Already cleared (another relay/the cron already handled it, the
+    // request completed, or an extension started) — nothing left to do.
+    if (!row?.pendingCaseReviewAt) return;
+
+    const remainingMs = row.pendingCaseReviewAt.getTime() - Date.now();
+    if (remainingMs > 0) {
+      const sleepMs = Math.min(remainingMs, deadline - Date.now());
+      if (sleepMs <= 0) break; // out of budget — fall through to the cron backstop
+      // Small fixed buffer past the exact due instant so the claim below
+      // never races a fresh write that lands in the same millisecond.
+      await new Promise((resolve) => setTimeout(resolve, sleepMs + 250));
+      continue;
+    }
+
+    const claimed = await db
+      .update(conversations)
+      .set({ pendingCaseReviewAt: null })
+      .where(and(eq(conversations.id, params.conversationId), eq(conversations.pendingCaseReviewAt, row.pendingCaseReviewAt)))
+      .returning({ id: conversations.id });
+    if (claimed.length === 0) return; // lost the claim race — whoever won owns the outcome
+
+    await runAutomaticCaseStatusReview({
+      organizationId: params.organizationId,
+      collectionRequestId: params.collectionRequestId,
+      conversationId: params.conversationId,
+      clientId: params.clientId,
+    });
+    return;
+  }
+  // Exceeded this relay's own safe wait budget — sustained, near-continuous
+  // activity kept pushing pendingCaseReviewAt further out than one
+  // invocation should keep waiting for. Not an error: scheduler.ts's cron
+  // sweep still owns this the moment it actually goes quiet, exactly as it
+  // did before this relay existed.
+}
+
 // Free-text "I'll send it later" understanding — called only when the
 // client's message didn't resolve any open confirmation and wasn't a
 // "finished" signal (see the webhook route / simulateInboundMessage), so
