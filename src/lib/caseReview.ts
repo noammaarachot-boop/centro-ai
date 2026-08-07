@@ -15,7 +15,15 @@ import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
 // before Centro proactively reports status, instead of requiring the
 // client to ever say "סיימתי". Exported so the scheduler and its tests
 // share one source of truth for the window length.
-export const CASE_REVIEW_SILENCE_WINDOW_MS = 5 * 60 * 1000;
+//
+// Deliberately a different mechanism from the reminderIntervalDays-based
+// staleness reminder (scheduler.ts's staleWaitingConversations pass): this
+// one is a direct reaction to activity the client themselves just
+// initiated (like the reactive document-intake questions, which already
+// use "manual" trigger below), so it runs 24/7 with no business-hours
+// gate — the client is demonstrably active *right now*, not being nudged
+// out of nowhere. The separate reminder stays business-hours-gated.
+export const CASE_REVIEW_SILENCE_WINDOW_MS = 2 * 60 * 1000;
 
 /**
  * "Centro checks the case, not the document" — a document classified as an
@@ -392,12 +400,16 @@ export async function runAutomaticCaseStatusReview(params: {
     // retry) — nothing concrete to report yet, never guess.
     return "nothing_to_report";
   }
+  // "manual" (same convention finalizeCompletion and every reactive
+  // document-intake question already use) — this is a direct reaction to
+  // the client's own just-happened activity, not a cold automated nudge,
+  // so it always sends regardless of business hours/automation pause.
   await sendOutboundMessage(
     params.organizationId,
     params.conversationId,
     buildCaseStatusSummaryMessage(received, missing),
     "ai",
-    "automated",
+    "manual",
     undefined,
     true
   );

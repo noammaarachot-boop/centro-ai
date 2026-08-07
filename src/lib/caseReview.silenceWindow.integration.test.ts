@@ -43,7 +43,7 @@ vi.mock("ai", () => ({
 }));
 
 const { runScheduledTasks } = await import("./scheduler");
-const { runAutomaticCaseStatusReview, buildCaseStatusSummaryMessage } = await import("./caseReview");
+const { runAutomaticCaseStatusReview, buildCaseStatusSummaryMessage, CASE_REVIEW_SILENCE_WINDOW_MS } = await import("./caseReview");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -186,7 +186,7 @@ describe("scheduler — silence-window due-check (mandatory: debounce, then act,
   it("does nothing while pendingCaseReviewAt is still in the future", async () => {
     const { orgId, requestId, conversationId, requirements } = await seedWaitingRequest(["תעודת זהות"]);
     await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
-    const future = new Date(Date.now() + 3 * 60 * 1000);
+    const future = new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS + 60_000);
     await db.update(schema.conversations).set({ pendingCaseReviewAt: future }).where(eq(schema.conversations.id, conversationId));
 
     const result = await runScheduledTasks(orgId);
@@ -220,7 +220,7 @@ describe("scheduler — silence-window due-check (mandatory: debounce, then act,
     for (let i = 0; i < 5; i++) {
       await db
         .update(schema.conversations)
-        .set({ pendingCaseReviewAt: new Date(Date.now() + 5 * 60 * 1000) })
+        .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
         .where(eq(schema.conversations.id, conversationId));
     }
     await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
@@ -235,23 +235,23 @@ describe("scheduler — silence-window due-check (mandatory: debounce, then act,
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("a due window while the office is closed reschedules to the next business opening instead of sending immediately", async () => {
-    const { orgId, conversationId } = await seedWaitingRequest(["תעודת זהות"], {
+  it("sends the summary even while the office is closed — a direct reaction to the client's own just-happened activity, not a cold nudge, so it is never business-hours-gated (unlike the separate reminderIntervalDays reminder)", async () => {
+    const { orgId, requestId, conversationId, requirements } = await seedWaitingRequest(["תעודת זהות"], {
       businessDays: "0,1,2,3,4",
       businessHoursStart: "09:00",
       businessHoursEnd: "18:00",
     });
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
     // Force a due-but-Friday instant regardless of when tests actually run.
     const friday = new Date("2026-01-16T08:00:00Z"); // Friday 10:00 local, closed (Sun-Thu only)
     await db.update(schema.conversations).set({ pendingCaseReviewAt: friday }).where(eq(schema.conversations.id, conversationId));
 
     const result = await runScheduledTasks(orgId);
 
-    expect(result.caseStatusReviewsRun).toBe(0);
-    expect(sendTextMessage).not.toHaveBeenCalled();
+    expect(result.caseStatusReviewsRun).toBe(1);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    expect(conversation.pendingCaseReviewAt).not.toBeNull();
-    expect(conversation.pendingCaseReviewAt!.getTime()).toBeGreaterThan(friday.getTime());
+    expect(conversation.pendingCaseReviewAt).toBeNull();
   });
 
   it("double-invocation of the scheduler for the same due window sends only one summary (idempotency/race safety)", async () => {
