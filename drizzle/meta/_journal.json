@@ -351,6 +351,13 @@
       "when": 1786057079677,
       "tag": "0049_clear_tyger_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1786102313654,
+      "tag": "0050_slippery_skin",
+      "breakpoints": true
     }
   ]
 }
