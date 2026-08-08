@@ -208,10 +208,11 @@ interface CaseStatusLists {
   received: string[];
   missing: string[];
   // Documents the client confirmed sending on purpose despite not matching
-  // any open requirement (unsolicited_document, confirmed) — never counts
-  // toward any requirement's satisfaction, shown purely for transparency.
-  // Already formatted with its own "— not requested" suffix so callers can
-  // fold it straight into the received list without knowing the wording.
+  // any open requirement (unsolicited_document/identity_anomaly, both
+  // confirmed) — never counts toward any requirement's satisfaction, shown
+  // purely for transparency. Already formatted with its own "— מסמך נוסף
+  // שהתקבל" suffix so callers can fold it straight into the received list
+  // without knowing the wording.
   extra: string[];
 }
 
@@ -282,7 +283,7 @@ async function computeCaseStatusLists(collectionRequestId: string): Promise<Case
         or(eq(documents.status, "unsolicited_approved"), eq(documents.status, "identity_anomaly_confirmed"))
       )
     );
-  const extra = extraDocs.map((d) => `${stripFileExtension(d.fileName)} — מסמך נוסף, לא נדרש במסגרת הבקשה`);
+  const extra = extraDocs.map((d) => `${stripFileExtension(d.fileName)} — מסמך נוסף שהתקבל`);
 
   return { received, missing, extra };
 }

@@ -17,7 +17,7 @@ describe("resolveInteractiveReplyText", () => {
       from: "972500000000",
       id: "wamid.1",
       type: "interactive",
-      interactive: { type: "button", button_reply: { id: CONFIRM_YES_BUTTON_ID, title: "כן" } },
+      interactive: { type: "button_reply", button_reply: { id: CONFIRM_YES_BUTTON_ID, title: "כן" } },
     };
     expect(resolveInteractiveReplyText(message)).toBe("כן");
   });
@@ -27,7 +27,7 @@ describe("resolveInteractiveReplyText", () => {
       from: "972500000000",
       id: "wamid.2",
       type: "interactive",
-      interactive: { type: "button", button_reply: { id: CONFIRM_NO_BUTTON_ID, title: "לא" } },
+      interactive: { type: "button_reply", button_reply: { id: CONFIRM_NO_BUTTON_ID, title: "לא" } },
     };
     expect(resolveInteractiveReplyText(message)).toBe("לא");
   });
@@ -42,7 +42,7 @@ describe("resolveInteractiveReplyText", () => {
       from: "972500000000",
       id: "wamid.4",
       type: "interactive",
-      interactive: { type: "button", button_reply: { id: "some_other_id", title: "?" } },
+      interactive: { type: "button_reply", button_reply: { id: "some_other_id", title: "?" } },
     };
     expect(resolveInteractiveReplyText(message)).toBeNull();
   });
