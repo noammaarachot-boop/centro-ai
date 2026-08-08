@@ -389,6 +389,42 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
       documentIds,
       collectionRequestId: resolved.collectionRequestId,
     });
+
+    // A short, immediate acknowledgment — the client explicitly said this
+    // was a mistake, which deserves a direct reaction just like the
+    // question that prompted it (matches every other immediate-reply
+    // kind: needs_resend, identity_anomaly's own confirmed/declined
+    // sends). Distinct from the "confirmed" branch below, which stays
+    // fully quiet since there's nothing to acknowledge — the document was
+    // simply accepted, exactly like any other ordinary document.
+    await sendOutboundMessage(
+      resolved.organizationId,
+      resolved.conversationId,
+      "בסדר, קיבלתי. לא אכלול את המסמך הזה בבקשה.",
+      "ai",
+      "manual",
+      undefined,
+      true
+    );
+
+    // Still real activity on the request — arms the same 2-minute
+    // silence-window summary trigger ordinary document arrivals use, so
+    // the client still gets the normal "here's what's received/missing"
+    // summary afterward (which never mentions this declined document —
+    // computeCaseStatusLists only ever looks at approved/unsolicited_approved
+    // documents).
+    await db
+      .update(conversations)
+      .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
+      .where(eq(conversations.id, resolved.conversationId));
+    scheduleAfterResponse(() =>
+      scheduleCaseReviewRelay({
+        organizationId: resolved.organizationId,
+        conversationId: resolved.conversationId,
+        collectionRequestId: resolved.collectionRequestId,
+        clientId: resolved.clientId,
+      })
+    );
     return;
   }
 

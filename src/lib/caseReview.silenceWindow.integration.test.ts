@@ -176,6 +176,30 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(request.status).toBe("completed");
   });
 
+  it("a declined-unsolicited document (client said 'לא') never appears in the summary, either as received or missing", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest([
+      "תעודת זהות",
+      "אישור ניהול חשבון בנק",
+    ]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    // Simulates applyUnsolicitedConfirmationDecision's "declined" outcome
+    // (tested directly in documentIntakeReview.test.ts) — this test
+    // targets caseReview.ts's own summary composition only.
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      fileName: "invoice_by_mistake.pdf",
+      status: "unsolicited_rejected",
+    });
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("summary_sent");
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).not.toContain("invoice_by_mistake");
+    expect(body).toContain("• תעודת זהות");
+    expect(body).toContain("• אישור ניהול חשבון בנק");
+  });
+
   it("a confirmed-unsolicited document folds into the summary, labeled as not-requested, without displacing what's actually still missing", async () => {
     const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest([
       "תעודת זהות",

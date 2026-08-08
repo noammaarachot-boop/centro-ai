@@ -862,6 +862,37 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     expect(conversation.pendingCaseReviewAt).not.toBeNull();
   });
 
+  it("a 'no' reply sends a short immediate acknowledgment and still arms the 2-minute silence-window", async () => {
+    const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
+      whatsappPhoneNumberId: "phone-1",
+    });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    await forceFlush(orgId, requestId);
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    sendTextMessage.mockClear();
+
+    await applyUnsolicitedConfirmationDecision({ ...confirmation, status: "declined", conversationId });
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage.mock.calls[0][2]).toContain("לא אכלול את המסמך");
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.pendingCaseReviewAt).not.toBeNull();
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.id, documentId));
+    expect(doc.status).toBe("unsolicited_rejected");
+    expect(doc.googleDriveFileId).toBeNull();
+  });
+
   it("reminder resend goes out as free-form numbered text (no pre-approved template exists for this dynamic question, and only the original send uses buttons)", async () => {
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
       businessHoursAlwaysOpen: true,
