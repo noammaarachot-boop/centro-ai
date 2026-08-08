@@ -305,13 +305,20 @@ function joinHebrewList(items: string[]): string {
 // model's own extractedPersonName/extractedCompanyName — see
 // detectIdentityAnomaly) — never a hardcoded or example name. When
 // extraction wasn't confident enough to name anyone (anomaly.confident is
-// false), the wording stays deliberately generic rather than guess at a
-// name — see detectIdentityAnomaly's own confidence bands.
+// false), the wording stays deliberately generic about the NAME — but if
+// the document TYPE is still confidently known (typeLabel), that's real,
+// non-hallucinated information the client can use to tell which file this
+// is about, so it's always still named. Every sentence below uses "המסמך"
+// (never the specific type word) as its grammatical subject, with the type
+// itself only ever shown on its own "📄 {type}" label line — Hebrew gender
+// agreement (הוא/היא, שייך/שייכת) would otherwise have to vary per
+// arbitrary type string; "המסמך" sidesteps that entirely.
 function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<string | null>): string {
   const count = documentTypes.length;
   const plural = count > 1;
   const knownTypes = documentTypes.filter((t): t is string => !!t);
-  const typeLabel = knownTypes.length === count ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
+  const allTypesKnown = knownTypes.length === count;
+  const typeLabel = allTypesKnown ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
   const askLine = plural ? "האם שלחת אותם בכוונה?" : "האם שלחת אותו בכוונה?";
 
   if (anomaly.kind === "id_mismatch") {
@@ -319,6 +326,9 @@ function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<str
   }
 
   if (!anomaly.confident) {
+    if (allTypesKnown) {
+      return `📄 ${typeLabel}\nנראה ש${plural ? "המסמכים שייכים" : "המסמך שייך"} לאדם אחר, אך לא הצלחתי לקרוא את השם בבירור.\n\n${askLine}`;
+    }
     return plural
       ? `מצאתי מסמכים שנראה שהם שייכים לאדם אחר.\n${askLine}`
       : `מצאתי מסמך שנראה שהוא שייך לאדם אחר.\n${askLine}`;
@@ -328,7 +338,7 @@ function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<str
     return `📄 ${typeLabel}\n${plural ? "נראה ששייכים" : "נראה ששייך"} לחברה אחרת (${anomaly.conflictingName}).\n\n${askLine}`;
   }
 
-  return `📄 ${typeLabel}\n${plural ? "המסמכים הם" : "המסמך הוא"} על שם ${anomaly.conflictingName}.\n\n${askLine}`;
+  return `📄 ${typeLabel}\n${plural ? "המסמכים הם" : "המסמך הוא"} על שם ${anomaly.conflictingName}, והשם אינו תואם לבעל הבקשה.\n\n${askLine}`;
 }
 
 // Groups documents that share the same underlying anomaly into one signature

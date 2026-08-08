@@ -1,9 +1,9 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { collectionRequestRequirements, collectionRequests, conversations, documents, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
-import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
+import { flushDueIntakeNotifications, type PendingConfirmationKind } from "@/lib/pendingConfirmations";
 import { createClarificationRequest, createUnsolicitedDocumentConfirmation } from "@/lib/documentIntakeReview";
 import { createOrMergeIdentityAnomalyConfirmation, type IdentityAnomaly } from "@/lib/documentIdentityVerification";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
@@ -80,13 +80,26 @@ interface DeferredDocument {
   deferredReviewPayload: unknown;
 }
 
-// Groups and asks about every document still holding a deferred review on
-// this request, in one pass — reusing the exact same per-kind create/merge
-// functions a real-time exception would have called, so the resulting
-// grouping/wording/numbered-options behavior is identical, just deferred
-// to this single moment instead of scattered across the whole collection
-// window. A no-op (returns hasPendingReview: false) when nothing was ever
-// deferred, which is the common case.
+// Legacy/defensive backstop only — identity_anomaly, unsolicited_document,
+// and document_clarification are all asked about IMMEDIATELY now
+// (conversationActions.ts calls createOrMergeIdentityAnomalyConfirmation /
+// createUnsolicitedDocumentConfirmation / createClarificationRequest
+// itself, right after each document is inserted), never by setting
+// documents.deferredReviewKind for this function to pick up later. This
+// still exists, and is still called from both attemptFinishCollectionRequest
+// and runAutomaticCaseStatusReview below, purely so a document row that
+// somehow still has deferredReviewKind set (a pre-existing row from before
+// this changed, or any future code path that reintroduces deferral) is
+// never silently stranded — it's a no-op (returns hasPendingReview: false)
+// in the now-common case where nothing is actually deferred.
+// document_clarification (needs_resend) is deliberately excluded: unlike
+// identity_anomaly/unsolicited_document, it's never treated as blocking —
+// the client can keep sending other documents (or never revisit this one
+// at all) and the 2-minute summary must still fire and report accurately
+// (that requirement simply stays "missing" until a real matching document
+// arrives), never stuck waiting on an answer that may never come.
+const CASE_REVIEW_RELEVANT_KINDS: PendingConfirmationKind[] = ["identity_anomaly", "unsolicited_document"];
+
 export async function runCaseReview(
   organizationId: string,
   clientId: string,
@@ -102,56 +115,59 @@ export async function runCaseReview(
     .from(documents)
     .where(and(eq(documents.collectionRequestId, collectionRequestId), isNotNull(documents.deferredReviewKind)));
 
-  if (deferred.length === 0) {
-    return { hasPendingReview: false, groupCount: 0 };
-  }
+  if (deferred.length > 0) {
+    console.log("[case-review] reviewing whole case (legacy deferred rows found)", {
+      collectionRequestId,
+      documentCount: deferred.length,
+      kinds: deferred.map((d) => d.deferredReviewKind),
+    });
 
-  console.log("[case-review] reviewing whole case", {
-    collectionRequestId,
-    documentCount: deferred.length,
-    kinds: deferred.map((d) => d.deferredReviewKind),
-  });
-
-  for (const doc of deferred as DeferredDocument[]) {
-    if (doc.deferredReviewKind === "identity_anomaly") {
-      const payload = doc.deferredReviewPayload as { anomaly: IdentityAnomaly; documentType: string | null };
-      await createOrMergeIdentityAnomalyConfirmation({
-        organizationId,
-        clientId,
-        collectionRequestId,
-        documentId: doc.id,
-        anomaly: payload.anomaly,
-        documentType: payload.documentType,
-      });
-    } else if (doc.deferredReviewKind === "unsolicited_document") {
-      const payload = doc.deferredReviewPayload as { documentType: string };
-      await createUnsolicitedDocumentConfirmation({
-        organizationId,
-        clientId,
-        collectionRequestId,
-        documentId: doc.id,
-        documentType: payload.documentType,
-      });
-    } else if (doc.deferredReviewKind === "document_clarification") {
-      await createClarificationRequest({
-        organizationId,
-        clientId,
-        collectionRequestId,
-        documentId: doc.id,
-      });
+    for (const doc of deferred as DeferredDocument[]) {
+      if (doc.deferredReviewKind === "identity_anomaly") {
+        const payload = doc.deferredReviewPayload as { anomaly: IdentityAnomaly; documentType: string | null };
+        await createOrMergeIdentityAnomalyConfirmation({
+          organizationId,
+          clientId,
+          collectionRequestId,
+          documentId: doc.id,
+          anomaly: payload.anomaly,
+          documentType: payload.documentType,
+        });
+      } else if (doc.deferredReviewKind === "unsolicited_document") {
+        const payload = doc.deferredReviewPayload as { documentType: string };
+        await createUnsolicitedDocumentConfirmation({
+          organizationId,
+          clientId,
+          collectionRequestId,
+          documentId: doc.id,
+          documentType: payload.documentType,
+        });
+      } else if (doc.deferredReviewKind === "document_clarification") {
+        await createClarificationRequest({
+          organizationId,
+          clientId,
+          collectionRequestId,
+          documentId: doc.id,
+        });
+      }
+      // Consumed — never re-reviewed if runCaseReview somehow runs again
+      // (e.g. a duplicate "finished" message) before the client answers.
+      await db
+        .update(documents)
+        .set({ deferredReviewKind: null, deferredReviewPayload: null })
+        .where(eq(documents.id, doc.id));
     }
-    // Consumed — never re-reviewed if runCaseReview somehow runs again
-    // (e.g. a duplicate "finished" message) before the client answers.
-    await db
-      .update(documents)
-      .set({ deferredReviewKind: null, deferredReviewPayload: null })
-      .where(eq(documents.id, doc.id));
   }
 
-  // The grouping window's purpose is to catch a burst of *arriving*
-  // documents; by the time the client says they're done, there's nothing
-  // left to wait for — force every group just created straight to due
-  // instead of waiting out its notifyAfter, then flush immediately.
+  // identity_anomaly/unsolicited_document/document_clarification are now
+  // created IMMEDIATELY at intake time (conversationActions.ts), each
+  // still held for its own short notification-grouping window
+  // (pendingConfirmations.ts) rather than sent the instant it's created.
+  // The client saying they're done removes any reason to keep waiting on
+  // that window — force every such row still unnotified on this request
+  // straight to due and flush now, whether it came from the legacy
+  // deferred path above or was already sitting there from ordinary
+  // immediate creation.
   await db
     .update(pendingConfirmations)
     .set({ notifyAfter: new Date() })
@@ -160,7 +176,28 @@ export async function runCaseReview(
     );
   const flushResult = await flushDueIntakeNotifications(organizationId, collectionRequestId);
 
-  return { hasPendingReview: true, groupCount: flushResult.groupCount };
+  // Completion must wait not only for whatever this call just flushed, but
+  // for ANY of these three kinds still genuinely open on this request —
+  // e.g. already sent moments ago by its own grouping-window trigger and
+  // still awaiting the client's answer. Real gap this closes: before this
+  // check existed, a confirmation created immediately at intake (as they
+  // all are now) but not yet due for its OWN notifyAfter at the moment the
+  // client said "finished" would report hasPendingReview: false here,
+  // letting the request complete while a real, unresolved business
+  // exception was still sitting open — completeCollectionRequest itself
+  // has no independent gate on open pendingConfirmations.
+  const stillOpen = await db
+    .select({ id: pendingConfirmations.id })
+    .from(pendingConfirmations)
+    .where(
+      and(
+        eq(pendingConfirmations.collectionRequestId, collectionRequestId),
+        eq(pendingConfirmations.status, "pending"),
+        or(...CASE_REVIEW_RELEVANT_KINDS.map((kind) => eq(pendingConfirmations.kind, kind)))
+      )
+    );
+
+  return { hasPendingReview: stillOpen.length > 0, groupCount: flushResult.groupCount };
 }
 
 interface CaseStatusLists {
@@ -355,7 +392,8 @@ export type CaseStatusReviewOutcome = "completed" | "review_pending" | "summary_
 
 // The silence-window counterpart to attemptFinishCollectionRequest — same
 // underlying evaluation (review the whole case, then check completion),
-// triggered by 5 minutes of document inactivity (the scheduler, via
+// triggered by CASE_REVIEW_SILENCE_WINDOW_MS (2 minutes) of document
+// inactivity (scheduleCaseReviewRelay + the scheduler's cron backstop, via
 // conversations.pendingCaseReviewAt) rather than the client ever typing
 // "סיימתי". An ordinary active collection request has no dependency on
 // that phrase at all anymore; it remains meaningful only for the separate
@@ -363,15 +401,16 @@ export type CaseStatusReviewOutcome = "completed" | "review_pending" | "summary_
 // its own "סיימת להעלות?" question because a completed request has no
 // requirement list left to silently evaluate against.
 //
-// Held/ambiguous documents (deferredReviewKind) never block this from
-// running: runCaseReview below already turns them into their own real
-// question the moment AI genuinely couldn't resolve them — by definition
-// the point they were deferred to begin with — so this function itself
-// never needs a separate "still under review" placeholder line. When a
-// question was just asked, that's this tick's entire output; the summary
-// naturally follows on a later tick once the client replies (which resets
-// the silence window like any other activity) or once nothing more is
-// pending.
+// runCaseReview below is now almost always a no-op here (identity_anomaly/
+// unsolicited_document/document_clarification are all asked about
+// immediately at intake time, not deferred — see conversationActions.ts) —
+// kept purely as the defensive backstop described in runCaseReview's own
+// doc comment, so a document that somehow still has deferredReviewKind set
+// is never silently stranded rather than eventually turned into a real
+// question. When that backstop DOES find something, this tick's entire
+// output is that question; the summary naturally follows on a later tick
+// once the client replies (which resets the silence window like any other
+// activity) or once nothing more is pending.
 export async function runAutomaticCaseStatusReview(params: {
   organizationId: string;
   collectionRequestId: string;

@@ -26,11 +26,13 @@ import {
   applyUnsolicitedConfirmationDecision,
   buildResendGuidanceMessage,
   createClarificationRequest,
+  createUnsolicitedDocumentConfirmation,
   resolveDocumentIntakeOutcome,
 } from "@/lib/documentIntakeReview";
 import {
   applyIdentityAnomalyDecision,
   buildIdentityReferencePool,
+  createOrMergeIdentityAnomalyConfirmation,
   detectIdentityAnomaly,
   extractedIdentityForStorage,
   type IdentityAnomaly,
@@ -466,27 +468,29 @@ export async function processInboundAttachment(
   let pageNumberCurrent: number | null = null;
   let pageNumberTotal: number | null = null;
   // What the AI called this document — used only to name the file when an
-  // identity-anomaly document is later confirmed by the client, and
-  // carried into deferredReviewPayload below for that same purpose once
-  // runCaseReview actually asks about it.
+  // identity-anomaly document is later confirmed by the client, and to
+  // name the type in the immediate anomaly question itself (see
+  // pendingIdentityAnomaly below).
   let identityDocumentType: string | null = null;
-  // "Centro checks the case, not the document" (caseReview.ts) — whichever
-  // of the two genuinely-deferrable business exceptions this document
-  // turned out to be, persisted so runCaseReview can ask about it later
-  // without re-running classification. A document that isn't usable as
-  // received (needs_resend) is never deferred — see needsResendMessage
-  // below — so "document_clarification" is no longer assigned here at all;
-  // it only still appears in the schema/runCaseReview for backward
-  // compatibility with rows created before this change.
-  let deferredReviewKind: "identity_anomaly" | "unsolicited_document" | null = null;
-  let deferredReviewPayload: unknown = null;
-  // Immediate problematic-document handling (documentIntakeReview.ts's
-  // resolveDocumentIntakeOutcome "needs_resend" outcome) — set below when
-  // this document isn't usable as received (a real quality defect, or
-  // genuinely unidentifiable). Sent right after the document row is
-  // inserted (needs its id for the pendingConfirmation payload), never
-  // deferred to case-review time — the client can still fix it while
-  // they're in the chat.
+  // Immediate business-exception handling — a document that's the right
+  // *type* but the wrong person (identity_anomaly) or a real, confidently-
+  // identified document that just isn't one of the open requirements
+  // (unsolicited) both need the client's own yes/no answer before anything
+  // else can happen with them, exactly like needs_resend below. All three
+  // are asked about right after the document row is inserted (needs its
+  // id), never deferred to whole-case-review time — deferring a genuine
+  // "does the system need something from you right now" question just
+  // delays it for no benefit, unlike the 2-minute silence-window summary
+  // (caseReview.ts), which is deliberately proactive/unprompted and so
+  // deliberately waits for quiet. Each of these three still only ever
+  // produces ONE combined message per short burst via the existing
+  // notifyAfter grouping window (pendingConfirmations.ts) — "immediate"
+  // means "not held for 2 minutes," not "one WhatsApp message per file."
+  let pendingIdentityAnomaly: { anomaly: IdentityAnomaly; documentType: string | null } | null = null;
+  let pendingUnsolicitedDocumentType: string | null = null;
+  // Sent below when this document isn't usable as received at all (a real
+  // quality defect, or genuinely unidentifiable) — the client can still fix
+  // it right now while they're in the chat.
   let needsResendMessage: string | null = null;
   // Multi-page document merging — set when this document is another page
   // of an already-approved document rather than its own independent unit.
@@ -653,17 +657,13 @@ export async function processInboundAttachment(
       console.log("[wa-inbound] identity check", { collectionRequestId, identityAnomaly });
     }
 
-    // "Centro checks the case, not the document" (caseReview.ts) — a
-    // genuine BUSINESS exception (wrong person, or identified-but-not-
-    // needed) is never asked about immediately: recorded (status +
-    // deferredReviewKind/Payload) and held silently until the client
-    // signals they're done; runCaseReview turns it into a real question
-    // once, for the whole case together. A document that simply isn't
-    // usable as received (needs_resend — a quality defect, or genuinely
-    // unidentifiable) is different in kind: the client can still fix it
-    // right now while they're in the chat, so that gets an immediate reply
-    // instead, checked first, ahead of even the identity check (there's
-    // nothing reliable to check identity against on an unusable file).
+    // Every business exception that genuinely needs the client's own
+    // answer — needs_resend (checked first: there's nothing reliable to
+    // check identity against on a file that isn't usable as received),
+    // an identity anomaly, or an unsolicited-but-identified document — gets
+    // an immediate reply. None of these wait for whole-case-review time;
+    // see pendingIdentityAnomaly/pendingUnsolicitedDocumentType's own doc
+    // comment above for why.
     if (outcome.kind === "needs_resend") {
       status = "clarification_requested";
       requirementId = null;
@@ -671,8 +671,7 @@ export async function processInboundAttachment(
     } else if (identityAnomaly) {
       status = "identity_anomaly_pending_confirmation";
       requirementId = null;
-      deferredReviewKind = "identity_anomaly";
-      deferredReviewPayload = { anomaly: identityAnomaly, documentType: identityDocumentType };
+      pendingIdentityAnomaly = { anomaly: identityAnomaly, documentType: identityDocumentType };
     } else if (outcome.kind === "matched") {
       requirementId = outcome.requirementId;
       status = "approved";
@@ -703,8 +702,7 @@ export async function processInboundAttachment(
       }
     } else if (outcome.kind === "unsolicited") {
       status = "unsolicited_pending_confirmation";
-      deferredReviewKind = "unsolicited_document";
-      deferredReviewPayload = { documentType: outcome.documentType };
+      pendingUnsolicitedDocumentType = outcome.documentType;
     }
 
     await recordAuditEvent({
@@ -750,7 +748,6 @@ export async function processInboundAttachment(
       ...(pageNumberCurrent !== null ? { pageNumberCurrent } : {}),
       ...(pageNumberTotal !== null ? { pageNumberTotal } : {}),
       ...(continuationOfDocumentId ? { continuationOfDocumentId } : {}),
-      ...(deferredReviewKind ? { deferredReviewKind, deferredReviewPayload } : {}),
     })
     .returning();
 
@@ -766,17 +763,38 @@ export async function processInboundAttachment(
   });
 
   if (needsResendMessage) {
-    // Immediate, specific, AI-grounded (never a generic "couldn't read it")
-    // — and creates the same resolvable pendingConfirmation a deferred
-    // document_clarification always did, so whatever the client sends back
-    // (a corrected photo, or just an explanation) still resolves normally
-    // via resolveOpenClarificationReply/applyClarificationReply.
+    // Immediate, specific, AI-grounded (never a generic "couldn't read it").
     await createClarificationRequest({
       organizationId,
       clientId,
       collectionRequestId,
       documentId: document.id,
       question: needsResendMessage,
+    });
+  }
+
+  if (pendingIdentityAnomaly) {
+    // Immediate (not deferred to whole-case-review time) — still only ever
+    // reaches the client as one combined message per short burst, via the
+    // same notifyAfter grouping window every other batched confirmation
+    // uses (see this function's own doc comment above).
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId,
+      clientId,
+      collectionRequestId,
+      documentId: document.id,
+      anomaly: pendingIdentityAnomaly.anomaly,
+      documentType: pendingIdentityAnomaly.documentType,
+    });
+  }
+
+  if (pendingUnsolicitedDocumentType) {
+    await createUnsolicitedDocumentConfirmation({
+      organizationId,
+      clientId,
+      collectionRequestId,
+      documentId: document.id,
+      documentType: pendingUnsolicitedDocumentType,
     });
   }
 
@@ -850,11 +868,9 @@ export async function processInboundAttachment(
   }
   // unsolicited_pending_confirmation / clarification_requested /
   // identity_anomaly_pending_confirmation: never uploaded and never
-  // counted, but no question is asked here either — "Centro checks the
-  // case, not the document." deferredReviewKind/Payload (already
-  // persisted above) is what runCaseReview (caseReview.ts) needs to ask
-  // about it, once, together with everything else found in this request,
-  // the moment the client signals they're done sending documents.
+  // counted — the question about each was already sent (or queued for
+  // this burst's short grouping window) above, immediately, right after
+  // the document row was inserted.
 
   const reopened = await reopenIfCompleted(organizationId, collectionRequestId);
   if (reopened) {

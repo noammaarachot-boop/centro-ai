@@ -108,9 +108,20 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
 
 const { processInboundAttachment } = await import("@/app/(app)/collections/conversationActions");
 const { flushDueIntakeNotifications, resolveBatchedIntakeReply } = await import("./pendingConfirmations");
-const { runCaseReview } = await import("./caseReview");
 const { applyUnsolicitedConfirmationDecision } = await import("./documentIntakeReview");
 const { applyIdentityAnomalyDecision } = await import("./documentIdentityVerification");
+
+// identity_anomaly/unsolicited_document confirmations are created
+// immediately at intake time (not deferred to whole-case-review time) but
+// still held for the short notification-grouping window — forces that
+// flush immediately for tests that need to observe the combined send.
+async function forceFlush(orgId: string, requestId: string) {
+  await db
+    .update(schema.pendingConfirmations)
+    .set({ notifyAfter: new Date(Date.now() - 1000) })
+    .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+  return flushDueIntakeNotifications(orgId, requestId);
+}
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -228,28 +239,26 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     expect(allDocs).toHaveLength(4);
     expect(allDocs.every((d) => d.googleDriveFileId === null)).toBe(true);
 
-    // "Centro checks the case, not the document" — nothing was asked yet
-    // while collection might still be in progress; every exception is
-    // only held (deferredReviewKind set), no pendingConfirmation exists.
-    expect(allDocs.filter((d) => d.deferredReviewKind !== null)).toHaveLength(4);
-    const beforeReview = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-    expect(beforeReview).toHaveLength(0);
+    // Asked about immediately, not deferred to whole-case-review time —
+    // every exception already has a pendingConfirmation right after
+    // intake, just not yet flushed/sent (still inside the short
+    // notification-grouping window) — so no WhatsApp message yet either.
+    expect(allDocs.every((d) => d.deferredReviewKind === null)).toBe(true);
+    const beforeFlush = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(beforeFlush).toHaveLength(2);
+    expect(beforeFlush.every((r) => r.notifiedAt === null)).toBe(true);
     expect(sendTextMessage).not.toHaveBeenCalled();
 
-    // Only once the client signals they're done does the whole case get
-    // reviewed together.
-    await runCaseReview(orgId, clientId, requestId);
-
     // Two distinct pending-confirmation groups (identity + unsolicited)...
-    const pendingRows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-    expect(pendingRows).toHaveLength(2);
+    const pendingRows = beforeFlush;
     const identityRow = pendingRows.find((r) => r.kind === "identity_anomaly")!;
     const unsolicitedRow = pendingRows.find((r) => r.kind === "unsolicited_document")!;
     expect((identityRow.payload as { documents: unknown[] }).documents).toHaveLength(2);
     expect((unsolicitedRow.payload as { documentIds: string[] }).documentIds).toHaveLength(2);
 
-    // ...but the client sees exactly ONE WhatsApp message, not four —
-    // runCaseReview already flushed it.
+    // ...but once the short grouping window elapses, the client sees
+    // exactly ONE WhatsApp message, not four.
+    await forceFlush(orgId, requestId);
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
 
     const messages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
@@ -298,7 +307,7 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     });
     await processInboundAttachment(orgId, requestId, conversationId, clientId, "invoice1.pdf", null, Buffer.from("invoice1-bytes"), "application/pdf", "wamid.t2.3");
 
-    await runCaseReview(orgId, clientId, requestId);
+    await forceFlush(orgId, requestId);
     const rowsBefore = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     const identityRow = rowsBefore.find((r) => r.kind === "identity_anomaly")!;
     const unsolicitedRow = rowsBefore.find((r) => r.kind === "unsolicited_document")!;
@@ -328,6 +337,15 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
 
     // Only the confirmed document was actually uploaded to Drive.
     expect(fakeFiles).toHaveLength(1);
+
+    // "כן, שלחתי בכוונה" (identity mismatch confirmed intentional) never
+    // escalates to an employee — no needs_review document, no employee-
+    // facing audit event, collection just continues.
+    expect(idDoc.some((d) => d.status === "needs_review")).toBe(false);
+    const auditEventTypesSoFar = (
+      await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId))
+    ).map((e) => e.eventType);
+    expect(auditEventTypesSoFar.some((t) => t.includes("needs_review") || t.includes("employee"))).toBe(false);
 
     // Independent audit trail entries exist for each document.
     const auditEvents = await db
@@ -367,7 +385,7 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     });
     await processInboundAttachment(orgId, requestId, conversationId, clientId, "invoice1.pdf", null, Buffer.from("invoice1-bytes"), "application/pdf", "wamid.t3.3");
 
-    await runCaseReview(orgId, clientId, requestId);
+    await forceFlush(orgId, requestId);
     const rowsBefore = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     const identityRow = rowsBefore.find((r) => r.kind === "identity_anomaly")!;
     const confirmOption = identityRow.groupIndex! * 2 + 1;
@@ -395,6 +413,70 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
   });
 });
 
+// An immediate correction message (needs_resend — never grouped/delayed,
+// unlike identity_anomaly/unsolicited_document above) must never interfere
+// with the separate 2-minute silence-window summary: the client fixing a
+// problem and then continuing to send valid documents should still get
+// exactly one correct, non-duplicated summary once things go quiet.
+describe("an immediate correction message never blocks or duplicates the later 2-minute summary", () => {
+  it("sends the resend request right away, then — once a valid document follows and the window elapses — exactly one correct summary", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const { runScheduledTasks } = await import("./scheduler");
+
+    // A blurry/unreadable document — immediate, ungrouped correction.
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.2,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+      readabilityIssue: "blurry",
+      readabilityIssueDetail: "התמונה מטושטשת מדי לקריאה",
+      suspectedDocumentType: "תעודת זהות",
+      clientMessageIfProblematic: "לא הצלחתי לאמת את תעודת הזהות מכיוון שהתמונה מטושטשת. נא לשלוח צילום חדש, ברור ומלא.",
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "blurry_id.jpg", null, Buffer.from("blurry-bytes"), "image/jpeg", "wamid.corr.1");
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const correctionBody = sendTextMessage.mock.calls[0][2] as string;
+    expect(correctionBody).toContain("מטושטשת");
+    sendTextMessage.mockClear();
+
+    // The client corrects course and sends a genuinely valid document for
+    // the OTHER open requirement — approved silently, no per-document reply.
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "דרכון",
+      identificationConfidence: 0.95,
+      matchedRequirementId: (await db.select().from(schema.collectionRequestRequirements).where(eq(schema.collectionRequestRequirements.collectionRequestId, requestId)))
+        .find((r) => r.name === "דרכון")!.id,
+      matchConfidence: 0.95,
+      extractedPersonName: "רז שלום",
+      extractedIdNumber: "111111118",
+      extractedCompanyName: null,
+      identityExtractionConfidence: 0.95,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "passport.jpg", null, Buffer.from("passport-bytes"), "image/jpeg", "wamid.corr.2");
+    expect(sendTextMessage).not.toHaveBeenCalled(); // still silent
+
+    // Window elapses — the cron-style sweep (same path scheduler.ts uses)
+    // finds it due and sends exactly one summary.
+    await db.update(schema.conversations).set({ pendingCaseReviewAt: new Date(Date.now() - 1000) }).where(eq(schema.conversations.id, conversationId));
+    const result = await runScheduledTasks(orgId);
+    expect(result.caseStatusReviewsRun).toBe(1);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const summaryBody = sendTextMessage.mock.calls[0][2] as string;
+    expect(summaryBody).toContain("דרכון"); // received
+    expect(summaryBody).toContain("תעודת זהות"); // still missing — the blurry one was never approved
+    sendTextMessage.mockClear();
+
+    // Running the sweep again must never resend the same summary.
+    const secondResult = await runScheduledTasks(orgId);
+    expect(secondResult.caseStatusReviewsRun).toBe(0);
+    expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+});
+
 // Regression: a real production incident where the client received the
 // exact same combined message twice. Root cause, confirmed from
 // production logs: two independent triggers (two scheduleAfterResponse
@@ -418,10 +500,10 @@ describe("flushDueIntakeNotifications never sends the same combined message twic
       .values({ organizationId: orgId, collectionRequestId: requestId, fileName: "invoice1.pdf", status: "unsolicited_pending_confirmation" })
       .returning();
 
-    // Two groups created moments apart, exactly as runCaseReview
-    // (caseReview.ts) creates them when the client says they're done —
-    // this test targets flushDueIntakeNotifications's own atomicity
-    // directly, independent of how the groups got there.
+    // Two groups created moments apart, exactly as conversationActions.ts
+    // creates them immediately at intake time — this test targets
+    // flushDueIntakeNotifications's own atomicity directly, independent of
+    // how the groups got there.
     await createOrMergeIdentityAnomalyConfirmation({
       organizationId: orgId,
       clientId,
