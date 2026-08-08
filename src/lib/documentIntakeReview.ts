@@ -400,7 +400,7 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
     await sendOutboundMessage(
       resolved.organizationId,
       resolved.conversationId,
-      "בסדר, קיבלתי. לא אכלול את המסמך הזה בבקשה.",
+      "בסדר, המסמך לא ייכלל.",
       "ai",
       "manual",
       undefined,
