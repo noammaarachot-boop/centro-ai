@@ -129,6 +129,20 @@ describe("buildCaseStatusSummaryMessage", () => {
     expect(message).not.toContain("קיבלתי");
     expect(message).toContain("עדיין חסר לי");
   });
+
+  it("folds a confirmed-unsolicited 'extra' document into the received list, labeled as not-requested", () => {
+    const message = buildCaseStatusSummaryMessage(
+      ["תעודת זהות", "רישיון נהיגה"],
+      ["אישור ניהול חשבון בנק"],
+      ["קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה"]
+    );
+    expect(message).toContain("קיבלתי את המסמכים הבאים");
+    expect(message).toContain("• תעודת זהות");
+    expect(message).toContain("• רישיון נהיגה");
+    expect(message).toContain("• קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(message).toContain("עדיין חסר לי");
+    expect(message).toContain("• אישור ניהול חשבון בנק");
+  });
 });
 
 describe("runAutomaticCaseStatusReview", () => {
@@ -158,6 +172,55 @@ describe("runAutomaticCaseStatusReview", () => {
 
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.status).toBe("closed");
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
+  });
+
+  it("a confirmed-unsolicited document folds into the summary, labeled as not-requested, without displacing what's actually still missing", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest([
+      "תעודת זהות",
+      "אישור ניהול חשבון בנק",
+    ]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    // Simulates a client-confirmed unsolicited document (documentIntakeReview.ts's
+    // applyUnsolicitedConfirmationDecision — tested directly in
+    // documentIntakeReview.test.ts) — this test targets caseReview.ts's own
+    // summary composition, independent of how the row got there.
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      fileName: "קבלה על תיקון רכב.pdf",
+      status: "unsolicited_approved",
+    });
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("summary_sent");
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("• תעודת זהות");
+    expect(body).toContain("• קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(body).toContain("עדיין חסר לי");
+    expect(body).toContain("• אישור ניהול חשבון בנק");
+  });
+
+  it("completing the request with a confirmed-unsolicited document still present mentions it in the completion message", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest(["תעודת זהות"]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      fileName: "קבלה על תיקון רכב.pdf",
+      status: "unsolicited_approved",
+    });
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("completed");
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו לבקשה");
+    expect(body).toContain("• קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(body).toContain("כל המסמכים הנדרשים התקבלו");
+
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(request.status).toBe("completed");
   });

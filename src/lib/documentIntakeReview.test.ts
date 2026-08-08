@@ -832,7 +832,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     expect(message.deliveryStatus).toBe("sent");
   });
 
-  it("sends the thank-you after a 'yes' reply as free-form text (the question itself went out via buttons)", async () => {
+  it("a 'yes' reply sends no immediate thank-you — it quietly arms the 2-minute silence-window instead", async () => {
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
       whatsappPhoneNumberId: "phone-1",
     });
@@ -850,14 +850,16 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
       .select()
       .from(schema.pendingConfirmations)
       .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    sendTextMessage.mockClear(); // only count sends from the decision itself, not the question above
 
     await applyUnsolicitedConfirmationDecision({ ...confirmation, status: "confirmed", conversationId });
 
-    // The question itself (interactive buttons) + the thank-you (plain text).
-    expect(sendInteractiveButtonsMessage).toHaveBeenCalledTimes(1);
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    const sentMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
-    expect(sentMessages.every((m) => m.deliveryStatus === "sent")).toBe(true);
+    // No immediate reply — the confirmed-unsolicited document is quiet,
+    // exactly like any other successfully-received document; it only
+    // shows up later, labeled, in the 2-minute summary.
+    expect(sendTextMessage).not.toHaveBeenCalled();
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.pendingCaseReviewAt).not.toBeNull();
   });
 
   it("reminder resend goes out as free-form numbered text (no pre-approved template exists for this dynamic question, and only the original send uses buttons)", async () => {
