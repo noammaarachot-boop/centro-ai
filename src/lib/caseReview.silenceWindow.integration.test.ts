@@ -134,12 +134,12 @@ describe("buildCaseStatusSummaryMessage", () => {
     const message = buildCaseStatusSummaryMessage(
       ["תעודת זהות", "רישיון נהיגה"],
       ["אישור ניהול חשבון בנק"],
-      ["קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה"]
+      ["קבלה על תיקון רכב — מסמך נוסף שהתקבל"]
     );
     expect(message).toContain("קיבלתי את המסמכים הבאים");
     expect(message).toContain("• תעודת זהות");
     expect(message).toContain("• רישיון נהיגה");
-    expect(message).toContain("• קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(message).toContain("• קבלה על תיקון רכב — מסמך נוסף שהתקבל");
     expect(message).toContain("עדיין חסר לי");
     expect(message).toContain("• אישור ניהול חשבון בנק");
   });
@@ -222,7 +222,7 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const body = sendTextMessage.mock.calls[0][2] as string;
     expect(body).toContain("• תעודת זהות");
-    expect(body).toContain("• קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(body).toContain("• קבלה על תיקון רכב — מסמך נוסף שהתקבל");
     expect(body).toContain("עדיין חסר לי");
     expect(body).toContain("• אישור ניהול חשבון בנק");
   });
@@ -247,7 +247,7 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(outcome).toBe("summary_sent");
     const body = sendTextMessage.mock.calls[0][2] as string;
     expect(body).toContain("• תעודת זהות");
-    expect(body).toContain("• אישור שכירות (אדם אחר) — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(body).toContain("• אישור שכירות (אדם אחר) — מסמך נוסף שהתקבל");
     expect(body).toContain("עדיין חסר לי");
     expect(body).toContain("• אישור ניהול חשבון בנק");
   });
@@ -267,7 +267,7 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const body = sendTextMessage.mock.calls[0][2] as string;
     expect(body).toContain("קיבלתי את כל המסמכים שנדרשו לבקשה");
-    expect(body).toContain("• קבלה על תיקון רכב — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(body).toContain("• קבלה על תיקון רכב — מסמך נוסף שהתקבל");
     expect(body).toContain("כל המסמכים הנדרשים התקבלו");
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));

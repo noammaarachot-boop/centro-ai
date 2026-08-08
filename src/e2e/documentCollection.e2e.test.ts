@@ -302,7 +302,7 @@ async function sendButtonReply(phoneNumberId: string, buttonId: string, title: s
                   from: TEST_CLIENT_WA_ID,
                   id: nextWamid(),
                   type: "interactive",
-                  interactive: { type: "button", button_reply: { id: buttonId, title } },
+                  interactive: { type: "button_reply", button_reply: { id: buttonId, title } },
                 },
               ],
             },
@@ -986,6 +986,59 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
 // handler, not by calling any single resolver in isolation, since the bug
 // was specifically about the order/fallthrough between them.
 // ======================================================================
+// ======================================================================
+// Real production incident: a button tap on "כן" never resolved at all
+// (silently fell through to "not a recognized button tap"), while typing
+// "כן" as plain text worked correctly — confirmed via diagnostic logging
+// that Meta's real inbound webhook payload sets interactive.type to
+// "button_reply", not "button" (route.ts's resolveInteractiveReplyText
+// checked for the wrong value from day one). These tests prove button tap
+// and typed text now produce byte-identical outcomes, for both
+// unsolicited_document and identity_anomaly confirmations.
+// ======================================================================
+describe("button tap vs typed text — must resolve an open confirmation identically", () => {
+  async function seedOneOpenUnsolicitedConfirmation() {
+    const { requestId, phoneNumberId, conversationId } = await seedActiveRequest(["תעודת זהות"]);
+    const invoiceDoc = await makeTestDocument("invoice", { fileName: "invoice1.pdf" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חשבונית",
+      identificationConfidence: 0.9,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
+    await sendDocument(phoneNumberId, invoiceDoc);
+    sentMessages.length = 0;
+    return { requestId, phoneNumberId, conversationId };
+  }
+
+  it("button tap 'כן' resolves the open confirmation exactly like typed 'כן': same document status, same acknowledgment, same debounce arm", async () => {
+    const { requestId, phoneNumberId, conversationId } = await seedOneOpenUnsolicitedConfirmation();
+
+    await sendButtonReply(phoneNumberId, CONFIRM_YES_BUTTON_ID, "כן");
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("unsolicited_approved");
+    expect(sentMessages.at(-1)!.body).toBe("תודה! שמרתי את המסמך.");
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.pendingCaseReviewAt).not.toBeNull();
+    const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmation.status).toBe("confirmed");
+  });
+
+  it("button tap 'לא' resolves the open confirmation exactly like typed 'לא': same document status, same acknowledgment, same debounce arm", async () => {
+    const { requestId, phoneNumberId, conversationId } = await seedOneOpenUnsolicitedConfirmation();
+
+    await sendButtonReply(phoneNumberId, CONFIRM_NO_BUTTON_ID, "לא");
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("unsolicited_rejected");
+    expect(sentMessages.at(-1)!.body).toBe("בסדר, קיבלתי. לא אכלול את המסמך הזה בבקשה.");
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.pendingCaseReviewAt).not.toBeNull();
+  });
+});
+
 describe("reply routing priority — an ambiguous yes/no answer to our own open question must never reach deferral/reminder logic", () => {
   // Two distinct unsolicited documents -> two simultaneously open
   // unsolicited_document confirmations, each sent as its own solo message

@@ -219,13 +219,19 @@ async function isMessageAlreadyProcessed(messageId: string): Promise<boolean> {
 // anywhere else. An unrecognized button id (should never happen — Centro
 // only ever sends its own two ids) resolves to null, same as no text at
 // all, rather than guessing.
+//
+// The real production incident this fixes: every button tap silently
+// failed to resolve, always falling through to "not a recognized button
+// tap" — confirmed via the diagnostic logging below (added specifically
+// to catch this) that Meta's actual webhook payload sets
+// interactive.type to "button_reply", never "button". "button" was never
+// a real value this field takes; it was a wrong assumption from day one,
+// not a recent regression.
 export function resolveInteractiveReplyText(message: WhatsAppInboundMessage): string | null {
-  if (message.interactive?.type !== "button" || !message.interactive.button_reply) {
-    // Diagnostic only (no behavior change) — a real production case
-    // showed a client's button tap arriving as type "interactive" but
-    // never resolving to a כן/לא reply, and the existing logs didn't
-    // capture enough of the raw payload to tell why. This makes the next
-    // occurrence diagnosable without guessing.
+  if (message.interactive?.type !== "button_reply" || !message.interactive.button_reply) {
+    // Diagnostic only (no behavior change) — kept in place so any future
+    // unresolved interactive payload shape is still fully logged instead
+    // of silently guessed at.
     if (message.interactive) {
       console.log("[wa-inbound] unresolved interactive reply — not a recognized button tap", {
         interactiveType: message.interactive.type,
