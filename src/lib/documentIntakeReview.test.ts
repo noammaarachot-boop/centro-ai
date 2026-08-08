@@ -857,7 +857,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     // A short immediate acknowledgment (not the full summary) — the
     // document itself still only shows up, labeled, in the later summary.
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(sendTextMessage.mock.calls[0][2]).toContain("קיבלתי את המסמך");
+    expect(sendTextMessage.mock.calls[0][2]).toBe("תודה! שמרתי את המסמך.");
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.pendingCaseReviewAt).not.toBeNull();
   });

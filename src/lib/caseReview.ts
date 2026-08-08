@@ -266,11 +266,23 @@ async function computeCaseStatusLists(collectionRequestId: string): Promise<Case
     }
   }
 
-  const unsolicitedDocs = await db
+  // Both unsolicited_approved (right type, just not what was asked for)
+  // and identity_anomaly_confirmed (client confirmed it's genuinely
+  // theirs despite the mismatch found) are distinct mechanisms with their
+  // own separate questions/reasons — never unified as a classification —
+  // but both describe the same thing to the client here: an extra
+  // document, kept for transparency, that never fulfills any actual
+  // requirement.
+  const extraDocs = await db
     .select({ fileName: documents.fileName })
     .from(documents)
-    .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "unsolicited_approved")));
-  const extra = unsolicitedDocs.map((d) => `${stripFileExtension(d.fileName)} — מסמך נוסף, לא נדרש במסגרת הבקשה`);
+    .where(
+      and(
+        eq(documents.collectionRequestId, collectionRequestId),
+        or(eq(documents.status, "unsolicited_approved"), eq(documents.status, "identity_anomaly_confirmed"))
+      )
+    );
+  const extra = extraDocs.map((d) => `${stripFileExtension(d.fileName)} — מסמך נוסף, לא נדרש במסגרת הבקשה`);
 
   return { received, missing, extra };
 }

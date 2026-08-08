@@ -420,6 +420,7 @@ describe("applyIdentityAnomalyDecision", () => {
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
     await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס" });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    sendTextMessage.mockClear(); // only count sends from the decision itself, not the question above
 
     await applyIdentityAnomalyDecision({ ...confirmation, status: "confirmed", conversationId });
 
@@ -428,6 +429,16 @@ describe("applyIdentityAnomalyDecision", () => {
     expect(after.requirementId).toBeNull();
     expect(after.googleDriveFileId).not.toBeNull();
     expect(fakeFiles).toHaveLength(1);
+
+    // Same unified post-"yes" behavior as unsolicited_document's own
+    // confirmed branch (documentIntakeReview.ts) — exact wording, and it
+    // arms the 2-minute silence-window summary trigger. Never escalates
+    // to needs_review or an employee just because this was identity_anomaly.
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage.mock.calls[0][2]).toBe("תודה! שמרתי את המסמך.");
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.pendingCaseReviewAt).not.toBeNull();
+    expect(after.status).not.toBe("needs_review");
   });
 
   it("client says it was sent by mistake — never uploaded, pending bytes cleared, marked rejected", async () => {

@@ -1,6 +1,6 @@
 import { and, eq, isNull, ne } from "drizzle-orm";
 import { getDb } from "@/db";
-import { documents, organizations, pendingConfirmations } from "@/db/schema";
+import { conversations, documents, organizations, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import type { DocumentClassification } from "@/lib/ai/documentClassifier";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
@@ -11,6 +11,7 @@ import {
 } from "@/lib/pendingConfirmations";
 import { fileExtension, uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
 import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
+import { CASE_REVIEW_SILENCE_WINDOW_MS, scheduleCaseReviewRelay } from "@/lib/caseReview";
 
 /**
  * Smart identity/consistency verification — a document can be exactly the
@@ -556,13 +557,24 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
     });
   }
 
-  await sendOutboundMessage(
-    resolved.organizationId,
-    resolved.conversationId,
-    documentsInGroup.length > 1 ? "תודה! שמרתי את המסמכים אצלך." : "תודה! שמרתי את המסמך אצלך.",
-    "ai",
-    "manual",
-    undefined,
-    true
+  // Same post-YES behavior as unsolicited_document's own confirmed branch
+  // (documentIntakeReview.ts) — deliberately unified only at this point,
+  // never the classification itself: identity_anomaly and
+  // unsolicited_document stay two separate mechanisms with their own
+  // distinct questions/reasons; only what happens once the client
+  // confirms "yes, sent on purpose" is now identical for both.
+  await sendOutboundMessage(resolved.organizationId, resolved.conversationId, "תודה! שמרתי את המסמך.", "ai", "manual", undefined, true);
+
+  await db
+    .update(conversations)
+    .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
+    .where(eq(conversations.id, resolved.conversationId));
+  scheduleAfterResponse(() =>
+    scheduleCaseReviewRelay({
+      organizationId: resolved.organizationId,
+      conversationId: resolved.conversationId,
+      collectionRequestId: resolved.collectionRequestId,
+      clientId: resolved.clientId,
+    })
   );
 }
