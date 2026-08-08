@@ -3,7 +3,7 @@ import { getDb } from "@/db";
 import { collectionRequestRequirements, collectionRequests, conversations, documents, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
-import { flushDueIntakeNotifications, type PendingConfirmationKind } from "@/lib/pendingConfirmations";
+import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
 import { createClarificationRequest, createUnsolicitedDocumentConfirmation } from "@/lib/documentIntakeReview";
 import { createOrMergeIdentityAnomalyConfirmation, type IdentityAnomaly } from "@/lib/documentIdentityVerification";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
@@ -92,13 +92,6 @@ interface DeferredDocument {
 // this changed, or any future code path that reintroduces deferral) is
 // never silently stranded — it's a no-op (returns hasPendingReview: false)
 // in the now-common case where nothing is actually deferred.
-// document_clarification (needs_resend) is deliberately excluded: unlike
-// identity_anomaly/unsolicited_document, it's never treated as blocking —
-// the client can keep sending other documents (or never revisit this one
-// at all) and the 2-minute summary must still fire and report accurately
-// (that requirement simply stays "missing" until a real matching document
-// arrives), never stuck waiting on an answer that may never come.
-const CASE_REVIEW_RELEVANT_KINDS: PendingConfirmationKind[] = ["identity_anomaly", "unsolicited_document"];
 
 export async function runCaseReview(
   organizationId: string,
@@ -176,28 +169,26 @@ export async function runCaseReview(
     );
   const flushResult = await flushDueIntakeNotifications(organizationId, collectionRequestId);
 
-  // Completion must wait not only for whatever this call just flushed, but
-  // for ANY of these three kinds still genuinely open on this request —
-  // e.g. already sent moments ago by its own grouping-window trigger and
-  // still awaiting the client's answer. Real gap this closes: before this
-  // check existed, a confirmation created immediately at intake (as they
-  // all are now) but not yet due for its OWN notifyAfter at the moment the
-  // client said "finished" would report hasPendingReview: false here,
-  // letting the request complete while a real, unresolved business
-  // exception was still sitting open — completeCollectionRequest itself
-  // has no independent gate on open pendingConfirmations.
-  const stillOpen = await db
-    .select({ id: pendingConfirmations.id })
-    .from(pendingConfirmations)
-    .where(
-      and(
-        eq(pendingConfirmations.collectionRequestId, collectionRequestId),
-        eq(pendingConfirmations.status, "pending"),
-        or(...CASE_REVIEW_RELEVANT_KINDS.map((kind) => eq(pendingConfirmations.kind, kind)))
-      )
-    );
-
-  return { hasPendingReview: stillOpen.length > 0, groupCount: flushResult.groupCount };
+  // hasPendingReview means "this exact call just asked the client something
+  // new" (a question flushed just now, in this same pass) — never "there
+  // exists some old, still-unanswered confirmation somewhere on this
+  // request". The only thing this must prevent is sending a question and a
+  // summary/completion message in the same breath; it must NOT keep
+  // blocking every later tick just because an identity_anomaly/
+  // unsolicited_document confirmation from days ago never got answered — a
+  // client who never replies at all must not freeze their own case-status
+  // summary or the request's completion indefinitely. Those documents
+  // simply stay excluded from computeCaseStatusLists (only
+  // approved/unsolicited_approved/identity_anomaly_confirmed count) until
+  // resolved; a late reply is still handled correctly whenever it arrives
+  // (applyUnsolicitedConfirmationDecision/applyIdentityAnomalyDecision act
+  // on the confirmation row directly, independent of request/conversation
+  // status — see the post-completion gate in the webhook route, which
+  // already falls through to the normal resolver for any open
+  // confirmation). The long-unanswered case is handled entirely by
+  // sendConfirmationRemindersAndEscalate's own reminder/escalation
+  // schedule, not by this function.
+  return { hasPendingReview: flushResult.groupCount > 0, groupCount: flushResult.groupCount };
 }
 
 interface CaseStatusLists {
