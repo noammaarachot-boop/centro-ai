@@ -885,7 +885,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     await applyUnsolicitedConfirmationDecision({ ...confirmation, status: "declined", conversationId });
 
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(sendTextMessage.mock.calls[0][2]).toContain("לא אכלול את המסמך");
+    expect(sendTextMessage.mock.calls[0][2]).toBe("בסדר, המסמך לא ייכלל.");
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.pendingCaseReviewAt).not.toBeNull();
     const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.id, documentId));

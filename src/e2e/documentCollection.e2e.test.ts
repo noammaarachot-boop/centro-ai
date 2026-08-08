@@ -1033,7 +1033,7 @@ describe("button tap vs typed text — must resolve an open confirmation identic
 
     const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
     expect(doc.status).toBe("unsolicited_rejected");
-    expect(sentMessages.at(-1)!.body).toBe("בסדר, קיבלתי. לא אכלול את המסמך הזה בבקשה.");
+    expect(sentMessages.at(-1)!.body).toBe("בסדר, המסמך לא ייכלל.");
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.pendingCaseReviewAt).not.toBeNull();
   });
