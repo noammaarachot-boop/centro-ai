@@ -832,7 +832,7 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     expect(message.deliveryStatus).toBe("sent");
   });
 
-  it("a 'yes' reply sends no immediate thank-you — it quietly arms the 2-minute silence-window instead", async () => {
+  it("a 'yes' reply sends a short immediate acknowledgment and still arms the 2-minute silence-window", async () => {
     const { orgId, clientId, requestId, conversationId, documentId } = await seedRequest({
       whatsappPhoneNumberId: "phone-1",
     });
@@ -854,10 +854,10 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
 
     await applyUnsolicitedConfirmationDecision({ ...confirmation, status: "confirmed", conversationId });
 
-    // No immediate reply — the confirmed-unsolicited document is quiet,
-    // exactly like any other successfully-received document; it only
-    // shows up later, labeled, in the 2-minute summary.
-    expect(sendTextMessage).not.toHaveBeenCalled();
+    // A short immediate acknowledgment (not the full summary) — the
+    // document itself still only shows up, labeled, in the later summary.
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage.mock.calls[0][2]).toContain("קיבלתי את המסמך");
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.pendingCaseReviewAt).not.toBeNull();
   });

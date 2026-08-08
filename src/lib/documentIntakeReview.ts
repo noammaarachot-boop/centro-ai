@@ -484,12 +484,22 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
     });
   }
 
-  // No immediate "thanks, saved" reply — a confirmed-unsolicited document
-  // is quiet exactly like any other successfully-received document; it
-  // folds into the next 2-minute silence-window summary instead (labeled
-  // as "not requested" — see buildCaseStatusSummaryMessage/
-  // computeCaseStatusLists, caseReview.ts), the same debounced trigger
-  // ordinary document arrivals already use.
+  // A short immediate acknowledgment — the client answered a direct
+  // question and deserves confirmation the system understood, exactly
+  // like the "declined" branch above. This is NOT the full status summary
+  // (still 2 minutes away, below) — just a receipt. The document itself
+  // still folds into that later summary, labeled as "not requested" (see
+  // buildCaseStatusSummaryMessage/computeCaseStatusLists, caseReview.ts).
+  await sendOutboundMessage(
+    resolved.organizationId,
+    resolved.conversationId,
+    "תודה, קיבלתי את המסמך.",
+    "ai",
+    "manual",
+    undefined,
+    true
+  );
+
   await db
     .update(conversations)
     .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
