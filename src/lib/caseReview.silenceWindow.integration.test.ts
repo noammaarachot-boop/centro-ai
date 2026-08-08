@@ -44,6 +44,8 @@ vi.mock("ai", () => ({
 
 const { runScheduledTasks } = await import("./scheduler");
 const { runAutomaticCaseStatusReview, buildCaseStatusSummaryMessage, CASE_REVIEW_SILENCE_WINDOW_MS } = await import("./caseReview");
+const { createUnsolicitedDocumentConfirmation } = await import("./documentIntakeReview");
+const { flushDueIntakeNotifications } = await import("./pendingConfirmations");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -280,7 +282,8 @@ describe("runAutomaticCaseStatusReview", () => {
     // legacy leftover (e.g. from before that change) purely to prove the
     // defensive backstop in runCaseReview still surfaces it rather than
     // stranding it forever. It deliberately does NOT block completion —
-    // see CASE_REVIEW_RELEVANT_KINDS's own doc comment for why.
+    // document_clarification is never treated as blocking, unlike
+    // identity_anomaly/unsolicited_document.
     const { orgId, requestId, conversationId, clientId } = await seedWaitingRequest(["תעודת זהות"]);
     await db.insert(schema.documents).values({
       organizationId: orgId,
@@ -298,6 +301,109 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(sendTextMessage).toHaveBeenCalledTimes(2);
     expect(sendTextMessage.mock.calls[0][2]).toContain("לא הצלחתי לזהות");
     expect(sendTextMessage.mock.calls[1][2]).toContain("תעודת זהות"); // still missing — never approved
+  });
+
+  it("an unsolicited-document confirmation the client never answered at all does NOT block a later summary tick — the document is simply excluded, not treated as received or missing", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest([
+      "תעודת זהות",
+      "אישור ניהול חשבון בנק",
+    ]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    const [extraDoc] = await db
+      .insert(schema.documents)
+      .values({
+        organizationId: orgId,
+        collectionRequestId: requestId,
+        fileName: "invoice_never_answered.pdf",
+        status: "unsolicited_pending_confirmation",
+        pendingFileContent: Buffer.from("bytes"),
+        pendingFileMimeType: "application/pdf",
+      })
+      .returning();
+    // Simulates the question already having gone out on an EARLIER tick
+    // (real flow: within ~15s of the document arriving, independent of
+    // case review) and the client simply never replying — not "declined",
+    // not "confirmed", genuinely still open.
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: extraDoc.id,
+      documentType: "חשבונית",
+    });
+    // The 15s grouping window (groupingWindowSeconds) hasn't elapsed yet
+    // right after creation — force it due, exactly like the real ~15s
+    // delayed flush (or the scheduler's own backstop) would once it has,
+    // so this flush is the one that actually sends the question, simulating
+    // "asked minutes ago, on an earlier tick" rather than "just asked now".
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ notifyAfter: new Date(Date.now() - 1000) })
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await flushDueIntakeNotifications(orgId, requestId);
+    sendTextMessage.mockClear();
+
+    // A later, unrelated silence-window trigger (e.g. another ordinary
+    // document arrived and went quiet again) must still report status
+    // normally — an old, unanswered confirmation must never freeze this.
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("summary_sent");
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).not.toContain("invoice_never_answered");
+    expect(body).not.toContain("חשבונית");
+    expect(body).toContain("• תעודת זהות");
+    expect(body).toContain("• אישור ניהול חשבון בנק");
+  });
+
+  it("an unsolicited-document confirmation the client never answered at all does NOT block full completion once every actual requirement is satisfied", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest(["תעודת זהות"]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    const [extraDoc] = await db
+      .insert(schema.documents)
+      .values({
+        organizationId: orgId,
+        collectionRequestId: requestId,
+        fileName: "invoice_never_answered.pdf",
+        status: "unsolicited_pending_confirmation",
+        pendingFileContent: Buffer.from("bytes"),
+        pendingFileMimeType: "application/pdf",
+      })
+      .returning();
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: extraDoc.id,
+      documentType: "חשבונית",
+    });
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ notifyAfter: new Date(Date.now() - 1000) })
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await flushDueIntakeNotifications(orgId, requestId);
+    sendTextMessage.mockClear();
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("completed");
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("קיבלתי הכל");
+    expect(body).not.toContain("invoice_never_answered");
+    expect(body).not.toContain("חשבונית");
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
+    // The still-open confirmation itself is untouched — a late reply must
+    // still be handled correctly (verified separately in
+    // documentIntakeReview.test.ts / the webhook route's post-completion
+    // gate, which falls through to the normal resolver for any open
+    // confirmation regardless of the request already being closed).
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmation.status).toBe("pending");
   });
 });
 
