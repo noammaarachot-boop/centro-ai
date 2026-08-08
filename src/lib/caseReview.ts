@@ -207,6 +207,17 @@ interface CaseStatusLists {
   // consistently side by side.
   received: string[];
   missing: string[];
+  // Documents the client confirmed sending on purpose despite not matching
+  // any open requirement (unsolicited_document, confirmed) — never counts
+  // toward any requirement's satisfaction, shown purely for transparency.
+  // Already formatted with its own "— not requested" suffix so callers can
+  // fold it straight into the received list without knowing the wording.
+  extra: string[];
+}
+
+function stripFileExtension(fileName: string): string {
+  const dotIndex = fileName.lastIndexOf(".");
+  return dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
 }
 
 // Quantity-aware (src/lib/documentQuantity.ts): shared core of both
@@ -254,7 +265,14 @@ async function computeCaseStatusLists(collectionRequestId: string): Promise<Case
       missing.push(`${requirement.name}${progressSuffix}`);
     }
   }
-  return { received, missing };
+
+  const unsolicitedDocs = await db
+    .select({ fileName: documents.fileName })
+    .from(documents)
+    .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "unsolicited_approved")));
+  const extra = unsolicitedDocs.map((d) => `${stripFileExtension(d.fileName)} — מסמך נוסף, לא נדרש במסגרת הבקשה`);
+
+  return { received, missing, extra };
 }
 
 export async function listMissingRequirementNames(collectionRequestId: string): Promise<string[]> {
@@ -272,14 +290,18 @@ function buildMissingRequirementsMessage(missing: string[]): string {
 // buildMissingRequirementsMessage (a reply to the client's own "סיימתי"),
 // this is a proactive report the client never asked for, so it names both
 // what actually arrived and what's still outstanding rather than assuming
-// "קיבלתי" context from a reply.
-export function buildCaseStatusSummaryMessage(received: string[], missing: string[]): string {
+// "קיבלתי" context from a reply. `extra` (confirmed-unsolicited documents,
+// already formatted with their own "not requested" suffix — see
+// computeCaseStatusLists) folds straight into the same received list, for
+// transparency, without counting toward or displacing anything missing.
+export function buildCaseStatusSummaryMessage(received: string[], missing: string[], extra: string[] = []): string {
+  const receivedAndExtra = [...received, ...extra];
   const parts: string[] = [];
-  if (received.length > 0) {
+  if (receivedAndExtra.length > 0) {
     parts.push(
-      received.length === 1
-        ? `קיבלתי את המסמך הבא:\n• ${received[0]}`
-        : `קיבלתי את המסמכים הבאים:\n${received.map((name) => `• ${name}`).join("\n")}`
+      receivedAndExtra.length === 1
+        ? `קיבלתי את המסמך הבא:\n• ${receivedAndExtra[0]}`
+        : `קיבלתי את המסמכים הבאים:\n${receivedAndExtra.map((name) => `• ${name}`).join("\n")}`
     );
   }
   if (missing.length > 0) {
@@ -299,10 +321,19 @@ export type FinishOutcome = "review_pending" | "missing_requirements" | "complet
 // same completion send + conversation-close + deferral/extension cleanup
 // either path needs the moment completeCollectionRequest actually succeeds.
 async function finalizeCompletion(params: { organizationId: string; collectionRequestId: string; conversationId: string }): Promise<void> {
+  // Confirmed-unsolicited documents (client said "כן, שלחתי בכוונה") never
+  // block or delay completion — they just deserve a mention for
+  // transparency, exactly like the silence-window summary already gives
+  // them (buildCaseStatusSummaryMessage) — see computeCaseStatusLists.
+  const { extra } = await computeCaseStatusLists(params.collectionRequestId);
+  const completionMessage =
+    extra.length === 0
+      ? "מעולה, קיבלתי הכל! תודה 😊"
+      : `קיבלתי את כל המסמכים שנדרשו לבקשה.\nבנוסף התקבל גם:\n${extra.map((name) => `• ${name}`).join("\n")}\n\nתודה, כל המסמכים הנדרשים התקבלו.`;
   await sendOutboundMessage(
     params.organizationId,
     params.conversationId,
-    "מעולה, קיבלתי הכל! תודה 😊",
+    completionMessage,
     "ai",
     "manual",
     undefined,
@@ -433,7 +464,7 @@ export async function runAutomaticCaseStatusReview(params: {
     return "completed";
   }
 
-  const { received, missing } = await computeCaseStatusLists(params.collectionRequestId);
+  const { received, missing, extra } = await computeCaseStatusLists(params.collectionRequestId);
   if (missing.length === 0) {
     // Blocked for some other reason (e.g. a document still mid-upload
     // retry) — nothing concrete to report yet, never guess.
@@ -446,7 +477,7 @@ export async function runAutomaticCaseStatusReview(params: {
   await sendOutboundMessage(
     params.organizationId,
     params.conversationId,
-    buildCaseStatusSummaryMessage(received, missing),
+    buildCaseStatusSummaryMessage(received, missing, extra),
     "ai",
     "manual",
     undefined,

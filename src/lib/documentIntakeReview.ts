@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, isNull, lte } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, documents, organizations, pendingConfirmations } from "@/db/schema";
+import { collectionRequestRequirements, conversations, documents, organizations, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import {
   AUTO_APPROVE_CONFIDENCE,
@@ -18,6 +18,7 @@ import {
 } from "@/lib/pendingConfirmations";
 import { fileExtension, uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
 import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
+import { CASE_REVIEW_SILENCE_WINDOW_MS, scheduleCaseReviewRelay } from "@/lib/caseReview";
 
 /**
  * Ch.6's 3-way document intake split. A document the AI genuinely cannot
@@ -447,17 +448,23 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
     });
   }
 
-  // One thank-you for the whole group, not one per document — direct
-  // reaction to the client's own reply, inside the same session window,
-  // same allowFreeform/trigger reasoning as the question that prompted it.
-  await sendOutboundMessage(
-    resolved.organizationId,
-    resolved.conversationId,
-    documentIds.length > 1 ? "תודה! שמרתי את המסמכים אצלך." : "תודה! שמרתי את המסמך אצלך.",
-    "ai",
-    "manual",
-    undefined,
-    true
+  // No immediate "thanks, saved" reply — a confirmed-unsolicited document
+  // is quiet exactly like any other successfully-received document; it
+  // folds into the next 2-minute silence-window summary instead (labeled
+  // as "not requested" — see buildCaseStatusSummaryMessage/
+  // computeCaseStatusLists, caseReview.ts), the same debounced trigger
+  // ordinary document arrivals already use.
+  await db
+    .update(conversations)
+    .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
+    .where(eq(conversations.id, resolved.conversationId));
+  scheduleAfterResponse(() =>
+    scheduleCaseReviewRelay({
+      organizationId: resolved.organizationId,
+      conversationId: resolved.conversationId,
+      collectionRequestId: resolved.collectionRequestId,
+      clientId: resolved.clientId,
+    })
   );
 }
 
