@@ -227,6 +227,31 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(body).toContain("• אישור ניהול חשבון בנק");
   });
 
+  it("a confirmed identity-anomaly document ALSO folds into the summary the same way, labeled as not-requested — a separate mechanism, unified only in this presentation", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest([
+      "תעודת זהות",
+      "אישור ניהול חשבון בנק",
+    ]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    // Simulates a client-confirmed identity-anomaly document
+    // (documentIdentityVerification.ts's applyIdentityAnomalyDecision —
+    // tested directly in documentIdentityVerification.test.ts).
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      fileName: "אישור שכירות (אדם אחר).pdf",
+      status: "identity_anomaly_confirmed",
+    });
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("summary_sent");
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("• תעודת זהות");
+    expect(body).toContain("• אישור שכירות (אדם אחר) — מסמך נוסף, לא נדרש במסגרת הבקשה");
+    expect(body).toContain("עדיין חסר לי");
+    expect(body).toContain("• אישור ניהול חשבון בנק");
+  });
+
   it("completing the request with a confirmed-unsolicited document still present mentions it in the completion message", async () => {
     const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest(["תעודת זהות"]);
     await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");

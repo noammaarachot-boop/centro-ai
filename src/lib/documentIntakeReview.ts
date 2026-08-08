@@ -490,10 +490,13 @@ export async function applyUnsolicitedConfirmationDecision(resolved: ResolvedCon
   // (still 2 minutes away, below) — just a receipt. The document itself
   // still folds into that later summary, labeled as "not requested" (see
   // buildCaseStatusSummaryMessage/computeCaseStatusLists, caseReview.ts).
+  // Same exact wording as identity_anomaly's own confirmed branch
+  // (documentIdentityVerification.ts) — the two questions/reasons stay
+  // separate, only the post-"yes" behavior is unified.
   await sendOutboundMessage(
     resolved.organizationId,
     resolved.conversationId,
-    "תודה, קיבלתי את המסמך.",
+    "תודה! שמרתי את המסמך.",
     "ai",
     "manual",
     undefined,
