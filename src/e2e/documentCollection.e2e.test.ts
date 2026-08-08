@@ -7,6 +7,7 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { makeTestDocument, type TestDocument } from "./fixtures";
+import { CONFIRM_NO_BUTTON_ID, CONFIRM_YES_BUTTON_ID } from "@/lib/pendingConfirmations";
 
 /**
  * Document-collection engine — comprehensive, re-runnable, end-to-end
@@ -282,6 +283,34 @@ function textMessagePayload(phoneNumberId: string, from: string, body: string) {
 async function sendText(phoneNumberId: string, body: string): Promise<void> {
   console.log("[e2e] inbound text", { body });
   await postWebhook(textMessagePayload(phoneNumberId, TEST_CLIENT_WA_ID, body));
+}
+
+// A real WhatsApp Interactive Reply Buttons tap — no message.text at all,
+// only message.interactive.button_reply (see route.ts's own
+// resolveInteractiveReplyText).
+async function sendButtonReply(phoneNumberId: string, buttonId: string, title: string): Promise<void> {
+  console.log("[e2e] inbound button tap", { buttonId });
+  await postWebhook({
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              metadata: { phone_number_id: phoneNumberId },
+              messages: [
+                {
+                  from: TEST_CLIENT_WA_ID,
+                  id: nextWamid(),
+                  type: "interactive",
+                  interactive: { type: "button", button_reply: { id: buttonId, title } },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
 }
 
 async function sendDocument(phoneNumberId: string, doc: TestDocument, caption?: string): Promise<void> {
@@ -942,5 +971,142 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
     expect(finalConversation.status).toBe("closed");
     const [finalRequest] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(finalRequest.extensionActive).toBe(false);
+  });
+});
+
+// ======================================================================
+// Reply-routing priority — regression for a real production incident: a
+// bare "כן" answering an open unsolicited-document question (with more
+// than one confirmation open at once, so the specific yes/no resolvers
+// correctly refused to guess which one it answered) fell through all the
+// way to the free-text deferral/reminder classifier and was misread as a
+// future-intent commitment ("לאיזה יום להזכיר?"). route.ts's own new
+// ambiguity guard must catch this before it ever reaches deferral or
+// generic intent classification — proven here via the REAL webhook POST
+// handler, not by calling any single resolver in isolation, since the bug
+// was specifically about the order/fallthrough between them.
+// ======================================================================
+describe("reply routing priority — an ambiguous yes/no answer to our own open question must never reach deferral/reminder logic", () => {
+  // Two distinct unsolicited documents -> two simultaneously open
+  // unsolicited_document confirmations, each sent as its own solo message
+  // (mirrors the real incident's accumulated state exactly, rather than a
+  // single still-open confirmation, which resolveConfirmationFromReply
+  // already handled correctly on its own).
+  async function seedTwoOpenUnsolicitedConfirmations() {
+    const { requestId, phoneNumberId, conversationId } = await seedActiveRequest(["תעודת זהות"]);
+
+    const invoiceDoc = await makeTestDocument("invoice", { fileName: "invoice1.pdf" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "חשבונית",
+      identificationConfidence: 0.9,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
+    await sendDocument(phoneNumberId, invoiceDoc);
+
+    const leaseDoc = await makeTestDocument("lease_certificate", { fileName: "lease1.pdf" });
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "אישור שכירות",
+      identificationConfidence: 0.88,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
+    await sendDocument(phoneNumberId, leaseDoc);
+
+    const openBefore = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
+    expect(openBefore).toHaveLength(2);
+
+    sentMessages.length = 0; // only count what happens AFTER this point
+    generateObject.mockClear();
+    return { requestId, phoneNumberId, conversationId };
+  }
+
+  async function assertNoDeferralAndBothStillOpen(requestId: string) {
+    // Never reached the deferral/generic classifiers at all.
+    expect(generateObject).not.toHaveBeenCalled();
+    // Never sent a reminder-flavored reply.
+    expect(sentMessages.some((m) => m.body.includes("להזכיר") || m.body.includes("יום"))).toBe(false);
+    // Neither confirmation was guessed-resolved — both still open.
+    const stillOpen = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
+    expect(stillOpen).toHaveLength(2);
+    // The ambiguity was explicitly recorded, not silently dropped.
+    const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows.some((r) => r.eventType === "message.ambiguous_confirmation_reply")).toBe(true);
+  }
+
+  it("unsolicited question -> typed \"כן\" -> not routed to reminder/deferral", async () => {
+    const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    await sendText(phoneNumberId, "כן");
+    await assertNoDeferralAndBothStillOpen(requestId);
+  });
+
+  it("unsolicited question -> button תap \"כן\" -> not routed to reminder/deferral", async () => {
+    const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    await sendButtonReply(phoneNumberId, CONFIRM_YES_BUTTON_ID, "כן");
+    await assertNoDeferralAndBothStillOpen(requestId);
+  });
+
+  it("unsolicited question -> typed \"לא\" -> not routed to reminder/deferral", async () => {
+    const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    await sendText(phoneNumberId, "לא");
+    await assertNoDeferralAndBothStillOpen(requestId);
+  });
+
+  it("unsolicited question -> button tap \"לא\" -> not routed to reminder/deferral", async () => {
+    const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    await sendButtonReply(phoneNumberId, CONFIRM_NO_BUTTON_ID, "לא");
+    await assertNoDeferralAndBothStillOpen(requestId);
+  });
+
+  it("a genuine dated future commitment (\"אשלח שבוע הבא\") with NO open confirmation still triggers real deferral logic", async () => {
+    const { phoneNumberId, conversationId } = await seedActiveRequest(["תעודת זהות"]);
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: 1, namedPeriod: null },
+    });
+    await sendText(phoneNumberId, "אשלח שבוע הבא");
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.deferredReminderAt).not.toBeNull();
+  });
+
+  it("a genuine vague future commitment (\"אשלח בקרוב\") with NO open confirmation still triggers real deferral logic", async () => {
+    const { phoneNumberId, requestId } = await seedActiveRequest(["תעודת זהות"]);
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
+    });
+    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: true } });
+    await sendText(phoneNumberId, "אשלח בקרוב");
+
+    // applyFollowUpPromiseIfAny's own short acknowledgment — proves the
+    // real deferral/follow-up path actually ran, not just "some message".
+    expect(sentMessages.at(-1)!.body).toBe("בסדר, תודה 😊");
+    const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows.some((r) => r.eventType === "message.ambiguous_confirmation_reply")).toBe(false);
+  });
+
+  it("a bare \"כן\" with NO open confirmation at all never invents a reminder out of nothing", async () => {
+    const { phoneNumberId, requestId } = await seedActiveRequest(["תעודת זהות"]);
+    // Correctly classified as neither a dated commitment nor a vague
+    // follow-up promise — this test proves the DOWNSTREAM behavior given
+    // that (correct) classification, not the AI's own judgment call.
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
+    });
+    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false } });
+    generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
+
+    await sendText(phoneNumberId, "כן");
+
+    expect(sentMessages.every((m) => !m.body.includes("להזכיר"))).toBe(true);
+    const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows.some((r) => r.eventType === "message.ambiguous_confirmation_reply")).toBe(false);
   });
 });

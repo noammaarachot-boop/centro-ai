@@ -9,6 +9,7 @@ import {
   CONFIRM_NO_BUTTON_ID,
   CONFIRM_YES_BUTTON_ID,
   listOpenConfirmationsForCollectionRequest,
+  parseConfirmationReply,
   resolveBatchedIntakeReply,
   resolveConfirmationFromReply,
   resolveOpenClarificationReply,
@@ -467,6 +468,14 @@ async function handleInboundMessage(
       });
     } else {
       const resolved = await resolveConfirmationFromReply(conversation.id, body);
+      // Computed once, up front, so the ambiguous-yes/no guard below (and
+      // its own log/audit entry) never has to re-query — see that
+      // branch's own doc comment for why this check exists at all.
+      const yesNoShape = resolved ? null : parseConfirmationReply(body);
+      const openConfirmationsForAmbiguityCheck =
+        resolved || yesNoShape === "unclear" || isFinishedSignal(body)
+          ? []
+          : await listOpenConfirmationsForCollectionRequest(collectionRequestId);
       if (resolved) {
         console.log("[wa-inbound] confirmation reply resolved", { pendingConfirmationId: resolved.id, kind: resolved.kind, status: resolved.status });
         // Each is a no-op for any kind that isn't its own.
@@ -497,13 +506,47 @@ async function handleInboundMessage(
           actorType: "client",
         });
         console.log("[wa-inbound] case review outcome", { collectionRequestId, outcome });
+      } else if (yesNoShape !== "unclear" && openConfirmationsForAmbiguityCheck.length > 0) {
+        // Real production incident: a bare "כן" answering an open
+        // unsolicited-document question fell all the way through to the
+        // free-text deferral classifier below and was misread as a
+        // future-intent reminder request ("לאיזה יום התכוונת?") — a
+        // completely different mechanism that must only ever fire from
+        // the client's own words genuinely expressing a future
+        // commitment, never as a side effect of a yes/no reply we simply
+        // couldn't route. Root cause: resolveConfirmationFromReply/
+        // resolveOpenClarificationReply both correctly refuse to guess
+        // when more than one confirmation is open at once (their own
+        // "never guess" discipline) — but that correct refusal was
+        // falling through into unrelated classifiers instead of stopping.
+        // This message is shaped like a yes/no answer (parseConfirmationReply)
+        // and at least one of our own open questions on this request
+        // could plausibly be what it's answering — stop here. Never
+        // guess which one, but never treat it as deferral or generic
+        // intent either.
+        console.log("[wa-inbound] ambiguous yes/no reply with open confirmation(s) — not routed to deferral/generic intent", {
+          collectionRequestId,
+          openConfirmationCount: openConfirmationsForAmbiguityCheck.length,
+          openConfirmationKinds: openConfirmationsForAmbiguityCheck.map((c) => c.kind),
+        });
+        await recordAuditEvent({
+          organizationId: organization.id,
+          eventType: "message.ambiguous_confirmation_reply",
+          description: `הלקוח ענה "${body}" אך יש יותר מבקשת אישור פתוחה אחת (או שלא ניתן היה לקבוע לאיזו מהן זו תשובה) — לא נשלחה תגובה`,
+          actorType: "system",
+          clientId: client.id,
+          collectionRequestId,
+          metadata: { openConfirmationKinds: openConfirmationsForAmbiguityCheck.map((c) => c.kind) },
+        });
       } else {
         // Free-text "I'll send it later" understanding, now including real
         // dated commitments ("אשלח ביום חמישי") as a stronger case than a
         // vague short-term promise ("אשלח בערב") — only reached once
         // nothing else claimed this message (no open confirmation, not a
-        // finished signal). A no-op for the overwhelming majority of
-        // ordinary messages; see applyDeferralIfAny's own doc comment.
+        // finished signal, and not an ambiguous yes/no reply to one of our
+        // own open questions — see the branch above). A no-op for the
+        // overwhelming majority of ordinary messages; see
+        // applyDeferralIfAny's own doc comment.
         const promised = await applyDeferralIfAny({
           organizationId: organization.id,
           conversationId: conversation.id,
