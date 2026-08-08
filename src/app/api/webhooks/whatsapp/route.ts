@@ -219,10 +219,25 @@ async function isMessageAlreadyProcessed(messageId: string): Promise<boolean> {
 // only ever sends its own two ids) resolves to null, same as no text at
 // all, rather than guessing.
 export function resolveInteractiveReplyText(message: WhatsAppInboundMessage): string | null {
-  if (message.interactive?.type !== "button" || !message.interactive.button_reply) return null;
+  if (message.interactive?.type !== "button" || !message.interactive.button_reply) {
+    // Diagnostic only (no behavior change) — a real production case
+    // showed a client's button tap arriving as type "interactive" but
+    // never resolving to a כן/לא reply, and the existing logs didn't
+    // capture enough of the raw payload to tell why. This makes the next
+    // occurrence diagnosable without guessing.
+    if (message.interactive) {
+      console.log("[wa-inbound] unresolved interactive reply — not a recognized button tap", {
+        interactiveType: message.interactive.type,
+        hasButtonReply: !!message.interactive.button_reply,
+        raw: message.interactive,
+      });
+    }
+    return null;
+  }
   const { id } = message.interactive.button_reply;
   if (id === CONFIRM_YES_BUTTON_ID) return "כן";
   if (id === CONFIRM_NO_BUTTON_ID) return "לא";
+  console.log("[wa-inbound] unresolved interactive reply — unrecognized button id", { id });
   return null;
 }
 
