@@ -375,12 +375,25 @@ describe("identity-anomaly question wording", () => {
     expect(row.question).toContain("מרגלית אביטן");
   });
 
-  it("never names anyone when extraction wasn't confident — uses the exact generic wording instead of guessing", async () => {
+  it("never guesses a NAME when extraction wasn't confident, but still names the document TYPE when that part IS confidently known", async () => {
     const { orgId, clientId, requestId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: false, conflictingName: null, maskedIdNumber: null };
 
     await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "תעודת זהות" });
+
+    const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(row.question).toBe(
+      "📄 תעודת זהות\nנראה שהמסמך שייך לאדם אחר, אך לא הצלחתי לקרוא את השם בבירור.\n\nהאם שלחת אותו בכוונה?"
+    );
+  });
+
+  it("falls back to the fully generic wording only when the document TYPE isn't confidently known either — never invents one", async () => {
+    const { orgId, clientId, requestId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    const doc = await seedDocument(requestId, orgId);
+    const anomaly = { kind: "name_mismatch" as const, confident: false, conflictingName: null, maskedIdNumber: null };
+
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: null });
 
     const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.question).toBe("מצאתי מסמך שנראה שהוא שייך לאדם אחר.\nהאם שלחת אותו בכוונה?");

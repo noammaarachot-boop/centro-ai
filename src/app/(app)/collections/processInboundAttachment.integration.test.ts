@@ -139,7 +139,7 @@ const MINIMAL_PNG = Buffer.from(
 );
 
 const { processInboundAttachment } = await import("./conversationActions");
-const { runCaseReview, CASE_REVIEW_SILENCE_WINDOW_MS } = await import("@/lib/caseReview");
+const { CASE_REVIEW_SILENCE_WINDOW_MS } = await import("@/lib/caseReview");
 const { checkCompletionGate } = await import("@/lib/collectionRequestStateMachine");
 
 beforeAll(async () => {
@@ -307,28 +307,19 @@ describe("processInboundAttachment — documents arriving as separate calls for 
       expect(doc.googleDriveFileId).toBeNull();
     }
 
-    // "Centro checks the case, not the document" — nothing was actually
-    // asked yet while the client might still be sending more documents;
-    // both unsolicited documents are only held (deferredReviewKind set),
-    // no pendingConfirmation exists until the case review runs.
-    expect(unsolicited.every((d) => d.deferredReviewKind === "unsolicited_document")).toBe(true);
-    const confirmationsBeforeReview = await db
-      .select()
-      .from(schema.pendingConfirmations)
-      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-    expect(confirmationsBeforeReview).toHaveLength(0);
-
-    // Only once the client signals they're done does the whole case get
-    // reviewed together — a real "was this intentional?" question for
-    // each (two different document types, so two separate groups).
-    await runCaseReview(orgId, clientId, requestId);
+    // Asked about immediately, not deferred to whole-case-review time —
+    // each unsolicited document already has its own pendingConfirmation
+    // right after intake (two different document types, so two separate
+    // groups), just not yet flushed/sent (still inside its short
+    // notification-grouping window).
+    expect(unsolicited.every((d) => d.deferredReviewKind === null)).toBe(true);
     const openConfirmations = await db
       .select()
       .from(schema.pendingConfirmations)
       .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     const unsolicitedConfirmations = openConfirmations.filter((c) => c.kind === "unsolicited_document");
     expect(unsolicitedConfirmations).toHaveLength(2);
-    expect(unsolicitedConfirmations.every((c) => c.status === "pending")).toBe(true);
+    expect(unsolicitedConfirmations.every((c) => c.status === "pending" && c.notifiedAt === null)).toBe(true);
 
     // The request must NOT have auto-closed with only 2 of 4 requirements
     // satisfied — checkCompletionGate only allows "completed" when every

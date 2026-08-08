@@ -162,7 +162,13 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(request.status).toBe("completed");
   });
 
-  it("an ambiguous document held for review is asked about instead of a summary being sent in the same pass", async () => {
+  it("a legacy stranded document_clarification row (pre-dating immediate handling) still gets asked about, and — unlike identity_anomaly/unsolicited_document — never blocks the summary from also going out in the same pass", async () => {
+    // document_clarification is asked about immediately at intake time in
+    // real code now (never deferred) — this row simulates a genuinely
+    // legacy leftover (e.g. from before that change) purely to prove the
+    // defensive backstop in runCaseReview still surfaces it rather than
+    // stranding it forever. It deliberately does NOT block completion —
+    // see CASE_REVIEW_RELEVANT_KINDS's own doc comment for why.
     const { orgId, requestId, conversationId, clientId } = await seedWaitingRequest(["תעודת זהות"]);
     await db.insert(schema.documents).values({
       organizationId: orgId,
@@ -176,9 +182,10 @@ describe("runAutomaticCaseStatusReview", () => {
     });
 
     const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
-    expect(outcome).toBe("review_pending");
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(outcome).toBe("summary_sent");
+    expect(sendTextMessage).toHaveBeenCalledTimes(2);
     expect(sendTextMessage.mock.calls[0][2]).toContain("לא הצלחתי לזהות");
+    expect(sendTextMessage.mock.calls[1][2]).toContain("תעודת זהות"); // still missing — never approved
   });
 });
 

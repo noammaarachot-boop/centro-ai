@@ -104,7 +104,19 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
 }));
 
 const { processInboundAttachment } = await import("./conversationActions");
-const { runCaseReview } = await import("@/lib/caseReview");
+const { flushDueIntakeNotifications } = await import("@/lib/pendingConfirmations");
+
+// Identity-anomaly confirmations are asked about immediately (not deferred
+// to whole-case-review time) but still held for the short notification-
+// grouping window (pendingConfirmations.ts) — forces that flush
+// immediately for tests that need to observe the send.
+async function forceFlush(orgId: string, requestId: string) {
+  await db
+    .update(schema.pendingConfirmations)
+    .set({ notifyAfter: new Date(Date.now() - 1000) })
+    .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+  return flushDueIntakeNotifications(orgId, requestId);
+}
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -198,19 +210,20 @@ describe("processInboundAttachment — smart identity/consistency verification",
     expect(doc.requirementId).toBeNull();
     expect(fakeFiles).toHaveLength(0);
 
-    // "Centro checks the case, not the document" — nothing asked yet
-    // while collection might still be in progress; the document is only
-    // held (deferredReviewKind set), no question sent.
-    expect(doc.deferredReviewKind).toBe("identity_anomaly");
-    const confirmationsBeforeReview = await db
+    // Asked about immediately — not deferred to whole-case-review time —
+    // but still held for the short notification-grouping window rather
+    // than sent as its own standalone message the instant this one
+    // document arrives.
+    expect(doc.deferredReviewKind).toBeNull();
+    const [confirmationBeforeFlush] = await db
       .select()
       .from(schema.pendingConfirmations)
       .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-    expect(confirmationsBeforeReview).toHaveLength(0);
+    expect(confirmationBeforeFlush.kind).toBe("identity_anomaly");
+    expect(confirmationBeforeFlush.notifiedAt).toBeNull();
+    expect(sendInteractiveButtonsMessage).not.toHaveBeenCalled();
 
-    // Only once the client signals they're done does the whole case get
-    // reviewed — this sends the question and flushes immediately.
-    await runCaseReview(orgId, clientId, requestId);
+    await forceFlush(orgId, requestId);
 
     const [confirmation] = await db
       .select()
@@ -365,7 +378,8 @@ describe("processInboundAttachment — smart identity/consistency verification",
     expect(appendixDoc.status).toBe("identity_anomaly_pending_confirmation");
     expect(appendixDoc.googleDriveFileId).toBeNull();
 
-    await runCaseReview(orgId, clientId, requestId);
+    // Asked about immediately — the pendingConfirmation row already exists
+    // right after intake, before any case review or flush.
     const [confirmation] = await db
       .select()
       .from(schema.pendingConfirmations)

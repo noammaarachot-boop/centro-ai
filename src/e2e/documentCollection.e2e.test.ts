@@ -751,12 +751,14 @@ describe("E2E Journey 3 — multi-page PDF merge, document replace, reminder def
 // saying "finished," then an explicit close).
 // ======================================================================
 describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-completion extension", () => {
-  it("defers an identity mismatch to case review at 'finished' but replies immediately to an unrecognized document, then supports adding more after completion", async () => {
+  it("asks about an identity mismatch immediately (batched, not per-file) and replies immediately to an unrecognized document too, then supports adding more after completion", async () => {
     const { requestId, phoneNumberId, conversationId, requirements } = await seedActiveRequest(["תעודת זהות", "אישור שכירות"]);
     const [idReq] = requirements;
 
     // A document whose extracted name doesn't match the client on file —
-    // never asked about immediately; held for the whole-case review.
+    // asked about immediately (not deferred to whole-case-review time),
+    // but still held for its own short notification-grouping window
+    // rather than sent as its own standalone message right away.
     const mismatchedId = await makeTestDocument("id_card", { fileName: "someone_elses_id.png" });
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
       identified: true,
@@ -774,8 +776,16 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
       .from(schema.documents)
       .where(eq(schema.documents.collectionRequestId, requestId));
     expect(heldDoc.status).toBe("identity_anomaly_pending_confirmation");
-    expect(heldDoc.deferredReviewKind).toBe("identity_anomaly");
-    // Held silently — no question sent yet, client not interrupted mid-collection.
+    expect(heldDoc.deferredReviewKind).toBeNull();
+    // A pendingConfirmation already exists right after intake...
+    const [pendingRow] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(pendingRow.kind).toBe("identity_anomaly");
+    expect(pendingRow.notifiedAt).toBeNull();
+    // ...but not sent yet — still inside its own short grouping window,
+    // not interrupting the client mid-collection with a standalone message.
     expect(sentMessages).toHaveLength(0);
 
     // A genuinely unrecognized file — unlike the identity mismatch above,
@@ -795,10 +805,13 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
     expect(sentMessages[0].body).toContain("mystery.pdf");
     expect(sentMessages[0].body).not.toContain("שלחת אותו בכוונה");
 
-    // The client says they're done — this is what actually turns both
-    // deferred exceptions into real questions, together, once. "סיימתי"
-    // is matched by pure-text isFinishedSignal, before the AI-backed
-    // deferral/Q&A chain is ever reached — no generateObject call at all.
+    // The client says they're done — the identity_anomaly confirmation was
+    // already created (immediately, at intake), but may still be inside
+    // its own short grouping window; "finished" forces it straight to due
+    // and flushes it right now rather than making the client wait out that
+    // window. "סיימתי" is matched by pure-text isFinishedSignal, before
+    // the AI-backed deferral/Q&A chain is ever reached — no generateObject
+    // call at all.
     await sendText(phoneNumberId, "סיימתי");
 
     const openConfirmations = await db
@@ -806,6 +819,10 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
       .from(schema.pendingConfirmations)
       .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
     expect(openConfirmations.length).toBeGreaterThanOrEqual(1);
+    // Completion must wait for the still-open identity_anomaly confirmation
+    // — this is exactly the gap runCaseReview's own hasPendingReview fix
+    // closes: it's still open regardless of whether "finished" just
+    // flushed it now or it had already been sent moments earlier.
     expect(await currentRequestStatus(requestId)).not.toBe("completed");
 
     // The employee (or client, via the same generic yes/no resolver)
