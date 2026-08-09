@@ -353,6 +353,7 @@ describe("attemptFinishCollectionRequest", () => {
       documentId: doc.id,
       anomaly: { kind: "name_mismatch", confident: true, conflictingName: "אורית לוי", maskedIdNumber: null },
       documentType: "תעודת זהות",
+      matchedRequirementId: null,
     });
 
     expect(sendTextMessage).not.toHaveBeenCalled();

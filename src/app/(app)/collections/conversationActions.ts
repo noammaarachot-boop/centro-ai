@@ -486,7 +486,19 @@ export async function processInboundAttachment(
   // produces ONE combined message per short burst via the existing
   // notifyAfter grouping window (pendingConfirmations.ts) — "immediate"
   // means "not held for 2 minutes," not "one WhatsApp message per file."
-  let pendingIdentityAnomaly: { anomaly: IdentityAnomaly; documentType: string | null } | null = null;
+  // matchedRequirementId: the requirement resolveDocumentIntakeOutcome
+  // already confidently matched, BEFORE the identity check overrode it —
+  // never a fresh guess, just carrying forward a decision already made at
+  // the same confidence bar every ordinary auto-approval requires. Null
+  // whenever the outcome wasn't "matched" at all (e.g. unsolicited or
+  // needs_resend never reaches this branch, or the sole-outstanding
+  // fallback didn't clear the bar) — nothing to carry forward, so a later
+  // "yes" answer keeps today's behavior (filed as an unassociated extra).
+  let pendingIdentityAnomaly: {
+    anomaly: IdentityAnomaly;
+    documentType: string | null;
+    matchedRequirementId: string | null;
+  } | null = null;
   let pendingUnsolicitedDocumentType: string | null = null;
   // Sent below when this document isn't usable as received at all (a real
   // quality defect, or genuinely unidentifiable) — the client can still fix
@@ -671,7 +683,11 @@ export async function processInboundAttachment(
     } else if (identityAnomaly) {
       status = "identity_anomaly_pending_confirmation";
       requirementId = null;
-      pendingIdentityAnomaly = { anomaly: identityAnomaly, documentType: identityDocumentType };
+      pendingIdentityAnomaly = {
+        anomaly: identityAnomaly,
+        documentType: identityDocumentType,
+        matchedRequirementId: outcome.kind === "matched" ? outcome.requirementId : null,
+      };
     } else if (outcome.kind === "matched") {
       requirementId = outcome.requirementId;
       status = "approved";
@@ -785,6 +801,7 @@ export async function processInboundAttachment(
       documentId: document.id,
       anomaly: pendingIdentityAnomaly.anomaly,
       documentType: pendingIdentityAnomaly.documentType,
+      matchedRequirementId: pendingIdentityAnomaly.matchedRequirementId,
     });
   }
 
