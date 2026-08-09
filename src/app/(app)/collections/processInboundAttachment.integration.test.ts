@@ -139,8 +139,9 @@ const MINIMAL_PNG = Buffer.from(
 );
 
 const { processInboundAttachment } = await import("./conversationActions");
-const { CASE_REVIEW_SILENCE_WINDOW_MS } = await import("@/lib/caseReview");
+const { CASE_REVIEW_SILENCE_WINDOW_MS, runAutomaticCaseStatusReview } = await import("@/lib/caseReview");
 const { checkCompletionGate } = await import("@/lib/collectionRequestStateMachine");
+const { applyIdentityAnomalyDecision } = await import("@/lib/documentIdentityVerification");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -1327,6 +1328,122 @@ describe("processInboundAttachment — a filename that merely echoes a requireme
     const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
     expect(doc.status).toBe("clarification_requested"); // needs_resend, not a guessed approval
     expect(doc.requirementId).toBeNull();
+  });
+});
+
+describe("identity_anomaly — the client explicitly decides whether a wrong-person document replaces the original requirement (product decision: never a silent guess)", () => {
+  async function lastOutboundBody(conversationId: string): Promise<string> {
+    const rows = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")))
+      .orderBy(schema.messages.createdAt);
+    return rows[rows.length - 1]?.body ?? "";
+  }
+
+  async function resolveIdentityConfirmation(requestId: string, status: "confirmed" | "declined") {
+    const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await db.update(schema.pendingConfirmations).set({ status, respondedAt: new Date() }).where(eq(schema.pendingConfirmations.id, row.id));
+    await applyIdentityAnomalyDecision({ ...row, status });
+  }
+
+  it("1. a document confidently identified as belonging to someone else asks explicitly whether it replaces the specific requirement it matched", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+      extractedPersonName: "דוד כהן", // not the client
+      extractedIdNumber: "000000099",
+      identityExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("real-bytes"), "image/jpeg", "wamid.replace1");
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("identity_anomaly_pending_confirmation");
+    const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmation.question).toContain("דוד כהן");
+    expect(confirmation.question).toContain(`מחליף את הדרישה "תעודת זהות"`);
+  });
+
+  it("2. 'כן' — the document replaces the requirement, which closes and stops appearing as missing", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    await db.update(schema.collectionRequests).set({ status: "active" }).where(eq(schema.collectionRequests.id, requestId));
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+      extractedPersonName: "דוד כהן",
+      extractedIdNumber: "000000099",
+      identityExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("real-bytes"), "image/jpeg", "wamid.replace2");
+
+    await resolveIdentityConfirmation(requestId, "confirmed");
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("approved");
+    expect(doc.requirementId).toBe(requirements[0].id);
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed"); // the only requirement, now satisfied
+  });
+
+  it("3. 'לא' — the document is kept as an extra, and the original requirement stays open/missing", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+      extractedPersonName: "דוד כהן",
+      extractedIdNumber: "000000099",
+      identityExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("real-bytes"), "image/jpeg", "wamid.replace3");
+
+    await resolveIdentityConfirmation(requestId, "declined");
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("identity_anomaly_confirmed"); // kept, not discarded
+    expect(doc.requirementId).toBeNull();
+    expect(doc.googleDriveFileId).not.toBeNull();
+    expect(doc.fileName).toContain("תעודת זהות");
+    expect(await lastOutboundBody(conversationId)).toBe("בסדר, שמרתי את המסמך כמסמך נוסף.");
+
+    const gateError = await checkCompletionGate(requestId);
+    expect(gateError).not.toBeNull(); // still missing the real תעודת זהות
+  });
+
+  it("4. after 'לא', the 2-minute summary correctly lists the extra document AND the still-missing original requirement, with the closing nudge", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+      extractedPersonName: "דוד כהן",
+      extractedIdNumber: "000000099",
+      identityExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, "id.jpg", null, Buffer.from("real-bytes"), "image/jpeg", "wamid.replace4");
+    await resolveIdentityConfirmation(requestId, "declined");
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("summary_sent");
+
+    const summary = await lastOutboundBody(conversationId);
+    expect(summary).toContain("• תעודת זהות — מסמך נוסף שהתקבל");
+    expect(summary).toContain("עדיין חסרים לי");
+    // Both actual missing requirements, distinct from the extra's own
+    // bullet above (which also contains the substring "תעודת זהות").
+    expect(summary).toContain("• תעודת זהות\n• רישיון נהיגה");
+    expect(summary).toContain("אנא שלחו את המסמכים החסרים בהקדם כדי שנוכל להמשיך לטפל בתיק.");
   });
 });
 

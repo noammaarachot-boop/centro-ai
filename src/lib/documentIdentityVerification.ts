@@ -316,13 +316,37 @@ function joinHebrewList(items: string[]): string {
 // itself only ever shown on its own "📄 {type}" label line — Hebrew gender
 // agreement (הוא/היא, שייך/שייכת) would otherwise have to vary per
 // arbitrary type string; "המסמך" sidesteps that entirely.
-function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<string | null>): string {
+//
+// matchedRequirementName: when the document's TYPE was already confidently
+// matched to a specific open requirement before this anomaly overrode it
+// (conversationActions.ts) — every document in a group is guaranteed to
+// share the same one, or none at all (see anomalySignature below) — the
+// question asks explicitly whether this document REPLACES that specific
+// requirement, instead of the generic "did you mean to send this?". This
+// is a deliberate product decision: the system never decides on its own
+// whether an identity-mismatched document satisfies the original
+// requirement (regardless of anomaly kind or confidence) — only the
+// client's own explicit answer to THIS question does. Quoted as
+// "הדרישה \"X\"" rather than inflecting X grammatically (e.g. "שנדרשה") —
+// an arbitrary office-authored requirement name has no reliable way to
+// auto-detect Hebrew grammatical gender for correct agreement.
+function buildAnomalyQuestion(
+  anomaly: IdentityAnomaly,
+  documentTypes: Array<string | null>,
+  matchedRequirementName: string | null
+): string {
   const count = documentTypes.length;
   const plural = count > 1;
   const knownTypes = documentTypes.filter((t): t is string => !!t);
   const allTypesKnown = knownTypes.length === count;
   const typeLabel = allTypesKnown ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
-  const askLine = plural ? "האם שלחת אותם בכוונה?" : "האם שלחת אותו בכוונה?";
+  const askLine = matchedRequirementName
+    ? plural
+      ? `האם המסמכים האלה מחליפים את הדרישה "${matchedRequirementName}"?`
+      : `האם המסמך הזה מחליף את הדרישה "${matchedRequirementName}"?`
+    : plural
+      ? "האם שלחת אותם בכוונה?"
+      : "האם שלחת אותו בכוונה?";
 
   if (anomaly.kind === "id_mismatch") {
     return `📄 ${typeLabel}\nמספר תעודת הזהות (מסתיים ב-${anomaly.maskedIdNumber}) שונה מהמסמכים הקודמים שקיבלתי.\n\n${askLine}`;
@@ -344,26 +368,36 @@ function buildAnomalyQuestion(anomaly: IdentityAnomaly, documentTypes: Array<str
   return `📄 ${typeLabel}\n${plural ? "המסמכים הם" : "המסמך הוא"} על שם ${anomaly.conflictingName}, והשם אינו תואם לבעל הבקשה.\n\n${askLine}`;
 }
 
-// Groups documents that share the same underlying anomaly into one signature
-// string — the grouping key createOrMergeIdentityAnomalyConfirmation uses to
-// avoid asking a separate question per file. Ambiguous (non-confident)
-// mismatches of the same kind share one signature regardless of the
-// specific document, since there's no confident specific fact to
-// distinguish them by anyway.
-function anomalySignature(anomaly: IdentityAnomaly): string {
-  if (!anomaly.confident) return `${anomaly.kind}:ambiguous`;
-  return `${anomaly.kind}:${anomaly.conflictingName ?? anomaly.maskedIdNumber ?? "unknown"}`;
+// Groups documents that share the same underlying anomaly AND the same
+// candidate requirement into one signature string — the grouping key
+// createOrMergeIdentityAnomalyConfirmation uses to avoid asking a separate
+// question per file. Ambiguous (non-confident) mismatches of the same kind
+// share one signature regardless of the specific document, since there's no
+// confident specific fact to distinguish them by anyway. Including
+// matchedRequirementId is deliberate: two documents that happen to share an
+// anomaly but target DIFFERENT requirements (or one targets none) are
+// asking two genuinely different "does this replace X?" questions and must
+// never be merged into one — every document in a resulting group is
+// guaranteed to share exactly one matchedRequirementName (or none).
+function anomalySignature(anomaly: IdentityAnomaly, matchedRequirementId: string | null): string {
+  const base = !anomaly.confident ? `${anomaly.kind}:ambiguous` : `${anomaly.kind}:${anomaly.conflictingName ?? anomaly.maskedIdNumber ?? "unknown"}`;
+  return `${base}::req:${matchedRequirementId ?? "none"}`;
 }
 
 interface IdentityAnomalyPayload {
-  // matchedRequirementId: the open requirement resolveDocumentIntakeOutcome
-  // had already confidently matched before this specific anomaly overrode
-  // it (conversationActions.ts) — null whenever there wasn't one (an
-  // unsolicited-but-anomalous document, or the fallback never cleared the
-  // confidence bar). Carried per-document since a merged group (several
-  // documents sharing one anomaly signature) could in principle mix
-  // documents that did and didn't have one.
-  documents: Array<{ id: string; documentType: string | null; matchedRequirementId: string | null }>;
+  // matchedRequirementId/matchedRequirementName: the open requirement
+  // resolveDocumentIntakeOutcome had already confidently matched before
+  // this specific anomaly overrode it (conversationActions.ts) — null
+  // whenever there wasn't one (an unsolicited-but-anomalous document, or
+  // the fallback never cleared the confidence bar). Every document in a
+  // group shares the same values (see anomalySignature above), but still
+  // carried per-document for a simple, uniform shape.
+  documents: Array<{
+    id: string;
+    documentType: string | null;
+    matchedRequirementId: string | null;
+    matchedRequirementName: string | null;
+  }>;
   anomaly: IdentityAnomaly;
 }
 
@@ -394,7 +428,17 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
   matchedRequirementId: string | null;
 }): Promise<void> {
   const db = await getDb();
-  const signature = anomalySignature(params.anomaly);
+  const signature = anomalySignature(params.anomaly, params.matchedRequirementId);
+
+  let matchedRequirementName: string | null = null;
+  if (params.matchedRequirementId) {
+    const [requirement] = await db
+      .select({ name: collectionRequestRequirements.name })
+      .from(collectionRequestRequirements)
+      .where(eq(collectionRequestRequirements.id, params.matchedRequirementId))
+      .limit(1);
+    matchedRequirementName = requirement?.name ?? null;
+  }
 
   const openRows = await db
     .select()
@@ -409,14 +453,17 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     );
   const existing = openRows.find((row) => {
     const payload = row.payload as IdentityAnomalyPayload | null;
-    return payload && anomalySignature(payload.anomaly) === signature;
+    return (
+      payload &&
+      anomalySignature(payload.anomaly, payload.documents[0]?.matchedRequirementId ?? null) === signature
+    );
   });
 
   if (existing) {
     const payload = existing.payload as IdentityAnomalyPayload;
     const documentsInGroup = [
       ...payload.documents,
-      { id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId },
+      { id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId, matchedRequirementName },
     ];
     await db
       .update(pendingConfirmations)
@@ -424,7 +471,8 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
         payload: { ...payload, documents: documentsInGroup } satisfies IdentityAnomalyPayload,
         question: buildAnomalyQuestion(
           params.anomaly,
-          documentsInGroup.map((d) => d.documentType)
+          documentsInGroup.map((d) => d.documentType),
+          matchedRequirementName
         ),
       })
       .where(eq(pendingConfirmations.id, existing.id));
@@ -442,6 +490,7 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     documentId: params.documentId,
     anomalyKind: params.anomaly.kind,
     confident: params.anomaly.confident,
+    matchedRequirementId: params.matchedRequirementId,
   });
 
   const groupingWindowSeconds = await getGroupingWindowSeconds(params.organizationId);
@@ -451,10 +500,10 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     collectionRequestId: params.collectionRequestId,
     kind: "identity_anomaly" satisfies PendingConfirmationKind,
     payload: {
-      documents: [{ id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId }],
+      documents: [{ id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId, matchedRequirementName }],
       anomaly: params.anomaly,
     } satisfies IdentityAnomalyPayload,
-    question: buildAnomalyQuestion(params.anomaly, [params.documentType]),
+    question: buildAnomalyQuestion(params.anomaly, [params.documentType], matchedRequirementName),
     notifyAfter: new Date(Date.now() + groupingWindowSeconds * 1000),
   });
 
@@ -480,79 +529,93 @@ interface ResolvedConfirmationRow {
   payload: unknown;
 }
 
-// Applies the client's yes/no answer to an identity-anomaly question to
-// every document folded into it. No-op for any other confirmation kind.
+// Uploads a document as an unassociated "extra" — never marks it as
+// fulfilling any requirement, never changes the request's primary client.
+// Shared by every path that ends with "kept, but not as a replacement":
+// the generic "sent on purpose" confirm, the explicit "no, doesn't replace
+// X" decline, and the safety fallback when a requirement it was cleared to
+// replace turned out to no longer be open. Each document keeps its own
+// type-based name (an ID card and a passport in the same group must not
+// both become the same filename).
+async function saveIdentityAnomalyDocumentAsExtra(params: {
+  db: Awaited<ReturnType<typeof getDb>>;
+  organizationId: string;
+  clientId: string;
+  collectionRequestId: string;
+  documentId: string;
+  documentType: string | null;
+  anomalyKind: IdentityAnomaly["kind"] | undefined;
+  fileName: string;
+  pendingFileContent: Buffer | null;
+  pendingFileMimeType: string | null;
+  auditDescription: string;
+}): Promise<void> {
+  const targetFileName = params.documentType ? `${params.documentType}${fileExtension(params.fileName)}` : params.fileName;
+  await params.db
+    .update(documents)
+    .set({ status: "identity_anomaly_confirmed", fileName: targetFileName, updatedAt: new Date() })
+    .where(eq(documents.id, params.documentId));
+
+  await recordAuditEvent({
+    organizationId: params.organizationId,
+    eventType: "document.identity_anomaly_confirmed",
+    description: params.auditDescription,
+    actorType: "client",
+    clientId: params.clientId,
+    collectionRequestId: params.collectionRequestId,
+    metadata: { documentId: params.documentId, anomalyKind: params.anomalyKind, anomalyConfirmed: true },
+  });
+
+  await uploadDocumentResiliently(
+    params.organizationId,
+    params.clientId,
+    params.documentId,
+    targetFileName,
+    params.collectionRequestId,
+    params.pendingFileContent ?? undefined,
+    params.pendingFileMimeType ?? undefined
+  );
+  console.log("[document-intake] identity anomaly resolved: kept as extra, uploaded to Drive", {
+    documentId: params.documentId,
+    collectionRequestId: params.collectionRequestId,
+  });
+}
+
+// Applies the client's answer to an identity-anomaly question to every
+// document folded into it. No-op for any other confirmation kind.
+//
+// Two distinct modes, decided per document by whether it was already
+// confidently matched to a specific open requirement before the identity
+// check overrode that outcome (matchedRequirementId — see
+// conversationActions.ts). Every document in one group shares the same
+// value here (anomalySignature only merges documents that do), so this
+// reads simply as "which question was actually asked":
+//
+// - Matched a requirement → the question was "does this REPLACE X?"
+//   (buildAnomalyQuestion). The client's own explicit answer is the sole
+//   authority on whether an identity-mismatched document satisfies the
+//   original requirement — never a confidence heuristic, and this applies
+//   uniformly regardless of anomaly kind (name/company/ID mismatch) or
+//   whether the mismatch was confident or ambiguous. "כן" attaches it and
+//   closes that one requirement; "לא" still keeps the document, just as an
+//   unassociated extra — the client is not discarding it, only declining
+//   to treat it as the replacement.
+// - No matched requirement → the original, unchanged question ("did you
+//   mean to send this?"). "כן" keeps it as an extra; "לא" discards it
+//   entirely (never uploaded) — this half is untouched by this feature.
 export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmationRow): Promise<void> {
   if (resolved.kind !== ("identity_anomaly" satisfies PendingConfirmationKind)) return;
   const payload = resolved.payload as IdentityAnomalyPayload | null;
   const documentsInGroup = payload?.documents ?? [];
   if (documentsInGroup.length === 0) return;
+  if (resolved.status !== "confirmed" && resolved.status !== "declined") return;
 
   const db = await getDb();
-
-  if (resolved.status === "declined") {
-    for (const { id: documentId } of documentsInGroup) {
-      await db
-        .update(documents)
-        .set({
-          status: "identity_anomaly_rejected",
-          pendingFileContent: null,
-          pendingFileMimeType: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(documents.id, documentId));
-      await recordAuditEvent({
-        organizationId: resolved.organizationId,
-        eventType: "document.identity_anomaly_rejected",
-        description: `הלקוח ציין שהמסמך נשלח בטעות (חריגת זהות) — לא הועלה ל-Drive`,
-        actorType: "client",
-        clientId: resolved.clientId,
-        collectionRequestId: resolved.collectionRequestId,
-        metadata: { documentId, anomalyKind: payload?.anomaly.kind },
-      });
-    }
-    console.log("[document-intake] identity anomaly resolved: declined, no upload", {
-      documentIds: documentsInGroup.map((d) => d.id),
-      collectionRequestId: resolved.collectionRequestId,
-    });
-
-    // Same exact wording and post-decline behavior as
-    // unsolicited_document's own declined branch (documentIntakeReview.ts)
-    // — a direct reply to the question just asked deserves the same short
-    // acknowledgment and the same restarted silence window, regardless of
-    // which of the two mechanisms asked it. This was previously missing
-    // here entirely: a "לא" answered after the original silence window had
-    // already elapsed (e.g. days later, via the reminder/escalation cycle)
-    // got no reply and never restarted the summary timer.
-    await sendOutboundMessage(
-      resolved.organizationId,
-      resolved.conversationId,
-      "בסדר, המסמך לא ייכלל.",
-      "ai",
-      "manual",
-      undefined,
-      true
-    );
-    await db
-      .update(conversations)
-      .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
-      .where(eq(conversations.id, resolved.conversationId));
-    scheduleAfterResponse(() =>
-      scheduleCaseReviewRelay({
-        organizationId: resolved.organizationId,
-        conversationId: resolved.conversationId,
-        collectionRequestId: resolved.collectionRequestId,
-        clientId: resolved.clientId,
-      })
-    );
-    return;
-  }
-
-  if (resolved.status !== "confirmed") return;
-
+  const confirmed = resolved.status === "confirmed";
   let anyAttachedToRequirement = false;
+  let anyKeptAsExtra = false;
 
-  for (const { id: documentId, documentType, matchedRequirementId } of documentsInGroup) {
+  for (const { id: documentId, documentType, matchedRequirementId, matchedRequirementName } of documentsInGroup) {
     const [doc] = await db
       .select({
         fileName: documents.fileName,
@@ -564,34 +627,15 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
       .limit(1);
     if (!doc) continue;
 
-    // Re-check, never trust the original snapshot: this document was
-    // already confidently matched to an open requirement before the
-    // identity check itself overrode that outcome (conversationActions.ts).
-    // Now that the client has confirmed it's genuinely theirs, re-verify
-    // that requirement is STILL actually open — something else may have
-    // satisfied it in the meantime (the client could have sent the correct
-    // document while this confirmation sat waiting for an answer), in
-    // which case forcing this one onto it would be wrong. Never a fresh
-    // guess at match confidence — only ever reuses the exact decision
-    // resolveDocumentIntakeOutcome already made at the same bar every
-    // ordinary auto-approval requires.
-    //
-    // Only ever attempted for an AMBIGUOUS name mismatch (confident: false
-    // — the extraction itself wasn't clear enough to assert a specific
-    // conflicting name; see detectIdentityAnomaly). "כן" there plausibly
-    // means "yes, that IS genuinely my document, your OCR just misread the
-    // name." id_mismatch, company_mismatch, and a CONFIDENT name_mismatch
-    // are a different kind of signal entirely — the system positively
-    // identified a specific different ID number, company, or person.
-    // "כן, שלחתי בכוונה" there only ever confirms the client meant to send
-    // that specific file, never that it's actually their own document —
-    // attaching it to the requirement would misreport someone else's
-    // document as satisfying this client's own requirement. Those always
-    // stay "extra", exactly like before this change.
-    const anomaly = payload?.anomaly;
-    const eligibleForReattachment = anomaly?.kind === "name_mismatch" && anomaly.confident === false;
-    let attachedRequirementId: string | null = null;
-    if (matchedRequirementId && eligibleForReattachment) {
+    if (matchedRequirementId && confirmed) {
+      // "כן, מחליף את X" — re-check, never trust the original snapshot:
+      // something else may have satisfied this requirement while the
+      // confirmation sat waiting for an answer (e.g. the client separately
+      // sent the correct document), in which case forcing this one onto
+      // it would be wrong. Never a fresh guess at match confidence — only
+      // ever reuses the exact decision resolveDocumentIntakeOutcome
+      // already made at the same bar every ordinary auto-approval
+      // requires.
       const [requirement] = await db
         .select({
           id: collectionRequestRequirements.id,
@@ -602,6 +646,7 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
         .from(collectionRequestRequirements)
         .where(eq(collectionRequestRequirements.id, matchedRequirementId))
         .limit(1);
+      let stillOpen = false;
       if (requirement) {
         const approvedSiblings = await db
           .select({
@@ -614,99 +659,152 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
         const satisfactionDocs = approvedSiblings
           .filter((d) => !d.continuationOfDocumentId)
           .map((d) => ({ periodLabel: d.extractedPeriodLabel, personName: d.extractedPersonName }));
-        if (!computeRequirementSatisfaction(requirement, satisfactionDocs).satisfied) {
-          attachedRequirementId = matchedRequirementId;
-        }
+        stillOpen = !computeRequirementSatisfaction(requirement, satisfactionDocs).satisfied;
       }
-    }
 
-    if (attachedRequirementId) {
-      // Genuinely fulfills the requirement it was originally matched to —
-      // counts as received, not just kept for transparency. Filename is
-      // left to uploadDocument's own requirementId-based renaming (same as
-      // every ordinary approved document), not the documentType-based name
-      // the "extra" branch below uses.
-      await db
-        .update(documents)
-        .set({ requirementId: attachedRequirementId, status: "approved", updatedAt: new Date() })
-        .where(eq(documents.id, documentId));
+      if (stillOpen) {
+        // Genuinely fulfills the requirement the client just explicitly
+        // confirmed it replaces — counts as received, not just kept for
+        // transparency. Filename is left to uploadDocument's own
+        // requirementId-based renaming (same as every ordinary approved
+        // document), not the documentType-based name the "extra" path uses.
+        await db
+          .update(documents)
+          .set({ requirementId: matchedRequirementId, status: "approved", updatedAt: new Date() })
+          .where(eq(documents.id, documentId));
 
-      await recordAuditEvent({
+        await recordAuditEvent({
+          organizationId: resolved.organizationId,
+          eventType: "document.identity_anomaly_confirmed",
+          description: `הלקוח אישר במפורש שהמסמך מחליף את הדרישה "${matchedRequirementName ?? ""}" למרות חריגת הזהות שזוהתה — נחשב כמסמך שהתקבל`,
+          actorType: "client",
+          clientId: resolved.clientId,
+          collectionRequestId: resolved.collectionRequestId,
+          metadata: { documentId, anomalyKind: payload?.anomaly.kind, anomalyConfirmed: true, requirementId: matchedRequirementId },
+        });
+
+        await uploadDocumentResiliently(
+          resolved.organizationId,
+          resolved.clientId,
+          documentId,
+          doc.fileName,
+          resolved.collectionRequestId,
+          doc.pendingFileContent ?? undefined,
+          doc.pendingFileMimeType ?? undefined
+        );
+        console.log("[document-intake] identity anomaly resolved: confirmed replacement, attached to requirement, uploaded to Drive", {
+          documentId,
+          requirementId: matchedRequirementId,
+          collectionRequestId: resolved.collectionRequestId,
+        });
+        anyAttachedToRequirement = true;
+        continue;
+      }
+
+      // The requirement it was meant to replace is no longer open — never
+      // force it onto a requirement that's already satisfied by something
+      // else; falls back to the same "kept as extra" treatment as a "לא".
+      await saveIdentityAnomalyDocumentAsExtra({
+        db,
         organizationId: resolved.organizationId,
-        eventType: "document.identity_anomaly_confirmed",
-        description: `הלקוח אישר שהמסמך נשלח בכוונה למרות חריגת הזהות שזוהתה — שויך בביטחון לדרישה הפתוחה שהוא בעצם מילא ונחשב כמסמך שהתקבל`,
-        actorType: "client",
         clientId: resolved.clientId,
         collectionRequestId: resolved.collectionRequestId,
-        metadata: { documentId, anomalyKind: payload?.anomaly.kind, anomalyConfirmed: true, requirementId: attachedRequirementId },
-      });
-
-      await uploadDocumentResiliently(
-        resolved.organizationId,
-        resolved.clientId,
         documentId,
-        doc.fileName,
-        resolved.collectionRequestId,
-        doc.pendingFileContent ?? undefined,
-        doc.pendingFileMimeType ?? undefined
-      );
-      console.log("[document-intake] identity anomaly resolved: confirmed, attached to requirement, uploaded to Drive", {
-        documentId,
-        requirementId: attachedRequirementId,
-        collectionRequestId: resolved.collectionRequestId,
+        documentType,
+        anomalyKind: payload?.anomaly.kind,
+        fileName: doc.fileName,
+        pendingFileContent: doc.pendingFileContent,
+        pendingFileMimeType: doc.pendingFileMimeType,
+        auditDescription: `הלקוח אישר שהמסמך מחליף את "${matchedRequirementName ?? ""}", אך הדרישה כבר הושלמה בינתיים — נשמר כמסמך נוסף בתיקיית הלקוח`,
       });
-      anyAttachedToRequirement = true;
+      anyKeptAsExtra = true;
       continue;
     }
 
-    // No confident requirement to reattach to (never matched one, or it's
-    // no longer open) — unchanged existing behavior: never marks the
-    // document as fulfilling any requirement it doesn't actually match,
-    // and never changes the request's primary client — uploaded as an
-    // extra document, exactly like a confirmed unsolicited document, with
-    // the anomaly itself kept in payload/audit metadata as the record of
-    // what the client actually confirmed. Each document in the group keeps
-    // its own type-based name (an ID card and a passport in the same
-    // group must not both become the same filename).
-    const targetFileName = documentType ? `${documentType}${fileExtension(doc.fileName)}` : doc.fileName;
+    if (matchedRequirementId && !confirmed) {
+      // "לא, לא מחליף את X" — the document is still real and still kept,
+      // the client is only declining to treat it as the replacement. The
+      // original requirement stays exactly as open as it was.
+      await saveIdentityAnomalyDocumentAsExtra({
+        db,
+        organizationId: resolved.organizationId,
+        clientId: resolved.clientId,
+        collectionRequestId: resolved.collectionRequestId,
+        documentId,
+        documentType,
+        anomalyKind: payload?.anomaly.kind,
+        fileName: doc.fileName,
+        pendingFileContent: doc.pendingFileContent,
+        pendingFileMimeType: doc.pendingFileMimeType,
+        auditDescription: `הלקוח ציין שהמסמך אינו מחליף את הדרישה "${matchedRequirementName ?? ""}" — נשמר כמסמך נוסף בתיקיית הלקוח`,
+      });
+      anyKeptAsExtra = true;
+      continue;
+    }
+
+    if (confirmed) {
+      // No matched requirement at all — the original, unchanged "did you
+      // mean to send this?" flow: "כן" keeps it as an extra.
+      await saveIdentityAnomalyDocumentAsExtra({
+        db,
+        organizationId: resolved.organizationId,
+        clientId: resolved.clientId,
+        collectionRequestId: resolved.collectionRequestId,
+        documentId,
+        documentType,
+        anomalyKind: payload?.anomaly.kind,
+        fileName: doc.fileName,
+        pendingFileContent: doc.pendingFileContent,
+        pendingFileMimeType: doc.pendingFileMimeType,
+        auditDescription: `הלקוח אישר שהמסמך נשלח בכוונה למרות חריגת הזהות שזוהתה — נשמר כמסמך נוסף בתיקיית הלקוח`,
+      });
+      anyKeptAsExtra = true;
+      continue;
+    }
+
+    // No matched requirement, declined — the original, unchanged behavior:
+    // never uploaded, pending bytes cleared, nothing left behind.
     await db
       .update(documents)
-      .set({ status: "identity_anomaly_confirmed", fileName: targetFileName, updatedAt: new Date() })
+      .set({
+        status: "identity_anomaly_rejected",
+        pendingFileContent: null,
+        pendingFileMimeType: null,
+        updatedAt: new Date(),
+      })
       .where(eq(documents.id, documentId));
-
     await recordAuditEvent({
       organizationId: resolved.organizationId,
-      eventType: "document.identity_anomaly_confirmed",
-      description: `הלקוח אישר שהמסמך נשלח בכוונה למרות חריגת הזהות שזוהתה — נשמר כמסמך נוסף בתיקיית הלקוח`,
+      eventType: "document.identity_anomaly_rejected",
+      description: `הלקוח ציין שהמסמך נשלח בטעות (חריגת זהות) — לא הועלה ל-Drive`,
       actorType: "client",
       clientId: resolved.clientId,
       collectionRequestId: resolved.collectionRequestId,
-      metadata: { documentId, anomalyKind: payload?.anomaly.kind, anomalyConfirmed: true },
+      metadata: { documentId, anomalyKind: payload?.anomaly.kind },
     });
-
-    await uploadDocumentResiliently(
-      resolved.organizationId,
-      resolved.clientId,
-      documentId,
-      targetFileName,
-      resolved.collectionRequestId,
-      doc.pendingFileContent ?? undefined,
-      doc.pendingFileMimeType ?? undefined
-    );
-    console.log("[document-intake] identity anomaly resolved: confirmed, uploaded to Drive", {
+    console.log("[document-intake] identity anomaly resolved: declined, no upload", {
       documentId,
       collectionRequestId: resolved.collectionRequestId,
     });
   }
 
-  // Same post-YES behavior as unsolicited_document's own confirmed branch
-  // (documentIntakeReview.ts) — deliberately unified only at this point,
-  // never the classification itself: identity_anomaly and
-  // unsolicited_document stay two separate mechanisms with their own
-  // distinct questions/reasons; only what happens once the client
-  // confirms "yes, sent on purpose" is now identical for both.
-  await sendOutboundMessage(resolved.organizationId, resolved.conversationId, "תודה! שמרתי את המסמך.", "ai", "manual", undefined, true);
+  // A single ack for the whole group — every real document in a group
+  // shares the same matchedRequirementId (anomalySignature guarantees
+  // this), so in practice every document just took the same branch above;
+  // the wording only needs to distinguish the three possible outcomes.
+  const ackMessage = anyAttachedToRequirement
+    ? "תודה! שמרתי את המסמך."
+    : anyKeptAsExtra
+      ? confirmed
+        ? "תודה! שמרתי את המסמך."
+        : "בסדר, שמרתי את המסמך כמסמך נוסף."
+      : "בסדר, המסמך לא ייכלל.";
+  await sendOutboundMessage(resolved.organizationId, resolved.conversationId, ackMessage, "ai", "manual", undefined, true);
 
+  // The silence window is restarted unconditionally below — real activity
+  // (a reply) just happened regardless of which outcome above it was,
+  // matching unsolicited_document's own decline branch exactly even when
+  // the document was fully discarded (no matched requirement, declined).
   await db
     .update(conversations)
     .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
