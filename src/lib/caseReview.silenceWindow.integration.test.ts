@@ -145,6 +145,16 @@ describe("buildCaseStatusSummaryMessage", () => {
     expect(message).toContain("עדיין חסר לי");
     expect(message).toContain("• אישור ניהול חשבון בנק");
   });
+
+  it("adds a short call-to-action when something is still missing", () => {
+    const message = buildCaseStatusSummaryMessage(["תעודת זהות"], ["רישיון נהיגה"]);
+    expect(message).toContain("אנא שלחו את המסמכים החסרים בהקדם כדי שנוכל להמשיך לטפל בתיק.");
+  });
+
+  it("never adds the call-to-action when nothing is missing (never reached in practice — finalizeCompletion sends its own message instead — but the function itself must stay correct)", () => {
+    const message = buildCaseStatusSummaryMessage(["תעודת זהות", "רישיון נהיגה"], []);
+    expect(message).not.toContain("אנא שלחו");
+  });
 });
 
 describe("runAutomaticCaseStatusReview", () => {

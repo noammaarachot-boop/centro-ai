@@ -318,6 +318,10 @@ export function buildCaseStatusSummaryMessage(received: string[], missing: strin
         ? `עדיין חסר לי:\n• ${missing[0]}`
         : `עדיין חסרים לי:\n${missing.map((name) => `• ${name}`).join("\n")}`
     );
+    // Short, warm nudge to action — only when something is genuinely still
+    // outstanding; never appended when the case is already fully received
+    // (that's finalizeCompletion's own message instead).
+    parts.push("אנא שלחו את המסמכים החסרים בהקדם כדי שנוכל להמשיך לטפל בתיק.");
   }
   return parts.join("\n\n");
 }

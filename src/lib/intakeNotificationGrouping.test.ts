@@ -245,15 +245,21 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     // notification-grouping window) — so no WhatsApp message yet either.
     expect(allDocs.every((d) => d.deferredReviewKind === null)).toBe(true);
     const beforeFlush = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-    expect(beforeFlush).toHaveLength(2);
+    // Three distinct groups, not two: the ID card and the passport share
+    // the same underlying identity mismatch (same wrong person) but target
+    // DIFFERENT requirements — "does this replace X?" is a genuinely
+    // different question for each, so they must never merge into one
+    // (see anomalySignature's own doc comment) — plus the one unsolicited
+    // group (the two invoices, unaffected by this).
+    expect(beforeFlush).toHaveLength(3);
     expect(beforeFlush.every((r) => r.notifiedAt === null)).toBe(true);
     expect(sendTextMessage).not.toHaveBeenCalled();
 
-    // Two distinct pending-confirmation groups (identity + unsolicited)...
     const pendingRows = beforeFlush;
-    const identityRow = pendingRows.find((r) => r.kind === "identity_anomaly")!;
+    const identityRows = pendingRows.filter((r) => r.kind === "identity_anomaly");
     const unsolicitedRow = pendingRows.find((r) => r.kind === "unsolicited_document")!;
-    expect((identityRow.payload as { documents: unknown[] }).documents).toHaveLength(2);
+    expect(identityRows).toHaveLength(2);
+    expect(identityRows.every((r) => (r.payload as { documents: unknown[] }).documents.length === 1)).toBe(true);
     expect((unsolicitedRow.payload as { documentIds: string[] }).documentIds).toHaveLength(2);
 
     // ...but once the short grouping window elapses, the client sees
@@ -271,11 +277,15 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     expect(body).toContain("דרכון");
     expect(body).toContain("ישראל ישראלי");
     expect(body).toContain("חשבונית");
-    // Numbered sections with independent yes/no options (keycap emoji).
+    // Numbered sections with independent yes/no options (keycap emoji) —
+    // 3 groups × 2 options each (see above for why the ID card and
+    // passport are now two separate groups, not one).
     expect(body).toContain("1️⃣");
     expect(body).toContain("2️⃣");
     expect(body).toContain("3️⃣");
     expect(body).toContain("4️⃣");
+    expect(body).toContain("5️⃣");
+    expect(body).toContain("6️⃣");
   });
 
   it("confirming one group and declining the other applies independently, each with its own audit trail, and only the confirmed group is uploaded", async () => {
@@ -326,11 +336,15 @@ describe("the reported bug: ID+passport for the wrong person, plus two unrelated
     }
 
     const idDoc = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
-    const identityDoc = idDoc.find((d) => d.status === "identity_anomaly_confirmed")!;
+    // The identity-anomaly document here has a matchedRequirementId
+    // (idReqId) — the question asked was "does this replace תעודת זהות?",
+    // and confirming "yes" now genuinely attaches it to that requirement
+    // (the client's own explicit answer, not a confidence-based guess).
+    const identityDoc = idDoc.find((d) => d.status === "approved")!;
     const invoiceDoc = idDoc.find((d) => d.status === "unsolicited_rejected")!;
     expect(identityDoc).toBeDefined();
     expect(invoiceDoc).toBeDefined();
-    expect(identityDoc.status).toBe("identity_anomaly_confirmed");
+    expect(identityDoc.requirementId).toBe(idReqId);
     expect(identityDoc.googleDriveFileId).not.toBeNull();
     expect(invoiceDoc.status).toBe("unsolicited_rejected");
     expect(invoiceDoc.googleDriveFileId).toBeNull();

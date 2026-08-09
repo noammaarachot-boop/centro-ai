@@ -581,37 +581,80 @@ describe("applyIdentityAnomalyDecision", () => {
     expect(request.status).toBe("completed");
   });
 
+  // Product decision: the system never decides on its own whether an
+  // identity-mismatched document satisfies the original requirement based
+  // on anomaly kind/confidence — it always asks the client explicitly
+  // ("does this replace X?"), and the client's own answer is the sole
+  // authority. This applies uniformly to every anomaly kind.
   it.each([
     { label: "id_mismatch", anomaly: { kind: "id_mismatch" as const, confident: true, conflictingName: null, maskedIdNumber: "***1234" } },
     { label: "company_mismatch", anomaly: { kind: "company_mismatch" as const, confident: true, conflictingName: "חברה אחרת בע\"מ", maskedIdNumber: null } },
     { label: "CONFIDENT name_mismatch", anomaly: { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null } },
-  ])(
-    "$label — even with a matched requirement candidate, 'כן' NEVER re-attaches it (only an ambiguous/non-confident name_mismatch is eligible) — stays an unassociated extra",
-    async ({ anomaly }) => {
-      const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
-      const requirement = await addRequirement(requestId, "תעודת זהות");
-      const doc = await seedDocument(requestId, orgId, { fileName: "id.jpg" });
-      await createOrMergeIdentityAnomalyConfirmation({
-        organizationId: orgId,
-        clientId,
-        collectionRequestId: requestId,
-        documentId: doc.id,
-        anomaly,
-        documentType: "תעודת זהות",
-        matchedRequirementId: requirement.id,
-      });
-      const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    { label: "AMBIGUOUS name_mismatch", anomaly: { kind: "name_mismatch" as const, confident: false, conflictingName: null, maskedIdNumber: null } },
+  ])("$label — asks explicitly whether the document replaces the matched requirement, and 'כן' always attaches it regardless of anomaly kind/confidence", async ({ anomaly }) => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    await db.update(schema.collectionRequests).set({ status: "active" }).where(eq(schema.collectionRequests.id, requestId));
+    const requirement = await addRequirement(requestId, "תעודת זהות");
+    const doc = await seedDocument(requestId, orgId, { fileName: "id.jpg" });
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: doc.id,
+      anomaly,
+      documentType: "תעודת זהות",
+      matchedRequirementId: requirement.id,
+    });
+    const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmation.question).toContain(`מחליף את הדרישה "${requirement.name}"`);
+    await db.update(schema.pendingConfirmations).set({ status: "confirmed", respondedAt: new Date() }).where(eq(schema.pendingConfirmations.id, confirmation.id));
 
-      await applyIdentityAnomalyDecision({ ...confirmation, status: "confirmed", conversationId });
+    await applyIdentityAnomalyDecision({ ...confirmation, status: "confirmed", conversationId });
 
-      const [after] = await db.select().from(schema.documents).where(eq(schema.documents.id, doc.id));
-      expect(after.status).toBe("identity_anomaly_confirmed");
-      expect(after.requirementId).toBeNull();
+    const [after] = await db.select().from(schema.documents).where(eq(schema.documents.id, doc.id));
+    expect(after.status).toBe("approved");
+    expect(after.requirementId).toBe(requirement.id);
 
-      const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-      expect(request.status).not.toBe("completed");
-    }
-  );
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
+  });
+
+  it.each([
+    { label: "id_mismatch", anomaly: { kind: "id_mismatch" as const, confident: true, conflictingName: null, maskedIdNumber: "***1234" } },
+    { label: "company_mismatch", anomaly: { kind: "company_mismatch" as const, confident: true, conflictingName: "חברה אחרת בע\"מ", maskedIdNumber: null } },
+    { label: "CONFIDENT name_mismatch", anomaly: { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null } },
+  ])("$label — 'לא' (doesn't replace) still SAVES the document as an extra, but the requirement stays open", async ({ anomaly }) => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
+    const requirement = await addRequirement(requestId, "תעודת זהות");
+    const doc = await seedDocument(requestId, orgId, { fileName: "id.jpg" });
+    await createOrMergeIdentityAnomalyConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId: doc.id,
+      anomaly,
+      documentType: "תעודת זהות",
+      matchedRequirementId: requirement.id,
+    });
+    const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    sendTextMessage.mockClear();
+
+    await applyIdentityAnomalyDecision({ ...confirmation, status: "declined", conversationId });
+
+    const [after] = await db.select().from(schema.documents).where(eq(schema.documents.id, doc.id));
+    // Kept, not discarded — this is the key behavior change: "לא" here
+    // answers "does it replace X?", not "did you mean to send this?".
+    expect(after.status).toBe("identity_anomaly_confirmed");
+    expect(after.requirementId).toBeNull();
+    expect(after.googleDriveFileId).not.toBeNull();
+    expect(fakeFiles).toHaveLength(1);
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage.mock.calls[0][2]).toBe("בסדר, שמרתי את המסמך כמסמך נוסף.");
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).not.toBe("completed");
+  });
 });
 
 describe("identity_anomaly reminders/escalation reuse the generic pending-confirmation cron pass", () => {
