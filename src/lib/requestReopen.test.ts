@@ -94,7 +94,7 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
   isVisionClassifiableMimeType: () => true,
 }));
 
-const { createRequestReopenConfirmation, applyRequestReopenDecision, decidePostCompletionGate } = await import("./requestReopen");
+const { createRequestReopenConfirmation, applyRequestReopenDecision, decidePostCompletionGate, POST_COMPLETION_WINDOW_MS } = await import("./requestReopen");
 const { reprocessHeldReopenDocument } = await import("@/app/(app)/collections/conversationActions");
 const { resolveConfirmationFromReply } = await import("./pendingConfirmations");
 
@@ -117,32 +117,52 @@ beforeEach(() => {
 describe("decidePostCompletionGate — pure decision core", () => {
   it("falls through when the conversation isn't closed", () => {
     expect(
-      decidePostCompletionGate({ conversationStatus: "open", hasOpenConfirmations: false, hasAttachment: false, wantsReopen: false })
+      decidePostCompletionGate({ conversationStatus: "open", hasOpenConfirmations: false, hasAttachment: false, wantsReopen: false, withinPostCompletionWindow: true })
     ).toBe("fall_through");
   });
 
   it("falls through when a confirmation (most commonly the reopen question itself) is already open", () => {
     expect(
-      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: true, hasAttachment: true, wantsReopen: false })
+      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: true, hasAttachment: true, wantsReopen: false, withinPostCompletionWindow: true })
     ).toBe("fall_through");
   });
 
-  it("stashes an attachment arriving on a closed conversation with nothing pending", () => {
+  it("stashes an attachment arriving on a closed conversation with nothing pending, within the 48h window", () => {
     expect(
-      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: true, wantsReopen: false })
+      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: true, wantsReopen: false, withinPostCompletionWindow: true })
     ).toBe("stash_attachment");
   });
 
-  it("asks before reopening when the text explicitly references the finished request", () => {
+  it("asks before reopening when the text explicitly references the finished request, within the 48h window", () => {
     expect(
-      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: false, wantsReopen: true })
+      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: false, wantsReopen: true, withinPostCompletionWindow: true })
     ).toBe("ask_reopen");
   });
 
-  it("stays silent for an ordinary unrelated message on a closed conversation", () => {
+  it("stays silent for an ordinary unrelated message on a closed conversation, within the 48h window", () => {
     expect(
-      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: false, wantsReopen: false })
+      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: false, wantsReopen: false, withinPostCompletionWindow: true })
     ).toBe("silent");
+  });
+
+  // The 48-hour grace window (scenarios 5/6 from the conversational
+  // correction layer's own test plan) — total silence past it, regardless
+  // of what the message contains, matching the product decision that this
+  // mechanism "stops intervening" entirely once the window has elapsed.
+  it("stays silent past the 48h window even with an attachment (never stashed)", () => {
+    expect(
+      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: true, wantsReopen: false, withinPostCompletionWindow: false })
+    ).toBe("silent");
+  });
+
+  it("stays silent past the 48h window even when the text references the finished request", () => {
+    expect(
+      decidePostCompletionGate({ conversationStatus: "closed", hasOpenConfirmations: false, hasAttachment: false, wantsReopen: true, withinPostCompletionWindow: false })
+    ).toBe("silent");
+  });
+
+  it("exports a 48-hour window constant", () => {
+    expect(POST_COMPLETION_WINDOW_MS).toBe(48 * 60 * 60 * 1000);
   });
 });
 

@@ -44,20 +44,37 @@ export type PostCompletionGateDecision =
   // the safe default this whole gate exists to enforce.
   | "silent";
 
+// The post-completion intent gate stays open for exactly 48 hours from the
+// moment a request completes (collectionRequests.completedAt) — started
+// once, never reset or extended by any later message/document/button click
+// during the window. Past it, this mechanism "stops intervening" entirely
+// (product decision — see src/lib/correction/ for the conversational
+// correction layer this window also gates): no reply, no stash, no state
+// change of any kind. A brand-new collection request created by the office
+// is a fresh, separate context, not an extension of this one.
+export const POST_COMPLETION_WINDOW_MS = 48 * 60 * 60 * 1000;
+
 // The pure decision core of the post-completion intent gate — no DB, no
 // WhatsApp, directly unit-testable. wantsReopen must already reflect
 // classifyReopenIntent's own result when relevant (the caller only needs
 // to actually invoke that AI classifier in the one case where it matters —
 // closed, nothing pending, no attachment, real body text — see the webhook
 // route, which short-circuits before ever calling it otherwise).
+// withinPostCompletionWindow must be computed by the caller from
+// collectionRequests.completedAt (see POST_COMPLETION_WINDOW_MS above) — a
+// null completedAt on a closed conversation must be passed as false
+// (fail-safe: never guess this mechanism is still "recently completed"
+// without a real timestamp backing it).
 export function decidePostCompletionGate(params: {
   conversationStatus: string;
   hasOpenConfirmations: boolean;
   hasAttachment: boolean;
   wantsReopen: boolean;
+  withinPostCompletionWindow: boolean;
 }): PostCompletionGateDecision {
   if (params.conversationStatus !== "closed") return "fall_through";
   if (params.hasOpenConfirmations) return "fall_through";
+  if (!params.withinPostCompletionWindow) return "silent";
   if (params.hasAttachment) return "stash_attachment";
   if (params.wantsReopen) return "ask_reopen";
   return "silent";

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { clients, conversations, documents, messages, organizations } from "@/db/schema";
+import { clients, collectionRequests, conversations, documents, messages, organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
@@ -22,8 +22,14 @@ import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification
 import { attemptFinishCollectionRequest, isFinishedSignal } from "@/lib/caseReview";
 import { applyDeferralIfAny } from "@/lib/reminderDeferral";
 import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
-import { createRequestReopenConfirmation, applyRequestReopenDecision, decidePostCompletionGate } from "@/lib/requestReopen";
+import {
+  createRequestReopenConfirmation,
+  applyRequestReopenDecision,
+  decidePostCompletionGate,
+  POST_COMPLETION_WINDOW_MS,
+} from "@/lib/requestReopen";
 import { applyExtensionFinishedDecision } from "@/lib/requestExtension";
+import { runCorrectionLayer } from "@/lib/correction/correctionDispatch";
 import { classifyRequestMessageIntent } from "@/lib/ai/requestMessageIntent";
 import { answerRequestMessage, buildRequirementFacts } from "@/lib/requestQnA";
 import { askWhichDocumentMissing, openRequirementException, resolveExceptionTarget } from "@/lib/requirementException";
@@ -331,6 +337,35 @@ async function handleInboundMessage(
   // falls through to the normal resolver chain below instead.
   if (conversation.status === "closed") {
     const openConfirmations = await listOpenConfirmationsForCollectionRequest(collectionRequestId);
+    // 48-hour post-completion grace window (POST_COMPLETION_WINDOW_MS,
+    // requestReopen.ts) — started once at completedAt, never reset by later
+    // activity. Past it, this whole mechanism stays silent regardless of
+    // what the message contains (see decidePostCompletionGate).
+    const db = await getDb();
+    const [request] = await db
+      .select({ completedAt: collectionRequests.completedAt })
+      .from(collectionRequests)
+      .where(eq(collectionRequests.id, collectionRequestId))
+      .limit(1);
+    const withinPostCompletionWindow = !!request?.completedAt && Date.now() - request.completedAt.getTime() <= POST_COMPLETION_WINDOW_MS;
+
+    // Conversational correction layer — a text-only message within the
+    // window that refers to something already resolved on the just-
+    // completed request (e.g. "שלחתי בטעות") is understood here, before the
+    // coarser classifyReopenIntent boolean gate below ever runs. No-op
+    // (handled: false) for anything it doesn't recognize as a correction —
+    // classifyReopenIntent/the rest of this gate then runs exactly as before.
+    if (withinPostCompletionWindow && !attachment && body && openConfirmations.length === 0) {
+      const { handled } = await runCorrectionLayer({
+        organizationId: organization.id,
+        clientId: client.id,
+        collectionRequestId,
+        conversationId: conversation.id,
+        messageText: body,
+      });
+      if (handled) return;
+    }
+
     // Only actually invokes the AI classifier in the one case where its
     // result matters — see decidePostCompletionGate's own doc comment.
     const wantsReopen =
@@ -340,8 +375,9 @@ async function handleInboundMessage(
       hasOpenConfirmations: openConfirmations.length > 0,
       hasAttachment: !!attachment,
       wantsReopen,
+      withinPostCompletionWindow,
     });
-    console.log("[wa-inbound] post-completion gate decision", { collectionRequestId, decision });
+    console.log("[wa-inbound] post-completion gate decision", { collectionRequestId, decision, withinPostCompletionWindow });
 
     if (decision === "stash_attachment" && attachment) {
       let media: Awaited<ReturnType<typeof downloadMedia>>;
@@ -359,7 +395,6 @@ async function handleInboundMessage(
         });
         return;
       }
-      const db = await getDb();
       const [placeholder] = await db
         .insert(documents)
         .values({
@@ -474,14 +509,6 @@ async function handleInboundMessage(
       });
     } else {
       const resolved = await resolveConfirmationFromReply(conversation.id, body);
-      // Computed once, up front, so the ambiguous-yes/no guard below (and
-      // its own log/audit entry) never has to re-query — see that
-      // branch's own doc comment for why this check exists at all.
-      const yesNoShape = resolved ? null : parseConfirmationReply(body);
-      const openConfirmationsForAmbiguityCheck =
-        resolved || yesNoShape === "unclear" || isFinishedSignal(body)
-          ? []
-          : await listOpenConfirmationsForCollectionRequest(collectionRequestId);
       if (resolved) {
         console.log("[wa-inbound] confirmation reply resolved", { pendingConfirmationId: resolved.id, kind: resolved.kind, status: resolved.status });
         // Each is a no-op for any kind that isn't its own.
@@ -512,7 +539,36 @@ async function handleInboundMessage(
           actorType: "client",
         });
         console.log("[wa-inbound] case review outcome", { collectionRequestId, outcome });
-      } else if (yesNoShape !== "unclear" && openConfirmationsForAmbiguityCheck.length > 0) {
+      } else {
+        // Conversational correction layer (src/lib/correction/) — handles
+        // two cases the deterministic/narrow-AI resolvers above couldn't:
+        // (1) a non-keyword reply to a currently-open question, and (2) the
+        // genuinely new capability — a message that corrects something
+        // already resolved (e.g. "שלחתי בטעות" right after a document was
+        // kept as an extra). Sends its own reply and performs any state
+        // change internally when it claims the message. Reports
+        // handled:false (falls through to the ambiguity guard below, then
+        // the unchanged deferral/QnA chain) for anything it doesn't
+        // recognize as either case — see runCorrectionLayer's own doc
+        // comment for the full decision logic.
+        const correctionResult = await runCorrectionLayer({
+          organizationId: organization.id,
+          clientId: client.id,
+          collectionRequestId,
+          conversationId: conversation.id,
+          messageText: body,
+        });
+        // Computed once, up front, so the ambiguous-yes/no guard below (and
+        // its own log/audit entry) never has to re-query — see that
+        // branch's own doc comment for why this check exists at all.
+        const yesNoShape = correctionResult.handled ? null : parseConfirmationReply(body);
+        const openConfirmationsForAmbiguityCheck =
+          correctionResult.handled || yesNoShape === "unclear" || isFinishedSignal(body)
+            ? []
+            : await listOpenConfirmationsForCollectionRequest(collectionRequestId);
+        if (correctionResult.handled) {
+          // handled entirely inside runCorrectionLayer — nothing left to do.
+        } else if (yesNoShape !== "unclear" && openConfirmationsForAmbiguityCheck.length > 0) {
         // Real production incident: a bare "כן" answering an open
         // unsolicited-document question fell all the way through to the
         // free-text deferral classifier below and was misread as a
@@ -520,16 +576,13 @@ async function handleInboundMessage(
         // completely different mechanism that must only ever fire from
         // the client's own words genuinely expressing a future
         // commitment, never as a side effect of a yes/no reply we simply
-        // couldn't route. Root cause: resolveConfirmationFromReply/
-        // resolveOpenClarificationReply both correctly refuse to guess
-        // when more than one confirmation is open at once (their own
-        // "never guess" discipline) — but that correct refusal was
-        // falling through into unrelated classifiers instead of stopping.
-        // This message is shaped like a yes/no answer (parseConfirmationReply)
-        // and at least one of our own open questions on this request
-        // could plausibly be what it's answering — stop here. Never
-        // guess which one, but never treat it as deferral or generic
-        // intent either.
+        // couldn't route. The correction layer above already had its
+        // (better-informed) chance to resolve this and declined — this is
+        // the same backstop as before that layer existed: this message is
+        // shaped like a yes/no answer and at least one of our own open
+        // questions on this request could plausibly be what it's
+        // answering — stop here. Never guess which one, but never treat it
+        // as deferral or generic intent either.
         console.log("[wa-inbound] ambiguous yes/no reply with open confirmation(s) — not routed to deferral/generic intent", {
           collectionRequestId,
           openConfirmationCount: openConfirmationsForAmbiguityCheck.length,
@@ -549,10 +602,10 @@ async function handleInboundMessage(
         // dated commitments ("אשלח ביום חמישי") as a stronger case than a
         // vague short-term promise ("אשלח בערב") — only reached once
         // nothing else claimed this message (no open confirmation, not a
-        // finished signal, and not an ambiguous yes/no reply to one of our
-        // own open questions — see the branch above). A no-op for the
-        // overwhelming majority of ordinary messages; see
-        // applyDeferralIfAny's own doc comment.
+        // finished signal, not a correction, and not an ambiguous yes/no
+        // reply to one of our own open questions — see the branches
+        // above). A no-op for the overwhelming majority of ordinary
+        // messages; see applyDeferralIfAny's own doc comment.
         const promised = await applyDeferralIfAny({
           organizationId: organization.id,
           conversationId: conversation.id,
@@ -606,6 +659,7 @@ async function handleInboundMessage(
           // "unrelated" — the safe default: no reply, no state change,
           // message already recorded above for an employee to see.
         }
+      }
       }
     }
     }
