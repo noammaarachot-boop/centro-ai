@@ -323,10 +323,26 @@ describe("resolveRequirementAssignment — sole-outstanding-requirement fallback
     expect(result).toEqual({ requirementId: "req-bank", confidence: 0.4 });
   });
 
-  it("auto-assigns to the one outstanding requirement when the classifier found nothing (WhatsApp image case)", () => {
-    const result = resolveRequirementAssignment({ matchedRequirementId: null, confidence: 0 }, ["req-id-card"]);
+  it("auto-assigns to the one outstanding requirement when the AI actually looked at it, confirmed it's legible, but couldn't map it to a specific name (WhatsApp image case)", () => {
+    const result = resolveRequirementAssignment(
+      { matchedRequirementId: null, confidence: 0, aiRan: true, readabilityIssue: null },
+      ["req-id-card"]
+    );
     expect(result.requirementId).toBe("req-id-card");
     expect(result.confidence).toBeGreaterThanOrEqual(AUTO_APPROVE_CONFIDENCE);
+  });
+
+  it("never auto-assigns when the AI never actually ran (no real file content to check) — a process-of-elimination guess is not identification", () => {
+    const result = resolveRequirementAssignment({ matchedRequirementId: null, confidence: 0 }, ["req-id-card"]);
+    expect(result).toEqual({ requirementId: null, confidence: 0 });
+  });
+
+  it("never auto-assigns when the AI ran but flagged a readability problem — the document must be resent, not silently guessed", () => {
+    const result = resolveRequirementAssignment(
+      { matchedRequirementId: null, confidence: 0, aiRan: true, readabilityIssue: "blurry" },
+      ["req-id-card"]
+    );
+    expect(result).toEqual({ requirementId: null, confidence: 0 });
   });
 
   it("stays unmatched when nothing overlaps and more than one requirement is still outstanding", () => {
