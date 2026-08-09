@@ -883,6 +883,15 @@ export const documentStatus = pgEnum("document_status", [
   // active-document count (approved-requirement checks, quantity
   // satisfaction) via documents.supersededByDocumentId being set.
   "superseded",
+  // Conversational correction layer (src/lib/correction/) — the client
+  // referred back to an already-resolved document (e.g. "שלחתי בטעות" right
+  // after it was kept as an extra or attached to a requirement) and the AI
+  // confidently classified their intent to withdraw it entirely. Same
+  // family as "superseded": never deleted — the row and its real Drive file
+  // both stay, renamed to make the withdrawal visible at a glance
+  // (markDocumentWithdrawnInDrive), just excluded from every
+  // active-document count, same mechanism as "superseded".
+  "withdrawn_by_correction",
 ]);
 
 // Metadata + a Google Drive file reference (EPS Ch.4/Ch.8 — Drive stores

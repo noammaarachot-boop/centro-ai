@@ -681,3 +681,33 @@ export async function markDocumentSupersededInDrive(organizationId: string, driv
     console.error("[document-replace] renaming superseded file in Drive failed (non-fatal)", error);
   }
 }
+
+// Conversational correction layer (src/lib/correction/) — same "archive/
+// mark, never delete without need" philosophy as markDocumentSupersededInDrive
+// above: a document the client withdrew via a later correction keeps its
+// real file in Drive, just renamed to make the withdrawal visible at a
+// glance. Best-effort and non-throwing for the same reason.
+export async function markDocumentWithdrawnInDrive(organizationId: string, driveFileId: string, fileName: string): Promise<void> {
+  try {
+    const accessToken = await getValidAccessToken(organizationId);
+    await withRetry(() => renameDriveFile(accessToken, driveFileId, `[בוטל] ${fileName}`));
+  } catch (error) {
+    console.error("[correction] renaming withdrawn file in Drive failed (non-fatal)", error);
+  }
+}
+
+// Conversational correction layer — a document already uploaded (status
+// approved/identity_anomaly_confirmed) that the client now clarifies is
+// only an extra, not a requirement match, needs its Drive file renamed to
+// the same "${documentType}${ext}" convention every other extra document
+// already uses (see saveIdentityAnomalyDocumentAsExtra) — no re-upload
+// needed, the bytes are already there. Best-effort/non-fatal, same
+// resilience philosophy as the two functions above.
+export async function renameDocumentInDrive(organizationId: string, driveFileId: string, newFileName: string): Promise<void> {
+  try {
+    const accessToken = await getValidAccessToken(organizationId);
+    await withRetry(() => renameDriveFile(accessToken, driveFileId, newFileName));
+  } catch (error) {
+    console.error("[correction] renaming document in Drive failed (non-fatal)", error);
+  }
+}

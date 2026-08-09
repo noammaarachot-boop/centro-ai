@@ -491,6 +491,21 @@ function queueNotDatedThenNoFollowUp() {
   generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false } });
 }
 
+// Conversational correction layer (src/lib/correction/) — runs one extra
+// generateObject call (classifyCorrectionIntent) ahead of every other
+// classifier in the ladder, but ONLY once there's at least one recent
+// document/confirmation/open-question candidate on the request to possibly
+// be a correction about (see correctionClassifier.ts's own early-exit
+// check — a message on a request with zero prior activity never reaches
+// the model at all, no mock needed). Call this immediately before any
+// existing classifier-mock setup for a text message sent once real
+// document/confirmation activity already exists on the request.
+function queueCorrectionNotApplicable() {
+  generateObject.mockResolvedValueOnce({
+    object: { kind: "not_applicable", confidence: 0, answer: null, targetType: null, targetId: null, desiredOutcome: null },
+  });
+}
+
 // ======================================================================
 // Journey 2 — quantity-aware requirement ("3 תלושי שכר של 3 חודשים
 // שונים"), client Q&A before and during collection, an "I don't have it"
@@ -569,6 +584,7 @@ describe("E2E Journey 2 — quantity requirement + Q&A + exception + duplicate +
     expect(await approvedDocuments(requestId)).toHaveLength(2);
 
     // 4) Client asks again — must now reflect real partial progress (2 of 3).
+    queueCorrectionNotApplicable();
     queueNotDatedThenNoFollowUp();
     generateObject.mockResolvedValueOnce({ object: { category: "request_overview", mentionedDocumentType: null } });
     await sendText(phoneNumberId, "כמה עוד חסר?");
@@ -577,6 +593,7 @@ describe("E2E Journey 2 — quantity requirement + Q&A + exception + duplicate +
     // 5) A completely unrelated message — Centro must stay silent (no new
     // outbound message, no state change).
     const sentCountBeforeUnrelated = sentMessages.length;
+    queueCorrectionNotApplicable();
     queueNotDatedThenNoFollowUp();
     generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
     await sendText(phoneNumberId, "מה שעות הפעילות שלכם?");
@@ -584,6 +601,7 @@ describe("E2E Journey 2 — quantity requirement + Q&A + exception + duplicate +
 
     // 6) "אין לי את התלוש השלישי" — opens a real employee exception rather
     // than being invented or silently dropped.
+    queueCorrectionNotApplicable();
     queueNotDatedThenNoFollowUp();
     generateObject.mockResolvedValueOnce({ object: { category: "no_document_exception", mentionedDocumentType: null } });
     await sendText(phoneNumberId, "אין לי את התלוש השלישי, איבדתי אותו");
@@ -689,9 +707,11 @@ describe("E2E Journey 3 — multi-page PDF merge, document replace, reminder def
     // first. Real, worth noting: a WhatsApp caption is read as this
     // message's own `body` too (route.ts has no separate "caption-only"
     // channel), so it first runs the ordinary conversational chain
-    // (deferral -> follow-up -> Q&A/exception, all naturally "no" for this
-    // text) before classifyDocumentRelationIntent gets its turn against
-    // the attachment itself.
+    // (correction layer -> deferral -> follow-up -> Q&A/exception, all
+    // naturally "no"/not-applicable for this text) before
+    // classifyDocumentRelationIntent gets its turn against the attachment
+    // itself.
+    queueCorrectionNotApplicable();
     queueNotDatedThenNoFollowUp();
     generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
     generateObject.mockResolvedValueOnce({ object: { relation: "replace" } });
@@ -903,13 +923,17 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
     // Manually bring the request to completed+closed to set up the
     // extension scenario cleanly (the resolution above doesn't itself
     // re-run completion in this synthetic flow).
-    await db.update(schema.collectionRequests).set({ status: "completed" }).where(eq(schema.collectionRequests.id, requestId));
+    await db.update(schema.collectionRequests).set({ status: "completed", completedAt: new Date() }).where(eq(schema.collectionRequests.id, requestId));
     await db.update(schema.conversations).set({ status: "closed" }).where(eq(schema.conversations.id, conversationId));
 
     // "שכחתי עוד מסמך" after completion — the post-completion gate's own
-    // classifyReopenIntent call is the ONLY classification that runs here
-    // (a closed conversation short-circuits before ever reaching the
-    // normal deferral/Q&A chain) — asks before doing anything.
+    // conversational correction layer gets first look (within the 48h
+    // window, no open confirmations), declines (not a correction to
+    // anything already resolved), then classifyReopenIntent is the only
+    // other classification that runs here (a closed conversation
+    // short-circuits before ever reaching the normal deferral/Q&A chain) —
+    // asks before doing anything.
+    queueCorrectionNotApplicable();
     generateObject.mockResolvedValueOnce({ object: { isReopenIntent: true } });
     await sendText(phoneNumberId, "שכחתי לשלוח את אישור השכירות, אשלח עכשיו");
     const reopenConfirmation = (
