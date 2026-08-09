@@ -317,36 +317,16 @@ function joinHebrewList(items: string[]): string {
 // agreement (הוא/היא, שייך/שייכת) would otherwise have to vary per
 // arbitrary type string; "המסמך" sidesteps that entirely.
 //
-// matchedRequirementName: when the document's TYPE was already confidently
-// matched to a specific open requirement before this anomaly overrode it
-// (conversationActions.ts) — every document in a group is guaranteed to
-// share the same one, or none at all (see anomalySignature below) — the
-// question asks explicitly whether this document REPLACES that specific
-// requirement, instead of the generic "did you mean to send this?". This
-// is a deliberate product decision: the system never decides on its own
-// whether an identity-mismatched document satisfies the original
-// requirement (regardless of anomaly kind or confidence) — only the
-// client's own explicit answer to THIS question does. Quoted as
-// "הדרישה \"X\"" rather than inflecting X grammatically (e.g. "שנדרשה") —
-// an arbitrary office-authored requirement name has no reliable way to
-// auto-detect Hebrew grammatical gender for correct agreement.
-function buildAnomalyQuestion(
-  anomaly: IdentityAnomaly,
-  documentTypes: Array<string | null>,
-  matchedRequirementName: string | null
-): string {
+// Used only when there's no matchedRequirementName (see buildReplaceQuestion
+// below for that case) — the original, unchanged "did you mean to send
+// this?" wording.
+function buildGenericQuestion(anomaly: IdentityAnomaly, documentTypes: Array<string | null>): string {
   const count = documentTypes.length;
   const plural = count > 1;
   const knownTypes = documentTypes.filter((t): t is string => !!t);
   const allTypesKnown = knownTypes.length === count;
   const typeLabel = allTypesKnown ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
-  const askLine = matchedRequirementName
-    ? plural
-      ? `האם המסמכים האלה מחליפים את הדרישה "${matchedRequirementName}"?`
-      : `האם המסמך הזה מחליף את הדרישה "${matchedRequirementName}"?`
-    : plural
-      ? "האם שלחת אותם בכוונה?"
-      : "האם שלחת אותו בכוונה?";
+  const askLine = plural ? "האם שלחת אותם בכוונה?" : "האם שלחת אותו בכוונה?";
 
   if (anomaly.kind === "id_mismatch") {
     return `📄 ${typeLabel}\nמספר תעודת הזהות (מסתיים ב-${anomaly.maskedIdNumber}) שונה מהמסמכים הקודמים שקיבלתי.\n\n${askLine}`;
@@ -366,6 +346,77 @@ function buildAnomalyQuestion(
   }
 
   return `📄 ${typeLabel}\n${plural ? "המסמכים הם" : "המסמך הוא"} על שם ${anomaly.conflictingName}, והשם אינו תואם לבעל הבקשה.\n\n${askLine}`;
+}
+
+// The explicit "does this replace X?" question — used whenever the
+// document's TYPE was already confidently matched to a specific open
+// requirement before this anomaly overrode it (conversationActions.ts).
+// Every document in a group is guaranteed to share the same
+// matchedRequirementName (see anomalySignature below), so this always
+// asks about exactly one requirement.
+//
+// Deliberately spelled out in full, two-sentence form (not the terser
+// "📄 type\n...\n\naskLine" shape buildGenericQuestion uses) so the client
+// understands precisely what "כן" commits to — a direct product
+// requirement: naming the document's own type+name, then explicitly
+// asking whether it was sent INSTEAD OF the original requirement, naming
+// the client. matchedRequirementName is repeated as-is (never grammatically
+// inflected, e.g. no attempt at "תעודת הזהות" or "שנדרשה") — an arbitrary
+// office-authored requirement name has no reliable way to auto-detect
+// Hebrew grammatical gender/construct-state for correct agreement, and a
+// plain repeated noun reads perfectly clearly either way.
+//
+// extractedNames: the raw name/company actually found ON each document in
+// the group (not anomaly.conflictingName, which for id_mismatch names a
+// SIBLING document's person, not this one's own) — the first non-null
+// entry is used; a genuinely mixed-name group is exceedingly rare given
+// how narrowly groups are scoped now (see anomalySignature).
+function buildReplaceQuestion(
+  anomaly: IdentityAnomaly,
+  documentTypes: Array<string | null>,
+  extractedNames: Array<string | null>,
+  matchedRequirementName: string,
+  clientName: string
+): string {
+  const count = documentTypes.length;
+  const plural = count > 1;
+  const knownTypes = documentTypes.filter((t): t is string => !!t);
+  const allTypesKnown = knownTypes.length === count;
+  const typeLabel = allTypesKnown ? joinHebrewList(knownTypes) : plural ? `${count} מסמכים` : "מסמך";
+  const name = extractedNames.find((n): n is string => !!n) ?? null;
+  const subject = plural ? "המסמכים שהתקבלו הם" : "המסמך שהתקבל הוא";
+  const askLine = plural
+    ? `האם הם נשלחו במקום ${matchedRequirementName} של ${clientName}?`
+    : `האם הוא נשלח במקום ${matchedRequirementName} של ${clientName}?`;
+
+  if (anomaly.kind === "id_mismatch") {
+    const nameClause = name ? ` על שם ${name},` : "";
+    return `${subject} ${typeLabel}${nameClause} עם מספר תעודת זהות (מסתיים ב-${anomaly.maskedIdNumber}) שונה ממה שקיבלתי עד כה.\n\n${askLine}`;
+  }
+
+  if (!anomaly.confident) {
+    return `${subject} ${typeLabel}, שנראה שאינו על שם ${clientName}, אך לא הצלחתי לקרוא בבירור על שם מי הוא.\n\n${askLine}`;
+  }
+
+  if (anomaly.kind === "company_mismatch") {
+    const nameClause = name ? ` על שם החברה ${name}` : "";
+    return `${subject} ${typeLabel}${nameClause}.\n\n${askLine}`;
+  }
+
+  const nameClause = name ? ` על שם ${name}` : `, שאינו על שם ${clientName}`;
+  return `${subject} ${typeLabel}${nameClause}.\n\n${askLine}`;
+}
+
+function buildAnomalyQuestion(
+  anomaly: IdentityAnomaly,
+  documentTypes: Array<string | null>,
+  extractedNames: Array<string | null>,
+  matchedRequirementName: string | null,
+  clientName: string
+): string {
+  return matchedRequirementName
+    ? buildReplaceQuestion(anomaly, documentTypes, extractedNames, matchedRequirementName, clientName)
+    : buildGenericQuestion(anomaly, documentTypes);
 }
 
 // Groups documents that share the same underlying anomaly AND the same
@@ -397,8 +448,15 @@ interface IdentityAnomalyPayload {
     documentType: string | null;
     matchedRequirementId: string | null;
     matchedRequirementName: string | null;
+    // The raw name/company actually extracted FROM this document — see
+    // buildReplaceQuestion's own doc comment for why this is kept
+    // separate from anomaly.conflictingName.
+    extractedPersonName: string | null;
+    extractedCompanyName: string | null;
   }>;
   anomaly: IdentityAnomaly;
+  // The request's own client — same for the whole request, not per-document.
+  clientName: string;
 }
 
 async function getGroupingWindowSeconds(organizationId: string): Promise<number> {
@@ -426,6 +484,9 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
   anomaly: IdentityAnomaly;
   documentType: string | null;
   matchedRequirementId: string | null;
+  extractedPersonName: string | null;
+  extractedCompanyName: string | null;
+  clientName: string;
 }): Promise<void> {
   const db = await getDb();
   const signature = anomalySignature(params.anomaly, params.matchedRequirementId);
@@ -463,7 +524,14 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     const payload = existing.payload as IdentityAnomalyPayload;
     const documentsInGroup = [
       ...payload.documents,
-      { id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId, matchedRequirementName },
+      {
+        id: params.documentId,
+        documentType: params.documentType,
+        matchedRequirementId: params.matchedRequirementId,
+        matchedRequirementName,
+        extractedPersonName: params.extractedPersonName,
+        extractedCompanyName: params.extractedCompanyName,
+      },
     ];
     await db
       .update(pendingConfirmations)
@@ -472,7 +540,9 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
         question: buildAnomalyQuestion(
           params.anomaly,
           documentsInGroup.map((d) => d.documentType),
-          matchedRequirementName
+          documentsInGroup.map((d) => d.extractedPersonName ?? d.extractedCompanyName),
+          matchedRequirementName,
+          params.clientName
         ),
       })
       .where(eq(pendingConfirmations.id, existing.id));
@@ -500,10 +570,26 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     collectionRequestId: params.collectionRequestId,
     kind: "identity_anomaly" satisfies PendingConfirmationKind,
     payload: {
-      documents: [{ id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId, matchedRequirementName }],
+      documents: [
+        {
+          id: params.documentId,
+          documentType: params.documentType,
+          matchedRequirementId: params.matchedRequirementId,
+          matchedRequirementName,
+          extractedPersonName: params.extractedPersonName,
+          extractedCompanyName: params.extractedCompanyName,
+        },
+      ],
       anomaly: params.anomaly,
+      clientName: params.clientName,
     } satisfies IdentityAnomalyPayload,
-    question: buildAnomalyQuestion(params.anomaly, [params.documentType], matchedRequirementName),
+    question: buildAnomalyQuestion(
+      params.anomaly,
+      [params.documentType],
+      [params.extractedPersonName ?? params.extractedCompanyName],
+      matchedRequirementName,
+      params.clientName
+    ),
     notifyAfter: new Date(Date.now() + groupingWindowSeconds * 1000),
   });
 

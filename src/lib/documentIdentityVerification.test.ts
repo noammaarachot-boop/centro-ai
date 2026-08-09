@@ -308,9 +308,9 @@ describe("createOrMergeIdentityAnomalyConfirmation — grouping", () => {
     const doc3 = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc1.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null });
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc2.id, anomaly, documentType: "דרכון", matchedRequirementId: null });
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc3.id, anomaly, documentType: "רישיון נהיגה", matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc1.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc2.id, anomaly, documentType: "דרכון", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc3.id, anomaly, documentType: "רישיון נהיגה", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
 
     const rows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(rows).toHaveLength(1);
@@ -337,8 +337,8 @@ describe("createOrMergeIdentityAnomalyConfirmation — grouping", () => {
     const anomalyA = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
     const anomalyB = { kind: "id_mismatch" as const, confident: true, conflictingName: null, maskedIdNumber: "***9999" };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc1.id, anomaly: anomalyA, documentType: null, matchedRequirementId: null });
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc2.id, anomaly: anomalyB, documentType: null, matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc1.id, anomaly: anomalyA, documentType: null, matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc2.id, anomaly: anomalyB, documentType: null, matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
 
     const rows = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     // Two distinct groups in the DB (independently answerable later)...
@@ -369,7 +369,7 @@ describe("identity-anomaly question wording", () => {
     // literal in the product code.
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "מרגלית אביטן", maskedIdNumber: null };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
 
     const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.question).toContain("מרגלית אביטן");
@@ -380,7 +380,7 @@ describe("identity-anomaly question wording", () => {
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: false, conflictingName: null, maskedIdNumber: null };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
 
     const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.question).toBe(
@@ -393,7 +393,7 @@ describe("identity-anomaly question wording", () => {
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: false, conflictingName: null, maskedIdNumber: null };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: null, matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: null, matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
 
     const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.question).toBe("מצאתי מסמך שנראה שהוא שייך לאדם אחר.\nהאם שלחת אותו בכוונה?");
@@ -404,7 +404,7 @@ describe("identity-anomaly question wording", () => {
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "אורלי דהן", maskedIdNumber: null };
 
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "תעודת זהות", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
 
     const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(row.question).not.toContain("זיהינו ש");
@@ -418,7 +418,7 @@ describe("applyIdentityAnomalyDecision", () => {
     const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס", matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     sendTextMessage.mockClear(); // only count sends from the decision itself, not the question above
 
@@ -445,7 +445,7 @@ describe("applyIdentityAnomalyDecision", () => {
     const { orgId, clientId, requestId, conversationId } = await seedRequest({ whatsappPhoneNumberId: "phone-1" });
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס", matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     sendTextMessage.mockClear();
 
@@ -491,6 +491,9 @@ describe("applyIdentityAnomalyDecision", () => {
       anomaly,
       documentType: "תעודת זהות",
       matchedRequirementId: requirement.id,
+      extractedPersonName: null,
+      extractedCompanyName: null,
+      clientName: "נועם שלום",
     });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     // Mirrors what the real resolver (pendingConfirmations.ts's `resolve`)
@@ -515,7 +518,7 @@ describe("applyIdentityAnomalyDecision", () => {
 
     // The immediate completion check ran (this was the only requirement) —
     // sent right away rather than waiting for the 2-minute silence window.
-    expect(sendTextMessage.mock.calls.some((c) => (c[2] as string).includes("קיבלתי הכל"))).toBe(true);
+    expect(sendTextMessage.mock.calls.some((c) => (c[2] as string).includes("קיבלתי את כל המסמכים שנדרשו:"))).toBe(true);
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(request.status).toBe("completed");
   });
@@ -533,6 +536,9 @@ describe("applyIdentityAnomalyDecision", () => {
       anomaly,
       documentType: "תעודת זהות",
       matchedRequirementId: requirement.id,
+      extractedPersonName: null,
+      extractedCompanyName: null,
+      clientName: "נועם שלום",
     });
     // A genuine, correctly-identified document satisfied the requirement
     // in the meantime — the still-open confirmation must never override it.
@@ -566,6 +572,9 @@ describe("applyIdentityAnomalyDecision", () => {
       anomaly,
       documentType: "אישור נוסף",
       matchedRequirementId: requirement.id,
+      extractedPersonName: null,
+      extractedCompanyName: null,
+      clientName: "נועם שלום",
     });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     await db.update(schema.pendingConfirmations).set({ status: "confirmed", respondedAt: new Date() }).where(eq(schema.pendingConfirmations.id, confirmation.id));
@@ -604,9 +613,12 @@ describe("applyIdentityAnomalyDecision", () => {
       anomaly,
       documentType: "תעודת זהות",
       matchedRequirementId: requirement.id,
+      extractedPersonName: null,
+      extractedCompanyName: null,
+      clientName: "נועם שלום",
     });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
-    expect(confirmation.question).toContain(`מחליף את הדרישה "${requirement.name}"`);
+    expect(confirmation.question).toContain(`נשלח במקום ${requirement.name} של נועם שלום?`);
     await db.update(schema.pendingConfirmations).set({ status: "confirmed", respondedAt: new Date() }).where(eq(schema.pendingConfirmations.id, confirmation.id));
 
     await applyIdentityAnomalyDecision({ ...confirmation, status: "confirmed", conversationId });
@@ -635,6 +647,9 @@ describe("applyIdentityAnomalyDecision", () => {
       anomaly,
       documentType: "תעודת זהות",
       matchedRequirementId: requirement.id,
+      extractedPersonName: null,
+      extractedCompanyName: null,
+      clientName: "נועם שלום",
     });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     sendTextMessage.mockClear();
@@ -662,7 +677,7 @@ describe("identity_anomaly reminders/escalation reuse the generic pending-confir
     const { orgId, clientId, requestId } = await seedRequest({ businessHoursAlwaysOpen: true, whatsappPhoneNumberId: "phone-1" });
     const doc = await seedDocument(requestId, orgId);
     const anomaly = { kind: "name_mismatch" as const, confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null };
-    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס", matchedRequirementId: null });
+    await createOrMergeIdentityAnomalyConfirmation({ organizationId: orgId, clientId, collectionRequestId: requestId, documentId: doc.id, anomaly, documentType: "חשבונית מס", matchedRequirementId: null, extractedPersonName: null, extractedCompanyName: null, clientName: "" });
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     await db
       .update(schema.pendingConfirmations)

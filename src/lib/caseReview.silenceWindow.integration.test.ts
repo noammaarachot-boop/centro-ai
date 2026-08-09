@@ -180,7 +180,10 @@ describe("runAutomaticCaseStatusReview", () => {
     const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
     expect(outcome).toBe("completed");
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(sendTextMessage.mock.calls[0][2]).toContain("קיבלתי הכל");
+    const completionBody = sendTextMessage.mock.calls[0][2] as string;
+    expect(completionBody).toContain("קיבלתי את כל המסמכים שנדרשו:");
+    expect(completionBody).toContain("• תעודת זהות");
+    expect(completionBody).toContain("תודה רבה על שיתוף הפעולה.");
 
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.status).toBe("closed");
@@ -278,23 +281,49 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(outcome).toBe("completed");
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const body = sendTextMessage.mock.calls[0][2] as string;
-    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו לבקשה");
+    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו:");
+    expect(body).toContain("• תעודת זהות");
+    expect(body).toContain("בנוסף התקבל גם:");
     expect(body).toContain("• קבלה על תיקון רכב — מסמך נוסף שהתקבל");
-    expect(body).toContain("כל המסמכים הנדרשים התקבלו");
+    expect(body).toContain("תודה רבה על שיתוף הפעולה.");
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(request.status).toBe("completed");
   });
 
-  it("a legacy stranded document_clarification row (pre-dating immediate handling) still gets asked about, and — unlike identity_anomaly/unsolicited_document — never blocks the summary from also going out in the same pass", async () => {
+  it("a legacy stranded document_clarification row (pre-dating immediate handling) still gets asked about even though nothing else was received — the interim summary itself is correctly suppressed (nothing real to report yet)", async () => {
     // document_clarification is asked about immediately at intake time in
     // real code now (never deferred) — this row simulates a genuinely
     // legacy leftover (e.g. from before that change) purely to prove the
     // defensive backstop in runCaseReview still surfaces it rather than
-    // stranding it forever. It deliberately does NOT block completion —
-    // document_clarification is never treated as blocking, unlike
-    // identity_anomaly/unsolicited_document.
+    // stranding it forever. document_clarification itself is never treated
+    // as BLOCKING (unlike identity_anomaly/unsolicited_document) — but
+    // since nothing has actually been received yet on this request (the
+    // one document that exists still needs clarification), the interim
+    // "here's what's missing" summary correctly stays silent per the
+    // "nothing to report" rule below — asking the clarification question
+    // is not itself something to report as received.
     const { orgId, requestId, conversationId, clientId } = await seedWaitingRequest(["תעודת זהות"]);
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      fileName: "mystery.pdf",
+      status: "clarification_requested",
+      pendingFileContent: Buffer.from("bytes"),
+      pendingFileMimeType: "application/pdf",
+      deferredReviewKind: "document_clarification",
+      deferredReviewPayload: {},
+    });
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+    expect(outcome).toBe("nothing_to_report");
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage.mock.calls[0][2]).toContain("לא הצלחתי לזהות");
+  });
+
+  it("a legacy stranded document_clarification row asked about ALONGSIDE a genuinely received document — the summary still goes out in the same pass (document_clarification never blocks it)", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest(["תעודת זהות", "רישיון נהיגה"]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
     await db.insert(schema.documents).values({
       organizationId: orgId,
       collectionRequestId: requestId,
@@ -310,7 +339,9 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(outcome).toBe("summary_sent");
     expect(sendTextMessage).toHaveBeenCalledTimes(2);
     expect(sendTextMessage.mock.calls[0][2]).toContain("לא הצלחתי לזהות");
-    expect(sendTextMessage.mock.calls[1][2]).toContain("תעודת זהות"); // still missing — never approved
+    expect(sendTextMessage.mock.calls[1][2]).toContain("• תעודת זהות");
+    expect(sendTextMessage.mock.calls[1][2]).toContain("עדיין חסר לי");
+    expect(sendTextMessage.mock.calls[1][2]).toContain("• רישיון נהיגה");
   });
 
   it("an unsolicited-document confirmation the client never answered at all does NOT block a later summary tick — the document is simply excluded, not treated as received or missing", async () => {
@@ -398,7 +429,7 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(outcome).toBe("completed");
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const body = sendTextMessage.mock.calls[0][2] as string;
-    expect(body).toContain("קיבלתי הכל");
+    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו:");
     expect(body).not.toContain("invoice_never_answered");
     expect(body).not.toContain("חשבונית");
 
@@ -534,6 +565,6 @@ describe("scheduler — silence-window due-check (mandatory: debounce, then act,
     expect(second.caseStatusReviewsRun).toBe(1);
     // Second summary is the completion message, not a repeat of the first.
     expect(sendTextMessage).toHaveBeenCalledTimes(2);
-    expect(sendTextMessage.mock.calls[1][2]).toContain("קיבלתי הכל");
+    expect(sendTextMessage.mock.calls[1][2]).toContain("קיבלתי את כל המסמכים שנדרשו:");
   });
 });

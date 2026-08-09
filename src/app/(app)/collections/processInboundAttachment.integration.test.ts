@@ -1174,7 +1174,7 @@ describe("processInboundAttachment — immediate completion the instant nothing 
       .from(schema.messages)
       .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
     expect(outbound).toHaveLength(1);
-    expect(outbound[0].body).toContain("קיבלתי הכל");
+    expect(outbound[0].body).toContain("קיבלתי את כל המסמכים שנדרשו:");
   });
 
   it("never sends a 'still missing' message after an ordinary document that doesn't complete the request", async () => {
@@ -1365,7 +1365,7 @@ describe("identity_anomaly — the client explicitly decides whether a wrong-per
     expect(doc.status).toBe("identity_anomaly_pending_confirmation");
     const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(confirmation.question).toContain("דוד כהן");
-    expect(confirmation.question).toContain(`מחליף את הדרישה "תעודת זהות"`);
+    expect(confirmation.question).toContain("נשלח במקום תעודת זהות של רז שלום?");
   });
 
   it("2. 'כן' — the document replaces the requirement, which closes and stops appearing as missing", async () => {
