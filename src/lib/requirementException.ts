@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, collectionRequests } from "@/db/schema";
+import { collectionRequestRequirements, collectionRequests, employeeReviewItems } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { ensureConversation, sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { matchTextToCandidates } from "@/lib/ai/documentClassifier";
@@ -80,6 +80,21 @@ export async function openRequirementException(params: {
     clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,
     metadata: { requirementId: params.requirementId, clientWording: params.clientWording },
+  });
+
+  // Mirrored into the unified, org-wide "needs employee review" queue
+  // (src/lib/employeeReview.ts) purely for central-dashboard visibility —
+  // computeRequirementSatisfaction/checkCompletionGate keep reading
+  // exceptionStatus exclusively, unaffected by this row's existence.
+  await db.insert(employeeReviewItems).values({
+    organizationId: params.organizationId,
+    clientId: params.clientId,
+    collectionRequestId: params.collectionRequestId,
+    conversationId: params.conversationId,
+    clientQuestion: params.clientWording,
+    category: "missing_document",
+    relatedRequirementId: params.requirementId,
+    status: "pending",
   });
 
   await sendOutboundMessage(
@@ -233,6 +248,34 @@ export async function resolveRequirementException(params: {
       metadata: { requirementId: params.requirementId },
     });
   }
+
+  // Close out the mirrored central-queue row(s) (see openRequirementException)
+  // so a resolved exception doesn't sit "pending" forever in the org-wide
+  // dashboard tile. At most one such row is ever open per requirement at a
+  // time (openRequirementException only ever adds another once this one is
+  // resolved), but this closes every match defensively rather than
+  // assuming exactly one.
+  const resolutionSummary: Record<RequirementExceptionDecision, string> = {
+    waive: "העובד ויתר על הדרישה",
+    request_alternative: `העובד ביקש מסמך חלופי: "${params.alternativeText ?? ""}"`,
+    contact_client: "העובד יצור קשר ידני עם הלקוח",
+    leave_open: "העובד השאיר את הדרישה פתוחה ללא החלטה סופית",
+  };
+  await db
+    .update(employeeReviewItems)
+    .set({
+      status: "resolved",
+      resolutionText: resolutionSummary[params.decision],
+      resolvedByUserId: params.actorUserId ?? null,
+      resolvedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(employeeReviewItems.relatedRequirementId, params.requirementId),
+        eq(employeeReviewItems.category, "missing_document"),
+        eq(employeeReviewItems.status, "pending")
+      )
+    );
 
   const gateError = await checkCompletionGate(request.id);
   if (gateError === null) {

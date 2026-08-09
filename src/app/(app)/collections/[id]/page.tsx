@@ -107,6 +107,19 @@ const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_EXTENSIONS.map((ext) => `.${ext}`).j
 const compactButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
 const pillButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
 
+// Cheap, non-AI "looks like the employee is probably done" signal — a
+// passive dashboard suggestion only, never a state change on its own; the
+// employee must still explicitly click the release button.
+const SUGGEST_RELEASE_IDLE_MS = 15 * 60 * 1000;
+function computeShouldSuggestReleasingControl(
+  conversationStatus: string | undefined,
+  lastMessage: { senderType: string; createdAt: Date } | undefined
+): boolean {
+  if (conversationStatus !== "human_control") return false;
+  if (!lastMessage || lastMessage.senderType !== "employee") return false;
+  return Date.now() - lastMessage.createdAt.getTime() >= SUGGEST_RELEASE_IDLE_MS;
+}
+
 export default async function CollectionRequestDetailPage({
   params,
   searchParams,
@@ -130,6 +143,12 @@ export default async function CollectionRequestDetailPage({
   const messages = conversation ? await listMessages(conversation.id) : [];
   const auditHistory = await listAuditLog(session.organizationId, { collectionRequestId: id });
   const openConfirmations = await listOpenConfirmationsForCollectionRequest(id);
+
+  const lastMessage = messages[messages.length - 1];
+  const shouldSuggestReleasingControl = computeShouldSuggestReleasingControl(
+    conversation?.status,
+    lastMessage ? { senderType: lastMessage.senderType, createdAt: new Date(lastMessage.createdAt) } : undefined
+  );
 
   return (
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -554,17 +573,26 @@ export default async function CollectionRequestDetailPage({
               {conversation.status === "human_control" ? (
                 <form action={releaseConversation.bind(null, id)}>
                   <button type="submit" className={pillButtonClass}>
-                    שחרור שליטה אוטומטית
+                    החזר לטיפול אוטומטי
                   </button>
                 </form>
               ) : (
-                <form action={takeOverConversation.bind(null, id)}>
-                  <button type="submit" className={pillButtonClass}>
-                    השתלטות עובד
-                  </button>
-                </form>
+                <ConfirmDialog
+                  title="העבר לטיפול אנושי"
+                  description="ה-AI יפסיק לענות אוטומטית ללקוח בבקשה זו, והמשך השיחה יעבור לטיפול המשרד. ניתן להחזיר את הטיפול האוטומטי בכל שלב."
+                  confirmLabel="העבר לטיפול אנושי"
+                  formAction={takeOverConversation.bind(null, id)}
+                  triggerClassName={pillButtonClass}
+                  trigger="העבר לטיפול אנושי"
+                />
               )}
             </div>
+
+            {shouldSuggestReleasingControl && (
+              <div className="mt-2 rounded-lg border border-brand-purple/30 bg-brand-purple/5 px-3 py-2 text-xs text-text-primary">
+                נראה שהטיפול הסתיים. להחזיר לטיפול אוטומטי? (ניתן ללחוץ על הכפתור למעלה)
+              </div>
+            )}
 
             <form
               action={sendEmployeeMessage.bind(null, id)}

@@ -960,6 +960,53 @@ export async function reprocessHeldReopenDocument(documentId: string): Promise<v
   );
 }
 
+// human_control's own document-staging counterpart to reprocessHeldReopenDocument
+// above — same shape, different trigger: a document that arrived while an
+// employee had this exact conversation taken over (never auto-classified,
+// never auto-uploaded, no client-facing question asked while stashed —
+// unlike reopen_pending_confirmation, the client already knows an employee
+// is handling this manually). Called by releaseConversation once control
+// returns to the AI, for every document stashed during that window.
+export async function reprocessHeldHumanControlDocument(documentId: string): Promise<void> {
+  const db = await getDb();
+  const [placeholder] = await db
+    .select({
+      organizationId: documents.organizationId,
+      collectionRequestId: documents.collectionRequestId,
+      fileName: documents.fileName,
+      pendingFileContent: documents.pendingFileContent,
+      pendingFileMimeType: documents.pendingFileMimeType,
+      whatsappMessageId: documents.whatsappMessageId,
+    })
+    .from(documents)
+    .where(eq(documents.id, documentId))
+    .limit(1);
+  if (!placeholder) return;
+
+  const [collectionRequest] = await db
+    .select({ clientId: collectionRequests.clientId })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, placeholder.collectionRequestId))
+    .limit(1);
+  if (!collectionRequest) return;
+
+  const conversation = await ensureConversation(placeholder.organizationId, placeholder.collectionRequestId, collectionRequest.clientId);
+
+  await db.delete(documents).where(eq(documents.id, documentId));
+
+  await processInboundAttachment(
+    placeholder.organizationId,
+    placeholder.collectionRequestId,
+    conversation.id,
+    collectionRequest.clientId,
+    placeholder.fileName,
+    null,
+    placeholder.pendingFileContent ?? undefined,
+    placeholder.pendingFileMimeType ?? undefined,
+    placeholder.whatsappMessageId ?? undefined
+  );
+}
+
 // The manual stand-in for "N minutes of inactivity" firing (Ch.16 FR-16.4)
 // — a real scheduler will call the same evaluateAndPrompt in M6.
 export async function evaluateNow(collectionRequestId: string) {
@@ -1132,6 +1179,21 @@ export async function releaseConversation(collectionRequestId: string) {
     clientId: current.clientId,
     collectionRequestId,
   });
+
+  // Every document stashed while this exact conversation was in human_control
+  // (never auto-classified/auto-uploaded at the time) is replayed through
+  // the ordinary intake pipeline now that the AI is live again — reading
+  // live, current state, never resuming from anything stale. No proactive
+  // "welcome back"/summary message is sent here beyond whatever this
+  // ordinary replay itself would produce — the AI never re-asks or re-sends
+  // anything about ground the employee already covered manually.
+  const stashed = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "human_control_pending")));
+  for (const doc of stashed) {
+    await reprocessHeldHumanControlDocument(doc.id);
+  }
 
   redirect(`/collections/${collectionRequestId}`);
 }

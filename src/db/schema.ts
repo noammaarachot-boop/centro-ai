@@ -892,6 +892,16 @@ export const documentStatus = pgEnum("document_status", [
   // (markDocumentWithdrawnInDrive), just excluded from every
   // active-document count, same mechanism as "superseded".
   "withdrawn_by_correction",
+  // A document arrived while the conversation is in human_control — never
+  // auto-classified/auto-uploaded while control is with an employee. Held
+  // here (raw bytes in pendingFileContent/pendingFileMimeType, same as
+  // reopen_pending_confirmation) until the employee releases control, at
+  // which point reprocessHeldHumanControlDocument
+  // (src/app/(app)/collections/conversationActions.ts) replays it through
+  // the ordinary intake pipeline. No client-facing question is ever asked
+  // while stashed this way (unlike reopen_pending_confirmation) — the
+  // client already knows an employee is handling this manually.
+  "human_control_pending",
 ]);
 
 // Metadata + a Google Drive file reference (EPS Ch.4/Ch.8 — Drive stores
@@ -1236,6 +1246,108 @@ export const pendingConfirmations = pgTable("pending_confirmations", {
   notifyAfter: timestamp("notify_after", { withTimezone: true }),
   notifiedAt: timestamp("notified_at", { withTimezone: true }),
   groupIndex: integer("group_index"),
+});
+
+// Unified document-conversation understanding layer (src/lib/conversation/,
+// src/lib/employeeReview.ts, src/lib/policyKnowledgeBase.ts) — "the AI
+// understands, the office decides, and only an explicit office decision
+// ever becomes reusable knowledge."
+//
+// employeeReviewItems: the generic, non-blocking "this needs an office
+// decision" queue. Created whenever the AI understands a document-related
+// question/request it has no confident authority to answer alone (a
+// proposed alternative document, a validity/format question, a request to
+// talk to a person, or any other future scenario — never a fixed sentence
+// list). Opening one never pauses the rest of the conversation — the client
+// gets an immediate natural reply and can keep sending documents, asking
+// what's missing, correcting mistakes, etc. while this one specific
+// question waits. See src/lib/employeeReview.ts.
+export const reviewItemCategory = pgEnum("review_item_category", [
+  "missing_document",
+  "alternative_or_policy_question",
+  "human_request",
+  "other",
+]);
+export const reviewItemStatus = pgEnum("review_item_status", ["pending", "resolved"]);
+
+export const employeeReviewItems = pgTable("employee_review_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  clientId: uuid("client_id")
+    .notNull()
+    .references(() => clients.id, { onDelete: "cascade" }),
+  collectionRequestId: uuid("collection_request_id").references(() => collectionRequests.id, { onDelete: "cascade" }),
+  conversationId: uuid("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  // The client's own literal wording — never paraphrased, same discipline
+  // as collectionRequestRequirements.exceptionNote.
+  clientQuestion: text("client_question").notNull(),
+  category: reviewItemCategory("category").notNull(),
+  // AI-produced structured summary of what was understood — e.g.
+  // { relatedRequirementName: string | null, gist: string } — shown to the
+  // employee ALONGSIDE clientQuestion, never in place of it; never
+  // authoritative on its own.
+  understoodContext: jsonb("understood_context"),
+  relatedRequirementId: uuid("related_requirement_id").references(() => collectionRequestRequirements.id, {
+    onDelete: "set null",
+  }),
+  status: reviewItemStatus("status").notNull().default("pending"),
+  resolutionText: text("resolution_text"),
+  resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  // Opt-in promote-to-policy trace — becamePolicy is only ever true
+  // together with a real policyId, both set in the same resolution
+  // transaction (resolveEmployeeReviewItem). Never set automatically; the
+  // office employee must explicitly check a box at resolution time. policyId
+  // has no DB-level FK (approvedPolicies is declared after this table to
+  // let IT hold the real FK back here via sourceReviewItemId instead) — app-
+  // enforced only, always written in the same transaction that creates the
+  // approvedPolicies row.
+  becamePolicy: boolean("became_policy").notNull().default(false),
+  policyId: uuid("policy_id"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// approvedPolicies: the searchable, semantic "office knowledge" store this
+// queue feeds. A policy is NEVER created automatically — only when an
+// employee resolving a review item explicitly opts in ("לשמור את ההחלטה
+// הזאת כמדיניות למקרים דומים בעתיד?"). Matched against a NEW client
+// question by meaning, not literal wording (src/lib/policyKnowledgeBase.ts),
+// using the same "real candidate id, never invented" AI discipline used
+// throughout this codebase.
+export const approvedPolicies = pgTable("approved_policies", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  // The generic, self-contained statement of the QUESTION this policy
+  // answers — written broadly enough to match future differently-worded
+  // questions by meaning (e.g. "אפשר לשלוח צילום מסמך במקום סריקה?").
+  questionSummary: text("question_summary").notNull(),
+  // The office's actual decision, in the employee's own words — woven into
+  // a natural client-facing reply by renderPolicyAnswer. Never AI-authored.
+  decisionText: text("decision_text").notNull(),
+  // Loose, optional scoping hint for context/display — not a hard filter.
+  relatedDocumentType: text("related_document_type"),
+  category: reviewItemCategory("category").notNull(),
+  // Soft-retire — "mark, never delete" convention, same as every other
+  // status-driven exclusion in this codebase. An inactive policy is
+  // excluded from future semantic matching but stays visible for audit.
+  isActive: boolean("is_active").notNull().default(true),
+  // Real FK — employeeReviewItems is declared above, so this direction is
+  // safe. Nullable for a possible future directly-authored policy path.
+  sourceReviewItemId: uuid("source_review_item_id").references(() => employeeReviewItems.id, { onDelete: "set null" }),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  retiredAt: timestamp("retired_at", { withTimezone: true }),
+  retiredByUserId: uuid("retired_by_user_id").references(() => users.id, { onDelete: "set null" }),
 });
 
 export const clientDocumentRequirementAction = pgEnum(
