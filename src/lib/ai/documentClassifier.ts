@@ -305,8 +305,25 @@ export async function classifyDocumentWithLearning(
     return { ...gateFailure, matchedRequirementId: null, confidence: 0 };
   }
 
+  // Real production incident: a test/sample file literally named
+  // "..._תעודת_זהות_..." scored a perfect filename-overlap match against
+  // the "תעודת זהות" requirement and was auto-approved WITHOUT the vision
+  // model ever running — extractedPersonName/extractedIdNumber came back
+  // null because classifyDocumentViaAI was never even called, not because
+  // it looked and found nothing. "לא לנחש לפי שם הקובץ בלבד" (never guess
+  // from the filename alone): a filename-only match (learned pattern or
+  // the deterministic heuristic below) is only ever allowed to skip real
+  // content verification when there is NO real content to verify against
+  // in the first place (fileContent undefined — the DevTools simulator
+  // and any other filename-only path). Every genuine inbound WhatsApp
+  // attachment always has fileContent, so this can never again finalize
+  // an "approved" outcome purely from a filename resembling a requirement
+  // name — classifyDocumentViaAI below always gets the chance to actually
+  // look at the file, confirm legibility, and (via
+  // documentIdentityVerification.ts) confirm whose document it actually
+  // is, before anything can count as received.
   const learnedMatch = matchLearnedPattern(fileName, learnedPatterns);
-  if (learnedMatch) {
+  if (learnedMatch && !fileContent) {
     const candidate = candidates.find(
       (c) => c.sourceRequirementId === learnedMatch.sourceRequirementId
     );
@@ -334,7 +351,7 @@ export async function classifyDocumentWithLearning(
   // "couldn't identify this at all" — the AI was never given the chance to
   // confirm what a human looking at the image would have seen immediately.
   const deterministic = await classifyDocument(fileName, candidates);
-  if (deterministic.matchedRequirementId && deterministic.confidence >= AUTO_APPROVE_CONFIDENCE) {
+  if (deterministic.matchedRequirementId && deterministic.confidence >= AUTO_APPROVE_CONFIDENCE && !fileContent) {
     return deterministic;
   }
 
@@ -373,9 +390,18 @@ export async function classifyDocumentWithLearning(
     // identification signal through so the caller can tell a confidently-
     // identified-but-unneeded document (Case 2: unsolicited) apart from a
     // genuinely unrecognizable one (Case 3), instead of collapsing both
-    // into the same "needs_review" bucket.
+    // into the same "needs_review" bucket. Deliberately does NOT fall back
+    // to `deterministic`'s own matchedRequirementId/confidence here: real
+    // content verification was just attempted and did not confirm a
+    // match, so a filename that merely resembles a requirement name must
+    // not silently override that and still finalize as approved — the
+    // exact same guarantee the fix above provides, closing the same gap
+    // for this branch too.
     return {
-      ...deterministic,
+      supported: deterministic.supported,
+      readable: deterministic.readable,
+      matchedRequirementId: null,
+      confidence: 0,
       aiRan: true,
       aiIdentified: aiResult.aiIdentified,
       aiDocumentType: aiResult.aiDocumentType,
@@ -411,14 +437,25 @@ export async function classifyDocumentWithLearning(
 // without a confident filename match. Multiple outstanding requirements stay
 // needs_review exactly as before — this fallback only removes ambiguity that
 // doesn't actually exist.
+//
+// "אין מספיק מידע כדי לזהות אותו בוודאות — אל תשייך": this is still a
+// process-of-elimination GUESS, not a real identification — only ever
+// applied once the AI has actually looked at the file and confirmed it's
+// genuinely legible (aiRan true, no readabilityIssue). A document the AI
+// never got to see at all (no file content — the sole remaining case where
+// aiRan is false for a real inbound attachment) or one it saw and flagged
+// as blurry/cropped/damaged/etc. must never be silently assigned to the
+// sole outstanding requirement — that path already has its own explicit
+// handling (needs_resend, in resolveDocumentIntakeOutcome) and must run
+// instead, asking the client to resend rather than guessing.
 export function resolveRequirementAssignment(
-  classification: Pick<DocumentClassification, "matchedRequirementId" | "confidence">,
+  classification: Pick<DocumentClassification, "matchedRequirementId" | "confidence" | "aiRan" | "readabilityIssue">,
   outstandingRequirementIds: string[]
 ): { requirementId: string | null; confidence: number } {
   if (classification.matchedRequirementId) {
     return { requirementId: classification.matchedRequirementId, confidence: classification.confidence };
   }
-  if (outstandingRequirementIds.length === 1) {
+  if (outstandingRequirementIds.length === 1 && classification.aiRan && !classification.readabilityIssue) {
     return {
       requirementId: outstandingRequirementIds[0],
       confidence: Math.max(classification.confidence, AUTO_APPROVE_CONFIDENCE),

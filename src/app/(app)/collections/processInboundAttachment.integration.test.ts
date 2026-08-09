@@ -361,7 +361,19 @@ describe("processInboundAttachment — documents arriving as separate calls for 
   // entirely on its own — the client never even needs to know there was a
   // dilemma. No WhatsApp message, still fully audited.
   it("a duplicate document is resolved silently — no WhatsApp message, but still audited", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    // The filename itself ("bank-statement-jan.pdf") doesn't resemble
+    // "תעודת זהות" at all — real content confirmation is what actually
+    // establishes this as the approved document the second (duplicate)
+    // call gets compared against; this test is about isFuzzyDuplicate
+    // detection, not about how the first one got approved.
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+    });
     await processInboundAttachment(orgId, requestId, conversationId, clientId, "bank-statement-jan.pdf", null, Buffer.from("x"), "application/pdf", "wamid.dup.1");
     await processInboundAttachment(orgId, requestId, conversationId, clientId, "bank-statement-jan-copy.pdf", null, Buffer.from("y"), "application/pdf", "wamid.dup.2");
 
@@ -1184,6 +1196,137 @@ describe("processInboundAttachment — immediate completion the instant nothing 
       .from(schema.messages)
       .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
     expect(outbound).toHaveLength(0); // completely silent — never interrupts mid-collection
+  });
+});
+
+describe("processInboundAttachment — a filename that merely echoes a requirement's name is never enough, on its own, to approve it (real production incident)", () => {
+  // Reproduces exactly what happened: a WhatsApp *document* attachment
+  // (which, unlike a photo, keeps the sender's own filename — see
+  // resolveAttachment in the webhook route) named
+  // "08_תעודת_זהות_אדם_אחר.pdf" scored a perfect filename-token match
+  // against the "תעודת זהות" requirement and was auto-approved WITHOUT
+  // the vision model ever running — extractedPersonName came back null
+  // because classifyDocumentViaAI was never even called, not because it
+  // looked and found nothing. Fixed in documentClassifier.ts: a filename-
+  // only match may only skip real content classification when there is no
+  // real file content to check in the first place.
+  const ECHO_FILENAME = "08_תעודת_זהות_אדם_אחר.pdf"; // deliberately echoes "תעודת זהות"
+
+  it("real content confirms the SAME person → still approves normally (the fix must not break the legitimate case)", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+      extractedPersonName: "רז שלום",
+      extractedIdNumber: "111111118",
+      identityExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, ECHO_FILENAME, null, Buffer.from("real-bytes"), "application/pdf", "wamid.echo-ok");
+
+    expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1); // the actual fix: this must run
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("approved");
+    expect(doc.requirementId).toBe(requirements[0].id);
+  });
+
+  it("real content belongs to a DIFFERENT person → never auto-approves; routes to identity_anomaly, requirement stays missing", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+      extractedPersonName: "דוד כהן", // not the client (רז שלום)
+      extractedIdNumber: "000000099",
+      identityExtractionConfidence: 0.9,
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, ECHO_FILENAME, null, Buffer.from("real-bytes"), "application/pdf", "wamid.echo-anomaly");
+
+    expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1);
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("identity_anomaly_pending_confirmation");
+    expect(doc.requirementId).toBeNull();
+    expect(doc.extractedPersonName).toBe("דוד כהן");
+    // The requirement genuinely never received a matching document.
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).not.toBe("completed");
+  });
+
+  it("real content is genuinely unreadable → never auto-approves; asks for a resend instead of guessing from the filename", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.1,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+      readabilityIssue: "damaged",
+      readabilityIssueDetail: "לא ניתן לקרוא את תוכן המסמך",
+      clientMessageIfProblematic: "לא הצלחתי לזהות בבירור את תעודת הזהות ששלחת. נא לשלוח צילום חדש, ברור ומלא של תעודת הזהות.",
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, ECHO_FILENAME, null, Buffer.from("garbled-bytes"), "application/pdf", "wamid.echo-unreadable");
+
+    expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1);
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("clarification_requested");
+    expect(doc.requirementId).toBeNull();
+
+    const outbound = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].body).toBe("לא הצלחתי לזהות בבירור את תעודת הזהות ששלחת. נא לשלוח צילום חדש, ברור ומלא של תעודת הזהות.");
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).not.toBe("completed");
+  });
+
+  it("AI runs and confirms the content is genuinely legible, just can't name it, with only ONE requirement outstanding → still resolved there (the legitimate WhatsApp-photo case must keep working)", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.2,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+      // No readabilityIssue — the image itself is fine, the AI just
+      // couldn't confidently name it. This is exactly the case
+      // resolveRequirementAssignment's sole-outstanding fallback exists
+      // for (e.g. a WhatsApp photo with a meaningless generated
+      // filename) — must still resolve it here, now gated on the AI
+      // having actually confirmed legibility rather than a blind guess.
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, ECHO_FILENAME, null, Buffer.from("real-bytes"), "application/pdf", "wamid.echo-unidentified");
+
+    expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1);
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("approved");
+    expect(doc.requirementId).toBe(requirements[0].id);
+  });
+
+  it("AI runs but flags a readability problem, with only ONE requirement outstanding → never guesses by elimination, asks for a resend instead", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.1,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+      readabilityIssue: "too_dark_or_low_quality",
+      readabilityIssueDetail: "התמונה כהה מדי",
+      clientMessageIfProblematic: "לא הצלחתי לזהות בבירור את המסמך ששלחת — התמונה כהה מדי. נא לשלוח צילום חדש וברור.",
+    });
+    await processInboundAttachment(orgId, requestId, conversationId, clientId, ECHO_FILENAME, null, Buffer.from("real-bytes"), "application/pdf", "wamid.echo-unidentified-dark");
+
+    expect(classifyDocumentViaVisionAI).toHaveBeenCalledTimes(1);
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.status).toBe("clarification_requested"); // needs_resend, not a guessed approval
+    expect(doc.requirementId).toBeNull();
   });
 });
 

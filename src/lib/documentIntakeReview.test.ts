@@ -211,11 +211,23 @@ describe("resolveDocumentIntakeOutcome", () => {
     });
   });
 
-  it("sole-outstanding fallback still applies when there is no AI signal at all (filename-only path)", () => {
+  it("sole-outstanding fallback no longer applies when there is no AI signal at all (filename-only path) — a process-of-elimination guess is not identification", () => {
     const classification: DocumentClassification = {
       ...readable,
       matchedRequirementId: null,
       confidence: 0,
+    };
+    const result = resolveDocumentIntakeOutcome(classification, ["req-1"]);
+    expect(result.kind).toBe("needs_resend");
+  });
+
+  it("sole-outstanding fallback still applies once the AI actually ran and confirmed the document is legible, even without a confident type match", () => {
+    const classification: DocumentClassification = {
+      ...readable,
+      matchedRequirementId: null,
+      confidence: 0,
+      aiRan: true,
+      aiIdentified: false,
     };
     const result = resolveDocumentIntakeOutcome(classification, ["req-1"]);
     expect(result).toEqual({ kind: "matched", requirementId: "req-1", confidence: AUTO_APPROVE_CONFIDENCE });
