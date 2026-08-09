@@ -245,7 +245,7 @@ describe("attemptFinishCollectionRequest", () => {
     expect(conversation.status).toBe("closed");
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const body = sendTextMessage.mock.calls[0][2] as string;
-    expect(body).toContain("קיבלתי הכל");
+    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו:");
   });
 
   it("tells the client exactly what's still missing, in one short message, instead of silently failing", async () => {
@@ -354,6 +354,9 @@ describe("attemptFinishCollectionRequest", () => {
       anomaly: { kind: "name_mismatch", confident: true, conflictingName: "אורית לוי", maskedIdNumber: null },
       documentType: "תעודת זהות",
       matchedRequirementId: null,
+      extractedPersonName: null,
+      extractedCompanyName: null,
+      clientName: "",
     });
 
     expect(sendTextMessage).not.toHaveBeenCalled();

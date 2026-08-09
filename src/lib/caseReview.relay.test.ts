@@ -82,10 +82,32 @@ async function seedWaitingRequest(pendingCaseReviewAt: Date) {
     .insert(schema.collectionRequests)
     .values({ organizationId: org.id, clientId: clientRow.id, serviceId: service.id, periodLabel: "p", status: "active" })
     .returning();
+  const [requirement] = await db
+    .insert(schema.collectionRequestRequirements)
+    .values({
+      collectionRequestId: request.id,
+      name: "תעודת זהות",
+      requiredCount: 1,
+    })
+    .returning();
+  // These tests are purely about the relay MECHANISM (debounce, claim
+  // race-safety) — sendTextMessage firing is only a proxy signal that the
+  // review actually ran. Not about summary content, so a second
+  // requirement is left genuinely missing here on purpose, giving
+  // runAutomaticCaseStatusReview's own "nothing real to report yet" rule
+  // (caseReview.ts) something real to report — this one already-approved
+  // document — so the relay's own send still fires as these tests expect.
   await db.insert(schema.collectionRequestRequirements).values({
     collectionRequestId: request.id,
-    name: "תעודת זהות",
+    name: "רישיון נהיגה",
     requiredCount: 1,
+  });
+  await db.insert(schema.documents).values({
+    organizationId: org.id,
+    collectionRequestId: request.id,
+    requirementId: requirement.id,
+    fileName: "id.jpg",
+    status: "approved",
   });
   const [conversation] = await db
     .insert(schema.conversations)

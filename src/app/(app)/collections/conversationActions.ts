@@ -498,6 +498,13 @@ export async function processInboundAttachment(
     anomaly: IdentityAnomaly;
     documentType: string | null;
     matchedRequirementId: string | null;
+    // The raw name/company actually found ON this document — distinct
+    // from anomaly.conflictingName, which for id_mismatch names a SIBLING
+    // document's person, not this one's own. Used to phrase the explicit
+    // "does this replace X?" question (documentIdentityVerification.ts).
+    extractedPersonName: string | null;
+    extractedCompanyName: string | null;
+    clientName: string;
   } | null = null;
   let pendingUnsolicitedDocumentType: string | null = null;
   // Sent below when this document isn't usable as received at all (a real
@@ -687,6 +694,9 @@ export async function processInboundAttachment(
         anomaly: identityAnomaly,
         documentType: identityDocumentType,
         matchedRequirementId: outcome.kind === "matched" ? outcome.requirementId : null,
+        extractedPersonName: classification.extractedPersonName ?? null,
+        extractedCompanyName: classification.extractedCompanyName ?? null,
+        clientName: identityClientName,
       };
     } else if (outcome.kind === "matched") {
       requirementId = outcome.requirementId;
@@ -802,6 +812,9 @@ export async function processInboundAttachment(
       anomaly: pendingIdentityAnomaly.anomaly,
       documentType: pendingIdentityAnomaly.documentType,
       matchedRequirementId: pendingIdentityAnomaly.matchedRequirementId,
+      extractedPersonName: pendingIdentityAnomaly.extractedPersonName,
+      extractedCompanyName: pendingIdentityAnomaly.extractedCompanyName,
+      clientName: pendingIdentityAnomaly.clientName,
     });
   }
 

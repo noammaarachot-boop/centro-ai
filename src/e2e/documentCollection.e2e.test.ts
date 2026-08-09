@@ -469,7 +469,7 @@ describe("E2E Journey 1 — simple two-document request, golden path", () => {
 
     // A real "thank you" message was actually sent (mocked transport, real
     // send-decision logic).
-    expect(sentMessages.some((m) => m.body.includes("קיבלתי הכל"))).toBe(true);
+    expect(sentMessages.some((m) => m.body.includes("קיבלתי את כל המסמכים שנדרשו:"))).toBe(true);
 
     // Full audit trail exists for both documents.
     const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));

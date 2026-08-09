@@ -107,7 +107,7 @@ describe("runScheduledTasks — cancels the generic reminder once nothing is act
     // Completed the same way an explicit "finished" signal would.
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
     const body = sendTextMessage.mock.calls[0][2] as string;
-    expect(body).toContain("קיבלתי הכל");
+    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו:");
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(request.status).toBe("completed");
