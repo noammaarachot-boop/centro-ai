@@ -122,6 +122,41 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: true, startedAt: new Date(startedAt).toISOString() });
       }
 
+      // Read-only diagnostic — confirms (or rules out) that a Meta Graph
+      // 401/OAuthException(190) on outbound WhatsApp sends is really the
+      // WHATSAPP_SYSTEM_USER_TOKEN itself being invalid/expired/revoked,
+      // rather than something else (wrong appId/appSecret pairing, wrong
+      // phoneNumberId, a permissions/asset issue). Uses Meta's own
+      // debug_token introspection endpoint — never logs or returns the
+      // token value itself, only its metadata (validity/expiry/scopes/
+      // error reason).
+      case "check_whatsapp_token": {
+        const { getWhatsAppConfig, GRAPH_API_BASE } = await import("@/lib/whatsapp/config");
+        let appId: string, appSecret: string, systemUserToken: string;
+        try {
+          ({ appId, appSecret, systemUserToken } = getWhatsAppConfig());
+        } catch (configError) {
+          return NextResponse.json({ ok: false, error: configError instanceof Error ? configError.message : String(configError) }, { status: 500 });
+        }
+        const params = new URLSearchParams({
+          input_token: systemUserToken,
+          access_token: `${appId}|${appSecret}`,
+        });
+        const res = await fetch(`${GRAPH_API_BASE}/debug_token?${params.toString()}`);
+        const bodyText = await res.text();
+        let parsedBody: unknown = null;
+        try {
+          parsedBody = JSON.parse(bodyText);
+        } catch {
+          // keep raw text below
+        }
+        return NextResponse.json({
+          ok: res.ok,
+          httpStatus: res.status,
+          debugTokenResponse: parsedBody ?? bodyText.slice(0, 800),
+        });
+      }
+
       case "ping": {
         const [org] = testClient
           ? await db.select().from(organizations).where(eq(organizations.id, testClient.organizationId))
