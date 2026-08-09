@@ -7,6 +7,7 @@ import {
   collectionRequests,
   conversations,
   documents,
+  employeeReviewItems,
   pendingConfirmations,
   services,
 } from "@/db/schema";
@@ -79,11 +80,21 @@ export async function getDashboardCounts(organizationId: string) {
       )
     );
 
-  // Union, not sum — a Collection Request that's both escalated and has a
-  // needs_review document must only count once.
+  // The generic "AI understood a document-related question but has no
+  // confident authority to answer it alone" queue (src/lib/employeeReview.ts)
+  // — every pending item, org-wide, regardless of category (missing
+  // document, alternative/policy question, human request, other).
+  const pendingReviewItemRows = await db
+    .selectDistinct({ collectionRequestId: employeeReviewItems.collectionRequestId })
+    .from(employeeReviewItems)
+    .where(and(eq(employeeReviewItems.organizationId, organizationId), eq(employeeReviewItems.status, "pending")));
+
+  // Union, not sum — a Collection Request appearing in more than one of
+  // these sources must only count once.
   const needsReviewCount = new Set([
     ...escalatedRows.map((r) => r.id),
     ...needsReviewDocRows.map((r) => r.collectionRequestId),
+    ...pendingReviewItemRows.map((r) => r.collectionRequestId).filter((id): id is string => !!id),
   ]).size;
 
   const processingRows = await db
@@ -289,7 +300,14 @@ export async function listQueue(
       .selectDistinct({ id: documents.collectionRequestId })
       .from(documents)
       .where(and(eq(documents.organizationId, organizationId), eq(documents.status, "needs_review")));
-    const ids = needsReviewIds.map((r) => r.id);
+    const pendingReviewItemIds = await db
+      .selectDistinct({ id: employeeReviewItems.collectionRequestId })
+      .from(employeeReviewItems)
+      .where(and(eq(employeeReviewItems.organizationId, organizationId), eq(employeeReviewItems.status, "pending")));
+    const ids = [
+      ...needsReviewIds.map((r) => r.id),
+      ...pendingReviewItemIds.map((r) => r.id).filter((id): id is string => !!id),
+    ];
 
     rows = await baseSelect.where(
       and(

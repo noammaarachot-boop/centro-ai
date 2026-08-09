@@ -15,7 +15,7 @@ import { fileExtension, markDocumentWithdrawnInDrive, renameDocumentInDrive } fr
 import { CASE_REVIEW_SILENCE_WINDOW_MS, scheduleCaseReviewRelay } from "@/lib/caseReview";
 import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
 import { reprocessHeldReopenDocument } from "@/app/(app)/collections/conversationActions";
-import { buildCorrectionContext, type CorrectionCandidateDocument } from "@/lib/correction/correctionContext";
+import { buildCorrectionContext, type CorrectionCandidateDocument, type CorrectionContext } from "@/lib/correction/correctionContext";
 import { classifyCorrectionIntent, type CorrectionDesiredOutcome } from "@/lib/correction/correctionClassifier";
 
 /**
@@ -263,61 +263,62 @@ async function applyDisposition(params: {
   });
 }
 
-export async function runCorrectionLayer(params: {
+// Extracted so the unified conversation-understanding layer
+// (src/lib/conversation/) can dispatch an already-classified
+// "answers_open_question" decision without paying for a second AI
+// classification call — this is exactly runCorrectionLayer's own former
+// inline branch, unchanged in behavior, just callable directly with a
+// pre-classified answer.
+export async function applyAnswersPendingClassification(params: {
   organizationId: string;
   clientId: string;
   collectionRequestId: string;
   conversationId: string;
-  messageText: string;
-}): Promise<{ handled: boolean }> {
-  const context = await buildCorrectionContext({
-    collectionRequestId: params.collectionRequestId,
-    conversationId: params.conversationId,
-  });
-  const classification = await classifyCorrectionIntent(context, params.messageText);
-
-  await recordAuditEvent({
-    organizationId: params.organizationId,
-    eventType: "message.correction_intent_classified",
-    description: `הודעת הלקוח סווגה כ-${classification.kind} (ביטחון ${Number(classification.confidence ?? 0).toFixed(2)})`,
-    actorType: "ai",
-    clientId: params.clientId,
-    collectionRequestId: params.collectionRequestId,
-    metadata: { kind: classification.kind, confidence: classification.confidence },
-  });
-
-  if (classification.kind === "not_applicable") {
-    return { handled: false };
-  }
-
-  if (classification.kind === "answers_open_question") {
-    if (!context.openQuestion || classification.confidence < ANSWER_CONFIDENCE_THRESHOLD || !classification.answer) {
-      await sendOutboundMessage(params.organizationId, params.conversationId, buildAmbiguousAnswerClarification(), "ai", "manual", undefined, true);
-      return { handled: true };
-    }
-    const resolved = await respondToPendingConfirmationManually(
-      params.organizationId,
-      context.openQuestion.id,
-      classification.answer === "confirm"
-    );
-    if (!resolved) {
-      await sendOutboundMessage(params.organizationId, params.conversationId, buildAmbiguousAnswerClarification(), "ai", "manual", undefined, true);
-      return { handled: true };
-    }
-    await applyResolvedConfirmationOutcome(resolved as ResolvedConfirmationRow);
-    await recordAuditEvent({
-      organizationId: params.organizationId,
-      eventType: "pending_confirmation.resolved",
-      description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור (זוהה בהבנת הקשר): "${resolved.question}"`,
-      actorType: "client",
-      clientId: params.clientId,
-      collectionRequestId: params.collectionRequestId,
-      metadata: { kind: resolved.kind, status: resolved.status, resolvedVia: "correction_layer" },
-    });
+  openQuestionId: string | null;
+  answer: "confirm" | "decline" | null;
+  confidence: number;
+}): Promise<{ handled: true }> {
+  if (!params.openQuestionId || params.confidence < ANSWER_CONFIDENCE_THRESHOLD || !params.answer) {
+    await sendOutboundMessage(params.organizationId, params.conversationId, buildAmbiguousAnswerClarification(), "ai", "manual", undefined, true);
     return { handled: true };
   }
+  const resolved = await respondToPendingConfirmationManually(params.organizationId, params.openQuestionId, params.answer === "confirm");
+  if (!resolved) {
+    await sendOutboundMessage(params.organizationId, params.conversationId, buildAmbiguousAnswerClarification(), "ai", "manual", undefined, true);
+    return { handled: true };
+  }
+  await applyResolvedConfirmationOutcome(resolved as ResolvedConfirmationRow);
+  await recordAuditEvent({
+    organizationId: params.organizationId,
+    eventType: "pending_confirmation.resolved",
+    description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור (זוהה בהבנת הקשר): "${resolved.question}"`,
+    actorType: "client",
+    clientId: params.clientId,
+    collectionRequestId: params.collectionRequestId,
+    metadata: { kind: resolved.kind, status: resolved.status, resolvedVia: "correction_layer" },
+  });
+  return { handled: true };
+}
 
-  // corrects_resolved
+// Extracted for the same reason as applyAnswersPendingClassification above
+// — runCorrectionLayer's former inline "corrects_resolved" branch,
+// unchanged in behavior, callable with an already-built context and an
+// already-classified decision shape.
+export async function applyCorrectsResolvedClassification(
+  params: {
+    organizationId: string;
+    clientId: string;
+    collectionRequestId: string;
+    conversationId: string;
+  },
+  context: CorrectionContext,
+  classification: {
+    targetType: "document" | "confirmation" | null;
+    targetId: string | null;
+    desiredOutcome: CorrectionDesiredOutcome | null;
+    confidence: number;
+  }
+): Promise<{ handled: boolean }> {
   if (!classification.targetType || !classification.targetId) {
     return { handled: false };
   }
@@ -432,4 +433,47 @@ export async function runCorrectionLayer(params: {
   await reopenIfNoLongerComplete(params);
 
   return { handled: true };
+}
+
+export async function runCorrectionLayer(params: {
+  organizationId: string;
+  clientId: string;
+  collectionRequestId: string;
+  conversationId: string;
+  messageText: string;
+}): Promise<{ handled: boolean }> {
+  const context = await buildCorrectionContext({
+    collectionRequestId: params.collectionRequestId,
+    conversationId: params.conversationId,
+  });
+  const classification = await classifyCorrectionIntent(context, params.messageText);
+
+  await recordAuditEvent({
+    organizationId: params.organizationId,
+    eventType: "message.correction_intent_classified",
+    description: `הודעת הלקוח סווגה כ-${classification.kind} (ביטחון ${Number(classification.confidence ?? 0).toFixed(2)})`,
+    actorType: "ai",
+    clientId: params.clientId,
+    collectionRequestId: params.collectionRequestId,
+    metadata: { kind: classification.kind, confidence: classification.confidence },
+  });
+
+  if (classification.kind === "not_applicable") {
+    return { handled: false };
+  }
+
+  if (classification.kind === "answers_open_question") {
+    return applyAnswersPendingClassification({
+      organizationId: params.organizationId,
+      clientId: params.clientId,
+      collectionRequestId: params.collectionRequestId,
+      conversationId: params.conversationId,
+      openQuestionId: context.openQuestion?.id ?? null,
+      answer: classification.answer,
+      confidence: classification.confidence,
+    });
+  }
+
+  // corrects_resolved
+  return applyCorrectsResolvedClassification(params, context, classification);
 }

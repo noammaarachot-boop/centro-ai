@@ -221,6 +221,53 @@ beforeAll(async () => {
   await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
+// The unified conversation-understanding layer (src/lib/conversation/) now
+// runs on EVERY inbound text message, by design — no deterministic
+// shortcut exists anymore even for a bare "כן"/"לא" (this is the whole
+// point of the architecture: no message bypasses real understanding). To
+// avoid hand-queuing an explicit mockResolvedValueOnce for every single
+// such message across this large file, a smart default mockImplementation
+// (set fresh in beforeEach, below any test's own explicit
+// mockResolvedValueOnce calls in the queue — vitest always drains queued
+// once-values first) recognizes MY classifier's own prompt shape (it
+// always opens with this exact sentence) and answers the mechanical common
+// case correctly: a bare "כן"/"לא" against exactly one open question
+// resolves it; anything else defaults to the safe "unrelated" reading, so
+// a test that needs something more specific (a correction, a deferral
+// promise, a review question, ...) still queues its own
+// mockResolvedValueOnce for it, exactly as before.
+// Unique to conversationIntent.ts's own prompt template — never appears in
+// any other classifier's prompt in this codebase.
+const CONVERSATION_INTENT_PROMPT_MARKER = String.fromCharCode(0x05d4, 0x05d4, 0x05d5, 0x05d3, 0x05e2, 0x05d4, 0x0020, 0x05d4, 0x05d7, 0x05d3, 0x05e9, 0x05d4, 0x0020, 0x05de, 0x05d4, 0x05dc, 0x05e7, 0x05d5, 0x05d7, 0x003a);
+function conversationIntentSmartDefault(args: unknown): { object: Record<string, unknown> } | undefined {
+  const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content;
+  if (typeof content !== "string" || !content.includes(CONVERSATION_INTENT_PROMPT_MARKER)) return undefined;
+  const base = {
+    confidence: 0.9,
+    pendingAnswer: null,
+    correctionTargetType: null,
+    correctionTargetId: null,
+    correctionDesiredOutcome: null,
+    missingDocumentMentionedType: null,
+    reviewCategory: null,
+    reviewGist: null,
+    documentQuestionCategory: null,
+  };
+  const messageMatch = content.match(/ההודעה החדשה מהלקוח: "([^"]*)"/);
+  const newMessage = messageMatch?.[1]?.trim() ?? "";
+  const hasOpenQuestion = content.includes('שאלה פתוחה שממתינה לתשובה כרגע');
+  if (hasOpenQuestion && newMessage === "כן") {
+    return { object: { ...base, kind: "resolves_pending", pendingAnswer: "confirm" } };
+  }
+  if (hasOpenQuestion && newMessage === "לא") {
+    return { object: { ...base, kind: "resolves_pending", pendingAnswer: "decline" } };
+  }
+  if (!hasOpenQuestion && newMessage === "סיימתי") {
+    return { object: { ...base, kind: "finished_signal" } };
+  }
+  return { object: { ...base, kind: "unrelated", confidence: 0 } };
+}
+
 beforeEach(() => {
   fakeFolders = [];
   fakeFiles = [];
@@ -234,6 +281,11 @@ beforeEach(() => {
   resolveLanguageModel.mockReset();
   resolveLanguageModel.mockResolvedValue({ modelId: "e2e-fake-model" });
   generateObject.mockReset();
+  generateObject.mockImplementation((args: unknown) => {
+    const smartDefault = conversationIntentSmartDefault(args);
+    if (smartDefault) return Promise.resolve(smartDefault);
+    return Promise.reject(new Error("[e2e] generateObject called with no queued mock and no smart default applies"));
+  });
 });
 
 // ---- Test client — the one Meta/WhatsApp test number authorized for
@@ -478,31 +530,35 @@ describe("E2E Journey 1 — simple two-document request, golden path", () => {
   });
 });
 
-// Every plain-text message with no open confirmation runs through
-// classifyDeferralIntent then (if not a dated commitment) the existing
-// vague-promise classifier before ever reaching Q&A/exception routing —
-// see route.ts's own resolver chain. Queues the two boilerplate "no, not
-// this" results so each scenario only has to declare the interesting
-// (third) classification.
-function queueNotDatedThenNoFollowUp() {
+// The unified conversation-understanding layer (src/lib/conversation/) runs
+// exactly once per inbound text message — this queues its response,
+// matching its real schema (conversationIntent.ts), with sensible defaults
+// for every field not overridden.
+function queueConversationIntent(overrides: {
+  kind: "resolves_pending" | "corrects_resolved" | "reports_missing_document" | "needs_employee_review" | "asks_document_question" | "finished_signal" | "deferral_promise" | "unclear" | "unrelated";
+  confidence?: number;
+  pendingAnswer?: "confirm" | "decline" | null;
+  correctionTargetType?: "document" | "confirmation" | null;
+  correctionTargetId?: string | null;
+  correctionDesiredOutcome?: string | null;
+  missingDocumentMentionedType?: string | null;
+  reviewCategory?: string | null;
+  reviewGist?: string | null;
+  documentQuestionCategory?: string | null;
+}) {
   generateObject.mockResolvedValueOnce({
-    object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
-  });
-  generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false } });
-}
-
-// Conversational correction layer (src/lib/correction/) — runs one extra
-// generateObject call (classifyCorrectionIntent) ahead of every other
-// classifier in the ladder, but ONLY once there's at least one recent
-// document/confirmation/open-question candidate on the request to possibly
-// be a correction about (see correctionClassifier.ts's own early-exit
-// check — a message on a request with zero prior activity never reaches
-// the model at all, no mock needed). Call this immediately before any
-// existing classifier-mock setup for a text message sent once real
-// document/confirmation activity already exists on the request.
-function queueCorrectionNotApplicable() {
-  generateObject.mockResolvedValueOnce({
-    object: { kind: "not_applicable", confidence: 0, answer: null, targetType: null, targetId: null, desiredOutcome: null },
+    object: {
+      confidence: 0.9,
+      pendingAnswer: null,
+      correctionTargetType: null,
+      correctionTargetId: null,
+      correctionDesiredOutcome: null,
+      missingDocumentMentionedType: null,
+      reviewCategory: null,
+      reviewGist: null,
+      documentQuestionCategory: null,
+      ...overrides,
+    },
   });
 }
 
@@ -544,8 +600,7 @@ describe("E2E Journey 2 — quantity requirement + Q&A + exception + duplicate +
 
     // 1) Client asks "כמה מסמכים חסרים לי?" before sending anything — must
     // reflect real (zero-progress) state, never invented.
-    queueNotDatedThenNoFollowUp();
-    generateObject.mockResolvedValueOnce({ object: { category: "request_overview", mentionedDocumentType: null } });
+    queueConversationIntent({ kind: "asks_document_question", documentQuestionCategory: "request_overview" });
     await sendText(phoneNumberId, "כמה מסמכים חסרים לי?");
     expect(sentMessages.at(-1)!.body).toContain("תלושי שכר");
     expect(sentMessages.at(-1)!.body).toContain("טרם התקבל");
@@ -584,26 +639,20 @@ describe("E2E Journey 2 — quantity requirement + Q&A + exception + duplicate +
     expect(await approvedDocuments(requestId)).toHaveLength(2);
 
     // 4) Client asks again — must now reflect real partial progress (2 of 3).
-    queueCorrectionNotApplicable();
-    queueNotDatedThenNoFollowUp();
-    generateObject.mockResolvedValueOnce({ object: { category: "request_overview", mentionedDocumentType: null } });
+    queueConversationIntent({ kind: "asks_document_question", documentQuestionCategory: "request_overview" });
     await sendText(phoneNumberId, "כמה עוד חסר?");
     expect(sentMessages.at(-1)!.body).toContain("2 מתוך 3");
 
     // 5) A completely unrelated message — Centro must stay silent (no new
     // outbound message, no state change).
     const sentCountBeforeUnrelated = sentMessages.length;
-    queueCorrectionNotApplicable();
-    queueNotDatedThenNoFollowUp();
-    generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
+    queueConversationIntent({ kind: "unrelated", confidence: 0 });
     await sendText(phoneNumberId, "מה שעות הפעילות שלכם?");
     expect(sentMessages).toHaveLength(sentCountBeforeUnrelated);
 
     // 6) "אין לי את התלוש השלישי" — opens a real employee exception rather
     // than being invented or silently dropped.
-    queueCorrectionNotApplicable();
-    queueNotDatedThenNoFollowUp();
-    generateObject.mockResolvedValueOnce({ object: { category: "no_document_exception", mentionedDocumentType: null } });
+    queueConversationIntent({ kind: "reports_missing_document", missingDocumentMentionedType: null });
     await sendText(phoneNumberId, "אין לי את התלוש השלישי, איבדתי אותו");
 
     const [reqAfterException] = await db
@@ -706,14 +755,12 @@ describe("E2E Journey 3 — multi-page PDF merge, document replace, reminder def
     // A second ID photo arrives with a caption saying it replaces the
     // first. Real, worth noting: a WhatsApp caption is read as this
     // message's own `body` too (route.ts has no separate "caption-only"
-    // channel), so it first runs the ordinary conversational chain
-    // (correction layer -> deferral -> follow-up -> Q&A/exception, all
-    // naturally "no"/not-applicable for this text) before
-    // classifyDocumentRelationIntent gets its turn against the attachment
-    // itself.
-    queueCorrectionNotApplicable();
-    queueNotDatedThenNoFollowUp();
-    generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
+    // channel), so it first runs the ordinary conversational-understanding
+    // chain (mocked as unrelated here, to isolate this test's real target —
+    // the SEPARATE caption-triggered classifyDocumentRelationIntent, which
+    // gets its own turn against the attachment itself once the document is
+    // uploaded).
+    queueConversationIntent({ kind: "unrelated", confidence: 0 });
     generateObject.mockResolvedValueOnce({ object: { relation: "replace" } });
     const idDoc2 = await makeTestDocument("id_card", { fileName: "test_id_card_v2.png" });
     classifyDocumentViaVisionAI.mockResolvedValueOnce({
@@ -748,6 +795,7 @@ describe("E2E Journey 3 — multi-page PDF merge, document replace, reminder def
 
     // "אני בחו״ל, אשלח עוד יומיים" — a real dated commitment (2 days),
     // resolved deterministically, never trusted to the model's own math.
+    queueConversationIntent({ kind: "deferral_promise" });
     generateObject.mockResolvedValueOnce({
       object: { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: 2, relativeWeeks: null, namedPeriod: null },
     });
@@ -927,13 +975,13 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
     await db.update(schema.conversations).set({ status: "closed" }).where(eq(schema.conversations.id, conversationId));
 
     // "שכחתי עוד מסמך" after completion — the post-completion gate's own
-    // conversational correction layer gets first look (within the 48h
-    // window, no open confirmations), declines (not a correction to
+    // unified conversation-understanding layer gets first look (within the
+    // 48h window, no open confirmations), declines (not a correction to
     // anything already resolved), then classifyReopenIntent is the only
     // other classification that runs here (a closed conversation
     // short-circuits before ever reaching the normal deferral/Q&A chain) —
     // asks before doing anything.
-    queueCorrectionNotApplicable();
+    queueConversationIntent({ kind: "unrelated", confidence: 0 });
     generateObject.mockResolvedValueOnce({ object: { isReopenIntent: true } });
     await sendText(phoneNumberId, "שכחתי לשלוח את אישור השכירות, אשלח עכשיו");
     const reopenConfirmation = (
@@ -1063,12 +1111,15 @@ describe("button tap vs typed text — must resolve an open confirmation identic
   });
 });
 
-describe("reply routing priority — an ambiguous yes/no answer to our own open question must never reach deferral/reminder logic", () => {
+describe("reply routing priority — an ambiguous yes/no answer with 2+ open questions must never be guessed or misread as a deferral promise", () => {
   // Two distinct unsolicited documents -> two simultaneously open
-  // unsolicited_document confirmations, each sent as its own solo message
-  // (mirrors the real incident's accumulated state exactly, rather than a
-  // single still-open confirmation, which resolveConfirmationFromReply
-  // already handled correctly on its own).
+  // unsolicited_document confirmations, each sent as its own solo message.
+  // The unified conversation-understanding layer's own context builder only
+  // ever populates a single "open question" when EXACTLY one confirmation
+  // is open (see correctionContext.ts) — with two open, it correctly
+  // reports "no open question" to the classifier, so a well-behaved
+  // classification of a bare "כן"/"לא" here is "unclear", never a guessed
+  // resolution and never a deferral promise.
   async function seedTwoOpenUnsolicitedConfirmations() {
     const { requestId, phoneNumberId, conversationId } = await seedActiveRequest(["תעודת זהות"]);
 
@@ -1103,48 +1154,86 @@ describe("reply routing priority — an ambiguous yes/no answer to our own open 
     return { requestId, phoneNumberId, conversationId };
   }
 
+  // Matches the unified classifier's real schema (conversationIntent.ts) —
+  // the realistic response for a bare "כן"/"לא" when the context builder
+  // reports no single open question (2 are open at once).
+  function queueUnclearClassification() {
+    generateObject.mockResolvedValueOnce({
+      object: {
+        kind: "unclear",
+        confidence: 0.3,
+        pendingAnswer: null,
+        correctionTargetType: null,
+        correctionTargetId: null,
+        correctionDesiredOutcome: null,
+        missingDocumentMentionedType: null,
+        reviewCategory: null,
+        reviewGist: null,
+        documentQuestionCategory: null,
+      },
+    });
+  }
+
   async function assertNoDeferralAndBothStillOpen(requestId: string) {
-    // Never reached the deferral/generic classifiers at all.
-    expect(generateObject).not.toHaveBeenCalled();
-    // Never sent a reminder-flavored reply.
+    // Exactly one AI call — the unified classifier itself — never a second
+    // (old-style) deferral/generic classifier call layered on top.
+    expect(generateObject).toHaveBeenCalledTimes(1);
+    // Never sent a reminder-flavored reply, and never silently dropped —
+    // a real (if generic) clarification went out instead.
     expect(sentMessages.some((m) => m.body.includes("להזכיר") || m.body.includes("יום"))).toBe(false);
+    expect(sentMessages).toHaveLength(1);
     // Neither confirmation was guessed-resolved — both still open.
     const stillOpen = await db
       .select()
       .from(schema.pendingConfirmations)
       .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
     expect(stillOpen).toHaveLength(2);
-    // The ambiguity was explicitly recorded, not silently dropped.
-    const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
-    expect(auditRows.some((r) => r.eventType === "message.ambiguous_confirmation_reply")).toBe(true);
   }
 
-  it("unsolicited question -> typed \"כן\" -> not routed to reminder/deferral", async () => {
+  it("unsolicited question -> typed \"כן\" -> not guessed, not routed to reminder/deferral", async () => {
     const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    queueUnclearClassification();
     await sendText(phoneNumberId, "כן");
     await assertNoDeferralAndBothStillOpen(requestId);
   });
 
-  it("unsolicited question -> button תap \"כן\" -> not routed to reminder/deferral", async () => {
+  it("unsolicited question -> button תap \"כן\" -> not guessed, not routed to reminder/deferral", async () => {
     const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    queueUnclearClassification();
     await sendButtonReply(phoneNumberId, CONFIRM_YES_BUTTON_ID, "כן");
     await assertNoDeferralAndBothStillOpen(requestId);
   });
 
-  it("unsolicited question -> typed \"לא\" -> not routed to reminder/deferral", async () => {
+  it("unsolicited question -> typed \"לא\" -> not guessed, not routed to reminder/deferral", async () => {
     const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    queueUnclearClassification();
     await sendText(phoneNumberId, "לא");
     await assertNoDeferralAndBothStillOpen(requestId);
   });
 
-  it("unsolicited question -> button tap \"לא\" -> not routed to reminder/deferral", async () => {
+  it("unsolicited question -> button tap \"לא\" -> not guessed, not routed to reminder/deferral", async () => {
     const { requestId, phoneNumberId } = await seedTwoOpenUnsolicitedConfirmations();
+    queueUnclearClassification();
     await sendButtonReply(phoneNumberId, CONFIRM_NO_BUTTON_ID, "לא");
     await assertNoDeferralAndBothStillOpen(requestId);
   });
 
   it("a genuine dated future commitment (\"אשלח שבוע הבא\") with NO open confirmation still triggers real deferral logic", async () => {
     const { phoneNumberId, conversationId } = await seedActiveRequest(["תעודת זהות"]);
+    generateObject.mockResolvedValueOnce({
+      object: {
+        kind: "deferral_promise",
+        confidence: 0.9,
+        pendingAnswer: null,
+        correctionTargetType: null,
+        correctionTargetId: null,
+        correctionDesiredOutcome: null,
+        missingDocumentMentionedType: null,
+        reviewCategory: null,
+        reviewGist: null,
+        documentQuestionCategory: null,
+      },
+    });
     generateObject.mockResolvedValueOnce({
       object: { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: 1, namedPeriod: null },
     });
@@ -1156,6 +1245,20 @@ describe("reply routing priority — an ambiguous yes/no answer to our own open 
 
   it("a genuine vague future commitment (\"אשלח בקרוב\") with NO open confirmation still triggers real deferral logic", async () => {
     const { phoneNumberId, requestId } = await seedActiveRequest(["תעודת זהות"]);
+    generateObject.mockResolvedValueOnce({
+      object: {
+        kind: "deferral_promise",
+        confidence: 0.9,
+        pendingAnswer: null,
+        correctionTargetType: null,
+        correctionTargetId: null,
+        correctionDesiredOutcome: null,
+        missingDocumentMentionedType: null,
+        reviewCategory: null,
+        reviewGist: null,
+        documentQuestionCategory: null,
+      },
+    });
     generateObject.mockResolvedValueOnce({
       object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
     });
@@ -1170,20 +1273,166 @@ describe("reply routing priority — an ambiguous yes/no answer to our own open 
   });
 
   it("a bare \"כן\" with NO open confirmation at all never invents a reminder out of nothing", async () => {
-    const { phoneNumberId, requestId } = await seedActiveRequest(["תעודת זהות"]);
-    // Correctly classified as neither a dated commitment nor a vague
-    // follow-up promise — this test proves the DOWNSTREAM behavior given
-    // that (correct) classification, not the AI's own judgment call.
-    generateObject.mockResolvedValueOnce({
-      object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
-    });
-    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false } });
-    generateObject.mockResolvedValueOnce({ object: { category: "unrelated", mentionedDocumentType: null } });
+    const { phoneNumberId } = await seedActiveRequest(["תעודת זהות"]);
+    // Correctly classified as neither a resolvable answer nor a deferral
+    // promise (nothing to interpret it against) — this test proves the
+    // DOWNSTREAM behavior given that (correct) classification, not the
+    // AI's own judgment call.
+    queueUnclearClassification();
 
     await sendText(phoneNumberId, "כן");
 
     expect(sentMessages.every((m) => !m.body.includes("להזכיר"))).toBe(true);
-    const auditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
-    expect(auditRows.some((r) => r.eventType === "message.ambiguous_confirmation_reply")).toBe(false);
+  });
+});
+
+// ======================================================================
+// human_control isolation — the owner's own explicit requirement: taking
+// over one client's one specific collection-request conversation must
+// NEVER affect any other client, any other request of the same client, or
+// the general automation. These tests prove that structurally, through
+// the real webhook route.
+// ======================================================================
+describe("human_control — silences the bot, strictly scoped to one conversation", () => {
+  const OTHER_CLIENT_WA_ID = "972501112222";
+
+  async function seedOrgWithTwoClients() {
+    const phoneNumberId = `e2e-phone-${nextOrgSeq++}`;
+    const [org] = await db
+      .insert(schema.organizations)
+      .values({
+        name: "משרד בדיקה E2E - human_control",
+        googleDriveFolderId: "e2e-root-folder-hc",
+        whatsappPhoneNumberId: phoneNumberId,
+        documentCollectionEnabled: true,
+        businessHoursStart: "00:00",
+        businessHoursEnd: "23:59",
+        businessDays: "0,1,2,3,4,5,6",
+      })
+      .returning();
+    const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות" }).returning();
+
+    async function seedClientRequest(name: string, phone: string) {
+      const [client] = await db.insert(schema.clients).values({ organizationId: org.id, name, phone }).returning();
+      const [request] = await db
+        .insert(schema.collectionRequests)
+        .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "E2E", status: "active" })
+        .returning();
+      const [conversation] = await db
+        .insert(schema.conversations)
+        .values({ organizationId: org.id, clientId: client.id, collectionRequestId: request.id, status: "open" })
+        .returning();
+      await db.insert(schema.collectionRequestRequirements).values({ collectionRequestId: request.id, name: "תעודת זהות" });
+      return { clientId: client.id, requestId: request.id, conversationId: conversation.id };
+    }
+
+    return { phoneNumberId, orgId: org.id, seedClientRequest };
+  }
+
+  it("client A in human_control does not silence client B in the same organization", async () => {
+    const { phoneNumberId, seedClientRequest } = await seedOrgWithTwoClients();
+    const clientA = await seedClientRequest("לקוח A", TEST_CLIENT_PHONE);
+    const clientB = await seedClientRequest("לקוח B", "+972501112222");
+
+    await db.update(schema.conversations).set({ status: "human_control" }).where(eq(schema.conversations.id, clientA.conversationId));
+
+    queueConversationIntent({ kind: "asks_document_question", documentQuestionCategory: "request_overview" });
+    await postWebhook(textMessagePayload(phoneNumberId, OTHER_CLIENT_WA_ID, "מה עדיין חסר לי?"));
+
+    // Client B was processed normally — got a real reply.
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].body).toContain("תעודת זהות");
+    // Client A's conversation is completely untouched — still human_control.
+    const [convA] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, clientA.conversationId));
+    expect(convA.status).toBe("human_control");
+    // Client B's own conversation stays exactly what it always was — this
+    // whole test proves the isolation runs both ways.
+    const [convB] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, clientB.conversationId));
+    expect(convB.status).toBe("open");
+  });
+
+  it("one request of a client in human_control does not silence that same client's other, open request", async () => {
+    const { phoneNumberId, seedClientRequest } = await seedOrgWithTwoClients();
+    const requestA = await seedClientRequest("לקוח", TEST_CLIENT_PHONE);
+    // A second request for the SAME client/phone — findClientAndConversation
+    // resolves to whichever conversation is most recently updated.
+    const [requestBRow] = await db
+      .insert(schema.collectionRequests)
+      .values({ organizationId: (await db.select().from(schema.clients).where(eq(schema.clients.id, requestA.clientId)))[0].organizationId, clientId: requestA.clientId, serviceId: (await db.select().from(schema.services))[0].id, periodLabel: "E2E-2", status: "active" })
+      .returning();
+    const [conversationB] = await db
+      .insert(schema.conversations)
+      .values({ organizationId: requestBRow.organizationId, clientId: requestA.clientId, collectionRequestId: requestBRow.id, status: "open", updatedAt: new Date(Date.now() + 1000) })
+      .returning();
+    await db.insert(schema.collectionRequestRequirements).values({ collectionRequestId: requestBRow.id, name: "רישיון נהיגה" });
+
+    await db.update(schema.conversations).set({ status: "human_control" }).where(eq(schema.conversations.id, requestA.conversationId));
+
+    // conversationB is the most-recently-updated -> the message routes there, gets processed normally.
+    queueConversationIntent({ kind: "asks_document_question", documentQuestionCategory: "request_overview" });
+    await sendText(phoneNumberId, "מה עדיין חסר לי?");
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].body).toContain("רישיון נהיגה");
+
+    // requestA's conversation remains untouched.
+    const [convA] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, requestA.conversationId));
+    expect(convA.status).toBe("human_control");
+    void conversationB;
+  });
+
+  it("an attachment arriving during human_control is stashed, scoped to that one collection request, never auto-processed", async () => {
+    const { phoneNumberId, seedClientRequest } = await seedOrgWithTwoClients();
+    const requestA = await seedClientRequest("לקוח", TEST_CLIENT_PHONE);
+    await db.update(schema.conversations).set({ status: "human_control" }).where(eq(schema.conversations.id, requestA.conversationId));
+
+    const idDoc = await makeTestDocument("id_card");
+    await sendDocument(phoneNumberId, idDoc);
+
+    // Never classified, never uploaded — vision AI never even called.
+    expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled();
+    expect(sentMessages).toHaveLength(0);
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestA.requestId));
+    expect(doc.status).toBe("human_control_pending");
+    expect(doc.pendingFileContent).not.toBeNull();
+  });
+
+  it("releasing control reprocesses only that request's stashed documents, never another request's", async () => {
+    const { seedClientRequest } = await seedOrgWithTwoClients();
+    const requestA = await seedClientRequest("לקוח A", TEST_CLIENT_PHONE);
+    const requestB = await seedClientRequest("לקוח B", "+972503334444");
+
+    const [stashedA] = await db
+      .insert(schema.documents)
+      .values({
+        organizationId: (await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestA.requestId)))[0].organizationId,
+        collectionRequestId: requestA.requestId,
+        fileName: "stashed-a.pdf",
+        status: "human_control_pending",
+        pendingFileContent: Buffer.from("fake-bytes-a"),
+        pendingFileMimeType: "application/pdf",
+      })
+      .returning();
+    const [stashedB] = await db
+      .insert(schema.documents)
+      .values({
+        organizationId: (await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestB.requestId)))[0].organizationId,
+        collectionRequestId: requestB.requestId,
+        fileName: "stashed-b.pdf",
+        status: "human_control_pending",
+        pendingFileContent: Buffer.from("fake-bytes-b"),
+        pendingFileMimeType: "application/pdf",
+      })
+      .returning();
+
+    const { reprocessHeldHumanControlDocument } = await import("@/app/(app)/collections/conversationActions");
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({ identified: false });
+    await reprocessHeldHumanControlDocument(stashedA.id);
+
+    // Only request A's stashed document was touched (reprocessed/deleted-as-placeholder).
+    const remainingA = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestA.requestId));
+    expect(remainingA.find((d) => d.id === stashedA.id)).toBeUndefined(); // placeholder replaced
+    const remainingB = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestB.requestId));
+    expect(remainingB.find((d) => d.id === stashedB.id)).toBeDefined();
+    expect(remainingB.find((d) => d.id === stashedB.id)?.status).toBe("human_control_pending"); // untouched
   });
 });
