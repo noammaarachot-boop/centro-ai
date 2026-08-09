@@ -139,6 +139,10 @@ function baseClassification(overrides: Partial<Awaited<ReturnType<typeof classif
     missingDocumentMentionedType: null,
     reviewCategory: null,
     reviewGist: null,
+    reviewItemTargetId: null,
+    reviewItemAction: null,
+    reviewItemReason: null,
+    naturalAcknowledgment: null,
     documentQuestionCategory: null,
     ...overrides,
   };
@@ -397,6 +401,210 @@ describe("runConversationUnderstanding — deferral_promise", () => {
     const result = await runConversationUnderstanding({ organizationId: orgId, clientId, collectionRequestId: requestId, conversationId, messageText: "אולי בקרוב" });
     expect(result.handled).toBe(true);
     expect(sendTextMessage).toHaveBeenCalledTimes(1); // never silent
+  });
+});
+
+describe("runConversationUnderstanding — resolves_review_item", () => {
+  async function seedReviewItem(params: { orgId: string; clientId: string; requestId: string; conversationId: string; status: "pending" | "resolved" }) {
+    const [item] = await db
+      .insert(schema.employeeReviewItems)
+      .values({
+        organizationId: params.orgId,
+        clientId: params.clientId,
+        collectionRequestId: params.requestId,
+        conversationId: params.conversationId,
+        clientQuestion: "יש לי רק ספח, זה מספיק?",
+        category: "alternative_or_policy_question",
+        understoodContext: { relatedRequirementName: "תעודת זהות", gist: "האם ספח מספיק במקום תעודת הזהות" },
+        status: params.status,
+        ...(params.status === "resolved" ? { resolutionText: "כן, זה בסדר", resolvedBy: "employee" as const, resolvedAt: new Date() } : {}),
+      })
+      .returning();
+    return item;
+  }
+
+  it("close_resolved at high confidence: closes the item with an ai_context audit trail and sends the natural acknowledgment — the real reported scenario (client finds the ID after a ספח question was open)", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const item = await seedReviewItem({ orgId, clientId, requestId, conversationId, status: "pending" });
+
+    classifyConversationIntent.mockResolvedValueOnce(
+      baseClassification({
+        kind: "resolves_review_item",
+        confidence: 0.92,
+        reviewItemTargetId: item.id,
+        reviewItemAction: "close_resolved",
+        reviewItemReason: "הלקוח מצא את תעודת הזהות המקורית.",
+        naturalAcknowledgment: "מעולה, אפשר לשלוח אותה כאן.",
+      })
+    );
+
+    const result = await runConversationUnderstanding({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      conversationId,
+      messageText: "לא משנה, מצאתי את תעודת הזהות ואני שולח אותה",
+    });
+
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
+    expect(after.status).toBe("resolved");
+    expect(after.resolvedBy).toBe("ai_context");
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "מעולה, אפשר לשלוח אותה כאן.");
+  });
+
+  it("close_resolved below the (deliberately high) confidence bar: item stays open, client gets a clarification instead — never a guessed closure", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const item = await seedReviewItem({ orgId, clientId, requestId, conversationId, status: "pending" });
+
+    classifyConversationIntent.mockResolvedValueOnce(
+      baseClassification({
+        kind: "resolves_review_item",
+        confidence: 0.7, // above MIN_ACT_CONFIDENCE but below REVIEW_ITEM_CLOSE_CONFIDENCE (0.85)
+        reviewItemTargetId: item.id,
+        reviewItemAction: "close_resolved",
+        reviewItemReason: "נראה שהסתדר, אבל לא ודאי",
+        naturalAcknowledgment: "טוב לשמוע.",
+      })
+    );
+
+    const result = await runConversationUnderstanding({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      conversationId,
+      messageText: "נראה לי שהסתדרתי עם זה",
+    });
+
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
+    expect(after.status).toBe("pending"); // never guessed-closed
+    expect(sendTextMessage).toHaveBeenCalledTimes(1); // still gets a reply, just a clarification
+  });
+
+  it("add_context_note: item stays open, a note is appended, client still gets a warm reply", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const item = await seedReviewItem({ orgId, clientId, requestId, conversationId, status: "pending" });
+
+    classifyConversationIntent.mockResolvedValueOnce(
+      baseClassification({
+        kind: "resolves_review_item",
+        confidence: 0.75,
+        reviewItemTargetId: item.id,
+        reviewItemAction: "add_context_note",
+        reviewItemReason: "הלקוח ציין שהספח גם הוא ישן.",
+        naturalAcknowledgment: "תודה, רשמתי את זה.",
+      })
+    );
+
+    const result = await runConversationUnderstanding({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      conversationId,
+      messageText: "דרך אגב הספח שיש לי גם הוא כבר ישן",
+    });
+
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
+    expect(after.status).toBe("pending");
+    const updates = after.contextUpdates as Array<{ note: string }> | null;
+    expect(updates).toHaveLength(1);
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "תודה, רשמתי את זה.");
+  });
+
+  it("close_resolved on an item already resolved by an employee in the meantime is not a legal action — stays as the employee left it", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const item = await seedReviewItem({ orgId, clientId, requestId, conversationId, status: "resolved" });
+
+    classifyConversationIntent.mockResolvedValueOnce(
+      baseClassification({
+        kind: "resolves_review_item",
+        confidence: 0.95,
+        reviewItemTargetId: item.id,
+        reviewItemAction: "close_resolved", // illegal — already resolved, only add_context_note is legal now
+        naturalAcknowledgment: "מעולה.",
+      })
+    );
+
+    const result = await runConversationUnderstanding({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      conversationId,
+      messageText: "מצאתי, תודה",
+    });
+
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
+    expect(after.resolvedBy).toBe("employee"); // untouched — the AI never overrides an employee's own resolution
+  });
+
+  it("generalizes to a wholly different review-item scenario/phrasing never seen in the ID-card example — retracting a request for an alternative document", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const [item] = await db
+      .insert(schema.employeeReviewItems)
+      .values({
+        organizationId: orgId,
+        clientId,
+        collectionRequestId: requestId,
+        conversationId,
+        clientQuestion: "אפשר לצרף חוזה שכירות ישן במקום העדכני?",
+        category: "alternative_or_policy_question",
+        status: "pending",
+      })
+      .returning();
+
+    classifyConversationIntent.mockResolvedValueOnce(
+      baseClassification({
+        kind: "resolves_review_item",
+        confidence: 0.9,
+        reviewItemTargetId: item.id,
+        reviewItemAction: "close_resolved",
+        reviewItemReason: "הלקוח מצא את החוזה העדכני וחוזר בו מהבקשה לחלופה.",
+        naturalAcknowledgment: "מצוין, אפשר לשלוח את החוזה העדכני כאן.",
+      })
+    );
+
+    const result = await runConversationUnderstanding({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      conversationId,
+      messageText: "טוב סוף סוף מצאתי גם את החוזה החדש, זה כבר לא רלוונטי מה ששאלתי קודם",
+    });
+
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
+    expect(after.status).toBe("resolved");
+    expect(after.resolvedBy).toBe("ai_context");
+  });
+
+  it("an unrecognized/stale reviewItemTargetId is never trusted — treated as unclear, item untouched", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest();
+    const item = await seedReviewItem({ orgId, clientId, requestId, conversationId, status: "pending" });
+
+    classifyConversationIntent.mockResolvedValueOnce(
+      baseClassification({
+        kind: "resolves_review_item",
+        confidence: 0.95,
+        reviewItemTargetId: "00000000-0000-0000-0000-000000000000",
+        reviewItemAction: "close_resolved",
+        naturalAcknowledgment: "מעולה.",
+      })
+    );
+
+    const result = await runConversationUnderstanding({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      conversationId,
+      messageText: "מצאתי, תודה",
+    });
+
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
+    expect(after.status).toBe("pending");
   });
 });
 

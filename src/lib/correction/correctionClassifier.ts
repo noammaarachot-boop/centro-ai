@@ -1,7 +1,7 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
-import type { CorrectionContext } from "@/lib/correction/correctionContext";
+import type { ConversationContext } from "@/lib/conversation/conversationContext";
 
 /**
  * Conversational correction layer — the general context-aware classifier.
@@ -70,7 +70,7 @@ const schema = z.object({
     ),
 });
 
-function formatCandidateDocuments(context: CorrectionContext): string {
+function formatCandidateDocuments(context: ConversationContext): string {
   if (context.recentDocuments.length === 0) return "אין מסמכים אחרונים.";
   return context.recentDocuments
     .map((doc, index) => {
@@ -86,7 +86,7 @@ function formatCandidateDocuments(context: CorrectionContext): string {
     .join("\n");
 }
 
-function formatCandidateConfirmations(context: CorrectionContext): string {
+function formatCandidateConfirmations(context: ConversationContext): string {
   if (context.recentResolvedConfirmations.length === 0) return "אין החלטות אחרונות.";
   return context.recentResolvedConfirmations
     .map(
@@ -96,7 +96,7 @@ function formatCandidateConfirmations(context: CorrectionContext): string {
     .join("\n");
 }
 
-function formatRecentMessages(context: CorrectionContext): string {
+function formatRecentMessages(context: ConversationContext): string {
   if (context.recentMessages.length === 0) return "אין הודעות קודמות.";
   return context.recentMessages
     .map((m) => `${m.direction === "inbound" ? "לקוח" : "Centro"}: "${m.body}"`)
@@ -104,7 +104,7 @@ function formatRecentMessages(context: CorrectionContext): string {
 }
 
 export async function classifyCorrectionIntent(
-  context: CorrectionContext,
+  context: ConversationContext,
   messageText: string
 ): Promise<CorrectionClassificationResult> {
   const trimmed = messageText.trim();

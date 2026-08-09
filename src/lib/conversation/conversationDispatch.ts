@@ -6,10 +6,11 @@ import { attemptFinishCollectionRequest } from "@/lib/caseReview";
 import { applyDeferralIfAny } from "@/lib/reminderDeferral";
 import { answerRequestMessage, buildRequirementFacts } from "@/lib/requestQnA";
 import { askWhichDocumentMissing, openRequirementException, resolveExceptionTarget } from "@/lib/requirementException";
-import { handlePotentialReviewQuestion } from "@/lib/employeeReview";
-import { buildCorrectionContext } from "@/lib/correction/correctionContext";
+import { addContextNoteToReviewItem, closeReviewItemFromClientContext, handlePotentialReviewQuestion } from "@/lib/employeeReview";
+import { buildConversationContext } from "@/lib/conversation/conversationContext";
 import { applyAnswersPendingClassification, applyCorrectsResolvedClassification } from "@/lib/correction/correctionDispatch";
 import { classifyConversationIntent } from "@/lib/conversation/conversationIntent";
+import type { ReviewItemAction } from "@/lib/conversation/conversationIntent";
 
 /**
  * The unified document-conversation understanding layer's dispatcher — the
@@ -32,11 +33,31 @@ import { classifyConversationIntent } from "@/lib/conversation/conversationInten
  */
 
 const MIN_ACT_CONFIDENCE = 0.65;
+// Closing a review item automatically is irreversible from the client's
+// point of view (the office won't independently re-check it) — deliberately
+// the highest confidence bar in this whole layer, matching the explicit
+// "never guess a closure" requirement. Adding a note is safe/reversible/
+// purely additive, so it can act at the same bar as everything else here.
+const REVIEW_ITEM_CLOSE_CONFIDENCE = 0.85;
+const REVIEW_ITEM_NOTE_CONFIDENCE = 0.6;
 
 function buildUnclearClarification(openQuestion: { question: string } | null): string {
   return openQuestion
     ? `לא הבנתי בבירור אם זו תשובה לשאלה ששאלתי ("${openQuestion.question}") או משהו אחר — אפשר להבהיר?`
     : "לא הצלחתי להבין בדיוק למה התכוונת — אפשר לנסח מחדש?";
+}
+
+function buildReviewItemFallbackAcknowledgment(action: ReviewItemAction): string {
+  return action === "close_resolved" ? "מעולה, תודה שעדכנת." : "תודה, רשמתי את זה לתשומת לב הצוות.";
+}
+
+// The same "never trust a stale snapshot" discipline every other legal-
+// outcomes table in this codebase uses (see correctionDispatch.ts's own
+// legalOutcomesForDocument): what the AI is even allowed to propose depends
+// on the item's real, current status, re-validated here — never on
+// whatever the classifier assumed while it was reading the context.
+function legalOutcomesForReviewItem(status: "pending" | "resolved"): Set<ReviewItemAction> {
+  return status === "pending" ? new Set(["close_resolved", "add_context_note"]) : new Set(["add_context_note"]);
 }
 
 export async function runConversationUnderstanding(params: {
@@ -46,7 +67,7 @@ export async function runConversationUnderstanding(params: {
   conversationId: string;
   messageText: string;
 }): Promise<{ handled: boolean }> {
-  const context = await buildCorrectionContext({
+  const context = await buildConversationContext({
     collectionRequestId: params.collectionRequestId,
     conversationId: params.conversationId,
   });
@@ -160,6 +181,44 @@ export async function runConversationUnderstanding(params: {
       relatedRequirementId: null,
       understoodContext: { relatedRequirementName: null, gist: classification.reviewGist ?? params.messageText },
     });
+    return { handled: true };
+  }
+
+  if (classification.kind === "resolves_review_item") {
+    const target = context.reviewItems.find((r) => r.id === classification.reviewItemTargetId) ?? null;
+    if (!target) {
+      await sendOutboundMessage(params.organizationId, params.conversationId, buildUnclearClarification(null), "ai", "manual", undefined, true);
+      return { handled: true };
+    }
+
+    const action = classification.reviewItemAction;
+    const legal = legalOutcomesForReviewItem(target.status);
+    if (!action || !legal.has(action) || classification.confidence < (action === "close_resolved" ? REVIEW_ITEM_CLOSE_CONFIDENCE : REVIEW_ITEM_NOTE_CONFIDENCE)) {
+      // Ambiguous, or an action no longer legal for the item's real current
+      // status (e.g. already resolved by an employee in the meantime) —
+      // the item stays exactly as-is, never guessed shut.
+      await sendOutboundMessage(params.organizationId, params.conversationId, buildUnclearClarification(null), "ai", "manual", undefined, true);
+      return { handled: true };
+    }
+
+    const acknowledgment = classification.naturalAcknowledgment?.trim() || buildReviewItemFallbackAcknowledgment(action);
+    if (action === "close_resolved") {
+      await closeReviewItemFromClientContext({
+        organizationId: params.organizationId,
+        reviewItemId: target.id,
+        triggerMessage: params.messageText,
+        reason: classification.reviewItemReason ?? "הלקוח מסר מידע חדש שפתר את השאלה.",
+        clientAcknowledgment: acknowledgment,
+      });
+    } else {
+      await addContextNoteToReviewItem({
+        organizationId: params.organizationId,
+        reviewItemId: target.id,
+        triggerMessage: params.messageText,
+        note: classification.reviewItemReason ?? params.messageText,
+        clientAcknowledgment: acknowledgment,
+      });
+    }
     return { handled: true };
   }
 

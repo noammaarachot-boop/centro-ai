@@ -15,7 +15,7 @@ import { fileExtension, markDocumentWithdrawnInDrive, renameDocumentInDrive } fr
 import { CASE_REVIEW_SILENCE_WINDOW_MS, scheduleCaseReviewRelay } from "@/lib/caseReview";
 import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
 import { reprocessHeldReopenDocument } from "@/app/(app)/collections/conversationActions";
-import { buildCorrectionContext, type CorrectionCandidateDocument, type CorrectionContext } from "@/lib/correction/correctionContext";
+import { buildConversationContext, type ConversationCandidateDocument, type ConversationContext } from "@/lib/conversation/conversationContext";
 import { classifyCorrectionIntent, type CorrectionDesiredOutcome } from "@/lib/correction/correctionClassifier";
 
 /**
@@ -311,7 +311,7 @@ export async function applyCorrectsResolvedClassification(
     collectionRequestId: string;
     conversationId: string;
   },
-  context: CorrectionContext,
+  context: ConversationContext,
   classification: {
     targetType: "document" | "confirmation" | null;
     targetId: string | null;
@@ -323,7 +323,7 @@ export async function applyCorrectsResolvedClassification(
     return { handled: false };
   }
 
-  let liveDocument: CorrectionCandidateDocument | null = null;
+  let liveDocument: ConversationCandidateDocument | null = null;
   let matchedRequirementId: string | null = null;
 
   if (classification.targetType === "document") {
@@ -442,7 +442,7 @@ export async function runCorrectionLayer(params: {
   conversationId: string;
   messageText: string;
 }): Promise<{ handled: boolean }> {
-  const context = await buildCorrectionContext({
+  const context = await buildConversationContext({
     collectionRequestId: params.collectionRequestId,
     conversationId: params.conversationId,
   });

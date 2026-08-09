@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CorrectionContext } from "./correctionContext";
+import type { ConversationContext } from "@/lib/conversation/conversationContext";
 
 const resolveLanguageModel = vi.fn();
 const generateObject = vi.fn();
@@ -18,13 +18,14 @@ beforeEach(() => {
   generateObject.mockReset();
 });
 
-const emptyContext: CorrectionContext = {
+const emptyContext: ConversationContext = {
   collectionRequestId: "req-1",
   conversationId: "conv-1",
   requirementFacts: [],
   openQuestion: null,
   recentDocuments: [],
   recentResolvedConfirmations: [],
+  reviewItems: [],
   recentMessages: [],
 };
 
@@ -42,7 +43,7 @@ describe("classifyCorrectionIntent", () => {
   });
 
   it("a document candidate present -> calls the model, returns its correction classification", async () => {
-    const context: CorrectionContext = {
+    const context: ConversationContext = {
       ...emptyContext,
       recentDocuments: [
         {
@@ -79,7 +80,7 @@ describe("classifyCorrectionIntent", () => {
   });
 
   it("an open question present -> can classify as answers_open_question", async () => {
-    const context: CorrectionContext = {
+    const context: ConversationContext = {
       ...emptyContext,
       openQuestion: { id: "pc-1", kind: "identity_anomaly", question: "האם הוא נשלח במקום תעודת הזהות של רז שלום?" },
     };
@@ -100,7 +101,7 @@ describe("classifyCorrectionIntent", () => {
   });
 
   it("a provider failure falls back to not_applicable — never guesses", async () => {
-    const context: CorrectionContext = {
+    const context: ConversationContext = {
       ...emptyContext,
       openQuestion: { id: "pc-1", kind: "identity_anomaly", question: "..." },
     };
