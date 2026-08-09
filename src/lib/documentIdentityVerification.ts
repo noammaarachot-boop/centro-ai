@@ -1,6 +1,6 @@
 import { and, eq, isNull, ne } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, documents, organizations, pendingConfirmations } from "@/db/schema";
+import { collectionRequestRequirements, collectionRequests, conversations, documents, organizations, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import type { DocumentClassification } from "@/lib/ai/documentClassifier";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
@@ -11,7 +11,9 @@ import {
 } from "@/lib/pendingConfirmations";
 import { fileExtension, uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
 import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
-import { CASE_REVIEW_SILENCE_WINDOW_MS, scheduleCaseReviewRelay } from "@/lib/caseReview";
+import { attemptFinishCollectionRequest, CASE_REVIEW_SILENCE_WINDOW_MS, scheduleCaseReviewRelay } from "@/lib/caseReview";
+import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
+import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
 
 /**
  * Smart identity/consistency verification — a document can be exactly the
@@ -354,7 +356,14 @@ function anomalySignature(anomaly: IdentityAnomaly): string {
 }
 
 interface IdentityAnomalyPayload {
-  documents: Array<{ id: string; documentType: string | null }>;
+  // matchedRequirementId: the open requirement resolveDocumentIntakeOutcome
+  // had already confidently matched before this specific anomaly overrode
+  // it (conversationActions.ts) — null whenever there wasn't one (an
+  // unsolicited-but-anomalous document, or the fallback never cleared the
+  // confidence bar). Carried per-document since a merged group (several
+  // documents sharing one anomaly signature) could in principle mix
+  // documents that did and didn't have one.
+  documents: Array<{ id: string; documentType: string | null; matchedRequirementId: string | null }>;
   anomaly: IdentityAnomaly;
 }
 
@@ -382,6 +391,7 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
   documentId: string;
   anomaly: IdentityAnomaly;
   documentType: string | null;
+  matchedRequirementId: string | null;
 }): Promise<void> {
   const db = await getDb();
   const signature = anomalySignature(params.anomaly);
@@ -404,7 +414,10 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
 
   if (existing) {
     const payload = existing.payload as IdentityAnomalyPayload;
-    const documentsInGroup = [...payload.documents, { id: params.documentId, documentType: params.documentType }];
+    const documentsInGroup = [
+      ...payload.documents,
+      { id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId },
+    ];
     await db
       .update(pendingConfirmations)
       .set({
@@ -438,7 +451,7 @@ export async function createOrMergeIdentityAnomalyConfirmation(params: {
     collectionRequestId: params.collectionRequestId,
     kind: "identity_anomaly" satisfies PendingConfirmationKind,
     payload: {
-      documents: [{ id: params.documentId, documentType: params.documentType }],
+      documents: [{ id: params.documentId, documentType: params.documentType, matchedRequirementId: params.matchedRequirementId }],
       anomaly: params.anomaly,
     } satisfies IdentityAnomalyPayload,
     question: buildAnomalyQuestion(params.anomaly, [params.documentType]),
@@ -502,12 +515,44 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
       documentIds: documentsInGroup.map((d) => d.id),
       collectionRequestId: resolved.collectionRequestId,
     });
+
+    // Same exact wording and post-decline behavior as
+    // unsolicited_document's own declined branch (documentIntakeReview.ts)
+    // — a direct reply to the question just asked deserves the same short
+    // acknowledgment and the same restarted silence window, regardless of
+    // which of the two mechanisms asked it. This was previously missing
+    // here entirely: a "לא" answered after the original silence window had
+    // already elapsed (e.g. days later, via the reminder/escalation cycle)
+    // got no reply and never restarted the summary timer.
+    await sendOutboundMessage(
+      resolved.organizationId,
+      resolved.conversationId,
+      "בסדר, המסמך לא ייכלל.",
+      "ai",
+      "manual",
+      undefined,
+      true
+    );
+    await db
+      .update(conversations)
+      .set({ pendingCaseReviewAt: new Date(Date.now() + CASE_REVIEW_SILENCE_WINDOW_MS) })
+      .where(eq(conversations.id, resolved.conversationId));
+    scheduleAfterResponse(() =>
+      scheduleCaseReviewRelay({
+        organizationId: resolved.organizationId,
+        conversationId: resolved.conversationId,
+        collectionRequestId: resolved.collectionRequestId,
+        clientId: resolved.clientId,
+      })
+    );
     return;
   }
 
   if (resolved.status !== "confirmed") return;
 
-  for (const { id: documentId, documentType } of documentsInGroup) {
+  let anyAttachedToRequirement = false;
+
+  for (const { id: documentId, documentType, matchedRequirementId } of documentsInGroup) {
     const [doc] = await db
       .select({
         fileName: documents.fileName,
@@ -519,13 +564,110 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
       .limit(1);
     if (!doc) continue;
 
-    // Never marks the document as fulfilling any requirement it doesn't
-    // actually match, and never changes the request's primary client —
-    // uploaded as an extra document, exactly like a confirmed unsolicited
-    // document, with the anomaly itself kept in payload/audit metadata as
-    // the record of what the client actually confirmed. Each document in
-    // the group keeps its own type-based name (an ID card and a passport
-    // in the same group must not both become the same filename).
+    // Re-check, never trust the original snapshot: this document was
+    // already confidently matched to an open requirement before the
+    // identity check itself overrode that outcome (conversationActions.ts).
+    // Now that the client has confirmed it's genuinely theirs, re-verify
+    // that requirement is STILL actually open — something else may have
+    // satisfied it in the meantime (the client could have sent the correct
+    // document while this confirmation sat waiting for an answer), in
+    // which case forcing this one onto it would be wrong. Never a fresh
+    // guess at match confidence — only ever reuses the exact decision
+    // resolveDocumentIntakeOutcome already made at the same bar every
+    // ordinary auto-approval requires.
+    //
+    // Only ever attempted for an AMBIGUOUS name mismatch (confident: false
+    // — the extraction itself wasn't clear enough to assert a specific
+    // conflicting name; see detectIdentityAnomaly). "כן" there plausibly
+    // means "yes, that IS genuinely my document, your OCR just misread the
+    // name." id_mismatch, company_mismatch, and a CONFIDENT name_mismatch
+    // are a different kind of signal entirely — the system positively
+    // identified a specific different ID number, company, or person.
+    // "כן, שלחתי בכוונה" there only ever confirms the client meant to send
+    // that specific file, never that it's actually their own document —
+    // attaching it to the requirement would misreport someone else's
+    // document as satisfying this client's own requirement. Those always
+    // stay "extra", exactly like before this change.
+    const anomaly = payload?.anomaly;
+    const eligibleForReattachment = anomaly?.kind === "name_mismatch" && anomaly.confident === false;
+    let attachedRequirementId: string | null = null;
+    if (matchedRequirementId && eligibleForReattachment) {
+      const [requirement] = await db
+        .select({
+          id: collectionRequestRequirements.id,
+          requiredCount: collectionRequestRequirements.requiredCount,
+          semanticSpec: collectionRequestRequirements.semanticSpec,
+          exceptionStatus: collectionRequestRequirements.exceptionStatus,
+        })
+        .from(collectionRequestRequirements)
+        .where(eq(collectionRequestRequirements.id, matchedRequirementId))
+        .limit(1);
+      if (requirement) {
+        const approvedSiblings = await db
+          .select({
+            extractedPeriodLabel: documents.extractedPeriodLabel,
+            extractedPersonName: documents.extractedPersonName,
+            continuationOfDocumentId: documents.continuationOfDocumentId,
+          })
+          .from(documents)
+          .where(and(eq(documents.requirementId, matchedRequirementId), eq(documents.status, "approved")));
+        const satisfactionDocs = approvedSiblings
+          .filter((d) => !d.continuationOfDocumentId)
+          .map((d) => ({ periodLabel: d.extractedPeriodLabel, personName: d.extractedPersonName }));
+        if (!computeRequirementSatisfaction(requirement, satisfactionDocs).satisfied) {
+          attachedRequirementId = matchedRequirementId;
+        }
+      }
+    }
+
+    if (attachedRequirementId) {
+      // Genuinely fulfills the requirement it was originally matched to —
+      // counts as received, not just kept for transparency. Filename is
+      // left to uploadDocument's own requirementId-based renaming (same as
+      // every ordinary approved document), not the documentType-based name
+      // the "extra" branch below uses.
+      await db
+        .update(documents)
+        .set({ requirementId: attachedRequirementId, status: "approved", updatedAt: new Date() })
+        .where(eq(documents.id, documentId));
+
+      await recordAuditEvent({
+        organizationId: resolved.organizationId,
+        eventType: "document.identity_anomaly_confirmed",
+        description: `הלקוח אישר שהמסמך נשלח בכוונה למרות חריגת הזהות שזוהתה — שויך בביטחון לדרישה הפתוחה שהוא בעצם מילא ונחשב כמסמך שהתקבל`,
+        actorType: "client",
+        clientId: resolved.clientId,
+        collectionRequestId: resolved.collectionRequestId,
+        metadata: { documentId, anomalyKind: payload?.anomaly.kind, anomalyConfirmed: true, requirementId: attachedRequirementId },
+      });
+
+      await uploadDocumentResiliently(
+        resolved.organizationId,
+        resolved.clientId,
+        documentId,
+        doc.fileName,
+        resolved.collectionRequestId,
+        doc.pendingFileContent ?? undefined,
+        doc.pendingFileMimeType ?? undefined
+      );
+      console.log("[document-intake] identity anomaly resolved: confirmed, attached to requirement, uploaded to Drive", {
+        documentId,
+        requirementId: attachedRequirementId,
+        collectionRequestId: resolved.collectionRequestId,
+      });
+      anyAttachedToRequirement = true;
+      continue;
+    }
+
+    // No confident requirement to reattach to (never matched one, or it's
+    // no longer open) — unchanged existing behavior: never marks the
+    // document as fulfilling any requirement it doesn't actually match,
+    // and never changes the request's primary client — uploaded as an
+    // extra document, exactly like a confirmed unsolicited document, with
+    // the anomaly itself kept in payload/audit metadata as the record of
+    // what the client actually confirmed. Each document in the group keeps
+    // its own type-based name (an ID card and a passport in the same
+    // group must not both become the same filename).
     const targetFileName = documentType ? `${documentType}${fileExtension(doc.fileName)}` : doc.fileName;
     await db
       .update(documents)
@@ -577,4 +719,38 @@ export async function applyIdentityAnomalyDecision(resolved: ResolvedConfirmatio
       clientId: resolved.clientId,
     })
   );
+
+  // At least one document in this group just became a genuine
+  // requirement-satisfying "approved" document (not just an extra) — this
+  // reply might be exactly what completes the whole request. Check
+  // immediately instead of waiting for the 2-minute window above to elapse,
+  // the same way an ordinary approved document does
+  // (processInboundAttachment, conversationActions.ts). checkCompletionGate
+  // is consulted first, same as there, so a request that's genuinely not
+  // yet done never gets an unwanted "still missing X" message from this
+  // check alone — the arm-timer above already covers that ordinary case.
+  if (anyAttachedToRequirement) {
+    // A post-completion extension in progress owns its own "are you done
+    // adding documents?" flow (src/lib/requestExtension.ts) — never
+    // attempt to complete the request from here while one is active, same
+    // as the ordinary approved-document path (processInboundAttachment)
+    // guards against it.
+    const [request] = await db
+      .select({ extensionActive: collectionRequests.extensionActive })
+      .from(collectionRequests)
+      .where(eq(collectionRequests.id, resolved.collectionRequestId))
+      .limit(1);
+    if (!request?.extensionActive) {
+      const gateError = await checkCompletionGate(resolved.collectionRequestId);
+      if (gateError === null) {
+        await attemptFinishCollectionRequest({
+          organizationId: resolved.organizationId,
+          collectionRequestId: resolved.collectionRequestId,
+          conversationId: resolved.conversationId,
+          clientId: resolved.clientId,
+          actorType: "client",
+        });
+      }
+    }
+  }
 }

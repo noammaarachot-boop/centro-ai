@@ -412,6 +412,19 @@ async function resolveUniqueDriveFileName(accessToken: string, folderId: string,
 // GoogleNotConnectedError and degrade gracefully (BR-15.1: a storage
 // failure must never corrupt or close a Collection Request) rather than
 // letting it crash the action.
+// Concurrency safety: two callers can genuinely overlap for the SAME
+// document — e.g. the scheduler's retryFailedDriveUploads cron racing an
+// in-flight original upload attempt, or two overlapping cron ticks (no
+// claim/lock existed here before; retryFailedDriveUploads itself has no
+// idempotency key of its own, unlike documents.whatsappMessageId). Without
+// serialization, both could call uploadDriveFile for the same document,
+// producing two distinct Drive files with only the second googleDriveFileId
+// write surviving — the first becomes an untracked orphan in Drive. A
+// Postgres advisory lock keyed to this exact documentId (same pattern
+// ensureDrivePath above already uses for its own folder-creation races)
+// serializes the whole read-check-upload-write sequence per document,
+// while never blocking uploads of any OTHER document. Held across the real
+// Drive API call inside — the same accepted pattern ensureDrivePath uses.
 export async function uploadDocument(
   clientId: string,
   documentId: string,
@@ -429,52 +442,68 @@ export async function uploadDocument(
     .limit(1);
   if (!client) throw new Error(`Client ${clientId} not found`);
 
-  const [document] = await db
-    .select({ fileName: documents.fileName, requirementId: documents.requirementId })
-    .from(documents)
-    .where(eq(documents.id, documentId))
-    .limit(1);
-  if (!document) throw new Error(`Document ${documentId} not found`);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`document-upload::${documentId}`}))`);
 
-  // Prefer the matched requirement's own name over the stored fileName —
-  // for a real WhatsApp attachment that's a meaningless generated name
-  // (image_<wamid>.jpg; see resolveAttachment in the webhook route), never
-  // what a client or employee would recognize in Drive. Falls back to the
-  // stored fileName when there's no requirement match (needs_review
-  // documents never reach here — see the `status === "approved"` gate in
-  // processInboundAttachment/reviewDocument) or it's a manual upload that
-  // already had a real name.
-  let targetFileName = document.fileName;
-  if (document.requirementId) {
-    const [requirement] = await db
-      .select({ name: collectionRequestRequirements.name })
-      .from(collectionRequestRequirements)
-      .where(eq(collectionRequestRequirements.id, document.requirementId))
+    const [document] = await tx
+      .select({ fileName: documents.fileName, requirementId: documents.requirementId, googleDriveFileId: documents.googleDriveFileId })
+      .from(documents)
+      .where(eq(documents.id, documentId))
       .limit(1);
-    if (requirement) {
-      targetFileName = `${requirement.name}${fileExtension(document.fileName)}`;
+    if (!document) throw new Error(`Document ${documentId} not found`);
+
+    // Another caller already finished uploading this exact document while
+    // this one was waiting for the lock — the actual duplicate-prevention
+    // step; the lock alone only orders the two calls, it doesn't stop the
+    // second one from re-uploading unless it also checks this.
+    if (document.googleDriveFileId) {
+      console.log("[drive-upload] already uploaded by a concurrent caller — skipping duplicate upload", {
+        documentId,
+        googleDriveFileId: document.googleDriveFileId,
+      });
+      return { fileId: document.googleDriveFileId, webViewLink: driveFileLink(document.googleDriveFileId) };
     }
-  }
 
-  return withRetry(async () => {
-    const accessToken = await getValidAccessToken(client.organizationId);
-    const content = fileBytes ?? placeholderContent(document.fileName);
-    const contentType = fileBytes ? mimeType ?? "application/octet-stream" : "text/plain; charset=utf-8";
-    const uniqueFileName = await resolveUniqueDriveFileName(accessToken, folderId, targetFileName);
+    // Prefer the matched requirement's own name over the stored fileName —
+    // for a real WhatsApp attachment that's a meaningless generated name
+    // (image_<wamid>.jpg; see resolveAttachment in the webhook route), never
+    // what a client or employee would recognize in Drive. Falls back to the
+    // stored fileName when there's no requirement match (needs_review
+    // documents never reach here — see the `status === "approved"` gate in
+    // processInboundAttachment/reviewDocument) or it's a manual upload that
+    // already had a real name.
+    let targetFileName = document.fileName;
+    if (document.requirementId) {
+      const [requirement] = await tx
+        .select({ name: collectionRequestRequirements.name })
+        .from(collectionRequestRequirements)
+        .where(eq(collectionRequestRequirements.id, document.requirementId))
+        .limit(1);
+      if (requirement) {
+        targetFileName = `${requirement.name}${fileExtension(document.fileName)}`;
+      }
+    }
 
-    const uploaded = await uploadDriveFile(accessToken, {
-      name: uniqueFileName,
-      parentId: folderId,
-      mimeType: contentType,
-      content,
+    return withRetry(async () => {
+      const accessToken = await getValidAccessToken(client.organizationId);
+      const content = fileBytes ?? placeholderContent(document.fileName);
+      const contentType = fileBytes ? mimeType ?? "application/octet-stream" : "text/plain; charset=utf-8";
+      const uniqueFileName = await resolveUniqueDriveFileName(accessToken, folderId, targetFileName);
+
+      const uploaded = await uploadDriveFile(accessToken, {
+        name: uniqueFileName,
+        parentId: folderId,
+        mimeType: contentType,
+        content,
+      });
+
+      await tx
+        .update(documents)
+        .set({ googleDriveFileId: uploaded.id, updatedAt: new Date() })
+        .where(eq(documents.id, documentId));
+
+      return { fileId: uploaded.id, webViewLink: uploaded.webViewLink ?? driveFileLink(uploaded.id) };
     });
-
-    await db
-      .update(documents)
-      .set({ googleDriveFileId: uploaded.id, updatedAt: new Date() })
-      .where(eq(documents.id, documentId));
-
-    return { fileId: uploaded.id, webViewLink: uploaded.webViewLink ?? driveFileLink(uploaded.id) };
   });
 }
 

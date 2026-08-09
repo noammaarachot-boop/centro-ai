@@ -42,6 +42,12 @@ interface FakeFile {
 let fakeFolders: FakeFolder[] = [];
 let fakeFiles: FakeFile[] = [];
 let nextId = 1;
+// Artificial delay for uploadDriveFile — 0 in every ordinary test (no
+// behavior change). Set to a small nonzero value only by the concurrency
+// tests below, to force two overlapping uploadDocument calls to genuinely
+// be in-flight at the same time rather than racing to finish before the
+// other even starts.
+let uploadDelayMs = 0;
 
 vi.mock("@/lib/googleAuth/drive", async () => {
   const actual = await vi.importActual<typeof import("@/lib/googleAuth/drive")>("@/lib/googleAuth/drive");
@@ -88,6 +94,7 @@ vi.mock("@/lib/googleAuth/drive", async () => {
       if (folder) folder.trashed = true;
     }),
     uploadDriveFile: vi.fn(async (_token: string, options: { name: string; parentId: string }) => {
+      if (uploadDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, uploadDelayMs));
       const id = `file-${nextId++}`;
       fakeFiles.push({ id, name: options.name, parentId: options.parentId });
       return { id, name: options.name, webViewLink: `https://drive.example/${id}` };
@@ -113,6 +120,7 @@ beforeAll(async () => {
 beforeEach(() => {
   fakeFolders = [];
   fakeFiles = [];
+  uploadDelayMs = 0;
   getValidAccessToken.mockResolvedValue("fake-token");
 });
 
@@ -377,5 +385,66 @@ describe("uploadDocument — file naming", () => {
     expect(distinctParents.size).toBe(1);
     const clientFolders = fakeFolders.filter((f) => f.name === "רז שלום");
     expect(clientFolders).toHaveLength(1);
+  });
+});
+
+describe("uploadDocument — concurrency safety (real Postgres advisory lock, not assumed sequential execution)", () => {
+  it("two genuinely overlapping calls for the SAME document upload it to Drive exactly once — the second returns the first's file, never a duplicate", async () => {
+    const { orgId, clientId } = await seedOrgWithClient("רז שלום");
+    const requestId = await seedRequest(orgId, clientId, new Date("2026-08-15T10:00:00Z"));
+    const [requirement] = await db
+      .insert(schema.collectionRequestRequirements)
+      .values({ collectionRequestId: requestId, name: "תעודת זהות" })
+      .returning();
+    const [document] = await db
+      .insert(schema.documents)
+      .values({
+        organizationId: orgId,
+        collectionRequestId: requestId,
+        requirementId: requirement.id,
+        fileName: "image_wamid.abc.jpg",
+        status: "approved",
+      })
+      .returning();
+
+    // Simulates the real-world race this closes: a cron retry picking up
+    // the document at the same moment the original approval call is still
+    // mid-upload — both call uploadDocument for the exact same documentId.
+    uploadDelayMs = 60;
+    const [a, b] = await Promise.all([
+      uploadDocument(clientId, document.id, requestId, Buffer.from("fake"), "image/jpeg"),
+      uploadDocument(clientId, document.id, requestId, Buffer.from("fake"), "image/jpeg"),
+    ]);
+
+    expect(a.fileId).toBe(b.fileId);
+    expect(fakeFiles).toHaveLength(1); // never two Drive files for one document
+    const [row] = await db.select({ googleDriveFileId: schema.documents.googleDriveFileId }).from(schema.documents).where(eq(schema.documents.id, document.id));
+    expect(row.googleDriveFileId).toBe(a.fileId);
+  });
+
+  it("uploading two genuinely DIFFERENT documents concurrently is never serialized against each other — both land in Drive", async () => {
+    const { orgId, clientId } = await seedOrgWithClient("רז שלום");
+    const requestId = await seedRequest(orgId, clientId, new Date("2026-08-15T10:00:00Z"));
+    const [requirement] = await db
+      .insert(schema.collectionRequestRequirements)
+      .values({ collectionRequestId: requestId, name: "מסמך" })
+      .returning();
+    const [docA] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, requirementId: requirement.id, fileName: "a.jpg", status: "approved" })
+      .returning();
+    const [docB] = await db
+      .insert(schema.documents)
+      .values({ organizationId: orgId, collectionRequestId: requestId, requirementId: requirement.id, fileName: "b.jpg", status: "approved" })
+      .returning();
+
+    uploadDelayMs = 30;
+    const [a, b] = await Promise.all([
+      uploadDocument(clientId, docA.id, requestId, Buffer.from("fake"), "image/jpeg"),
+      uploadDocument(clientId, docB.id, requestId, Buffer.from("fake"), "image/jpeg"),
+    ]);
+
+    expect(a.fileId).not.toBe(b.fileId);
+    expect(fakeFiles).toHaveLength(2);
   });
 });

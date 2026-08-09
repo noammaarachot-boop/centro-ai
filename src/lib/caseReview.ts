@@ -125,6 +125,10 @@ export async function runCaseReview(
           documentId: doc.id,
           anomaly: payload.anomaly,
           documentType: payload.documentType,
+          // This legacy payload shape predates matchedRequirementId — never
+          // guess one for a row that never captured it at classification
+          // time; falls back to today's existing "kept as extra" behavior.
+          matchedRequirementId: null,
         });
       } else if (doc.deferredReviewKind === "unsolicited_document") {
         const payload = doc.deferredReviewPayload as { documentType: string };

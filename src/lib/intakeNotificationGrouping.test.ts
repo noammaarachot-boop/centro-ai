@@ -511,6 +511,7 @@ describe("flushDueIntakeNotifications never sends the same combined message twic
       documentId: idDoc.id,
       anomaly: { kind: "name_mismatch", confident: true, conflictingName: "ישראל ישראלי", maskedIdNumber: null },
       documentType: "תעודת זהות",
+      matchedRequirementId: null,
     });
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,
@@ -572,6 +573,7 @@ describe("case-wide identity split wording", () => {
       documentId: docA.id,
       anomaly: { kind: "name_mismatch", confident: true, conflictingName: "אורית לוי", maskedIdNumber: null },
       documentType: "תעודת זהות",
+      matchedRequirementId: null,
     });
     await createOrMergeIdentityAnomalyConfirmation({
       organizationId: orgId,
@@ -580,6 +582,7 @@ describe("case-wide identity split wording", () => {
       documentId: docB.id,
       anomaly: { kind: "name_mismatch", confident: true, conflictingName: "משה גולן", maskedIdNumber: null },
       documentType: "רישיון נהיגה",
+      matchedRequirementId: null,
     });
 
     await db
@@ -618,6 +621,7 @@ describe("case-wide identity split wording", () => {
       documentId: docA.id,
       anomaly: { kind: "name_mismatch", confident: true, conflictingName: "אורית לוי", maskedIdNumber: null },
       documentType: "תעודת זהות",
+      matchedRequirementId: null,
     });
     // A second group, but a *different kind* (unsolicited, not a second
     // identity) — only one distinct identity is in question here, so the
