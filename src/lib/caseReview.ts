@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, collectionRequests, conversations, documents, organizations, pendingConfirmations } from "@/db/schema";
+import { collectionRequestRequirements, collectionRequests, conversations, documents, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
@@ -9,7 +9,6 @@ import { createOrMergeIdentityAnomalyConfirmation, type IdentityAnomaly } from "
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
 import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
-import { zonedDateParts } from "@/lib/businessHours";
 
 // Silence-window case review (runAutomaticCaseStatusReview, below) — how
 // long a collection request's conversation must go without a new document
@@ -337,16 +336,6 @@ export function buildCaseStatusSummaryMessage(received: string[], missing: strin
 
 export type FinishOutcome = "review_pending" | "missing_requirements" | "completed" | "blocked";
 
-// A closing line that changes with the time of day — evaluated in the
-// organization's own IANA timezone (never the server process's UTC clock),
-// same discipline as isWithinBusinessHours/nextBusinessOpenTime.
-function buildClosingGreeting(hour: number): string {
-  if (hour >= 5 && hour < 12) return "בוקר טוב";
-  if (hour >= 12 && hour < 17) return "המשך צהריים טובים";
-  if (hour >= 17 && hour < 21) return "המשך ערב טוב";
-  return "לילה טוב";
-}
-
 // Shared by both attemptFinishCollectionRequest (explicit "סיימתי") and
 // runAutomaticCaseStatusReview (silence-window trigger, below) — the exact
 // same completion send + conversation-close + deferral/extension cleanup
@@ -358,15 +347,9 @@ async function finalizeCompletion(params: { organizationId: string; collectionRe
   // them (buildCaseStatusSummaryMessage) — see computeCaseStatusLists.
   const { received, extra } = await computeCaseStatusLists(params.collectionRequestId);
   const db = await getDb();
-  const [organization] = await db
-    .select({ timezone: organizations.timezone })
-    .from(organizations)
-    .where(eq(organizations.id, params.organizationId))
-    .limit(1);
-  const greeting = buildClosingGreeting(zonedDateParts(new Date(), organization?.timezone ?? "Asia/Jerusalem").hour);
 
   const extraSection = extra.length > 0 ? `\n\nבנוסף התקבל גם:\n${extra.map((name) => `• ${name}`).join("\n")}` : "";
-  const completionMessage = `קיבלתי את כל המסמכים שנדרשו:\n${received.map((name) => `• ${name}`).join("\n")}${extraSection}\n\nתודה רבה על שיתוף הפעולה.\n${greeting}`;
+  const completionMessage = `קיבלתי את כל המסמכים שנדרשו:\n${received.map((name) => `• ${name}`).join("\n")}${extraSection}\n\nתודה רבה על שיתוף הפעולה.\nהמשך יום טוב.`;
   await sendOutboundMessage(
     params.organizationId,
     params.conversationId,

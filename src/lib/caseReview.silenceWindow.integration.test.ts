@@ -184,6 +184,12 @@ describe("runAutomaticCaseStatusReview", () => {
     expect(completionBody).toContain("קיבלתי את כל המסמכים שנדרשו:");
     expect(completionBody).toContain("• תעודת זהות");
     expect(completionBody).toContain("תודה רבה על שיתוף הפעולה.");
+    // Fixed closing line — never varies by time of day.
+    expect(completionBody).toContain("המשך יום טוב.");
+    expect(completionBody).not.toContain("בוקר טוב");
+    expect(completionBody).not.toContain("צהריים טובים");
+    expect(completionBody).not.toContain("ערב טוב");
+    expect(completionBody).not.toContain("לילה טוב");
 
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.status).toBe("closed");
