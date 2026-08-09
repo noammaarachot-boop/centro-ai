@@ -1,7 +1,7 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
-import type { CorrectionContext } from "@/lib/correction/correctionContext";
+import type { ConversationContext } from "@/lib/conversation/conversationContext";
 import type { CorrectionDesiredOutcome } from "@/lib/correction/correctionClassifier";
 
 /**
@@ -28,6 +28,7 @@ export type ConversationIntentKind =
   | "corrects_resolved"
   | "reports_missing_document"
   | "needs_employee_review"
+  | "resolves_review_item"
   | "asks_document_question"
   | "finished_signal"
   | "deferral_promise"
@@ -36,6 +37,7 @@ export type ConversationIntentKind =
 
 export type DocumentQuestionCategory = "request_overview" | "receipt_check" | "supporting_document" | "file_format";
 export type ReviewCategory = "alternative_or_policy_question" | "human_request" | "other";
+export type ReviewItemAction = "close_resolved" | "add_context_note";
 
 export interface ConversationIntentResult {
   kind: ConversationIntentKind;
@@ -52,9 +54,21 @@ export interface ConversationIntentResult {
   // document, if named (same role as classifyRequestMessageIntent's old
   // mentionedDocumentType, fed into resolveExceptionTarget).
   missingDocumentMentionedType: string | null;
-  // "needs_employee_review"
+  // "needs_employee_review" — opens a brand-new review item.
   reviewCategory: ReviewCategory | null;
   reviewGist: string | null;
+  // "resolves_review_item" — the message clearly relates to an EXISTING
+  // review item shown below (open or recently resolved), either settling
+  // it (close_resolved) or adding a relevant detail without settling it
+  // (add_context_note). reviewItemTargetId must be copied verbatim from
+  // the list — the caller re-validates it, never trusts it blindly.
+  // reviewItemReason is the internal audit explanation (never shown to the
+  // client verbatim); naturalAcknowledgment is the actual client-facing
+  // reply, phrased warmly from the real facts, never inventing new ones.
+  reviewItemTargetId: string | null;
+  reviewItemAction: ReviewItemAction | null;
+  reviewItemReason: string | null;
+  naturalAcknowledgment: string | null;
   // "asks_document_question"
   documentQuestionCategory: DocumentQuestionCategory | null;
 }
@@ -69,6 +83,10 @@ const UNRELATED_RESULT: ConversationIntentResult = {
   missingDocumentMentionedType: null,
   reviewCategory: null,
   reviewGist: null,
+  reviewItemTargetId: null,
+  reviewItemAction: null,
+  reviewItemReason: null,
+  naturalAcknowledgment: null,
   documentQuestionCategory: null,
 };
 
@@ -79,6 +97,7 @@ const schema = z.object({
       "corrects_resolved",
       "reports_missing_document",
       "needs_employee_review",
+      "resolves_review_item",
       "asks_document_question",
       "finished_signal",
       "deferral_promise",
@@ -89,7 +108,8 @@ const schema = z.object({
       '"resolves_pending" — ההודעה עונה על השאלה הפתוחה המוצגת למטה (בכל ניסוח, לא רק "כן"/"לא" מילוליים) — כולל מקרה שבו השאלה הפתוחה היא בקשת הבהרה חופשית על מסמך, ואז כל תיאור של הלקוח נחשב תשובה. שימי לב: אם ההודעה בבירור אינה מתייחסת לשאלה הפתוחה אלא שואלת משהו אחר לגמרי, אל תסמני resolves_pending — סמני את הקטגוריה האמיתית (למשל needs_employee_review). ' +
         '"corrects_resolved" — ההודעה מתייחסת למסמך/החלטה שכבר טופלו (מהרשימה למטה) ומבקשת לשנות את התוצאה שלהם. ' +
         '"reports_missing_document" — הלקוח אומר בבירור שאין לו/לא משיג מסמך נדרש. ' +
-        '"needs_employee_review" — כל שאלה הקשורה למסמך/לדרישה בבקשה הזו שאינה נענית מהעובדות הידועות (למשל: אפשר לשלוח מסמך חלופי, המסמך על שם קרוב משפחה, יש רק תמונה של עמוד אחד, המסמך עדיין בתוקף, בקשה לדבר עם נציג אנושי, וכל שאלה דומה שלא מכוסה בקטגוריות האחרות). אל תנחשי — אם לא בטוחה אם השאלה שייכת כאן, סמני needs_employee_review ולא unrelated. ' +
+        '"needs_employee_review" — שאלה חדשה, שאינה מתייחסת לאף אחד מ"הפריטים לבדיקת עובד" המוצגים למטה, הקשורה למסמך/לדרישה בבקשה הזו ואינה נענית מהעובדות הידועות (למשל: אפשר לשלוח מסמך חלופי, המסמך על שם קרוב משפחה, יש רק תמונה של עמוד אחד, המסמך עדיין בתוקף, בקשה לדבר עם נציג אנושי). אל תנחשי — אם לא בטוחה אם השאלה שייכת כאן, סמני needs_employee_review ולא unrelated. ' +
+        '"resolves_review_item" — ההודעה מתייחסת באופן ברור לאחד מ"הפריטים לבדיקת עובד" המוצגים למטה (פתוח או שנפתר לאחרונה) — למשל הלקוח מצא את המסמך שהשאלה הייתה עליו, חזר בו, הוסיף פרט רלוונטי, או אמר שהשאלה כבר לא רלוונטית. סמני kind זה גם אם רק חלק מהפריט מתעדכן (add_context_note) וגם אם הוא נפתר לגמרי (close_resolved) — ההבדל נקבע בשדה reviewItemAction. ' +
         '"asks_document_question" — שאלות עובדתיות שהמערכת יודעת לענות עליהן מהנתונים הידועים: מה נדרש/מה חסר, האם מסמך התקבל, האם צריך ספח, באיזה פורמט לשלוח. ' +
         '"finished_signal" — הלקוח אומר בבירור שסיים לשלוח את כל המסמכים. ' +
         '"deferral_promise" — הלקוח מבטיח לשלוח בעתיד (מתוארך או כללי). ' +
@@ -125,13 +145,37 @@ const schema = z.object({
     .string()
     .nullable()
     .describe('רק כאשר kind הוא "needs_employee_review": תקציר קצר וברור של השאלה עבור העובד, בעברית.'),
+  reviewItemTargetId: z
+    .string()
+    .nullable()
+    .describe(
+      'רק כאשר kind הוא "resolves_review_item": ה-id המדויק (חייב להיות זהה בדיוק לאחד מה-id-ים ברשימת "פריטים לבדיקת עובד" למטה) של הפריט שההודעה מתייחסת אליו. לעולם אל תמציאי id — אם אינך בטוחה לאיזה פריט ההודעה מתייחסת, סמני kind אחר או הורידי את confidence.'
+    ),
+  reviewItemAction: z
+    .enum(["close_resolved", "add_context_note"])
+    .nullable()
+    .describe(
+      'רק כאשר kind הוא "resolves_review_item": "close_resolved" — ההודעה פותרת את הפריט באופן חד-משמעי ואין עוד צורך בהחלטת משרד (למשל הלקוח מצא את המסמך המקורי וישלח אותו, או חזר בו לגמרי מהשאלה). "add_context_note" — ההודעה מוסיפה מידע רלוונטי לפריט אך אינה פותרת אותו באופן ודאי (עדיין נדרשת החלטת עובד, או שאין ביטחון מלא שזה נגמר). כשיש ספק כלשהו אם זה נפתר לגמרי — תמיד add_context_note, לעולם אל תנחשי close_resolved.'
+    ),
+  reviewItemReason: z
+    .string()
+    .nullable()
+    .describe(
+      'רק כאשר kind הוא "resolves_review_item": הסבר פנימי קצר וברור בעברית לצוות/לביקורת — למה סומן close_resolved או מה בדיוק ההודעה הוסיפה ל-add_context_note. לעולם אינו נשלח ללקוח.'
+    ),
+  naturalAcknowledgment: z
+    .string()
+    .nullable()
+    .describe(
+      'רק כאשר kind הוא "resolves_review_item": תגובה טבעית, קצרה וחמה ללקוח בעברית, המתאימה בדיוק למצב (למשל "מעולה, אפשר לשלוח אותה כאן" אם מצא את המסמך, או "תודה, רשמתי את זה" להוספת פרט) — התבססי אך ורק על מה שההודעה עצמה אמרה, לעולם אל תמציאי עובדות או החלטות חדשות.'
+    ),
   documentQuestionCategory: z
     .enum(["request_overview", "receipt_check", "supporting_document", "file_format"])
     .nullable()
     .describe('רק כאשר kind הוא "asks_document_question": "request_overview" למה נדרש/מה חסר, "receipt_check" האם מסמך התקבל, "supporting_document" האם צריך ספח, "file_format" באיזה פורמט לשלוח.'),
 });
 
-function formatCandidateDocuments(context: CorrectionContext): string {
+function formatCandidateDocuments(context: ConversationContext): string {
   if (context.recentDocuments.length === 0) return "אין מסמכים אחרונים.";
   return context.recentDocuments
     .map((doc, index) => {
@@ -147,19 +191,26 @@ function formatCandidateDocuments(context: CorrectionContext): string {
     .join("\n");
 }
 
-function formatCandidateConfirmations(context: CorrectionContext): string {
+function formatCandidateConfirmations(context: ConversationContext): string {
   if (context.recentResolvedConfirmations.length === 0) return "אין החלטות אחרונות.";
   return context.recentResolvedConfirmations
     .map((c) => `[id=${c.id}] שאלה: "${c.question}" — הלקוח ענה: ${c.resolvedAnswer === "confirmed" ? "כן" : "לא"}`)
     .join("\n");
 }
 
-function formatRecentMessages(context: CorrectionContext): string {
+function formatRecentMessages(context: ConversationContext): string {
   if (context.recentMessages.length === 0) return "אין הודעות קודמות.";
   return context.recentMessages.map((m) => `${m.direction === "inbound" ? "לקוח" : "Centro"}: "${m.body}"`).join("\n");
 }
 
-export async function classifyConversationIntent(context: CorrectionContext, messageText: string): Promise<ConversationIntentResult> {
+function formatReviewItems(context: ConversationContext): string {
+  if (context.reviewItems.length === 0) return "אין פריטים לבדיקת עובד.";
+  return context.reviewItems
+    .map((r) => `[id=${r.id}] (${r.status === "pending" ? "ממתין להחלטת משרד" : "כבר נענה"}) שאלת הלקוח: "${r.clientQuestion}"${r.gist ? ` — תקציר: ${r.gist}` : ""}`)
+    .join("\n");
+}
+
+export async function classifyConversationIntent(context: ConversationContext, messageText: string): Promise<ConversationIntentResult> {
   const trimmed = messageText.trim();
   if (!trimmed) return UNRELATED_RESULT;
 
@@ -194,6 +245,9 @@ export async function classifyConversationIntent(context: CorrectionContext, mes
             "הודעות אחרונות בשיחה:",
             formatRecentMessages(context),
             "",
+            "פריטים לבדיקת עובד (פתוחים ושנפתרו לאחרונה) — שאלות של הלקוח שהועברו למשרד:",
+            formatReviewItems(context),
+            "",
             `ההודעה החדשה מהלקוח: "${trimmed}"`,
             "",
             "סווגי את ההודעה. אל תנחשי — אם לא בטוחה, סמני unclear או הורידי את confidence.",
@@ -214,6 +268,10 @@ export async function classifyConversationIntent(context: CorrectionContext, mes
       missingDocumentMentionedType: object.missingDocumentMentionedType,
       reviewCategory: object.reviewCategory,
       reviewGist: object.reviewGist,
+      reviewItemTargetId: object.reviewItemTargetId,
+      reviewItemAction: object.reviewItemAction,
+      reviewItemReason: object.reviewItemReason,
+      naturalAcknowledgment: object.naturalAcknowledgment,
       documentQuestionCategory: object.documentQuestionCategory,
     };
   } catch (error) {

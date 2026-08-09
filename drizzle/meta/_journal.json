@@ -372,6 +372,13 @@
       "when": 1786277764296,
       "tag": "0052_square_tinkerer",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1786289004050,
+      "tag": "0053_dazzling_the_hand",
+      "breakpoints": true
     }
   ]
 }

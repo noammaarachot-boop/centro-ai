@@ -1269,6 +1269,11 @@ export const reviewItemCategory = pgEnum("review_item_category", [
   "other",
 ]);
 export const reviewItemStatus = pgEnum("review_item_status", ["pending", "resolved"]);
+// Who/what actually resolved a review item — required for a clear audit
+// trail whenever the conversational layer closes one on its own (see
+// src/lib/employeeReview.ts's closeReviewItemFromClientContext), never
+// inferred after the fact from resolvedByUserId being null.
+export const reviewItemResolvedBy = pgEnum("review_item_resolved_by", ["employee", "ai_context"]);
 
 export const employeeReviewItems = pgTable("employee_review_items", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1298,6 +1303,24 @@ export const employeeReviewItems = pgTable("employee_review_items", {
   resolutionText: text("resolution_text"),
   resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id, { onDelete: "set null" }),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  // Null while pending. Set alongside status/resolutionText/resolvedAt on
+  // every resolution path — "employee" for a real dashboard decision,
+  // "ai_context" when the conversational layer recognized (at a high,
+  // confidence-gated bar) that a later client message made the question
+  // moot. resolutionText for an "ai_context" resolution is an
+  // internal/audit explanation, never sent to the client verbatim (the
+  // client instead gets the classifier's own natural acknowledgment — see
+  // conversationDispatch.ts).
+  resolvedBy: reviewItemResolvedBy("resolved_by"),
+  // A running, append-only log of later client messages relevant to this
+  // item that didn't (yet, or ever) resolve it outright — e.g. the client
+  // added a detail while the item is still pending, or commented on it
+  // after an employee already answered. Each entry:
+  // { note: string, clientMessage: string, at: string (ISO) }. Never
+  // removes or rewrites clientQuestion/resolutionText — purely additive,
+  // so an employee always sees the full history, never a silently
+  // overwritten question.
+  contextUpdates: jsonb("context_updates"),
   // Opt-in promote-to-policy trace — becamePolicy is only ever true
   // together with a real policyId, both set in the same resolution
   // transaction (resolveEmployeeReviewItem). Never set automatically; the

@@ -251,6 +251,10 @@ function conversationIntentSmartDefault(args: unknown): { object: Record<string,
     missingDocumentMentionedType: null,
     reviewCategory: null,
     reviewGist: null,
+    reviewItemTargetId: null,
+    reviewItemAction: null,
+    reviewItemReason: null,
+    naturalAcknowledgment: null,
     documentQuestionCategory: null,
   };
   const messageMatch = content.match(/ההודעה החדשה מהלקוח: "([^"]*)"/);
@@ -535,7 +539,17 @@ describe("E2E Journey 1 — simple two-document request, golden path", () => {
 // matching its real schema (conversationIntent.ts), with sensible defaults
 // for every field not overridden.
 function queueConversationIntent(overrides: {
-  kind: "resolves_pending" | "corrects_resolved" | "reports_missing_document" | "needs_employee_review" | "asks_document_question" | "finished_signal" | "deferral_promise" | "unclear" | "unrelated";
+  kind:
+    | "resolves_pending"
+    | "corrects_resolved"
+    | "reports_missing_document"
+    | "needs_employee_review"
+    | "resolves_review_item"
+    | "asks_document_question"
+    | "finished_signal"
+    | "deferral_promise"
+    | "unclear"
+    | "unrelated";
   confidence?: number;
   pendingAnswer?: "confirm" | "decline" | null;
   correctionTargetType?: "document" | "confirmation" | null;
@@ -544,6 +558,10 @@ function queueConversationIntent(overrides: {
   missingDocumentMentionedType?: string | null;
   reviewCategory?: string | null;
   reviewGist?: string | null;
+  reviewItemTargetId?: string | null;
+  reviewItemAction?: "close_resolved" | "add_context_note" | null;
+  reviewItemReason?: string | null;
+  naturalAcknowledgment?: string | null;
   documentQuestionCategory?: string | null;
 }) {
   generateObject.mockResolvedValueOnce({
@@ -556,6 +574,10 @@ function queueConversationIntent(overrides: {
       missingDocumentMentionedType: null,
       reviewCategory: null,
       reviewGist: null,
+      reviewItemTargetId: null,
+      reviewItemAction: null,
+      reviewItemReason: null,
+      naturalAcknowledgment: null,
       documentQuestionCategory: null,
       ...overrides,
     },

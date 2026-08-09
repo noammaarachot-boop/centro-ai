@@ -1,31 +1,41 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, documents, messages, pendingConfirmations } from "@/db/schema";
+import { collectionRequestRequirements, documents, employeeReviewItems, messages, pendingConfirmations } from "@/db/schema";
 import { buildRequirementFacts, type RequirementFact } from "@/lib/requestQnA";
 
 /**
- * Conversational correction layer — context-gathering only, no AI, no state
- * changes. The real gap this closes: nothing in the codebase before this
- * ever assembled "what just happened" for a client's new message to be
- * understood against — every existing classifier only ever saw either the
- * single currently-open question, or a bare requirement-name list. A
- * correction like "שלחתי בטעות" arriving right after a decision was already
- * applied needs to see that decision (and a short recent window around it),
- * not just the live open state.
+ * The unified document-conversation understanding layer's context builder —
+ * pure data-gathering, no AI, no state changes. The real gap this closes:
+ * nothing in this codebase before it ever assembled "everything relevant
+ * that's happened in this conversation" for a client's new message to be
+ * understood against — every classifier only ever saw either the single
+ * currently-open question, or a bare requirement-name list.
  *
- * Every candidate (document or confirmation) is tagged with its real
- * database id — never a synthesized one — so the classifier's own returned
- * targetId can be validated by exact membership against the same list built
- * here, in the same call, rather than trusted blindly.
+ * Every candidate (document, confirmation, or review item) is tagged with
+ * its real database id — never a synthesized one — so the classifier's own
+ * returned targetId can be validated by exact membership against the same
+ * list built here, in the same call, rather than trusted blindly.
+ *
+ * Employee-review items (src/lib/employeeReview.ts) are included precisely
+ * because they're exactly the kind of "still-relevant, not-yet-settled"
+ * state a later client message routinely refers back to (found the
+ * document a review question was about, changed their mind, added a
+ * detail) — without this, that whole class of message had no anchor to
+ * connect to and silently degraded to "לא הצלחתי להבין".
  */
 
 const RECENT_DOCUMENT_STATUSES = ["approved", "unsolicited_approved", "identity_anomaly_confirmed"] as const;
 const RECENT_CONFIRMATION_KINDS = ["identity_anomaly", "unsolicited_document"] as const;
 const RECENT_DOCUMENTS_LIMIT = 5;
 const RECENT_CONFIRMATIONS_LIMIT = 5;
-const RECENT_MESSAGES_LIMIT = 8;
+const RECENT_REVIEW_ITEMS_LIMIT = 5; // per status (pending / resolved), not combined
+// Widened from the original 8 — a second, cheaper safety net alongside the
+// structured reviewItems/recentResolvedConfirmations lists above: raw
+// scrollback so a longer exchange doesn't lose everything once the
+// structured lists' own limits are exceeded.
+const RECENT_MESSAGES_LIMIT = 14;
 
-export interface CorrectionCandidateDocument {
+export interface ConversationCandidateDocument {
   id: string;
   documentType: string | null;
   requirementName: string | null;
@@ -35,7 +45,7 @@ export interface CorrectionCandidateDocument {
   receivedAt: string;
 }
 
-export interface CorrectionCandidateConfirmation {
+export interface ConversationCandidateConfirmation {
   id: string;
   kind: "identity_anomaly" | "unsolicited_document";
   question: string;
@@ -43,26 +53,36 @@ export interface CorrectionCandidateConfirmation {
   resolvedAt: string;
 }
 
-export interface CorrectionOpenQuestion {
+export interface ConversationCandidateReviewItem {
+  id: string;
+  category: string;
+  clientQuestion: string;
+  gist: string | null;
+  status: "pending" | "resolved";
+  createdAt: string;
+}
+
+export interface ConversationOpenQuestion {
   id: string;
   kind: string;
   question: string;
 }
 
-export interface CorrectionRecentMessage {
+export interface ConversationRecentMessage {
   direction: "inbound" | "outbound";
   body: string;
   createdAt: string;
 }
 
-export interface CorrectionContext {
+export interface ConversationContext {
   collectionRequestId: string;
   conversationId: string;
   requirementFacts: RequirementFact[];
-  openQuestion: CorrectionOpenQuestion | null;
-  recentDocuments: CorrectionCandidateDocument[];
-  recentResolvedConfirmations: CorrectionCandidateConfirmation[];
-  recentMessages: CorrectionRecentMessage[];
+  openQuestion: ConversationOpenQuestion | null;
+  recentDocuments: ConversationCandidateDocument[];
+  recentResolvedConfirmations: ConversationCandidateConfirmation[];
+  reviewItems: ConversationCandidateReviewItem[];
+  recentMessages: ConversationRecentMessage[];
 }
 
 // Best-effort "what type of document was this" label — mirrors the same
@@ -72,10 +92,10 @@ function deriveDocumentType(fileName: string, requirementName: string | null): s
   return requirementName ?? (fileName.includes(".") ? fileName.slice(0, fileName.lastIndexOf(".")) : fileName) ?? null;
 }
 
-export async function buildCorrectionContext(params: {
+export async function buildConversationContext(params: {
   collectionRequestId: string;
   conversationId: string;
-}): Promise<CorrectionContext> {
+}): Promise<ConversationContext> {
   const db = await getDb();
 
   const requirementFacts = await buildRequirementFacts(params.collectionRequestId);
@@ -90,7 +110,7 @@ export async function buildCorrectionContext(params: {
       )
     )
     .limit(2);
-  const openQuestion: CorrectionOpenQuestion | null =
+  const openQuestion: ConversationOpenQuestion | null =
     openRows.length === 1 ? { id: openRows[0].id, kind: openRows[0].kind, question: openRows[0].question } : null;
 
   const recentDocs = await db
@@ -123,7 +143,7 @@ export async function buildCorrectionContext(params: {
     for (const row of requirementRows) requirementNameById.set(row.id, row.name);
   }
 
-  const recentDocuments: CorrectionCandidateDocument[] = recentDocs.map((doc) => {
+  const recentDocuments: ConversationCandidateDocument[] = recentDocs.map((doc) => {
     const requirementName = doc.requirementId ? requirementNameById.get(doc.requirementId) ?? null : null;
     return {
       id: doc.id,
@@ -148,7 +168,7 @@ export async function buildCorrectionContext(params: {
     .orderBy(desc(pendingConfirmations.respondedAt))
     .limit(RECENT_CONFIRMATIONS_LIMIT * 2); // status filtered in JS below, respondedAt is null for still-pending rows
 
-  const recentResolvedConfirmations: CorrectionCandidateConfirmation[] = resolvedConfirmationRows
+  const recentResolvedConfirmations: ConversationCandidateConfirmation[] = resolvedConfirmationRows
     .filter((row) => (row.status === "confirmed" || row.status === "declined") && row.respondedAt)
     .slice(0, RECENT_CONFIRMATIONS_LIMIT)
     .map((row) => ({
@@ -159,13 +179,37 @@ export async function buildCorrectionContext(params: {
       resolvedAt: row.respondedAt!.toISOString(),
     }));
 
+  const reviewItemRows = await db
+    .select({
+      id: employeeReviewItems.id,
+      category: employeeReviewItems.category,
+      clientQuestion: employeeReviewItems.clientQuestion,
+      understoodContext: employeeReviewItems.understoodContext,
+      status: employeeReviewItems.status,
+      createdAt: employeeReviewItems.createdAt,
+    })
+    .from(employeeReviewItems)
+    .where(eq(employeeReviewItems.collectionRequestId, params.collectionRequestId))
+    .orderBy(desc(employeeReviewItems.createdAt));
+
+  const pendingReviewItems = reviewItemRows.filter((r) => r.status === "pending").slice(0, RECENT_REVIEW_ITEMS_LIMIT);
+  const resolvedReviewItems = reviewItemRows.filter((r) => r.status === "resolved").slice(0, RECENT_REVIEW_ITEMS_LIMIT);
+  const reviewItems: ConversationCandidateReviewItem[] = [...pendingReviewItems, ...resolvedReviewItems].map((row) => ({
+    id: row.id,
+    category: row.category,
+    clientQuestion: row.clientQuestion,
+    gist: (row.understoodContext as { gist?: string } | null)?.gist ?? null,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
+  }));
+
   const recentMessageRows = await db
     .select({ direction: messages.direction, body: messages.body, createdAt: messages.createdAt })
     .from(messages)
     .where(eq(messages.conversationId, params.conversationId))
     .orderBy(desc(messages.createdAt))
     .limit(RECENT_MESSAGES_LIMIT);
-  const recentMessages: CorrectionRecentMessage[] = recentMessageRows
+  const recentMessages: ConversationRecentMessage[] = recentMessageRows
     .map((row) => ({ direction: row.direction, body: row.body, createdAt: row.createdAt.toISOString() }))
     .reverse();
 
@@ -176,6 +220,7 @@ export async function buildCorrectionContext(params: {
     openQuestion,
     recentDocuments,
     recentResolvedConfirmations,
+    reviewItems,
     recentMessages,
   };
 }
