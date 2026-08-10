@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, desc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, documents, messages, organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -15,8 +15,17 @@ import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification
 import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
 import { createRequestReopenConfirmation, decidePostCompletionGate, POST_COMPLETION_WINDOW_MS } from "@/lib/requestReopen";
 import { runConversationUnderstanding } from "@/lib/conversation/conversationDispatch";
-import { recordInboundMessage } from "@/lib/conversationOrchestration";
+import { ensureConversation, recordInboundMessage } from "@/lib/conversationOrchestration";
 import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
+import {
+  createRequestDisambiguation,
+  findOpenDisambiguationForClient,
+  resendDisambiguationClarification,
+  resolveClientConversation,
+  resolveDisambiguationReply,
+  tryUnambiguousMatchByOpenQuestion,
+  type DisambiguationResolution,
+} from "@/lib/requestDisambiguation";
 import { downloadMedia } from "@/lib/whatsapp/media";
 import { toE164 } from "@/lib/whatsapp/phone";
 import { verifyWebhookSignature } from "@/lib/whatsapp/webhookSignature";
@@ -111,14 +120,14 @@ async function findOrganizationByPhoneNumberId(phoneNumberId: string) {
   return organization ?? null;
 }
 
-// A client's most recently active conversation — real inbound routing
-// has no "which page is the employee looking at" context the way the
-// DevTools simulator does, since Meta only reports which phone number
-// sent what. Matches phone numbers by E.164 normalization since
-// clients.phone has no fixed format. A client with several genuinely
-// concurrent collection requests isn't disambiguated further than this —
-// out of this milestone's scope.
-async function findClientAndConversation(organizationId: string, fromWaId: string) {
+// Real inbound routing has no "which page is the employee looking at"
+// context the way the DevTools simulator does, since Meta only reports
+// which phone number sent what. Matches by E.164 normalization since
+// clients.phone has no fixed format. Which of the matched client's
+// possibly-several conversations a message belongs to is a separate
+// decision — see resolveClientConversation (src/lib/requestDisambiguation.ts),
+// consulted by handleInboundMessage below.
+async function matchClientByPhone(organizationId: string, fromWaId: string) {
   const db = await getDb();
   const orgClients = await db
     .select({ id: clients.id, phone: clients.phone })
@@ -130,30 +139,14 @@ async function findClientAndConversation(organizationId: string, fromWaId: strin
   // Last 4 digits only — matches the codebase's "no full phone numbers in
   // logs" convention (see document-collection-automation.md §12) while
   // still being enough to eyeball a match/mismatch against known test data.
-  console.log("[wa-inbound] findClientAndConversation: phone match", {
+  console.log("[wa-inbound] matchClientByPhone", {
     organizationId,
     fromWaIdLast4: fromWaId.slice(-4),
     candidateCount: orgClients.length,
     matched: !!client,
     clientId: client?.id ?? null,
   });
-  if (!client) return null;
-
-  const [conversation] = await db
-    .select()
-    .from(conversations)
-    .where(and(eq(conversations.organizationId, organizationId), eq(conversations.clientId, client.id)))
-    .orderBy(desc(conversations.updatedAt))
-    .limit(1);
-  console.log("[wa-inbound] findClientAndConversation: conversation lookup", {
-    clientId: client.id,
-    conversationFound: !!conversation,
-    conversationId: conversation?.id ?? null,
-    collectionRequestId: conversation?.collectionRequestId ?? null,
-  });
-  if (!conversation) return null;
-
-  return { client, conversation };
+  return client ?? null;
 }
 
 // Idempotency check — Meta can and does redeliver the same webhook event
@@ -252,19 +245,17 @@ async function handleInboundMessage(
     type: message.type,
   });
 
-  const match = await findClientAndConversation(organization.id, message.from);
-  if (!match) {
-    console.log("[wa-inbound] STOPPED: no matching client/conversation for this org — see phone match log above");
+  const client = await matchClientByPhone(organization.id, message.from);
+  if (!client) {
+    console.log("[wa-inbound] STOPPED: no matching client for this org — see phone match log above");
     await recordAuditEvent({
       organizationId: organization.id,
       eventType: "whatsapp.inbound_unmatched",
-      description: `התקבלה הודעת WhatsApp ממספר לא מזוהה או ללא בקשת איסוף פעילה (${message.from})`,
+      description: `התקבלה הודעת WhatsApp ממספר לא מזוהה (${message.from})`,
       actorType: "system",
     });
     return;
   }
-  const { client, conversation } = match;
-  const collectionRequestId = conversation.collectionRequestId;
 
   // Document replace/supersede (src/lib/documentReplace.ts) — Meta lets a
   // client attach free text alongside media in the same message.
@@ -277,6 +268,121 @@ async function handleInboundMessage(
     fileName: attachment?.fileName ?? null,
     mimeType: attachment?.mimeType ?? null,
   });
+
+  // Multi-active-collection-request disambiguation (src/lib/requestDisambiguation.ts)
+  // — checked BEFORE any conversation is chosen. A client already mid-way
+  // through answering "which of your open requests is this about?" has
+  // this exact reply consumed as the answer, never processed as a fresh
+  // new message against a guessed conversation.
+  const openDisambiguation = await findOpenDisambiguationForClient(organization.id, client.id);
+  if (openDisambiguation) {
+    if (attachment && openDisambiguation.whatsappMessageId === message.id) {
+      console.log("[wa-inbound] SKIPPED (idempotency): redelivery of the exact message already held for disambiguation", {
+        messageId: message.id,
+      });
+      return;
+    }
+    const resolution = await resolveDisambiguationReply(openDisambiguation, body ?? "");
+    if (!resolution) {
+      console.log("[wa-inbound] disambiguation reply not understood as a single valid choice — re-asking, not guessing");
+      await resendDisambiguationClarification(openDisambiguation);
+      return;
+    }
+    console.log("[wa-inbound] disambiguation resolved", {
+      clientId: client.id,
+      resolvedCollectionRequestId: resolution.collectionRequestId,
+    });
+    await replayHeldDisambiguation(organization, client, resolution);
+    return;
+  }
+
+  const resolution = await resolveClientConversation(organization.id, client.id);
+  if (resolution.outcome === "no_conversation") {
+    console.log("[wa-inbound] STOPPED: client matched but has no collection request at all");
+    await recordAuditEvent({
+      organizationId: organization.id,
+      eventType: "whatsapp.inbound_unmatched",
+      description: `התקבלה הודעת WhatsApp מלקוח ללא בקשת איסוף פעילה (${message.from})`,
+      actorType: "system",
+      clientId: client.id,
+    });
+    return;
+  }
+  let conversation: typeof conversations.$inferSelect;
+  if (resolution.outcome === "resolved") {
+    conversation = resolution.conversation;
+  } else {
+    // outcome === "ambiguous" — two or more genuinely active requests.
+    console.log("[wa-inbound] multiple active collection requests", {
+      clientId: client.id,
+      candidateCount: resolution.candidates.length,
+    });
+    const unambiguous = await tryUnambiguousMatchByOpenQuestion(resolution.candidates);
+    if (!unambiguous) {
+      // Tier 3 — hold, ask, touch nothing on any candidate request.
+      let attachmentContent: { fileName: string; mimeType: string; content: Buffer } | null = null;
+      if (attachment) {
+        try {
+          const media = await downloadMedia(attachment.mediaId);
+          attachmentContent = { fileName: attachment.fileName, mimeType: media.mimeType, content: media.bytes };
+        } catch (error) {
+          console.error("[wa-inbound] downloadMedia FAILED (disambiguation hold path)", error);
+          await recordAuditEvent({
+            organizationId: organization.id,
+            eventType: "whatsapp.inbound_media_download_failed",
+            description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+            actorType: "system",
+            clientId: client.id,
+          });
+          return;
+        }
+      }
+      try {
+        await createRequestDisambiguation({
+          organizationId: organization.id,
+          clientId: client.id,
+          candidates: resolution.candidates,
+          messageBody: body,
+          attachment: attachmentContent,
+          whatsappMessageId: attachment ? message.id : null,
+        });
+      } catch (error) {
+        // Race backstop — the partial unique index on
+        // pendingRequestDisambiguations (one open question per client) is
+        // the real guarantee behind the findOpenDisambiguationForClient
+        // check above, which only ever sees a snapshot: two messages from
+        // the same client processed by genuinely concurrent invocations
+        // (two separate webhook deliveries, not two messages in the same
+        // payload — those are handled sequentially by processClaimedMessages)
+        // could both pass that check before either INSERT commits. Whichever
+        // one loses the race never sent a second clarification (the insert
+        // failed before sendOutboundMessage was ever reached) — the winner's
+        // question already covers this client, so the losing message is
+        // safely dropped rather than crashing the whole webhook attempt.
+        if (isUniqueViolation(error, "pending_request_disambiguations_client_open_idx")) {
+          console.log("[wa-inbound] SKIPPED (idempotency, race): another concurrent message already opened a disambiguation for this client", {
+            clientId: client.id,
+          });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+    console.log("[wa-inbound] disambiguation auto-resolved — exactly one candidate has an open question", {
+      clientId: client.id,
+      collectionRequestId: unambiguous.collectionRequestId,
+    });
+    const db = await getDb();
+    const [resolvedConversation] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, unambiguous.conversationId))
+      .limit(1);
+    if (!resolvedConversation) return; // defensive — vanished between the two lookups above
+    conversation = resolvedConversation;
+  }
+  const collectionRequestId = conversation.collectionRequestId;
 
   if (attachment && (await isMessageAlreadyProcessed(message.id))) {
     console.log("[wa-inbound] SKIPPED (idempotency): this WhatsApp message already produced a document", {
@@ -587,6 +693,175 @@ async function handleInboundMessage(
       organizationId: organization.id,
       eventType: "whatsapp.inbound_processing_failed",
       description: `עיבוד המסמך שהתקבל מהלקוח נכשל (${attachment.fileName})`,
+      actorType: "system",
+      clientId: client.id,
+      collectionRequestId,
+    });
+  }
+}
+
+// Replays content held by createRequestDisambiguation once the client's
+// reply resolves exactly which collection request it belongs to — the
+// real intake pipeline runs for the first time here, exactly as if the
+// content had just arrived on an already-unambiguous conversation. Mirrors
+// reprocessHeldReopenDocument/reprocessHeldHumanControlDocument's own
+// replay shape (src/app/(app)/collections/conversationActions.ts): the
+// held bytes were already downloaded at hold time (a WhatsApp media URL
+// is short-lived and might not still resolve by the time the client
+// answers), so there's nothing left to fetch here.
+async function replayHeldDisambiguation(
+  organization: typeof organizations.$inferSelect,
+  client: { id: string },
+  resolution: DisambiguationResolution
+) {
+  const conversation = await ensureConversation(organization.id, resolution.collectionRequestId, client.id);
+  const collectionRequestId = resolution.collectionRequestId;
+
+  await recordInboundMessage(
+    organization.id,
+    conversation.id,
+    resolution.messageBody || (resolution.pendingFileContent ? `[קובץ: ${resolution.fileName}]` : "[הודעה מסוג לא נתמך]")
+  );
+
+  // Human-control silencing gate — same rule as the live path (see its own
+  // comment above): while an employee has this now-resolved conversation
+  // taken over, the bot never auto-processes; a document is stashed, text
+  // is only logged.
+  if (conversation.status === "human_control") {
+    if (resolution.pendingFileContent) {
+      const db = await getDb();
+      await db.insert(documents).values({
+        organizationId: organization.id,
+        collectionRequestId,
+        fileName: resolution.fileName ?? "מסמך",
+        status: "human_control_pending",
+        pendingFileContent: resolution.pendingFileContent,
+        pendingFileMimeType: resolution.pendingFileMimeType,
+        whatsappMessageId: resolution.whatsappMessageId,
+      });
+      await recordAuditEvent({
+        organizationId: organization.id,
+        eventType: "document.stashed_during_human_control",
+        description: "מסמך התקבל בזמן שהשיחה בטיפול אנושי — לא עובד אוטומטית",
+        actorType: "system",
+        clientId: client.id,
+        collectionRequestId,
+      });
+    }
+    console.log("[wa-inbound] disambiguation replay target is in human_control — recorded, no automated processing", { collectionRequestId });
+    return;
+  }
+
+  // Post-completion gate — the resolved request can genuinely close between
+  // the clarification question being asked and the client actually
+  // answering it (an employee finishes it manually, or the scheduler
+  // completes it because nothing was left missing). Blindly running
+  // processInboundAttachment/runConversationUnderstanding here would bypass
+  // the same "already completed" protection the live path enforces via its
+  // own closed-conversation gate (decidePostCompletionGate) — reuse the
+  // identical stash-and-ask mechanism instead of silently filing a document
+  // or acting on a request that isn't open anymore.
+  if (conversation.status === "closed") {
+    const openConfirmations = await listOpenConfirmationsForCollectionRequest(collectionRequestId);
+    if (openConfirmations.length === 0) {
+      if (resolution.pendingFileContent) {
+        const db = await getDb();
+        const [placeholder] = await db
+          .insert(documents)
+          .values({
+            organizationId: organization.id,
+            collectionRequestId,
+            fileName: resolution.fileName ?? "מסמך",
+            status: "reopen_pending_confirmation",
+            pendingFileContent: resolution.pendingFileContent,
+            pendingFileMimeType: resolution.pendingFileMimeType,
+            whatsappMessageId: resolution.whatsappMessageId,
+          })
+          .returning();
+        await createRequestReopenConfirmation({
+          organizationId: organization.id,
+          clientId: client.id,
+          collectionRequestId,
+          documentId: placeholder.id,
+        });
+      } else {
+        await createRequestReopenConfirmation({
+          organizationId: organization.id,
+          clientId: client.id,
+          collectionRequestId,
+          documentId: null,
+        });
+      }
+    }
+    console.log("[wa-inbound] disambiguation resolved to a request that has since completed — routed through the reopen gate, not auto-processed", { collectionRequestId });
+    return;
+  }
+
+  if (resolution.messageBody) {
+    const intent = await classifyIntent(resolution.messageBody);
+    await recordAuditEvent({
+      organizationId: organization.id,
+      eventType: "message.intent_classified",
+      description: `הודעת הלקוח סווגה כ-${intent}`,
+      actorType: "ai",
+      clientId: client.id,
+      collectionRequestId,
+      metadata: { intent },
+    });
+
+    const batchResolved = await resolveBatchedIntakeReply(conversation.id, resolution.messageBody);
+    if (batchResolved.length > 0) {
+      for (const resolved of batchResolved) {
+        await applyUnsolicitedConfirmationDecision(resolved);
+        await applyIdentityAnomalyDecision(resolved);
+        await recordAuditEvent({
+          organizationId: organization.id,
+          eventType: "pending_confirmation.resolved",
+          description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} קבוצה בהודעה מרוכזת: "${resolved.question}"`,
+          actorType: "client",
+          clientId: client.id,
+          collectionRequestId,
+          metadata: { kind: resolved.kind, status: resolved.status, groupIndex: resolved.groupIndex },
+        });
+      }
+    } else {
+      await runConversationUnderstanding({
+        organizationId: organization.id,
+        clientId: client.id,
+        collectionRequestId,
+        conversationId: conversation.id,
+        messageText: resolution.messageBody,
+      });
+    }
+  }
+
+  if (!resolution.pendingFileContent) return;
+
+  try {
+    await processInboundAttachment(
+      organization.id,
+      collectionRequestId,
+      conversation.id,
+      client.id,
+      resolution.fileName ?? "מסמך",
+      null,
+      resolution.pendingFileContent,
+      resolution.pendingFileMimeType ?? undefined,
+      resolution.whatsappMessageId ?? undefined,
+      resolution.messageBody
+    );
+  } catch (error) {
+    if (isUniqueViolation(error, "documents_whatsapp_message_id_idx")) {
+      console.log("[wa-inbound] SKIPPED (idempotency, race): concurrent redelivery lost the insert race, as intended (disambiguation replay)", {
+        whatsappMessageId: resolution.whatsappMessageId,
+      });
+      return;
+    }
+    console.error("[wa-inbound] processInboundAttachment FAILED (disambiguation replay)", error);
+    await recordAuditEvent({
+      organizationId: organization.id,
+      eventType: "whatsapp.inbound_processing_failed",
+      description: `עיבוד המסמך שהתקבל מהלקוח נכשל (${resolution.fileName})`,
       actorType: "system",
       clientId: client.id,
       collectionRequestId,

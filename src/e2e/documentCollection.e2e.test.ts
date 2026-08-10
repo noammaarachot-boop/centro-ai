@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -1373,11 +1373,18 @@ describe("human_control — silences the bot, strictly scoped to one conversatio
     expect(convB.status).toBe("open");
   });
 
-  it("one request of a client in human_control does not silence that same client's other, open request", async () => {
+  it("one request of a client in human_control plus that same client's other open request — with no unambiguous signal, asks which request instead of guessing", async () => {
+    // Phase 8 remediation (request disambiguation) — this used to assert
+    // the OLD "most recently updated conversation wins" behavior, forcing
+    // conversationB's updatedAt artificially ahead specifically to make
+    // that guess land correctly. That was never a real guarantee (see
+    // src/lib/requestDisambiguation.ts's own doc comment) — two genuinely
+    // active requests for the same client with no signal pointing at
+    // either one must now be disambiguated by asking, never guessed by
+    // recency. requestA is still correctly protected: human_control is
+    // never silently bypassed just because a sibling request exists.
     const { phoneNumberId, seedClientRequest } = await seedOrgWithTwoClients();
     const requestA = await seedClientRequest("לקוח", TEST_CLIENT_PHONE);
-    // A second request for the SAME client/phone — findClientAndConversation
-    // resolves to whichever conversation is most recently updated.
     const [requestBRow] = await db
       .insert(schema.collectionRequests)
       .values({ organizationId: (await db.select().from(schema.clients).where(eq(schema.clients.id, requestA.clientId)))[0].organizationId, clientId: requestA.clientId, serviceId: (await db.select().from(schema.services))[0].id, periodLabel: "E2E-2", status: "active" })
@@ -1390,16 +1397,24 @@ describe("human_control — silences the bot, strictly scoped to one conversatio
 
     await db.update(schema.conversations).set({ status: "human_control" }).where(eq(schema.conversations.id, requestA.conversationId));
 
-    // conversationB is the most-recently-updated -> the message routes there, gets processed normally.
-    queueConversationIntent({ kind: "asks_document_question", documentQuestionCategory: "request_overview" });
     await sendText(phoneNumberId, "מה עדיין חסר לי?");
-    expect(sentMessages).toHaveLength(1);
-    expect(sentMessages[0].body).toContain("רישיון נהיגה");
 
-    // requestA's conversation remains untouched.
+    // Neither request answered directly — a clarification question went
+    // out instead, naming both open requests.
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].body).toContain("כמה בקשות איסוף מסמכים פתוחות");
+    expect(sentMessages[0].body).toContain("E2E-2"); // requestB's own periodLabel, listed as an option
+
+    // Neither conversation's substantive state changed — requestA still
+    // human_control, requestB still open. (Whichever candidate is used as
+    // the technical carrier for the clarification message does get its
+    // own conversations.updatedAt bumped, same as any outbound send — see
+    // createRequestDisambiguation's own comment; that's message-delivery
+    // bookkeeping, not a business-state change, so it's not asserted here.)
     const [convA] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, requestA.conversationId));
     expect(convA.status).toBe("human_control");
-    void conversationB;
+    const [convB] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationB.id));
+    expect(convB.status).toBe("open");
   });
 
   it("an attachment arriving during human_control is stashed, scoped to that one collection request, never auto-processed", async () => {
@@ -1456,5 +1471,287 @@ describe("human_control — silences the bot, strictly scoped to one conversatio
     const remainingB = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestB.requestId));
     expect(remainingB.find((d) => d.id === stashedB.id)).toBeDefined();
     expect(remainingB.find((d) => d.id === stashedB.id)?.status).toBe("human_control_pending"); // untouched
+  });
+});
+
+// ======================================================================
+// Multi-active-collection-request disambiguation (src/lib/requestDisambiguation.ts)
+// — the real architectural gap the pre-Phase-8 verification proved: a
+// client assigned to two different Services (or with a manually-opened
+// second request) can genuinely have two collection requests open at
+// once. Before this, an inbound message with no signal beyond the
+// client's phone number was routed to "whichever conversation was most
+// recently updated" — a silent guess that could mark the wrong request's
+// requirement satisfied. These scenarios exercise the real fix through
+// the actual webhook POST handler, no shortcuts.
+// ======================================================================
+describe("Multi-active-collection-request disambiguation", () => {
+  async function seedClientWithTwoActiveRequests() {
+    const phoneNumberId = `e2e-phone-${nextOrgSeq++}`;
+    const [org] = await db
+      .insert(schema.organizations)
+      .values({
+        name: "משרד בדיקה E2E - disambiguation",
+        googleDriveFolderId: "e2e-root-folder-disambig",
+        whatsappPhoneNumberId: phoneNumberId,
+        documentCollectionEnabled: true,
+        businessHoursStart: "00:00",
+        businessHoursEnd: "23:59",
+        businessDays: "0,1,2,3,4,5,6",
+      })
+      .returning();
+    const [client] = await db
+      .insert(schema.clients)
+      .values({ organizationId: org.id, name: "ישראל ישראלי בדיקה", phone: TEST_CLIENT_PHONE })
+      .returning();
+
+    async function seedRequest(serviceName: string, periodLabel: string, requirementName: string) {
+      const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: serviceName }).returning();
+      const [request] = await db
+        .insert(schema.collectionRequests)
+        .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel, status: "active" })
+        .returning();
+      const [conversation] = await db
+        .insert(schema.conversations)
+        .values({ organizationId: org.id, clientId: client.id, collectionRequestId: request.id, status: "open" })
+        .returning();
+      const [requirement] = await db
+        .insert(schema.collectionRequestRequirements)
+        .values({ collectionRequestId: request.id, name: requirementName })
+        .returning();
+      return { requestId: request.id, conversationId: conversation.id, requirementId: requirement.id, serviceId: service.id };
+    }
+
+    return { phoneNumberId, orgId: org.id, clientId: client.id, seedRequest };
+  }
+
+  it("a client with exactly one active collection request continues automatically — unaffected by the disambiguation logic", async () => {
+    const { phoneNumberId } = await seedActiveRequest(["תעודת זהות"]);
+    queueConversationIntent({ kind: "asks_document_question", documentQuestionCategory: "request_overview" });
+    await sendText(phoneNumberId, "מה עדיין חסר לי?");
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].body).toContain("תעודת זהות");
+  });
+
+  it("a client with two active collection requests and no signal either way gets asked, never guessed — no state changes on either request", async () => {
+    const { phoneNumberId, clientId, seedRequest } = await seedClientWithTwoActiveRequests();
+    const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    const idDoc = await makeTestDocument("id_card");
+    await sendDocument(phoneNumberId, idDoc);
+
+    // A clarification question went out — never a silent guess, never a
+    // document uploaded to either request.
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].body).toContain("כמה בקשות איסוף מסמכים פתוחות");
+    expect(sentMessages[0].body).toContain("תקופה-X");
+    expect(sentMessages[0].body).toContain("תקופה-Y");
+    expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled(); // never even classified yet
+
+    const docsX = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, reqX.requestId));
+    const docsY = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, reqY.requestId));
+    expect(docsX).toHaveLength(0);
+    expect(docsY).toHaveLength(0);
+    expect(await currentRequestStatus(reqX.requestId)).toBe("active");
+    expect(await currentRequestStatus(reqY.requestId)).toBe("active");
+
+    // The held content is tracked, unresolved, against this client — never
+    // attached to either candidate collectionRequestId yet.
+    const pending = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(eq(schema.pendingRequestDisambiguations.clientId, clientId));
+    expect(pending).toHaveLength(1);
+    expect(pending[0].resolvedAt).toBeNull();
+    expect(pending[0].pendingFileContent).not.toBeNull();
+    expect(new Set(pending[0].candidateCollectionRequestIds)).toEqual(new Set([reqX.requestId, reqY.requestId]));
+  });
+
+  it("the client's numbered reply resolves to the correct request — the document is processed only there, the other request is untouched", async () => {
+    const { phoneNumberId, clientId, seedRequest } = await seedClientWithTwoActiveRequests();
+    const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    const idDoc = await makeTestDocument("id_card");
+    await sendDocument(phoneNumberId, idDoc);
+    expect(sentMessages).toHaveLength(1); // the clarification question
+
+    // Candidates are listed most-recently-updated first, not by insertion
+    // order — read the real held row to find reqX's actual position
+    // rather than assuming it, so this test doesn't depend on incidental
+    // timing. Scoped to THIS test's own client — the shared PGlite instance
+    // can still hold an earlier test's deliberately-unresolved row for a
+    // different client (e.g. the "no signal either way" test above).
+    const [held] = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(and(eq(schema.pendingRequestDisambiguations.clientId, clientId), isNull(schema.pendingRequestDisambiguations.resolvedAt)));
+    const reqXChoice = held.candidateCollectionRequestIds.indexOf(reqX.requestId) + 1;
+    expect(reqXChoice).toBeGreaterThan(0);
+
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.97,
+      matchedRequirementId: reqX.requirementId,
+      matchConfidence: 0.95,
+      extractedPersonName: "ישראל ישראלי בדיקה",
+      identityExtractionConfidence: 0.9,
+    });
+    await sendText(phoneNumberId, String(reqXChoice));
+
+    // reqX: the held document is now filed and completes the request
+    // (its only requirement is satisfied).
+    expect(await currentRequestStatus(reqX.requestId)).toBe("completed");
+    const docsX = await db.select().from(schema.documents).where(and(eq(schema.documents.collectionRequestId, reqX.requestId), eq(schema.documents.status, "approved")));
+    expect(docsX).toHaveLength(1);
+
+    // reqY: completely untouched — still active, zero documents.
+    expect(await currentRequestStatus(reqY.requestId)).toBe("active");
+    const docsY = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, reqY.requestId));
+    expect(docsY).toHaveLength(0);
+  });
+
+  it("exactly one candidate having an open question is an unambiguous signal — auto-routes there without asking", async () => {
+    const { phoneNumberId, seedRequest, clientId } = await seedClientWithTwoActiveRequests();
+    const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    // Give reqX (only) a genuinely open question — mirrors how a real
+    // unsolicited/identity-anomaly confirmation would already be open.
+    const [reqXRow] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, reqX.requestId));
+    const [conversationX] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, reqX.conversationId));
+    await db.insert(schema.pendingConfirmations).values({
+      organizationId: reqXRow.organizationId,
+      clientId,
+      collectionRequestId: reqX.requestId,
+      conversationId: conversationX.id,
+      kind: "unsolicited_document",
+      payload: { documentIds: [], documentType: "קבלה" },
+      question: "קיבלנו מסמך שלא ביקשנו — האם התכוונת לשלוח אותו?",
+      status: "pending",
+    });
+
+    queueConversationIntent({ kind: "resolves_pending", pendingAnswer: "confirm" });
+    await sendText(phoneNumberId, "כן");
+
+    // Routed straight to reqX — no clarification question ever sent.
+    expect(sentMessages.some((m) => m.body.includes("כמה בקשות איסוף מסמכים פתוחות"))).toBe(false);
+    const [resolvedConfirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, reqX.requestId));
+    expect(resolvedConfirmation.status).toBe("confirmed");
+
+    // reqY: completely untouched — no confirmation, no document, still active.
+    const reqYConfirmations = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, reqY.requestId));
+    expect(reqYConfirmations).toHaveLength(0);
+    expect(await currentRequestStatus(reqY.requestId)).toBe("active");
+  });
+
+  it("reminders and completion stay fully isolated per collection request even while two are open for the same client", async () => {
+    const { seedRequest } = await seedClientWithTwoActiveRequests();
+    const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    // reqX's requirement is already satisfied via a direct manual document
+    // (bypassing WhatsApp entirely) — completion must only ever evaluate
+    // reqX's own requirement, never reqY's.
+    const [reqXRow] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, reqX.requestId));
+    await db.insert(schema.documents).values({
+      organizationId: reqXRow.organizationId,
+      collectionRequestId: reqX.requestId,
+      requirementId: reqX.requirementId,
+      fileName: "manual.pdf",
+      status: "approved",
+    });
+
+    const { checkCompletionGate } = await import("@/lib/collectionRequestStateMachine");
+    expect(await checkCompletionGate(reqX.requestId)).toBeNull(); // nothing missing on reqX
+    expect(await checkCompletionGate(reqY.requestId)).not.toBeNull(); // reqY still genuinely missing its own requirement
+  });
+
+  // Final Pre-Commit Review item #2 — two genuinely concurrent webhook
+  // deliveries (not two messages in one payload, which processClaimedMessages
+  // already handles sequentially) racing to open a disambiguation for the
+  // SAME client. The partial unique index is the real guarantee; this
+  // proves the race actually resolves safely end to end through the real
+  // route, not just that the DB constraint exists in isolation.
+  it("two concurrent messages racing to open a disambiguation for the same client never crash and never create two — the loser is dropped safely, the winner's question stands", async () => {
+    const { phoneNumberId, clientId, seedRequest } = await seedClientWithTwoActiveRequests();
+    await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    const idDoc = await makeTestDocument("id_card");
+    const licenseDoc = await makeTestDocument("drivers_license");
+    const results = await Promise.allSettled([sendDocument(phoneNumberId, idDoc), sendDocument(phoneNumberId, licenseDoc)]);
+
+    // Neither webhook call itself throws/rejects — postWebhook's own
+    // expect(response.status).toBe(200) already asserts a clean 2xx for
+    // both; Promise.allSettled here just guards against an unhandled
+    // rejection surfacing as a raw test crash instead of a clear failure.
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+
+    // Exactly one disambiguation exists for this client — never two, never
+    // zero.
+    const pending = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(eq(schema.pendingRequestDisambiguations.clientId, clientId));
+    expect(pending).toHaveLength(1);
+    // Exactly one clarification question went out (the race loser's
+    // create attempt failed before ever reaching sendOutboundMessage).
+    expect(sentMessages).toHaveLength(1);
+  });
+
+  // Final Pre-Commit Review item #7 — the resolved request can genuinely
+  // close between the clarification question being asked and the client
+  // actually answering it (an employee finishes it manually here; the
+  // scheduler completing it naturally would reach the same conversation
+  // state). The reply must never be silently processed against a request
+  // that isn't open anymore.
+  it("if the chosen request completed while the disambiguation was still pending, the reply is routed through the reopen gate, never auto-processed", async () => {
+    const { phoneNumberId, clientId, seedRequest } = await seedClientWithTwoActiveRequests();
+    const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    const idDoc = await makeTestDocument("id_card");
+    await sendDocument(phoneNumberId, idDoc);
+    const [held] = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(and(eq(schema.pendingRequestDisambiguations.clientId, clientId), isNull(schema.pendingRequestDisambiguations.resolvedAt)));
+    const reqXChoice = held.candidateCollectionRequestIds.indexOf(reqX.requestId) + 1;
+    expect(reqXChoice).toBeGreaterThan(0);
+
+    // reqX completes independently (an employee finishing it directly)
+    // while the client still hasn't answered.
+    await db
+      .update(schema.collectionRequests)
+      .set({ status: "completed", completedAt: new Date() })
+      .where(eq(schema.collectionRequests.id, reqX.requestId));
+    await db.update(schema.conversations).set({ status: "closed" }).where(eq(schema.conversations.id, reqX.conversationId));
+
+    sentMessages.length = 0;
+    await sendText(phoneNumberId, String(reqXChoice));
+
+    // Never silently filed — no approved document landed on the
+    // now-completed reqX, and its status is untouched by the reply.
+    const approvedOnX = await db
+      .select()
+      .from(schema.documents)
+      .where(and(eq(schema.documents.collectionRequestId, reqX.requestId), eq(schema.documents.status, "approved")));
+    expect(approvedOnX).toHaveLength(0);
+    expect(await currentRequestStatus(reqX.requestId)).toBe("completed"); // still completed, not silently reopened
+    expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled(); // never even classified
+
+    // Routed through the exact same reopen-confirmation mechanism the live
+    // path uses for a closed conversation — a real question was asked.
+    const reopenConfirmations = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(and(eq(schema.pendingConfirmations.collectionRequestId, reqX.requestId), eq(schema.pendingConfirmations.kind, "request_reopen")));
+    expect(reopenConfirmations).toHaveLength(1);
+
+    // reqY (never chosen, never involved) is completely unaffected.
+    expect(await currentRequestStatus(reqY.requestId)).toBe("active");
   });
 });

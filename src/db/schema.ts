@@ -1298,6 +1298,73 @@ export const pendingConfirmations = pgTable("pending_confirmations", {
     .where(sql`${table.kind} = 'extension_finished_check' and ${table.status} = 'pending'`),
 ]);
 
+// Multi-active-collection-request disambiguation — a client can genuinely
+// have two or more collection requests open at once (e.g. assigned to two
+// different recurring Services, or a second request opened manually while
+// an earlier one is still waiting on documents). When that happens, an
+// inbound WhatsApp message/document has no reliable signal (phone number
+// alone identifies the CLIENT, never which of their several open requests
+// a given message is about) — picking "whichever conversation was most
+// recently updated" would silently guess, and a wrong guess can mark the
+// wrong request's requirement satisfied or auto-complete the wrong
+// request. This table is the held state for that one narrow situation:
+// the real content (text and/or attachment) the client actually sent is
+// captured here — NOT attached to any collectionRequestId yet, since we
+// don't know which one it belongs to — while Centro asks the client
+// directly which of their open requests this is about. Nothing about any
+// candidate request (documents, requirements, completion, reminders) is
+// touched until resolved. See src/lib/requestDisambiguation.ts.
+export const pendingRequestDisambiguations = pgTable(
+  "pending_request_disambiguations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    // The genuinely-open collection requests this message could belong to,
+    // captured at the moment the question was asked — never re-queried
+    // live, so a request completing/cancelling while the client is still
+    // deciding doesn't change the numbered options they were already sent.
+    candidateCollectionRequestIds: jsonb("candidate_collection_request_ids").$type<string[]>().notNull(),
+    // One of the candidates above, used only as the messages/conversations
+    // row to log the clarification question itself against — never implies
+    // that request is the answer; the client's reply is what actually
+    // resolves it.
+    hostConversationId: uuid("host_conversation_id")
+      .notNull()
+      .references(() => conversations.id),
+    // The held content — same retention discipline as documents.pendingFileContent
+    // (Ch.14/M9): raw bytes captured once at receipt time (a WhatsApp media
+    // URL is short-lived and may not still resolve by the time the client
+    // answers), cleared the moment this row resolves.
+    messageBody: text("message_body"),
+    pendingFileName: text("pending_file_name"),
+    pendingFileContent: bytea("pending_file_content"),
+    pendingFileMimeType: text("pending_file_mime_type"),
+    // Idempotency for a redelivered webhook while this exact question is
+    // still open — mirrors documents.whatsappMessageId's own role.
+    whatsappMessageId: text("whatsapp_message_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedCollectionRequestId: uuid("resolved_collection_request_id").references(
+      () => collectionRequests.id
+    ),
+  },
+  (table) => [
+    // At most one open question per client at a time — a second inbound
+    // message while one is already pending is treated as an attempt to
+    // answer it (see resolveDisambiguationReply), never a second question.
+    uniqueIndex("pending_request_disambiguations_client_open_idx")
+      .on(table.clientId)
+      .where(sql`${table.resolvedAt} is null`),
+  ]
+);
+
 // Unified document-conversation understanding layer (src/lib/conversation/,
 // src/lib/employeeReview.ts, src/lib/policyKnowledgeBase.ts) — "the AI
 // understands, the office decides, and only an explicit office decision
