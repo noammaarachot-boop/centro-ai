@@ -311,17 +311,40 @@ export async function processInboundAttachment(
 ) {
   const db = await getDb();
 
+  // Tenant-consistency guard (Phase 1.2 remediation) — this function has no
+  // session of its own (it's called both from an authenticated Server
+  // Action and, unauthenticated by design, from the webhook route right
+  // after Meta's signature is verified), so it can't require a session the
+  // way most of this file's other actions do. What it CAN do is refuse to
+  // act if the organizationId/clientId it was handed don't actually match
+  // this collectionRequestId's own row — every real caller already derives
+  // these three ids together from one already-validated source (the
+  // webhook's own findClientAndConversation join, or this file's own
+  // getCollectionRequestOrRedirect), so this never rejects a legitimate
+  // call; it only refuses a future caller that mixed up ids across tenants.
+  const [collectionRequestRow] = await db
+    .select({
+      organizationId: collectionRequests.organizationId,
+      clientId: collectionRequests.clientId,
+      extensionActive: collectionRequests.extensionActive,
+    })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .limit(1);
+  if (!collectionRequestRow || collectionRequestRow.organizationId !== organizationId || collectionRequestRow.clientId !== clientId) {
+    console.error("[processInboundAttachment] organizationId/clientId does not match collectionRequestId's own row — refusing to process", {
+      collectionRequestId,
+      organizationId,
+      clientId,
+    });
+    return;
+  }
   // Post-completion extension flow (src/lib/requestExtension.ts) — while
   // active, a document arriving must never auto-complete/close the request
   // the instant it happens to satisfy every requirement (see the immediate-
   // completion block below): the client may still have more to add and
   // hasn't said so yet.
-  const [collectionRequestRow] = await db
-    .select({ extensionActive: collectionRequests.extensionActive })
-    .from(collectionRequests)
-    .where(eq(collectionRequests.id, collectionRequestId))
-    .limit(1);
-  const extensionActive = collectionRequestRow?.extensionActive ?? false;
+  const extensionActive = collectionRequestRow.extensionActive ?? false;
 
   // Silence-window case review (src/lib/caseReview.ts's
   // runAutomaticCaseStatusReview) — every attachment that reaches this
@@ -927,6 +950,7 @@ export async function reprocessHeldReopenDocument(documentId: string): Promise<v
       organizationId: documents.organizationId,
       collectionRequestId: documents.collectionRequestId,
       fileName: documents.fileName,
+      status: documents.status,
       pendingFileContent: documents.pendingFileContent,
       pendingFileMimeType: documents.pendingFileMimeType,
       whatsappMessageId: documents.whatsappMessageId,
@@ -935,6 +959,17 @@ export async function reprocessHeldReopenDocument(documentId: string): Promise<v
     .where(eq(documents.id, documentId))
     .limit(1);
   if (!placeholder) return;
+  // State-consistency guard (Phase 1.2 remediation) — this function has no
+  // organizationId of its own to check a caller-supplied id against (it
+  // derives everything from the document row itself), so the real
+  // protection is refusing to act on any document that isn't actually a
+  // genuine reopen-placeholder row. A future caller passing an arbitrary
+  // documentId can no longer make this function delete and reprocess a
+  // real, already-classified document.
+  if (placeholder.status !== "reopen_pending_confirmation") {
+    console.error("[reprocessHeldReopenDocument] refusing — document is not a reopen placeholder", { documentId, status: placeholder.status });
+    return;
+  }
 
   const [collectionRequest] = await db
     .select({ clientId: collectionRequests.clientId })
@@ -974,6 +1009,7 @@ export async function reprocessHeldHumanControlDocument(documentId: string): Pro
       organizationId: documents.organizationId,
       collectionRequestId: documents.collectionRequestId,
       fileName: documents.fileName,
+      status: documents.status,
       pendingFileContent: documents.pendingFileContent,
       pendingFileMimeType: documents.pendingFileMimeType,
       whatsappMessageId: documents.whatsappMessageId,
@@ -982,6 +1018,13 @@ export async function reprocessHeldHumanControlDocument(documentId: string): Pro
     .where(eq(documents.id, documentId))
     .limit(1);
   if (!placeholder) return;
+  // Same state-consistency guard as reprocessHeldReopenDocument above —
+  // see its own comment for why this is the right protection here instead
+  // of a session check.
+  if (placeholder.status !== "human_control_pending") {
+    console.error("[reprocessHeldHumanControlDocument] refusing — document is not a human-control placeholder", { documentId, status: placeholder.status });
+    return;
+  }
 
   const [collectionRequest] = await db
     .select({ clientId: collectionRequests.clientId })

@@ -43,3 +43,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# scratch E2E test fixtures (synthetic "TEST DOCUMENT ONLY" PDFs/images for
+# manual end-to-end testing) and their one-off generator scripts — never
+# meant to be committed; see scripts/_e2e_make_fixtures*.mjs
+/scratch_e2e_fixtures/
+/scratch_e2e_fixtures_he/
+scripts/_e2e_*.mjs

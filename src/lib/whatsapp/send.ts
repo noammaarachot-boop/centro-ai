@@ -1,7 +1,34 @@
-import { withRetry } from "@/lib/resilience";
+import { OperationFailedError, withRetry } from "@/lib/resilience";
 import { getWhatsAppConfig, GRAPH_API_BASE, GRAPH_API_VERSION } from "./config";
+import { parseGraphErrorBody } from "./embeddedSignup";
 
 export class WhatsAppSendError extends Error {}
+
+// Phase 3.2 remediation — thrown only from inside the withRetry callback
+// below, for the specific HTTP statuses worth retrying (429 rate-limit,
+// 5xx transient server error). Never for other 4xx statuses (invalid
+// recipient, unapproved template, bad request) — those fail the exact
+// same way on every retry, so retrying them only delays the caller for no
+// benefit. Carries the real Response through so the caller can still
+// parse/log its body after retries are exhausted.
+class RetryableMetaHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly response: Response
+  ) {
+    super(message);
+  }
+}
+
+function isRetryableMetaStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+// A conservative ceiling under every route's own maxDuration — a hung
+// (not merely slow-to-error) Meta request must fail fast enough for
+// withRetry to actually get a chance to retry it, rather than silently
+// consuming the whole function's time budget (Phase 3.3 remediation).
+const META_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface SendResult {
   messageId: string;
@@ -21,20 +48,62 @@ async function postMessage(phoneNumberId: string, payload: Record<string, unknow
     type: payload.type,
     tokenSource: "WHATSAPP_SYSTEM_USER_TOKEN (env / hardcode-off → env)",
   });
-  const response = await withRetry(() =>
-    fetch(`${GRAPH_API_BASE}/${encodeURIComponent(phoneNumberId)}/messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${systemUserToken}`,
-        "Content-Type": "application/json",
+  const response = await withRetry(
+    async () => {
+      const res = await fetch(`${GRAPH_API_BASE}/${encodeURIComponent(phoneNumberId)}/messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${systemUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(META_REQUEST_TIMEOUT_MS),
+      });
+      if (isRetryableMetaStatus(res.status)) {
+        throw new RetryableMetaHttpError(`Meta returned a retryable status ${res.status}`, res);
+      }
+      return res;
+    },
+    {
+      // No shouldRetry here on purpose — every way this callback can throw
+      // (a network failure, the AbortSignal timeout above, or the explicit
+      // RetryableMetaHttpError for 429/5xx) is exactly the set of failures
+      // worth retrying; a non-retryable HTTP status (e.g. invalid
+      // recipient, unapproved template) never throws from in here at all —
+      // it's returned as a normal (non-ok) Response and handled by the
+      // caller below, untouched by retry logic, same as before this fix.
+      //
+      // Meta's own Retry-After header (seconds), when present, takes
+      // priority over the default exponential backoff.
+      delayMsFor: (error) => {
+        if (!(error instanceof RetryableMetaHttpError)) return undefined;
+        const retryAfter = error.response.headers.get("retry-after");
+        const seconds = retryAfter ? Number(retryAfter) : NaN;
+        return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
       },
-      body: JSON.stringify(payload),
-    })
-  );
+    }
+  ).catch((error: unknown) => {
+    // Retries exhausted on a genuinely retryable status — surface the last
+    // real Response so the rest of this function's error handling (body
+    // parsing, WhatsAppSendError) stays exactly the same either way,
+    // rather than needing a second, divergent error path here.
+    if (error instanceof OperationFailedError && error.cause instanceof RetryableMetaHttpError) {
+      return error.cause.response;
+    }
+    throw error;
+  });
   if (!response.ok) {
     const body = await response.text();
-    console.error("[wa-diag] Meta response NOT OK", { httpStatus: response.status, body });
-    throw new WhatsAppSendError(`WhatsApp send failed (${response.status}): ${body}`);
+    // Never log or embed the raw body in an Error message that might get
+    // logged downstream — it can echo back request content (recipient
+    // number, template parameters, which for the dynamic templates carry
+    // the real document list). Only the structured code/message Meta
+    // itself returns is worth surfacing, here and in the thrown error's
+    // own message (which src/lib/conversationOrchestration.ts's catch
+    // block does log in full).
+    const parsed = parseGraphErrorBody(body);
+    console.error("[wa-diag] Meta response NOT OK", { httpStatus: response.status, code: parsed.code, message: parsed.message });
+    throw new WhatsAppSendError(`WhatsApp send failed (${response.status}): code=${parsed.code ?? "?"} message=${parsed.message ?? "(unparseable body)"}`);
   }
   console.log("[wa-diag] Meta response OK", { httpStatus: response.status });
   const data = (await response.json()) as SendMessagesResponse;

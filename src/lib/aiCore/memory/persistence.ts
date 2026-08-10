@@ -74,12 +74,23 @@ export async function getConversation(organizationId: string, userId: string, co
 // Reconstructs the exact ModelMessage[] shape the provider SDK expects
 // for the next turn's `messages` param — lossless, since `parts` already
 // holds the verbatim content the SDK itself produced or consumed.
-export async function loadConversationHistory(conversationId: string): Promise<ModelMessage[]> {
+//
+// organizationId (Phase 5.1 remediation) — every current caller already
+// only reaches a conversationId after getConversation has verified it
+// against the caller's own organizationId+userId (see the module comment
+// above), so this doesn't change any observable behavior today. It's
+// enforced directly in the WHERE clause anyway, rather than trusted from
+// that earlier check, so a future caller that skips the check can't read
+// another organization's AI conversation history.
+export async function loadConversationHistory(
+  conversationId: string,
+  organizationId: string
+): Promise<ModelMessage[]> {
   const db = await getDb();
   const rows = await db
     .select({ role: aiMessages.role, parts: aiMessages.parts })
     .from(aiMessages)
-    .where(eq(aiMessages.conversationId, conversationId))
+    .where(and(eq(aiMessages.conversationId, conversationId), eq(aiMessages.organizationId, organizationId)))
     .orderBy(asc(aiMessages.createdAt));
   return rows.map((row) => ({ role: row.role, content: row.parts }) as ModelMessage);
 }
@@ -98,12 +109,15 @@ export interface DisplayMessage {
 // reload replays, and a correct, honest simplification (show the real
 // questions and real final answers) beats a half-reconstructed replay of
 // intermediate tool-call bubbles from persisted data.
-export async function listMessagesForDisplay(conversationId: string): Promise<DisplayMessage[]> {
+export async function listMessagesForDisplay(
+  conversationId: string,
+  organizationId: string
+): Promise<DisplayMessage[]> {
   const db = await getDb();
   const rows = await db
     .select({ id: aiMessages.id, role: aiMessages.role, content: aiMessages.content })
     .from(aiMessages)
-    .where(eq(aiMessages.conversationId, conversationId))
+    .where(and(eq(aiMessages.conversationId, conversationId), eq(aiMessages.organizationId, organizationId)))
     .orderBy(asc(aiMessages.createdAt));
   return rows
     .filter((row): row is { id: string; role: "user" | "assistant"; content: string } =>
@@ -121,8 +135,9 @@ export async function appendUserMessage(
   const [conversation] = await db
     .select({ title: aiConversations.title })
     .from(aiConversations)
-    .where(eq(aiConversations.id, conversationId))
+    .where(and(eq(aiConversations.id, conversationId), eq(aiConversations.organizationId, organizationId)))
     .limit(1);
+  if (!conversation) throw new Error(`Conversation ${conversationId} not found for organization ${organizationId}`);
 
   await db.insert(aiMessages).values({
     organizationId,

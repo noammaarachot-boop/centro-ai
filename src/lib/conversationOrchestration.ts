@@ -280,7 +280,13 @@ export async function sendOutboundMessage(
   // WhatsApp Interactive Reply Buttons — see sendViaWhatsApp's own doc
   // comment.
   interactiveButtons?: InteractiveButton[]
-): Promise<{ sent: boolean }> {
+  // deliveryStatus is additive (Phase 2.1 remediation) — existing callers
+  // that only destructure `{ sent }` are unaffected. startConversation
+  // uses it to detect a v2-template rejection and fall back to v1 without
+  // needing sendOutboundMessage itself to ever throw (its own "never
+  // throws, always records" contract stays intact for every other
+  // caller).
+): Promise<{ sent: boolean; deliveryStatus?: string }> {
   const db = await getDb();
   const organization = await getOrganizationConfig(organizationId);
 
@@ -327,6 +333,35 @@ export async function sendOutboundMessage(
     console.log("[wa-diag] automated gates PASSED → calling sendViaWhatsApp");
   }
 
+  // Phase 3.1 remediation — the message row (and the conversation's own
+  // updatedAt bump) is now written BEFORE the Meta call, not after. Under
+  // the old order, a function killed between a successful Meta accept and
+  // the DB write left zero record that a send ever happened: the next
+  // scheduler tick still saw a stale conversation and sent the exact same
+  // message again (a real duplicate client-facing message), because
+  // nothing had bumped updatedAt or recorded the attempt. Writing "pending"
+  // first means even a crash right after Meta accepts still leaves (a) an
+  // audit trail that a send was attempted, and (b) updatedAt already
+  // bumped, so the staleness-based reminder/nudge logic never re-fires on
+  // the same conversation just because the final status update never
+  // landed.
+  const [pendingRow] = await db
+    .insert(messages)
+    .values({
+      organizationId,
+      conversationId,
+      direction: "outbound",
+      senderType,
+      body,
+      whatsappMessageId: null,
+      deliveryStatus: "pending",
+    })
+    .returning({ id: messages.id });
+  await db
+    .update(conversations)
+    .set({ updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId));
+
   const { whatsappMessageId, deliveryStatus } = await sendViaWhatsApp(
     organization,
     conversationId,
@@ -351,21 +386,13 @@ export async function sendOutboundMessage(
     });
   }
 
-  await db.insert(messages).values({
-    organizationId,
-    conversationId,
-    direction: "outbound",
-    senderType,
-    body,
-    whatsappMessageId,
-    deliveryStatus,
-  });
-  await db
-    .update(conversations)
-    .set({ updatedAt: new Date() })
-    .where(eq(conversations.id, conversationId));
+  // conversations.updatedAt was already bumped above, before the Meta call
+  // — that's the write that actually matters for crash-safety, so it's not
+  // repeated here (a second identical bump would be redundant, not more
+  // correct).
+  await db.update(messages).set({ whatsappMessageId, deliveryStatus }).where(eq(messages.id, pendingRow.id));
 
-  return { sent: true };
+  return { sent: true, deliveryStatus };
 }
 
 export async function recordInboundMessage(
@@ -433,13 +460,16 @@ export async function startConversation(
     clientId
   );
   // Build the initial request from THIS request's own frozen requirement
-  // snapshot (collectionRequestRequirements) — never a hardcoded list. While
-  // v2 is not yet enabled, this resolves to the static v1 template with no
-  // params (identical to prior behavior); once approved+enabled it becomes
-  // the v2 template carrying the dynamic document list.
+  // snapshot (collectionRequestRequirements) — never a hardcoded list.
+  // v2Enabled is THIS organization's own Meta template-approval state
+  // (Phase 2.1 remediation) — never the old global flag, since Meta
+  // approves a template per-WABA, not for every connected office at once.
+  // An org that hasn't had centro_initial_request_v2 approved on its own
+  // WABA yet safely gets the static, always-approved v1 template.
+  const organization = await getOrganizationConfig(organizationId);
   const requirementNames = await getRequestRequirementNames(organizationId, collectionRequestId);
-  const initial = buildInitialRequestSend(requirementNames);
-  const { sent } = await sendOutboundMessage(
+  const initial = buildInitialRequestSend(requirementNames, organization.initialRequestV2Approved);
+  const result = await sendOutboundMessage(
     organizationId,
     conversation.id,
     initial.renderedBody,
@@ -447,7 +477,34 @@ export async function startConversation(
     trigger,
     { templateName: initial.templateName, language: initial.language, params: initial.params }
   );
-  return { conversation, sent };
+
+  // Fallback-on-rejection (Phase 2.1 remediation) — organizations.initialRequestV2Approved
+  // is set by a human confirming Meta's approval, so a stale/premature
+  // "true" is possible (approval revoked, a typo, a copy-pasted org
+  // setting). Rather than leaving the very first client-facing message of
+  // a collection request permanently "failed", retry once with the
+  // always-approved static v1 template — never silently drop the client's
+  // first message over a template-tracking mistake. Both attempts stay on
+  // the message history (nothing hidden), and only ever retries with v1
+  // once, never loops.
+  if (initial.usedV2 && result.deliveryStatus === "failed") {
+    console.error("[whatsapp] v2 initial-request template send failed — falling back to static v1 template", {
+      organizationId,
+      collectionRequestId,
+    });
+    const fallback = buildInitialRequestSend(requirementNames, false);
+    const fallbackResult = await sendOutboundMessage(
+      organizationId,
+      conversation.id,
+      fallback.renderedBody,
+      "ai",
+      trigger,
+      { templateName: fallback.templateName, language: fallback.language, params: fallback.params }
+    );
+    return { conversation, sent: fallbackResult.sent };
+  }
+
+  return { conversation, sent: result.sent };
 }
 
 // Ch.10 step 3-4: the stand-in for "after N minutes of inactivity" (no

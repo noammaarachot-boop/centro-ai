@@ -253,7 +253,14 @@ async function seedRequest(options?: { businessHoursAlwaysOpen?: boolean; whatsa
       ...(options?.businessHoursAlwaysOpen
         ? { businessHoursStart: "00:00", businessHoursEnd: "23:59", businessDays: "0,1,2,3,4,5,6" }
         : {}),
-      ...(options?.whatsappPhoneNumberId ? { whatsappPhoneNumberId: options.whatsappPhoneNumberId } : {}),
+      // Suffixed with a fresh uuid — every call in this file passes the
+      // same literal ("phone-1"), and every seeded org shares one PGlite
+      // instance for the whole file, so the literal alone would collide
+      // with organizations_whatsapp_phone_number_id_idx (Phase 1.6). No
+      // test asserts on the exact value, only that it's non-null.
+      ...(options?.whatsappPhoneNumberId
+        ? { whatsappPhoneNumberId: `${options.whatsappPhoneNumberId}-${crypto.randomUUID()}` }
+        : {}),
     })
     .returning();
   const [client] = await db

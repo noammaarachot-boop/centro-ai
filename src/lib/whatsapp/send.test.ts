@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sendTemplateMessage } from "./send";
 
 // centro_reminder_v2 uses a NAMED {{documents}} placeholder, not a
@@ -64,5 +64,116 @@ describe("sendTemplateMessage — no parameters", () => {
     await sendTemplateMessage("phone-1", "972500000000", "centro_reminder", "he");
     const body = lastRequestBody();
     expect(body.template).toEqual({ name: "centro_reminder", language: { code: "he" } });
+  });
+});
+
+describe("sendTemplateMessage — Meta error responses never leak request content into the thrown error", () => {
+  it("reduces a JSON error body down to code/message, never the raw body (which can echo recipient/template params)", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () =>
+        JSON.stringify({ error: { message: "Invalid parameter", code: 100, error_subcode: 2494010 } }),
+    });
+    await expect(
+      sendTemplateMessage("phone-1", "972500000000", "centro_initial_request_v2", "he", ["תעודת זהות, אישור שכירות"])
+    ).rejects.toThrow(/code=100 message=Invalid parameter/);
+  });
+
+  it("never includes the sensitive recipient/params echo Meta's error body can contain", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () =>
+        JSON.stringify({
+          error: { message: "Invalid parameter", code: 100 },
+          // Realistic shape of what Meta can echo back — must never leak.
+          echoed_recipient: "972500000000",
+        }),
+    });
+    await expect(
+      sendTemplateMessage("phone-1", "972500000000", "centro_initial_request_v2", "he", ["תעודת זהות, אישור שכירות"])
+    ).rejects.not.toThrow(/echoed_recipient/);
+  });
+});
+
+describe("sendTemplateMessage — Phase 3.2: retries only the statuses actually worth retrying", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries a 429 and succeeds on the second attempt", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 429, headers: new Headers(), text: async () => "" })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [{ id: "wamid.retried" }] }) });
+
+    const promise = sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(promise).resolves.toEqual({ messageId: "wamid.retried" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a 500 and succeeds on a later attempt", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 500, headers: new Headers(), text: async () => "" })
+      .mockResolvedValueOnce({ ok: false, status: 503, headers: new Headers(), text: async () => "" })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [{ id: "wamid.retried" }] }) });
+
+    const promise = sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(promise).resolves.toEqual({ messageId: "wamid.retried" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("honors Meta's own Retry-After header instead of the default exponential backoff", async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 429, headers: new Headers({ "retry-after": "5" }), text: async () => "" })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [{ id: "wamid.retried" }] }) });
+
+    const promise = sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he");
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // still waiting on the 5s Retry-After, not the ~200ms default backoff
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    await expect(promise).resolves.toEqual({ messageId: "wamid.retried" });
+  });
+
+  it("a non-retryable 4xx (e.g. invalid recipient) fails immediately — never retried, never delayed", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ error: { message: "Invalid recipient", code: 131026 } }),
+    });
+
+    await expect(sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he")).rejects.toThrow(/code=131026/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up after retries are exhausted on a persistent 5xx, still surfacing the real Meta error", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ error: { message: "Internal error", code: 1 } }),
+    });
+
+    const promise = sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he");
+    const assertion = expect(promise).rejects.toThrow(/code=1 message=Internal error/);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await assertion;
+    expect(fetchMock).toHaveBeenCalledTimes(3); // withRetry's default 3 attempts
+  });
+});
+
+describe("sendTemplateMessage — Phase 3.3: every Meta call carries a request timeout", () => {
+  it("wires an AbortSignal into the fetch call so a hung request fails fast instead of consuming the whole function budget", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: "wamid.test" }] }) });
+    await sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he");
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 });

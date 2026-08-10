@@ -144,7 +144,9 @@ beforeEach(() => {
 async function seedRequest() {
   const [org] = await db
     .insert(schema.organizations)
-    .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: "phone-1" })
+    // Suffixed with a fresh uuid — Phase 1.6's unique constraint on this
+    // column (see caseReview.test.ts's identical comment).
+    .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
     .returning();
   const [client] = await db
     .insert(schema.clients)

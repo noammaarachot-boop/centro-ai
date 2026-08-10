@@ -1,6 +1,10 @@
 import { withRetry } from "@/lib/resilience";
 import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
 
+// Phase 7 remediation — matches the timeout already applied to every other
+// outbound Meta Graph API call in src/lib/whatsapp/send.ts (15s).
+const WHATSAPP_PHONE_NUMBER_REQUEST_TIMEOUT_MS = 15_000;
+
 export class WhatsAppApiError extends Error {
   // Aligns with WhatsAppSignupStep "phone-lookup" for API error responses.
   readonly step = "phone-lookup" as const;
@@ -60,7 +64,10 @@ async function listFirstPhoneNumber(wabaId: string, accessToken: string): Promis
   const response = await withRetry(() =>
     fetch(
       `${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/phone_numbers?fields=display_phone_number,verified_name`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(WHATSAPP_PHONE_NUMBER_REQUEST_TIMEOUT_MS),
+      }
     )
   );
   if (!response.ok) {
@@ -71,10 +78,25 @@ async function listFirstPhoneNumber(wabaId: string, accessToken: string): Promis
   const data = (await response.json()) as {
     data?: Array<{ id: string; display_phone_number: string; verified_name: string }>;
   };
-  const first = data.data?.[0];
-  if (!first) {
+  const numbers = data.data ?? [];
+  if (numbers.length === 0) {
     throw new WhatsAppApiError(`No phone numbers found for WhatsApp Business Account ${wabaId}`);
   }
+  // Phase 2.2 remediation — this used to silently pick numbers[0]. A WABA
+  // with more than one phone number (e.g. one already used for something
+  // else on the same Business Manager) would connect Centro to whichever
+  // number Meta happened to list first, with no error and no way for the
+  // connecting admin to notice except a mismatched display number in
+  // Settings later. Fail loud instead — never guess which number the
+  // office meant.
+  if (numbers.length > 1) {
+    throw new WhatsAppApiError(
+      `WhatsApp Business Account ${wabaId} has ${numbers.length} phone numbers (${numbers
+        .map((n) => n.display_phone_number)
+        .join(", ")}) — Centro cannot determine which one to connect automatically. Disconnect the extra number(s) from this WABA, or contact support.`
+    );
+  }
+  const first = numbers[0];
   return {
     id: first.id,
     displayPhoneNumber: first.display_phone_number,

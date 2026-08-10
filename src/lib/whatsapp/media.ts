@@ -3,6 +3,17 @@ import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
 
 export class WhatsAppMediaError extends Error {}
 
+// Phase 7 remediation — this module runs on the inbound WhatsApp webhook's
+// hot path (a client's attachment), inside a route whose own maxDuration is
+// 180s (src/app/api/webhooks/whatsapp/route.ts) — a hung Graph API call
+// here previously had no bound of its own and could quietly consume a large
+// share of that budget. Metadata lookup mirrors send.ts's 15s Meta-call
+// convention; the actual file transfer gets the longer allowance
+// googleAuth/drive.ts already uses for its own file transfers (30s), since
+// a real attachment can be larger than a metadata response.
+const WHATSAPP_MEDIA_METADATA_TIMEOUT_MS = 15_000;
+const WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS = 30_000;
+
 export interface DownloadedMedia {
   bytes: Buffer;
   mimeType: string;
@@ -19,6 +30,7 @@ export async function downloadMedia(mediaId: string): Promise<DownloadedMedia> {
   const metaResponse = await withRetry(() =>
     fetch(`${GRAPH_API_BASE}/${encodeURIComponent(mediaId)}`, {
       headers: { Authorization: `Bearer ${systemUserToken}` },
+      signal: AbortSignal.timeout(WHATSAPP_MEDIA_METADATA_TIMEOUT_MS),
     })
   );
   if (!metaResponse.ok) {
@@ -30,7 +42,10 @@ export async function downloadMedia(mediaId: string): Promise<DownloadedMedia> {
   }
 
   const fileResponse = await withRetry(() =>
-    fetch(meta.url!, { headers: { Authorization: `Bearer ${systemUserToken}` } })
+    fetch(meta.url!, {
+      headers: { Authorization: `Bearer ${systemUserToken}` },
+      signal: AbortSignal.timeout(WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS),
+    })
   );
   if (!fileResponse.ok) {
     throw new WhatsAppMediaError(`Media download failed (${fileResponse.status})`);

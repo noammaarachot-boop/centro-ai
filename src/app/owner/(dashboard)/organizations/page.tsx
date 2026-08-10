@@ -9,9 +9,53 @@ import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { formatOwnerDate } from "@/lib/owner/formatDate";
 import { t } from "@/lib/owner/i18n/t";
-import { disableQaModeAction, enableQaModeAction } from "./[id]/actions";
+import {
+  disableQaModeAction,
+  enableQaModeAction,
+  disableInitialRequestV2Action,
+  enableInitialRequestV2Action,
+  disableReminderV2Action,
+  enableReminderV2Action,
+} from "./[id]/actions";
 
 export const metadata: Metadata = { title: "ארגונים — מסוף בעלים" };
+
+// Phase 2.1 remediation — a human (the platform owner) confirms in Meta
+// Business Manager that a specific template is APPROVED on THIS
+// organization's own WABA before flipping this; see
+// organizations.initialRequestV2Approved/reminderV2Approved's own schema
+// doc comment. Same inline toggle-form pattern as qaMode above, reused
+// for both templates rather than duplicating the JSX twice.
+function TemplateApprovalToggle({
+  organizationId,
+  label,
+  approved,
+  enableAction,
+  disableAction,
+}: {
+  organizationId: string;
+  label: string;
+  approved: boolean;
+  enableAction: (formData: FormData) => Promise<void>;
+  disableAction: (formData: FormData) => Promise<void>;
+}) {
+  return (
+    <form action={approved ? disableAction : enableAction} className="flex items-center gap-1">
+      <input type="hidden" name="organizationId" value={organizationId} />
+      <span className="text-[11px] text-text-muted">{label}:</span>
+      <button
+        type="submit"
+        className={
+          approved
+            ? "inline-flex items-center rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success transition-colors hover:border-success/50 hover:bg-success/20"
+            : "inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-text-muted transition-colors hover:border-brand-purple/40 hover:text-brand-purple"
+        }
+      >
+        {approved ? t("owner.organizations.templateApproval.approved") : t("owner.organizations.templateApproval.markApproved")}
+      </button>
+    </form>
+  );
+}
 
 export default async function OwnerOrganizationsPage({
   searchParams,
@@ -117,9 +161,29 @@ export default async function OwnerOrganizationsPage({
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <div className="flex gap-1.5">
-                    <Badge tone={org.whatsappConnectedAt ? "success" : "neutral"}>WhatsApp</Badge>
-                    <Badge tone={org.googleConnectedAt ? "success" : "neutral"}>Drive</Badge>
+                  <div className="flex flex-col items-start gap-1.5">
+                    <div className="flex gap-1.5">
+                      <Badge tone={org.whatsappConnectedAt ? "success" : "neutral"}>WhatsApp</Badge>
+                      <Badge tone={org.googleConnectedAt ? "success" : "neutral"}>Drive</Badge>
+                    </div>
+                    {org.whatsappConnectedAt && (
+                      <>
+                        <TemplateApprovalToggle
+                          organizationId={org.id}
+                          label={t("owner.organizations.templateApproval.initialLabel")}
+                          approved={org.initialRequestV2Approved}
+                          enableAction={enableInitialRequestV2Action}
+                          disableAction={disableInitialRequestV2Action}
+                        />
+                        <TemplateApprovalToggle
+                          organizationId={org.id}
+                          label={t("owner.organizations.templateApproval.reminderLabel")}
+                          approved={org.reminderV2Approved}
+                          enableAction={enableReminderV2Action}
+                          disableAction={disableReminderV2Action}
+                        />
+                      </>
+                    )}
                   </div>
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-text-muted">

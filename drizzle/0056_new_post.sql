@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "pending_confirmations_extension_finished_check_idx" ON "pending_confirmations" USING btree ("collection_request_id") WHERE "pending_confirmations"."kind" = 'extension_finished_check' and "pending_confirmations"."status" = 'pending';

@@ -154,7 +154,9 @@ async function seedRequest() {
     .values({
       name: "Org",
       googleDriveFolderId: "root-1",
-      whatsappPhoneNumberId: "phone-1",
+      // Suffixed with a fresh uuid — Phase 1.6's unique constraint on this
+      // column (see caseReview.test.ts's identical comment).
+      whatsappPhoneNumberId: `phone-${crypto.randomUUID()}`,
       documentCollectionEnabled: true,
       businessHoursStart: "00:00",
       businessHoursEnd: "23:59",

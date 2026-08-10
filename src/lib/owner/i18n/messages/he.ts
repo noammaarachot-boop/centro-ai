@@ -88,6 +88,10 @@ export const he = {
   "owner.organizations.suspended": "מושהה",
   "owner.organizations.qaMode.badge": "משתמש בדיקה",
   "owner.organizations.qaMode.enable": "סימון כמשתמש בדיקה",
+  "owner.organizations.templateApproval.initialLabel": "תבנית פנייה",
+  "owner.organizations.templateApproval.reminderLabel": "תבנית תזכורת",
+  "owner.organizations.templateApproval.approved": "מאושרת ב-Meta",
+  "owner.organizations.templateApproval.markApproved": "סמן כמאושרת",
 
   "owner.orgDetail.backLink": "כל הארגונים",
   "owner.orgDetail.infoTitle": "פרטי ארגון",

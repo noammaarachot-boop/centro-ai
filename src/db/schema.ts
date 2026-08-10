@@ -100,6 +100,28 @@ export const organizations = pgTable("organizations", {
   // confirm which number is connected.
   whatsappDisplayPhoneNumber: text("whatsapp_display_phone_number"),
   whatsappVerifiedName: text("whatsapp_verified_name"),
+  // Per-organization Meta template-approval tracking (Phase 2.1 remediation).
+  // Message-template review/approval happens per-WABA on Meta's side, not
+  // globally — a template approved on one office's WhatsApp Business
+  // Account tells you nothing about whether it's approved on a DIFFERENT
+  // office's WABA. These replace what used to be a single hardcoded
+  // boolean (INITIAL_REQUEST_V2_ENABLED / REMINDER_V2_ENABLED in
+  // src/lib/whatsapp/templates.ts) applied to every organization — which
+  // meant the very first automated message to the SECOND office to ever
+  // connect would silently fail (Meta rejects a template send on a WABA
+  // where it isn't approved yet). Default false: every newly-connected
+  // organization starts on the always-approved static v1 templates,
+  // never guessing that Meta has approved anything.
+  //
+  // Never set automatically — Meta does not expose a webhook/callback this
+  // codebase consumes for template approval events, so a human (the
+  // platform owner, via /owner) must confirm in Meta Business Manager that
+  // the specific WABA's copy of the template is actually APPROVED before
+  // flipping this to true. Flipping it early would repeat exactly the bug
+  // this column exists to fix, just scoped to one org instead of all of
+  // them.
+  initialRequestV2Approved: boolean("initial_request_v2_approved").notNull().default(false),
+  reminderV2Approved: boolean("reminder_v2_approved").notNull().default(false),
   // Explicit, dedicated gate for the automated document-collection
   // pipeline — the long-term source of truth that supersedes
   // automationActivatedAt for this purpose (which is kept only for
@@ -238,7 +260,22 @@ export const organizations = pgTable("organizations", {
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  // Multi-tenant safety backstop (Phase 1.6 remediation) — findOrganizationByPhoneNumberId
+  // (src/app/api/webhooks/whatsapp/route.ts) routes every inbound WhatsApp
+  // message/document by this value alone with a bare .limit(1); without a
+  // DB-level constraint, a future storeWabaConnection bug (or a stale row
+  // from a disconnected org never cleared) could silently make two
+  // organizations share the same value, misrouting one tenant's real
+  // WhatsApp traffic to another. Partial (WHERE ... IS NOT NULL) so any
+  // number of disconnected organizations can all sit at null.
+  uniqueIndex("organizations_whatsapp_phone_number_id_idx")
+    .on(table.whatsappPhoneNumberId)
+    .where(sql`${table.whatsappPhoneNumberId} is not null`),
+  uniqueIndex("organizations_whatsapp_business_account_id_idx")
+    .on(table.whatsappBusinessAccountId)
+    .where(sql`${table.whatsappBusinessAccountId} is not null`),
+]);
 
 // The Pilot MVP uses a single shared employee account per firm (EPS Ch.13
 // BR-13.1) rather than individual employee identities — one row per
@@ -1246,7 +1283,20 @@ export const pendingConfirmations = pgTable("pending_confirmations", {
   notifyAfter: timestamp("notify_after", { withTimezone: true }),
   notifiedAt: timestamp("notified_at", { withTimezone: true }),
   groupIndex: integer("group_index"),
-});
+}, (table) => [
+  // Phase 4.6 remediation — createExtensionFinishedCheckIfDue
+  // (src/lib/requestExtension.ts) read-then-inserts: it lists open
+  // confirmations, then inserts if none match. Two overlapping calls for
+  // the same collection request could both pass that read before either
+  // insert commits, opening a second "סיימת להעלות?" question the client
+  // never should have gotten twice. Existence-only (no value to
+  // compare-and-swap against), so a plain partial unique index closes the
+  // race at the database instead of a claim pattern — the second insert
+  // fails with a unique violation that the caller catches as a no-op.
+  uniqueIndex("pending_confirmations_extension_finished_check_idx")
+    .on(table.collectionRequestId)
+    .where(sql`${table.kind} = 'extension_finished_check' and ${table.status} = 'pending'`),
+]);
 
 // Unified document-conversation understanding layer (src/lib/conversation/,
 // src/lib/employeeReview.ts, src/lib/policyKnowledgeBase.ts) — "the AI

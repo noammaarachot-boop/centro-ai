@@ -446,11 +446,28 @@ export async function uploadDocument(
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`document-upload::${documentId}`}))`);
 
     const [document] = await tx
-      .select({ fileName: documents.fileName, requirementId: documents.requirementId, googleDriveFileId: documents.googleDriveFileId })
+      .select({
+        fileName: documents.fileName,
+        requirementId: documents.requirementId,
+        googleDriveFileId: documents.googleDriveFileId,
+        collectionRequestId: documents.collectionRequestId,
+      })
       .from(documents)
       .where(eq(documents.id, documentId))
       .limit(1);
     if (!document) throw new Error(`Document ${documentId} not found`);
+    // Phase 5.2 remediation — a documentId/collectionRequestId mismatch
+    // between the two params would otherwise upload this document's bytes
+    // into a different request's (potentially different client's) Drive
+    // folder, since ensureCollectionRequestDriveFolder above already
+    // resolved the folder from collectionRequestId alone. Every real
+    // caller today passes a consistent pair (confirmed by the Phase 5
+    // audit) — this only guards against a future caller getting it wrong.
+    if (document.collectionRequestId !== collectionRequestId) {
+      throw new Error(
+        `Document ${documentId} belongs to collection request ${document.collectionRequestId}, not ${collectionRequestId}`
+      );
+    }
 
     // Another caller already finished uploading this exact document while
     // this one was waiting for the lock — the actual duplicate-prevention

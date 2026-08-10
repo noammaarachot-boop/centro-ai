@@ -53,7 +53,9 @@ async function seedActiveExtensionRequest(conversationUpdatedAt: Date) {
     .insert(schema.organizations)
     .values({
       name: "Org",
-      whatsappPhoneNumberId: "phone-1",
+      // Suffixed with a fresh uuid — Phase 1.6's unique constraint on this
+      // column (see caseReview.test.ts's identical comment).
+      whatsappPhoneNumberId: `phone-${crypto.randomUUID()}`,
       businessHoursStart: "00:00",
       businessHoursEnd: "23:59",
       businessDays: "0,1,2,3,4,5,6",

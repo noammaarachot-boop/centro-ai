@@ -21,7 +21,7 @@ export default async function AssistantConversationPage({
 
   const [conversations, initialMessages] = await Promise.all([
     listConversations(session.organizationId, session.userId),
-    listMessagesForDisplay(conversationId),
+    listMessagesForDisplay(conversationId, session.organizationId),
   ]);
 
   return (

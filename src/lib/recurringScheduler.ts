@@ -112,15 +112,47 @@ interface DueRow {
   service: typeof services.$inferSelect;
 }
 
+// Returns whether this pairing was actually claimed and a cycle created —
+// false means another tick already claimed it (see the atomic claim
+// below), so the caller must not count it.
 async function createAndSendRecurringCycle(
   organization: typeof organizations.$inferSelect,
   row: DueRow
-) {
+): Promise<boolean> {
   const db = await getDb();
   const intervalMonths = row.service.collectionFrequencyIntervalMonths ?? 1;
   const now = new Date();
-  const periodLabel = formatAutoPeriodLabel(now, intervalMonths);
 
+  // Atomic claim (Phase 4.4 remediation) — moved to run FIRST, before any
+  // collection request is created. The comment this replaced ("advance the
+  // schedule before attempting the send") already protected against a
+  // slow/failed *send* causing the same pairing to double-create on the
+  // *next* tick — but the SELECT in runRecurringCycleCreation that finds
+  // this row still had no claim of its own, so two ticks running
+  // genuinely concurrently could both read the same due row before either
+  // one's UPDATE committed, and both create a real duplicate collection
+  // request/cycle for the same client/period. The compare-and-swap here
+  // (matching the exact nextCollectionRunAt this row was read with) closes
+  // that: whichever tick's UPDATE commits second matches zero rows and
+  // backs off instead.
+  const anchorDay = resolveScheduleConfig(organization, row.service).collectionDayOfMonth;
+  const baseline = row.nextCollectionRunAt ?? now;
+  const nextRunAt = advanceCollectionRunAt(baseline, anchorDay, intervalMonths);
+  const claimed = await db
+    .update(clientServices)
+    .set({ nextCollectionRunAt: nextRunAt })
+    .where(
+      and(
+        eq(clientServices.id, row.clientServiceId),
+        row.nextCollectionRunAt
+          ? eq(clientServices.nextCollectionRunAt, row.nextCollectionRunAt)
+          : isNull(clientServices.nextCollectionRunAt)
+      )
+    )
+    .returning({ id: clientServices.id });
+  if (claimed.length === 0) return false; // lost the race to another tick
+
+  const periodLabel = formatAutoPeriodLabel(now, intervalMonths);
   const [collectionRequest] = await db
     .insert(collectionRequests)
     .values({
@@ -143,17 +175,6 @@ async function createAndSendRecurringCycle(
     collectionRequestId: collectionRequest.id,
   });
 
-  // Advance the schedule before attempting the send — a slow or failed
-  // send must never cause the same pairing to be picked up again on the
-  // very next tick and double-create a cycle for the same period.
-  const anchorDay = resolveScheduleConfig(organization, row.service).collectionDayOfMonth;
-  const baseline = row.nextCollectionRunAt ?? now;
-  const nextRunAt = advanceCollectionRunAt(baseline, anchorDay, intervalMonths);
-  await db
-    .update(clientServices)
-    .set({ nextCollectionRunAt: nextRunAt })
-    .where(eq(clientServices.id, row.clientServiceId));
-
   // The same real send path a manual "initiate" uses (startConversation) —
   // already degrades gracefully (recorded, never thrown) if WhatsApp isn't
   // connected or automation is paused, via sendOutboundMessage's own
@@ -166,6 +187,7 @@ async function createAndSendRecurringCycle(
       .set({ status: "active", updatedAt: new Date() })
       .where(eq(collectionRequests.id, collectionRequest.id));
   }
+  return true;
 }
 
 // The cron entry point — src/lib/scheduler.ts calls this once per
@@ -208,8 +230,8 @@ export async function runRecurringCycleCreation(organizationId?: string): Promis
       );
 
     for (const row of dueRows) {
-      await createAndSendRecurringCycle(organization, row as DueRow);
-      created += 1;
+      const claimedAndCreated = await createAndSendRecurringCycle(organization, row as DueRow);
+      if (claimedAndCreated) created += 1;
     }
   }
 

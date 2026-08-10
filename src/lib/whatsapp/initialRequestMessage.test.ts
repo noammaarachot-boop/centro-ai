@@ -6,18 +6,25 @@ import {
   INITIAL_REQUEST_V2_TEMPLATE_NAME,
 } from "./templates";
 
-describe("buildInitialRequestSend — v2 approved and live (current production state)", () => {
-  it("the shipped flag is true (centro_initial_request_v2 approved by Meta 2026-08-05)", () => {
-    expect(INITIAL_REQUEST_V2_ENABLED).toBe(true);
+describe("buildInitialRequestSend — Phase 2.1: template approval is per-organization, never a global flag", () => {
+  it("the module-level default is false (safe fallback) — approval now lives on organizations.initialRequestV2Approved, per-org, never this constant", () => {
+    expect(INITIAL_REQUEST_V2_ENABLED).toBe(false);
   });
 
-  it("defaults to v2 with no explicit flag argument, using the real production flag", () => {
+  it("defaults to the static v1 template with no explicit flag argument — never guesses an organization is approved", () => {
     const send = buildInitialRequestSend(["תעודת זהות", "דפי חשבון בנק"]);
+    expect(send.usedV2).toBe(false);
+    expect(send.templateName).toBe("centro_initial_request");
+    expect(send.renderedBody).toBe(INITIAL_REQUEST_BODY);
+  });
+
+  it("uses v2 only when the caller explicitly passes this organization's own approved=true", () => {
+    const send = buildInitialRequestSend(["תעודת זהות", "דפי חשבון בנק"], true);
     expect(send.usedV2).toBe(true);
     expect(send.templateName).toBe(INITIAL_REQUEST_V2_TEMPLATE_NAME);
   });
 
-  it("still falls back to the static v1 template when explicitly disabled", () => {
+  it("stays on v1 when explicitly passed false (this organization not yet approved)", () => {
     const send = buildInitialRequestSend(["תעודת זהות", "דפי חשבון בנק"], false);
     expect(send.usedV2).toBe(false);
     expect(send.templateName).toBe("centro_initial_request");

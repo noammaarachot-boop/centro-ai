@@ -20,6 +20,16 @@ export interface DriveFileRef {
 
 export class DriveApiError extends Error {}
 
+// Phase 3.3 remediation — a hung (not merely slow-to-error) Drive request
+// must fail fast enough for withRetry to actually get a chance to retry
+// it, rather than silently consuming the whole function's time budget.
+// Metadata-only calls (search, create folder, read fields) are cheap and
+// get the shorter ceiling; the binary transfer calls below (upload/
+// download/update content) get a longer one since a real document file
+// can legitimately take longer to move than a JSON round-trip.
+const DRIVE_METADATA_TIMEOUT_MS = 15_000;
+const DRIVE_TRANSFER_TIMEOUT_MS = 30_000;
+
 async function driveFetch(accessToken: string, path: string, init?: RequestInit): Promise<Response> {
   return withRetry(() =>
     fetch(`${DRIVE_API}${path}`, {
@@ -29,6 +39,7 @@ async function driveFetch(accessToken: string, path: string, init?: RequestInit)
         "Content-Type": "application/json",
         ...init?.headers,
       },
+      signal: AbortSignal.timeout(DRIVE_METADATA_TIMEOUT_MS),
     })
   );
 }
@@ -225,6 +236,7 @@ export async function uploadDriveFile(
         "Content-Type": `multipart/related; boundary=${UPLOAD_BOUNDARY}`,
       },
       body,
+      signal: AbortSignal.timeout(DRIVE_TRANSFER_TIMEOUT_MS),
     })
   );
   if (!response.ok) {
@@ -249,6 +261,7 @@ export async function downloadDriveFile(accessToken: string, fileId: string): Pr
   const contentResponse = await withRetry(() =>
     fetch(`${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`, {
       headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(DRIVE_TRANSFER_TIMEOUT_MS),
     })
   );
   if (!contentResponse.ok) {
@@ -277,6 +290,7 @@ export async function updateDriveFileContent(
         "Content-Type": mimeType,
       },
       body: new Uint8Array(content),
+      signal: AbortSignal.timeout(DRIVE_TRANSFER_TIMEOUT_MS),
     })
   );
   if (!response.ok) {

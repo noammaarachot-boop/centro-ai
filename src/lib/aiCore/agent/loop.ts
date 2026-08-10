@@ -37,7 +37,7 @@ async function prepareTurn(input: RunAgentTurnInput) {
   await appendUserMessage(input.conversationId, input.organizationId, input.userMessage);
 
   const [rawHistory, organization, resolved] = await Promise.all([
-    loadConversationHistory(input.conversationId),
+    loadConversationHistory(input.conversationId, input.organizationId),
     getOrganization(input.organizationId),
     resolveModelInfo(input.provider),
   ]);

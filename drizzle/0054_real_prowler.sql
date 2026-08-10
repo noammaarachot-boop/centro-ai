@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "organizations_whatsapp_phone_number_id_idx" ON "organizations" USING btree ("whatsapp_phone_number_id") WHERE "organizations"."whatsapp_phone_number_id" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "organizations_whatsapp_business_account_id_idx" ON "organizations" USING btree ("whatsapp_business_account_id") WHERE "organizations"."whatsapp_business_account_id" is not null;

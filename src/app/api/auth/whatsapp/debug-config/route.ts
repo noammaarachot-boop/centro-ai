@@ -8,6 +8,10 @@ import {
 
 export const dynamic = "force-dynamic";
 
+// Phase 7 remediation — matches the timeout already applied to every other
+// outbound Meta Graph API call in src/lib/whatsapp/send.ts (15s).
+const GRAPH_DEBUG_REQUEST_TIMEOUT_MS = 15_000;
+
 /**
  * Session-protected diagnosis of WhatsApp/Meta wiring.
  * Never returns secrets. Open while logged into Centro:
@@ -66,7 +70,9 @@ export async function GET() {
       fields: "id,name",
       access_token: `${appId}|${appSecret}`,
     });
-    const res = await fetch(`${GRAPH_API_BASE}/${encodeURIComponent(appId)}?${params}`);
+    const res = await fetch(`${GRAPH_API_BASE}/${encodeURIComponent(appId)}?${params}`, {
+      signal: AbortSignal.timeout(GRAPH_DEBUG_REQUEST_TIMEOUT_MS),
+    });
     const bodyText = await res.text();
     graphAppCheck.status = res.status;
     if (res.ok) {

@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, lte, notInArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { clients, collectionRequests, conversations, organizations, services } from "@/db/schema";
+import { clients, collectionRequests, conversations, messages, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { isWithinBusinessHours, nextBusinessOpenTime, resolveScheduleConfig } from "@/lib/businessHours";
 import {
@@ -18,6 +18,23 @@ import {
 import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest, runAutomaticCaseStatusReview } from "@/lib/caseReview";
 import { createExtensionFinishedCheckIfDue, EXTENSION_NUDGE_AFTER_MINUTES } from "@/lib/requestExtension";
+import { captureError } from "@/lib/monitoring/errorReporting";
+
+// Phase 6.4 (Production Hardening) — Phase 3.1's send-before-DB-write fix
+// closed the crash window where a real WhatsApp send left zero record at
+// all, by writing a "pending" messages row before the Meta call and only
+// finalizing it (whatsappMessageId/deliveryStatus) after. That narrows,
+// but doesn't eliminate, a crash window: a function killed between the
+// Meta call and that final UPDATE leaves the row stuck at "pending"
+// forever, with no way to know after the fact whether Meta actually
+// delivered it — Meta exposes no "did message X go out" lookup without
+// the whatsappMessageId this row never received. Auto-resending would
+// risk a genuine duplicate the client actually reads twice, exactly what
+// Phase 3.1 was closing — so this only ever detects and flags for a human
+// to check, never resends. Generous enough that no send legitimately still
+// in flight (even through withRetry's backoff) could be mistaken for
+// stuck.
+const STUCK_PENDING_MESSAGE_AGE_MS = 10 * 60 * 1000;
 
 /**
  * The real automatic trigger Ch.5/Ch.16 describe — "after N minutes of
@@ -54,6 +71,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   confirmationsEscalated: number;
   intakeNotificationsFlushed: number;
   caseStatusReviewsRun: number;
+  stuckMessagesFlagged: number;
 }> {
   const db = await getDb();
   const allOrganizations = organizationId
@@ -69,6 +87,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   let driveRetried = 0;
   let recurringCyclesCreated = 0;
   let caseStatusReviewsRun = 0;
+  let stuckMessagesFlagged = 0;
 
   for (const organization of allOrganizations) {
     // Ch.16 FR-16.4: after inactivity, evaluate whether known requirements
@@ -111,6 +130,26 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         Date.now() - inactivityTimeoutMinutes * 60 * 1000
       );
       if (conversation.updatedAt >= inactivityCutoff) continue;
+
+      // Atomic claim (Phase 4.2 remediation, same compare-and-swap pattern
+      // already used below for deferredReminderAt/pendingCaseReviewAt) —
+      // two concurrent scheduler ticks reading the same idleOpenConversations
+      // row before either one's own write commits could otherwise both
+      // call evaluateAndPrompt, both send the real thank-you WhatsApp
+      // message, and both attempt the same open->waiting_for_client
+      // transition. Bumping updatedAt here — even though evaluateAndPrompt
+      // itself may end up doing nothing this round (checkCompletionGate not
+      // yet satisfied) — is a deliberate tradeoff: a conversation that's
+      // not yet ready gets re-evaluated on the next full
+      // inactivityTimeoutMinutes cycle rather than on literally every tick,
+      // in exchange for it being genuinely impossible for two ticks to ever
+      // race on the same conversation here.
+      const claimed = await db
+        .update(conversations)
+        .set({ updatedAt: new Date() })
+        .where(and(eq(conversations.id, conversation.id), eq(conversations.updatedAt, conversation.updatedAt)))
+        .returning({ id: conversations.id });
+      if (claimed.length === 0) continue; // lost the race to another tick
 
       const { prompted } = await evaluateAndPrompt(
         organization.id,
@@ -199,6 +238,22 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       } else {
         const reminderCutoff = new Date(Date.now() - reminderIntervalDays * 24 * 60 * 60 * 1000);
         if (conversation.updatedAt >= reminderCutoff) continue;
+
+        // Atomic claim (Phase 4.3 remediation) — the deferred-reminder
+        // branch above already has its own claim (on deferredReminderAt);
+        // this is the same protection for the plain staleness path, so two
+        // concurrent ticks can never both fall through to the shared
+        // gate-check-then-send-or-complete logic below for the same
+        // conversation. Same tradeoff as the idle-conversation pass above:
+        // a conversation whose completion gate isn't yet satisfied gets
+        // re-evaluated on the next full reminderIntervalDays cycle instead
+        // of every tick.
+        const claimed = await db
+          .update(conversations)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(conversations.id, conversation.id), eq(conversations.updatedAt, conversation.updatedAt)))
+          .returning({ id: conversations.id });
+        if (claimed.length === 0) continue; // lost the race to another tick
       }
 
       // Reminder infrastructure — "ביטול תזכורת כאשר הדרישה הושלמה": a
@@ -221,7 +276,16 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         continue;
       }
 
-      const reminderSend = await buildReminderSend(conversation.id, conversation.collectionRequestId, conversation.clientName);
+      // organization.reminderV2Approved — THIS organization's own Meta
+      // template-approval state (Phase 2.1 remediation), never the old
+      // global flag (Meta approves per-WABA, not for every connected
+      // office at once).
+      const reminderSend = await buildReminderSend(
+        conversation.id,
+        conversation.collectionRequestId,
+        conversation.clientName,
+        organization.reminderV2Approved
+      );
       const { sent } = await sendOutboundMessage(
         organization.id,
         conversation.id,
@@ -401,6 +465,51 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         collectionRequestId: ext.collectionRequestId,
       });
     }
+
+    // Phase 6.4 — see STUCK_PENDING_MESSAGE_AGE_MS's own doc comment above.
+    // Transitions the row to a distinct terminal "stuck" deliveryStatus
+    // (not a resend, not left as "pending") — both so it reads honestly
+    // (neither confirmed sent nor confirmed failed — genuinely unknown)
+    // and so this same row is never re-flagged on every later tick.
+    const stuckPendingCutoff = new Date(Date.now() - STUCK_PENDING_MESSAGE_AGE_MS);
+    const stuckPendingMessages = await db
+      .select({ id: messages.id, conversationId: messages.conversationId, createdAt: messages.createdAt })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.organizationId, organization.id),
+          eq(messages.direction, "outbound"),
+          eq(messages.deliveryStatus, "pending"),
+          lte(messages.createdAt, stuckPendingCutoff)
+        )
+      );
+    for (const stuck of stuckPendingMessages) {
+      const claimed = await db
+        .update(messages)
+        .set({ deliveryStatus: "stuck" })
+        .where(and(eq(messages.id, stuck.id), eq(messages.deliveryStatus, "pending")))
+        .returning({ id: messages.id });
+      if (claimed.length === 0) continue; // another tick already flagged it
+      console.error("[scheduler] stuck pending outbound message detected — delivery outcome unknown, needs manual check", {
+        organizationId: organization.id,
+        messageId: stuck.id,
+        conversationId: stuck.conversationId,
+        ageMs: Date.now() - stuck.createdAt.getTime(),
+      });
+      captureError(new Error("Stuck pending outbound WhatsApp message"), {
+        organizationId: organization.id,
+        messageId: stuck.id,
+        conversationId: stuck.conversationId,
+      });
+      await recordAuditEvent({
+        organizationId: organization.id,
+        eventType: "message.stuck_pending",
+        description: "הודעה יוצאת נתקעה במצב 'ממתין לשליחה' ללא עדכון סופי — נדרשת בדיקה ידנית מול WhatsApp",
+        actorType: "system",
+        metadata: { messageId: stuck.id, conversationId: stuck.conversationId },
+      });
+      stuckMessagesFlagged += 1;
+    }
   }
 
   return {
@@ -413,5 +522,6 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     confirmationsEscalated,
     intakeNotificationsFlushed,
     caseStatusReviewsRun,
+    stuckMessagesFlagged,
   };
 }

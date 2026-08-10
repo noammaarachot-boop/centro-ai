@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { LEAD_WELCOME_TEMPLATE, REQUIRED_TEMPLATES, TEMPLATE_BY_BODY } from "./templates";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const fetchMock = vi.fn();
+
+beforeEach(() => {
+  fetchMock.mockReset();
+  vi.stubGlobal("fetch", fetchMock);
+});
+
+vi.mock("./config", () => ({
+  getWhatsAppConfig: () => ({ systemUserToken: "fake-token" }),
+  GRAPH_API_BASE: "https://graph.example/v1",
+}));
+
+const {
+  LEAD_WELCOME_TEMPLATE,
+  REQUIRED_TEMPLATES,
+  TEMPLATE_BY_BODY,
+  ensureTemplatesProvisioned,
+} = await import("./templates");
 
 describe("TEMPLATE_BY_BODY", () => {
   it("has one entry per required template, keyed by its exact body text", () => {
@@ -59,6 +77,25 @@ describe("template definitions", () => {
       for (const placeholder of namedPlaceholders) {
         expect(template.namedExampleParams?.some((p) => p.paramName === placeholder)).toBe(true);
       }
+    }
+  });
+});
+
+describe("ensureTemplatesProvisioned — Phase 7: request timeout", () => {
+  it("wires an AbortSignal into both the list and the create Graph API calls", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("message_templates?")) {
+        return { ok: true, json: async () => ({ data: [] }) };
+      }
+      return { ok: true, json: async () => ({ id: "template-1" }) };
+    });
+
+    await ensureTemplatesProvisioned("waba-1", [REQUIRED_TEMPLATES[0]]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2); // list existing, then create the one missing template
+    for (const call of fetchMock.mock.calls) {
+      const [, init] = call;
+      expect(init.signal).toBeInstanceOf(AbortSignal);
     }
   });
 });

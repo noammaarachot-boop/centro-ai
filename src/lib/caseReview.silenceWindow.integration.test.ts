@@ -73,7 +73,9 @@ async function seedWaitingRequest(
     .insert(schema.organizations)
     .values({
       name: "Org",
-      whatsappPhoneNumberId: "phone-1",
+      // Suffixed with a fresh uuid — see caseReview.test.ts's identical
+      // comment (Phase 1.6's unique constraint on this column).
+      whatsappPhoneNumberId: `phone-${crypto.randomUUID()}`,
       documentCollectionEnabled: true,
       businessHoursStart: "00:00",
       businessHoursEnd: "23:59",

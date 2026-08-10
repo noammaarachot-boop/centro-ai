@@ -119,3 +119,112 @@ export async function disableQaModeAction(formData: FormData) {
 
   redirect("/owner/organizations");
 }
+
+// Per-organization Meta template-approval tracking (Phase 2.1 remediation
+// — see organizations.initialRequestV2Approved/reminderV2Approved's own
+// schema doc comment for the full rationale: Meta approves a message
+// template per-WABA, never globally, so this can only ever be set
+// correctly by a human who has actually confirmed APPROVED status for
+// THIS organization's own WhatsApp Business Account in Meta Business
+// Manager — never inferred or set automatically. Same
+// requireOwnerSession() + recordOwnerAuditEvent() convention as every
+// other action in this file.
+export async function enableInitialRequestV2Action(formData: FormData) {
+  const session = await requireOwnerSession();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  if (!organizationId) redirect("/owner/organizations");
+
+  const db = await getDb();
+  const [org] = await db
+    .update(organizations)
+    .set({ initialRequestV2Approved: true, updatedAt: new Date() })
+    .where(eq(organizations.id, organizationId))
+    .returning({ id: organizations.id, name: organizations.name });
+
+  if (org) {
+    await recordOwnerAuditEvent({
+      eventType: "owner.initial_request_v2_approved",
+      description: `תבנית הפנייה הראשונית (v2) סומנה כמאושרת עבור "${org.name}" על ידי ${session.email}`,
+      severity: "info",
+      platformOwnerId: session.platformOwnerId,
+      metadata: { organizationId: org.id },
+    });
+  }
+
+  redirect("/owner/organizations");
+}
+
+export async function disableInitialRequestV2Action(formData: FormData) {
+  const session = await requireOwnerSession();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  if (!organizationId) redirect("/owner/organizations");
+
+  const db = await getDb();
+  const [org] = await db
+    .update(organizations)
+    .set({ initialRequestV2Approved: false, updatedAt: new Date() })
+    .where(eq(organizations.id, organizationId))
+    .returning({ id: organizations.id, name: organizations.name });
+
+  if (org) {
+    await recordOwnerAuditEvent({
+      eventType: "owner.initial_request_v2_unapproved",
+      description: `סימון האישור לתבנית הפנייה הראשונית (v2) בוטל עבור "${org.name}" על ידי ${session.email}`,
+      severity: "info",
+      platformOwnerId: session.platformOwnerId,
+      metadata: { organizationId: org.id },
+    });
+  }
+
+  redirect("/owner/organizations");
+}
+
+export async function enableReminderV2Action(formData: FormData) {
+  const session = await requireOwnerSession();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  if (!organizationId) redirect("/owner/organizations");
+
+  const db = await getDb();
+  const [org] = await db
+    .update(organizations)
+    .set({ reminderV2Approved: true, updatedAt: new Date() })
+    .where(eq(organizations.id, organizationId))
+    .returning({ id: organizations.id, name: organizations.name });
+
+  if (org) {
+    await recordOwnerAuditEvent({
+      eventType: "owner.reminder_v2_approved",
+      description: `תבנית התזכורת (v2) סומנה כמאושרת עבור "${org.name}" על ידי ${session.email}`,
+      severity: "info",
+      platformOwnerId: session.platformOwnerId,
+      metadata: { organizationId: org.id },
+    });
+  }
+
+  redirect("/owner/organizations");
+}
+
+export async function disableReminderV2Action(formData: FormData) {
+  const session = await requireOwnerSession();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  if (!organizationId) redirect("/owner/organizations");
+
+  const db = await getDb();
+  const [org] = await db
+    .update(organizations)
+    .set({ reminderV2Approved: false, updatedAt: new Date() })
+    .where(eq(organizations.id, organizationId))
+    .returning({ id: organizations.id, name: organizations.name });
+
+  if (org) {
+    await recordOwnerAuditEvent({
+      eventType: "owner.reminder_v2_unapproved",
+      description: `סימון האישור לתבנית התזכורת (v2) בוטל עבור "${org.name}" על ידי ${session.email}`,
+      severity: "info",
+      platformOwnerId: session.platformOwnerId,
+      metadata: { organizationId: org.id },
+    });
+  }
+
+  redirect("/owner/organizations");
+}

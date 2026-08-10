@@ -21,6 +21,7 @@
     "@ai-sdk/openai": "^4.0.18",
     "@ai-sdk/react": "^4.0.38",
     "@electric-sql/pglite": "^0.5.4",
+    "@sentry/node": "^10.69.0",
     "ai": "^7.0.35",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",

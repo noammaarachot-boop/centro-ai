@@ -137,7 +137,11 @@ describe("isFinishedSignal", () => {
 async function seedRequest(requirementNames: string[]) {
   const [org] = await db
     .insert(schema.organizations)
-    .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: "phone-1" })
+    // Suffixed with a fresh uuid — seedRequest is called once per it()
+    // block on one shared PGlite instance for the whole file, so a fixed
+    // literal would collide with organizations_whatsapp_phone_number_id_idx
+    // (Phase 1.6's unique constraint).
+    .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
     .returning();
   const [client] = await db
     .insert(schema.clients)

@@ -169,7 +169,9 @@ describe("decidePostCompletionGate — pure decision core", () => {
 async function seedCompletedRequest() {
   const [org] = await db
     .insert(schema.organizations)
-    .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: "phone-1" })
+    // Suffixed with a fresh uuid — Phase 1.6's unique constraint on this
+    // column (see caseReview.test.ts's identical comment).
+    .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
     .returning();
   const [client] = await db.insert(schema.clients).values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" }).returning();
   const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "Service" }).returning();

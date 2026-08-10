@@ -3,6 +3,14 @@ import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
 
 export class WhatsAppTemplateError extends Error {}
 
+// Phase 7 remediation — matches the timeout already applied to every other
+// outbound Meta Graph API call in src/lib/whatsapp/send.ts (15s). Without
+// this, a hung (not just erroring) request here has no bound of its own —
+// withRetry only reacts to a genuine rejection, so a request that never
+// resolves would never be retried and would sit until whatever caller's
+// own outer timeout (if any) eventually gives up.
+const WHATSAPP_TEMPLATE_REQUEST_TIMEOUT_MS = 15_000;
+
 export interface TemplateDefinition {
   name: string;
   language: string;
@@ -42,13 +50,19 @@ export const INITIAL_REQUEST_BODY =
 export const INITIAL_REQUEST_V2_BODY =
   "שלום! זהו סנטרו, העוזר הדיגיטלי של המשרד. כדי שנוכל להמשיך בטיפול בבקשה, נא שלחו את המסמכים הבאים: {{1}}";
 export const INITIAL_REQUEST_V2_TEMPLATE_NAME = "centro_initial_request_v2";
-// Master switch for actually SENDING the parameterized v2 template over
-// WhatsApp. centro_initial_request_v2 was approved on the WABA on
-// 2026-08-05 — flipped to true. The initial request now sends the
-// dynamic per-request document list via {{1}}; centro_initial_request
-// (static, no params) remains the fallback used when a request has zero
-// requirements (see buildInitialRequestSend).
-export const INITIAL_REQUEST_V2_ENABLED = true;
+// Phase 2.1 remediation — this USED to be the single live gate for every
+// organization, which is wrong: Meta approves a template per-WABA, not
+// globally, so "approved for the one office connected when this was
+// flipped to true" said nothing about any other office. The real,
+// per-organization gate is now organizations.initialRequestV2Approved
+// (src/db/schema.ts) — startConversation (conversationOrchestration.ts)
+// reads that column and passes it explicitly to buildInitialRequestSend.
+// This constant is ONLY the default used when no explicit value is
+// passed (tests, or a future caller that forgets to look up the
+// organization's own column) — kept at the SAFE value (false → static v1
+// template, always approved) so forgetting to wire it up fails safe, not
+// fails by silently guessing every org is approved.
+export const INITIAL_REQUEST_V2_ENABLED = false;
 export const THANK_YOU_BODY =
   "תודה, קיבלנו את המסמכים! האם סיימתם לשלוח את כל המסמכים? השיבו 'סיימתי' או 'יש עוד מסמכים'.";
 export const REMINDER_BODY = "תזכורת: עדיין ממתינים לתשובתכם - 'סיימתי' או 'יש עוד מסמכים'?";
@@ -72,13 +86,14 @@ export const REMINDER_V2_TEMPLATE_NAME = "centro_reminder_v2";
 // comment); sendTemplateMessage's named-parameter form matches by this
 // string, not by array position.
 export const REMINDER_V2_PARAM_NAME = "documents";
-// Master switch for actually SENDING the parameterized v2 reminder
-// template over WhatsApp — false until centro_reminder_v2 is APPROVED on
-// the WABA. Until then, src/lib/reminderContent.ts falls back to the
-// already-approved static REMINDER_BODY, exactly today's behavior. THE
-// ONLY THING TO CHANGE ONCE META APPROVES: flip this to true. No other
-// code change is needed — the send path, named-parameter mapping, and
-// fallback are already fully wired and tested.
+// Phase 2.1 remediation — same fix as INITIAL_REQUEST_V2_ENABLED above:
+// the real, per-organization gate is now organizations.reminderV2Approved
+// (src/db/schema.ts) — the scheduler (src/lib/scheduler.ts) reads that
+// column per-organization and passes it explicitly to buildReminderSend.
+// This constant is only the default used when no explicit value is
+// passed (tests, or a future caller that forgets to look up the
+// organization's own column) — false is already the safe fallback
+// (static, always-approved REMINDER_BODY).
 export const REMINDER_V2_ENABLED = false;
 export const DUPLICATE_BODY = "קיבלנו מסמך זה כבר, תודה.";
 
@@ -163,7 +178,10 @@ export async function ensureTemplatesProvisioned(
   const existingResponse = await withRetry(() =>
     fetch(
       `${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/message_templates?fields=name,language&limit=100`,
-      { headers: { Authorization: `Bearer ${systemUserToken}` } }
+      {
+        headers: { Authorization: `Bearer ${systemUserToken}` },
+        signal: AbortSignal.timeout(WHATSAPP_TEMPLATE_REQUEST_TIMEOUT_MS),
+      }
     )
   );
   if (!existingResponse.ok) {
@@ -185,6 +203,7 @@ export async function ensureTemplatesProvisioned(
           Authorization: `Bearer ${systemUserToken}`,
           "Content-Type": "application/json",
         },
+        signal: AbortSignal.timeout(WHATSAPP_TEMPLATE_REQUEST_TIMEOUT_MS),
         body: JSON.stringify({
           name: template.name,
           language: template.language,

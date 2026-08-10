@@ -2,6 +2,12 @@ import { withRetry } from "@/lib/resilience";
 import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
 import { WHATSAPP_HARDCODE_ENABLED, WHATSAPP_HARDCODED } from "./hardcodedConfig";
 
+// Phase 7 remediation — matches the timeout already applied to every other
+// outbound Meta Graph API call in src/lib/whatsapp/send.ts (15s). This is
+// an admin-initiated onboarding flow, not a hot request path, but a hung
+// call here previously had no bound of its own.
+const WHATSAPP_SIGNUP_REQUEST_TIMEOUT_MS = 15_000;
+
 // Safe step ids returned to the client on failure (WA-03). Do not put
 // secrets or full Graph bodies here — those stay in server logs only.
 export type WhatsAppSignupStep =
@@ -151,6 +157,7 @@ export async function exchangeSignupCode(
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString(),
+      signal: AbortSignal.timeout(WHATSAPP_SIGNUP_REQUEST_TIMEOUT_MS),
     });
     if (response.ok) {
       const data = (await response.json()) as { access_token?: string };
@@ -195,7 +202,8 @@ export async function exchangeSignupCode(
   let secretMatchesApp: boolean | null = null;
   try {
     const probe = await fetch(
-      `${GRAPH_API_BASE}/${encodeURIComponent(appId)}?fields=id&access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`
+      `${GRAPH_API_BASE}/${encodeURIComponent(appId)}?fields=id&access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`,
+      { signal: AbortSignal.timeout(WHATSAPP_SIGNUP_REQUEST_TIMEOUT_MS) }
     );
     secretMatchesApp = probe.ok;
   } catch {
@@ -284,7 +292,11 @@ function isRetryableRedirectClassError(
   return false;
 }
 
-function parseGraphErrorBody(body: string): {
+// Exported for reuse by send.ts's own error logging — a single place that
+// knows how to reduce Meta's raw error body (which can echo back request
+// content — recipient numbers, template parameters) down to just the
+// structured fields worth logging.
+export function parseGraphErrorBody(body: string): {
   message?: string;
   code?: number;
   error_subcode?: number;
@@ -336,7 +348,11 @@ export async function resolveWabaIdFromToken(userAccessToken: string): Promise<s
     input_token: userAccessToken,
     access_token: `${appId}|${appSecret}`,
   });
-  const response = await withRetry(() => fetch(`${GRAPH_API_BASE}/debug_token?${params.toString()}`));
+  const response = await withRetry(() =>
+    fetch(`${GRAPH_API_BASE}/debug_token?${params.toString()}`, {
+      signal: AbortSignal.timeout(WHATSAPP_SIGNUP_REQUEST_TIMEOUT_MS),
+    })
+  );
   if (!response.ok) {
     const body = await response.text();
     throw new WhatsAppSignupError(
@@ -356,10 +372,11 @@ export async function resolveWabaIdFromToken(userAccessToken: string): Promise<s
   // integration's live testing, so either is a reliable source of the
   // WABA id.
   const scopes = data.data?.granular_scopes ?? [];
-  const wabaId =
-    scopes.find((scope) => scope.scope === "whatsapp_business_management")?.target_ids?.[0] ??
-    scopes.find((scope) => scope.scope === "whatsapp_business_messaging")?.target_ids?.[0];
-  if (!wabaId) {
+  const targetIds =
+    scopes.find((scope) => scope.scope === "whatsapp_business_management")?.target_ids ??
+    scopes.find((scope) => scope.scope === "whatsapp_business_messaging")?.target_ids ??
+    [];
+  if (targetIds.length === 0) {
     // WA-07: explicit guidance when Config permissions/scopes are wrong.
     throw new WhatsAppSignupError(
       "Exchanged token was not granted access to any WhatsApp Business Account " +
@@ -368,7 +385,19 @@ export async function resolveWabaIdFromToken(userAccessToken: string): Promise<s
       "waba-resolve"
     );
   }
-  return wabaId;
+  // Phase 2.2 remediation — this used to silently pick target_ids[0]. A
+  // signing admin whose Meta identity has access to more than one WABA
+  // (e.g. an accountant/agency managing several clients' Business
+  // Managers) would silently connect Centro to whichever WABA Meta
+  // happened to list first. Fail loud instead — never guess which
+  // business the office meant to connect.
+  if (targetIds.length > 1) {
+    throw new WhatsAppSignupError(
+      `This Meta account has access to ${targetIds.length} WhatsApp Business Accounts — Centro cannot determine which one to connect automatically. Complete Embedded Signup with an account that only has access to the one Business Account you want to connect.`,
+      "waba-resolve"
+    );
+  }
+  return targetIds[0];
 }
 
 // Centro's fixed production domain — this deployment has exactly one,
@@ -415,6 +444,7 @@ export async function subscribeToWabaWebhooks(
       fetch(`${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/subscribed_apps`, {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(WHATSAPP_SIGNUP_REQUEST_TIMEOUT_MS),
       })
     );
     if (wabaResponse.ok) {
@@ -447,7 +477,11 @@ export async function subscribeToWabaWebhooks(
     access_token: `${appId}|${appSecret}`,
   });
   const fieldResponse = await withRetry(() =>
-    fetch(`${GRAPH_API_BASE}/${appId}/subscriptions`, { method: "POST", body: fieldParams })
+    fetch(`${GRAPH_API_BASE}/${appId}/subscriptions`, {
+      method: "POST",
+      body: fieldParams,
+      signal: AbortSignal.timeout(WHATSAPP_SIGNUP_REQUEST_TIMEOUT_MS),
+    })
   );
   if (!fieldResponse.ok) {
     // Non-fatal — the WABA-level link above already succeeded, and this

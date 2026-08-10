@@ -61,7 +61,9 @@ async function seedWaitingRequest(overrides: Partial<typeof schema.organizations
     .insert(schema.organizations)
     .values({
       name: "Org",
-      whatsappPhoneNumberId: "phone-1",
+      // Suffixed with a fresh uuid — Phase 1.6's unique constraint on this
+      // column (see caseReview.test.ts's identical comment).
+      whatsappPhoneNumberId: `phone-${crypto.randomUUID()}`,
       documentCollectionEnabled: true,
       businessHoursStart: "09:00",
       businessHoursEnd: "18:00",
@@ -234,16 +236,27 @@ describe("scheduler — deferred reminders (mandatory: suppress until date, then
   });
 
   it("a deferred date that arrives while the office is closed reschedules to the next business opening instead of sending immediately", async () => {
-    // businessDays "0,1,2,3,4" (Sun-Thu) — Friday is closed.
+    // businessDays "0,1,2,3,4" (Sun-Thu) — Friday is closed. isWithinBusinessHours
+    // checks the real current instant (correctly — the question is whether the
+    // office is open *now*, when the tick actually runs, not back when the
+    // reminder first became due), so the "office is closed" side of this test
+    // needs the system clock itself pinned to a Friday, not just the stored
+    // deferredReminderAt value — otherwise this only passes when the suite
+    // happens to run outside business hours in real wall-clock time.
     const { orgId, conversationId } = await seedWaitingRequest();
-    // Force a due-but-Friday instant regardless of when tests actually run.
     const friday = new Date("2026-01-16T08:00:00Z"); // Friday 10:00 local, closed
     await db
       .update(schema.conversations)
       .set({ deferredReminderAt: friday, updatedAt: new Date() })
       .where(eq(schema.conversations.id, conversationId));
 
-    await runScheduledTasks(orgId);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(friday);
+      await runScheduledTasks(orgId);
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(sendTextMessage).not.toHaveBeenCalled();
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));

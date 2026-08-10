@@ -18,6 +18,8 @@ export interface OwnerOrganizationListRow {
   googleConnectedAt: Date | null;
   suspendedAt: Date | null;
   qaModeEnabledAt: Date | null;
+  initialRequestV2Approved: boolean;
+  reminderV2Approved: boolean;
   createdAt: Date;
   userEmail: string | null;
   userPhone: string | null;
@@ -44,6 +46,8 @@ export async function listOrganizations(query?: string): Promise<OwnerOrganizati
       googleConnectedAt: organizations.googleConnectedAt,
       suspendedAt: organizations.suspendedAt,
       qaModeEnabledAt: organizations.qaModeEnabledAt,
+      initialRequestV2Approved: organizations.initialRequestV2Approved,
+      reminderV2Approved: organizations.reminderV2Approved,
       createdAt: organizations.createdAt,
       userEmail: users.email,
       userPhone: users.phone,

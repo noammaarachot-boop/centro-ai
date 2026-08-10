@@ -4,6 +4,10 @@ import { getGoogleOAuthConfig, GOOGLE_DRIVE_SCOPE } from "./config";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
+// Phase 3.3 remediation — every Drive operation depends on a valid
+// access token, so a hung token exchange/refresh call is just as
+// important to fail fast on as a hung Drive API call itself.
+const GOOGLE_TOKEN_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface TokenSet {
   accessToken: string;
@@ -44,6 +48,7 @@ async function postToken(body: URLSearchParams): Promise<GoogleTokenResponse> {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
+      signal: AbortSignal.timeout(GOOGLE_TOKEN_REQUEST_TIMEOUT_MS),
     })
   );
   const data = (await response.json()) as GoogleTokenResponse;
@@ -103,6 +108,7 @@ export async function revokeToken(token: string): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ token }),
+      signal: AbortSignal.timeout(GOOGLE_TOKEN_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     console.error("[google-oauth] token revocation failed (non-fatal)", error);

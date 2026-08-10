@@ -1,0 +1,2 @@
+ALTER TABLE "organizations" ADD COLUMN "initial_request_v2_approved" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "organizations" ADD COLUMN "reminder_v2_approved" boolean DEFAULT false NOT NULL;

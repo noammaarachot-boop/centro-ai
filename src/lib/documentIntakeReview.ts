@@ -646,6 +646,26 @@ export async function sendConfirmationRemindersAndEscalate(
   let escalated = 0;
 
   for (const row of due) {
+    // Atomic claim (Phase 4.5 remediation) — nulls out nextReminderAt via
+    // compare-and-swap against the exact value this row was just read
+    // with, BEFORE deciding whether to escalate/defer/send. Two concurrent
+    // scheduler ticks can then never both act on the same due confirmation
+    // — whichever tick's UPDATE commits second matches zero rows and backs
+    // off, exactly the pattern flushDueIntakeNotifications (this file) and
+    // the scheduler's own deferred-reminder/case-review passes already
+    // use. Every branch below is responsible for setting nextReminderAt
+    // back to whatever its own outcome implies (a real future due date, or
+    // left null for an escalation) — "sent:false" (the automation gate
+    // blocked it, not a real send attempt) is the one path that must
+    // restore the ORIGINAL due value, or this confirmation would silently
+    // never be retried again.
+    const claimed = await db
+      .update(pendingConfirmations)
+      .set({ nextReminderAt: null })
+      .where(and(eq(pendingConfirmations.id, row.id), eq(pendingConfirmations.nextReminderAt, row.nextReminderAt!)))
+      .returning({ id: pendingConfirmations.id });
+    if (claimed.length === 0) continue; // lost the race to another tick
+
     if (row.remindersSent >= maxReminders) {
       // Every payload shape this cron pass has ever needed to escalate:
       // document_clarification carries a single documentId;
@@ -745,6 +765,15 @@ export async function sendConfirmationRemindersAndEscalate(
         })
         .where(eq(pendingConfirmations.id, row.id));
       reminded += 1;
+    } else {
+      // The automation gate blocked the send (org/service paused) —
+      // restore the original due date so this confirmation stays "due" and
+      // is retried on the next tick, rather than being silently claimed
+      // (nextReminderAt left null) and never reminded again.
+      await db
+        .update(pendingConfirmations)
+        .set({ nextReminderAt: row.nextReminderAt })
+        .where(eq(pendingConfirmations.id, row.id));
     }
   }
 

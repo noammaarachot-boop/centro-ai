@@ -386,6 +386,27 @@ describe("uploadDocument — file naming", () => {
     const clientFolders = fakeFolders.filter((f) => f.name === "רז שלום");
     expect(clientFolders).toHaveLength(1);
   });
+
+  it("Phase 5.2: refuses to upload a document into a collectionRequestId that isn't actually its own — never files it under the wrong request/client folder", async () => {
+    const { orgId, clientId } = await seedOrgWithClient("רז שלום");
+    const realRequestId = await seedRequest(orgId, clientId, new Date("2026-08-15T10:00:00Z"));
+    const otherRequestId = await seedRequest(orgId, clientId, new Date("2026-08-15T10:00:00Z"));
+    const [document] = await db
+      .insert(schema.documents)
+      .values({
+        organizationId: orgId,
+        collectionRequestId: realRequestId,
+        fileName: "image_wamid.abc123.jpg",
+        status: "approved",
+      })
+      .returning();
+
+    await expect(
+      uploadDocument(clientId, document.id, otherRequestId, Buffer.from("fake"), "image/jpeg")
+    ).rejects.toThrow(/belongs to collection request/);
+
+    expect(fakeFiles).toHaveLength(0); // never uploaded anywhere
+  });
 });
 
 describe("uploadDocument — concurrency safety (real Postgres advisory lock, not assumed sequential execution)", () => {

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import * as schema from "./schema";
 
@@ -90,7 +91,36 @@ export async function getDb(): Promise<Database> {
   return db;
 }
 
+// Phase 6.3 (Production Hardening) — migration concurrency safety.
+// drizzle's own PgDialect.migrate() reads "last applied migration" and
+// only then applies pending ones inside its own transaction, but that
+// read happens before any lock is held — two migrate runs racing (two
+// overlapping deploys, or a build retried while a prior one is still
+// finishing) could both read the same starting point and both attempt to
+// apply the same pending migration concurrently. This process-wide
+// advisory lock serializes any concurrent attempt: the second one blocks
+// until the first fully commits and releases, then migrate() re-reads the
+// migrations table itself and correctly finds nothing left to do — never
+// double-applies. Exported separately from migrateDb so it can be
+// exercised directly against a real PGlite instance in tests, without
+// needing to fight the getConnection()/global.__centroDb singleton this
+// module otherwise keeps private. Session-scoped pg_advisory_lock (not
+// the transaction-scoped pg_advisory_xact_lock used elsewhere in the
+// codebase for pooled request-handler connections) is the right choice
+// here: this always runs as a single dedicated, non-pooled connection for
+// the lifetime of one migration run (a one-off script, or once per cold
+// build), so there's no pool-safety hazard, and an explicit unlock in
+// `finally` releases it the moment migrate() finishes either way.
+export async function withMigrationLock<T>(db: Database, fn: () => Promise<T>): Promise<T> {
+  await db.execute(sql`select pg_advisory_lock(hashtext('centro-db-migrate'))`);
+  try {
+    return await fn();
+  } finally {
+    await db.execute(sql`select pg_advisory_unlock(hashtext('centro-db-migrate'))`);
+  }
+}
+
 export async function migrateDb() {
-  const { migrate } = await getConnection();
-  await migrate();
+  const { db, migrate } = await getConnection();
+  await withMigrationLock(db, migrate);
 }

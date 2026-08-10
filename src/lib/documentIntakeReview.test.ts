@@ -322,7 +322,11 @@ async function seedRequest(options?: {
       ...(options?.confirmationMaxReminders !== undefined
         ? { confirmationMaxReminders: options.confirmationMaxReminders }
         : {}),
-      ...(options?.whatsappPhoneNumberId ? { whatsappPhoneNumberId: options.whatsappPhoneNumberId } : {}),
+      // Suffixed with a fresh uuid — see documentIdentityVerification.test.ts's
+      // identical comment (Phase 1.6's unique constraint on this column).
+      ...(options?.whatsappPhoneNumberId
+        ? { whatsappPhoneNumberId: `${options.whatsappPhoneNumberId}-${crypto.randomUUID()}` }
+        : {}),
     })
     .returning();
   const [client] = await db
@@ -939,6 +943,75 @@ describe("WhatsApp delivery of the confirmation question (the messaging fix)", (
     expect(sendTemplateMessage).not.toHaveBeenCalled();
     const sentMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
     expect(sentMessages).toHaveLength(2);
+  });
+
+  it("Phase 4.5: a second reminder pass run right after the first no longer sees the confirmation as due — the atomic claim already advanced nextReminderAt, not a second reminder", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest({
+      businessHoursAlwaysOpen: true,
+      whatsappPhoneNumberId: "phone-1",
+    });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    await forceFlush(orgId, requestId);
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ nextReminderAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.pendingConfirmations.id, confirmation.id));
+
+    const first = await sendConfirmationRemindersAndEscalate(orgId);
+    expect(first.reminded).toBe(1);
+
+    sendTextMessage.mockClear();
+    const second = await sendConfirmationRemindersAndEscalate(orgId);
+    expect(second.reminded).toBe(0); // not due again yet — nextReminderAt was advanced by the first pass's claim
+    expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it("Phase 4.5: an automation-gate block (sent:false) restores the original due date — never silently drops the confirmation from future reminders", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest({
+      // Business hours must be open so this reaches the actual send
+      // attempt (and its automation gate) rather than the earlier
+      // business-hours defer branch, which this test isn't exercising.
+      businessHoursAlwaysOpen: true,
+      whatsappPhoneNumberId: "phone-1",
+    });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    const [confirmation] = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    const originalDueAt = new Date(Date.now() - 1000);
+    await db
+      .update(schema.pendingConfirmations)
+      .set({ nextReminderAt: originalDueAt, notifiedAt: new Date() })
+      .where(eq(schema.pendingConfirmations.id, confirmation.id));
+    // Blocks sendOutboundMessage's own automation gate regardless of
+    // business hours — simulates the org pausing automation between the
+    // question being asked and the reminder coming due.
+    await db.update(schema.organizations).set({ documentCollectionEnabled: false }).where(eq(schema.organizations.id, orgId));
+
+    const result = await sendConfirmationRemindersAndEscalate(orgId);
+
+    expect(result.reminded).toBe(0);
+    const [after] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.id, confirmation.id));
+    expect(after.nextReminderAt?.getTime()).toBe(originalDueAt.getTime()); // restored, not left null forever
   });
 
   it("a WhatsApp send failure doesn't block the confirmation from being flushed, is recorded on the message row, and stays pending for the next reminder to retry", async () => {

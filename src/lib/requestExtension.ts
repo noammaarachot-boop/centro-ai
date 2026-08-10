@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { collectionRequests, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
+import { isUniqueViolation } from "@/lib/db/errors";
 import {
   CONFIRM_NO_BUTTON_ID,
   CONFIRM_YES_BUTTON_ID,
@@ -58,18 +59,37 @@ export async function createExtensionFinishedCheckIfDue(params: {
   }
 
   const { reminderIntervalDays } = await getConfirmationReminderConfig(params.organizationId);
-  await createPendingConfirmation({
-    organizationId: params.organizationId,
-    clientId: params.clientId,
-    collectionRequestId: params.collectionRequestId,
-    kind: "extension_finished_check" satisfies PendingConfirmationKind,
-    payload: {},
-    question: "סיימת להעלות את כל המסמכים הנוספים?",
-    reminderIntervalDays,
-    trigger: "automated",
-    allowFreeform: true,
-    interactiveButtons: FINISHED_CHECK_BUTTONS,
-  });
+  try {
+    await createPendingConfirmation({
+      organizationId: params.organizationId,
+      clientId: params.clientId,
+      collectionRequestId: params.collectionRequestId,
+      kind: "extension_finished_check" satisfies PendingConfirmationKind,
+      payload: {},
+      question: "סיימת להעלות את כל המסמכים הנוספים?",
+      reminderIntervalDays,
+      trigger: "automated",
+      allowFreeform: true,
+      interactiveButtons: FINISHED_CHECK_BUTTONS,
+    });
+  } catch (error) {
+    // The listOpenConfirmationsForCollectionRequest check above is a fast
+    // path, not the real guarantee — two overlapping calls for the same
+    // collection request (e.g. two ticks briefly racing before Phase 4.1's
+    // advisory lock existed, or any future caller of this function) could
+    // both pass it before either insert commits. This unique-violation
+    // catch is the actual backstop (see the partial unique index on
+    // pendingConfirmations in src/db/schema.ts): the loser's WhatsApp
+    // question was already sent by createPendingConfirmation before its
+    // insert failed, so the client-facing send itself can still double up
+    // in that narrow window — but the duplicate DB row (and any drift from
+    // acting on two separate finished-check confirmations) is the part
+    // this closes.
+    if (isUniqueViolation(error, "pending_confirmations_extension_finished_check_idx")) {
+      return false;
+    }
+    throw error;
+  }
   return true;
 }
 
