@@ -19,8 +19,6 @@ import {
   respondToClarificationManually,
   respondToPendingConfirmationManually,
   resolveBatchedIntakeReply,
-  resolveConfirmationFromReply,
-  resolveOpenClarificationReply,
 } from "@/lib/pendingConfirmations";
 import {
   applyClarificationReply,
@@ -46,13 +44,12 @@ import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
 import {
   attemptFinishCollectionRequest,
   CASE_REVIEW_SILENCE_WINDOW_MS,
-  isFinishedSignal,
   scheduleCaseReviewRelay,
 } from "@/lib/caseReview";
 import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
 import { applyExtensionFinishedDecision, withdrawStaleFinishedCheck } from "@/lib/requestExtension";
 import { applyRequestReopenDecision } from "@/lib/requestReopen";
-import { classifyIntent } from "@/lib/ai/intentClassifier";
+import { runConversationUnderstanding } from "@/lib/conversation/conversationDispatch";
 import { requireSession } from "@/lib/auth/session";
 import {
   checkIntegrationStatus,
@@ -166,28 +163,22 @@ export async function simulateInboundMessage(
     body || `[מסמך: ${fileName}]`
   );
 
-  // Ch.9 Intent Detection: logged for visibility on every inbound text;
-  // only ever informational here — it never blocks receiving an
-  // attachment, and workflow automation is gated by the presence of a
-  // file, not by this classification.
+  // Runs the exact same unified document-conversation understanding layer
+  // the real WhatsApp webhook route uses (src/app/api/webhooks/whatsapp/route.ts)
+  // — this simulator used to run its own separate, older ladder
+  // (per-kind resolvers called directly, in a fixed order) that predated
+  // that layer and had silently fallen out of sync with it (e.g. it never
+  // saw deferrals, requirement exceptions, employee-review questions, or
+  // document Q&A the real path already handles). Now genuinely exercises
+  // the same decision logic real client traffic does, so a manual test
+  // through this panel reflects real production behavior.
   if (body) {
-    const intent = await classifyIntent(body);
-    await recordAuditEvent({
-      organizationId: session.organizationId,
-      eventType: "message.intent_classified",
-      description: `הודעת הלקוח סווגה כ-${intent}`,
-      actorType: "ai",
-      clientId: current.clientId,
-      collectionRequestId,
-      metadata: { intent },
-    });
-
     // Smart notification grouping's reply counterpart: once several
     // groups have actually been sent together in one combined message,
     // the client answers by number ("1", "1,3") rather than a bare yes/no
-    // — checked before every other resolver, since with 2+ groups open a
-    // bare "כן"/"לא" is genuinely ambiguous and none of the resolvers
-    // below may guess which one it answers.
+    // — checked before conversation understanding, exactly like the real
+    // webhook route, since with 2+ groups open a bare "כן"/"לא" is
+    // genuinely ambiguous and no classifier may guess which one it answers.
     const batchResolved = await resolveBatchedIntakeReply(conversation.id, body);
     if (batchResolved.length > 0) {
       for (const resolved of batchResolved) {
@@ -204,61 +195,13 @@ export async function simulateInboundMessage(
         });
       }
     } else {
-    // Milestone 5 (Ch.3 "Confirm") / Ch.6 3-way document intake — a no-op
-    // unless there is actually an open confirmation waiting for this exact
-    // conversation. document_clarification is open-ended (not yes/no), so
-    // it's checked first via its own resolver; everything else (including
-    // the new unsolicited_document kind) goes through the generic yes/no
-    // resolver, same as before.
-    //
-    // See the identical guard in the webhook route's own copy of this
-    // logic for why isFinishedSignal is checked first — an explicit
-    // "סיימתי" must never be swallowed as the answer to an unrelated open
-    // clarification (resolveOpenClarificationReply has no semantic gating
-    // at all; it accepts any non-empty reply as a genuine description).
-    const clarificationResolved = isFinishedSignal(body) ? null : await resolveOpenClarificationReply(conversation.id, body);
-    if (clarificationResolved) {
-      await applyClarificationReply(clarificationResolved, body);
-      await recordAuditEvent({
+      await runConversationUnderstanding({
         organizationId: session.organizationId,
-        eventType: "pending_confirmation.resolved",
-        description: `הלקוח הבהיר לגבי המסמך: "${body}"`,
-        actorType: "client",
         clientId: current.clientId,
         collectionRequestId,
-        metadata: { kind: clarificationResolved.kind, status: clarificationResolved.status },
+        conversationId: conversation.id,
+        messageText: body,
       });
-    } else {
-      const resolved = await resolveConfirmationFromReply(conversation.id, body);
-      if (resolved) {
-        // Milestone 6 (Learn) — the only place a client's own reply
-        // changes their document profile. Both are no-ops for any kind
-        // that isn't their own.
-        await applyDocumentProfileConfirmation(resolved);
-        await applyUnsolicitedConfirmationDecision(resolved);
-        await applyIdentityAnomalyDecision(resolved);
-        await recordAuditEvent({
-          organizationId: session.organizationId,
-          eventType: "pending_confirmation.resolved",
-          description: `הלקוח ${resolved.status === "confirmed" ? "אישר" : "דחה"} בקשת אישור: "${resolved.question}"`,
-          actorType: "client",
-          clientId: current.clientId,
-          collectionRequestId,
-          metadata: { kind: resolved.kind, status: resolved.status },
-        });
-      } else if (isFinishedSignal(body)) {
-        // "Centro checks the case, not the document" (caseReview.ts) — the
-        // client's own words are the real, primary trigger for the whole-
-        // case review, not just the employee dashboard button.
-        await attemptFinishCollectionRequest({
-          organizationId: session.organizationId,
-          collectionRequestId,
-          conversationId: conversation.id,
-          clientId: current.clientId,
-          actorType: "client",
-        });
-      }
-    }
     }
   }
 
