@@ -1590,6 +1590,21 @@ export const clientDocumentRequirements = pgTable(
       () => pendingConfirmations.id,
       { onDelete: "set null" }
     ),
+    // Semantic requirement engine (src/lib/ai/requirementSemantics.ts) —
+    // an "add" row predates this engine (Milestone 6 shipped before it
+    // existed) and was always given a hardcoded semanticSpec:null,
+    // requiredCount:1 at snapshot time (resolveEffectiveRequirementNames),
+    // never actually parsed. Parsed here instead, honestly, at the moment
+    // the client confirms the addition (applyDocumentProfileConfirmation)
+    // — never blocking (same non-blocking-on-low-confidence discipline as
+    // createCollectionRequestDraft's bulk wizard step in
+    // templates/actions.ts), so "2 תלושי שכר אחרונים" now gets real
+    // quantity/period understanding instead of being silently flattened to
+    // "exactly one document, no period." Null for a "remove" row (no
+    // requirement text of its own to parse) or a row confirmed before this
+    // column existed.
+    semanticSpec: jsonb("semantic_spec"),
+    requiredCount: integer("required_count").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

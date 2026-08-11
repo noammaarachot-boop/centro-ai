@@ -33,10 +33,21 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
+// Deterministic stand-in for the real LLM call — this file proves
+// applyDocumentProfileConfirmation actually calls and stores the parser's
+// result, not what the parser itself decides for any given text (that's
+// requirementSemantics.test.ts's job).
+const parseRequirementSemantics = vi.fn();
+vi.mock("@/lib/ai/requirementSemantics", () => ({
+  parseRequirementSemantics: (...args: unknown[]) => parseRequirementSemantics(...args),
+}));
+
 const { respondToPendingConfirmationManually, respondToClarificationManually } = await import(
   "@/lib/pendingConfirmations"
 );
-const { applyDocumentProfileConfirmation } = await import("@/lib/clientDocumentProfile");
+const { applyDocumentProfileConfirmation, resolveEffectiveRequirementNames } = await import(
+  "@/lib/clientDocumentProfile"
+);
 const { applyUnsolicitedConfirmationDecision, applyClarificationReply } = await import(
   "@/lib/documentIntakeReview"
 );
@@ -66,6 +77,24 @@ beforeAll(async () => {
 beforeEach(() => {
   sendTextMessage.mockReset();
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+  parseRequirementSemantics.mockReset();
+  parseRequirementSemantics.mockResolvedValue({
+    originalText: "2 תלושי שכר אחרונים",
+    documentType: "תלוש שכר",
+    requiredCount: 2,
+    periodType: "unspecified",
+    explicitPeriods: null,
+    relativePeriod: null,
+    samePeriodAllowed: false,
+    distinctPeriodsRequired: false,
+    distinctPeopleRequired: false,
+    expectedPersonOrCompany: null,
+    validityRequirement: null,
+    supportingDocumentRelationship: null,
+    freeTextConstraints: null,
+    interpretationConfidence: 0.9,
+    clarifyingQuestion: null,
+  });
 });
 
 async function seedRequest(status: "active" | "completed" = "active") {
@@ -93,6 +122,7 @@ async function seedRequest(status: "active" | "completed" = "active") {
   return {
     orgId: org.id,
     clientId: client.id,
+    serviceId: service.id,
     requestId: request.id,
     requirementId: requirement.id,
     conversationId: conversation.id,
@@ -100,7 +130,57 @@ async function seedRequest(status: "active" | "completed" = "active") {
 }
 
 describe("confirmation routing — every kind reaches its real handler, not a no-op", () => {
-  it("document_profile_addition: confirming updates the real clientDocumentRequirements row", async () => {
+  it("document_profile_addition: confirming updates the real clientDocumentRequirements row and parses real semantics (previously hardcoded to null/1)", async () => {
+    const { orgId, clientId, serviceId, requestId, conversationId } = await seedRequest();
+    const [pending] = await db
+      .insert(schema.pendingConfirmations)
+      .values({
+        organizationId: orgId,
+        clientId,
+        collectionRequestId: requestId,
+        conversationId,
+        kind: "document_profile_addition",
+        payload: {},
+        question: "לזהות תמיד לצרף גם 2 תלושי שכר אחרונים?",
+      })
+      .returning();
+    const [profileRow] = await db
+      .insert(schema.clientDocumentRequirements)
+      .values({
+        organizationId: orgId,
+        clientId,
+        name: "2 תלושי שכר אחרונים",
+        action: "add",
+        status: "pending",
+        pendingConfirmationId: pending.id,
+      })
+      .returning();
+
+    const resolved = await respondToPendingConfirmationManually(orgId, pending.id, true);
+    expect(resolved).not.toBeNull();
+    await applyFullFanOut(resolved!);
+
+    expect(parseRequirementSemantics).toHaveBeenCalledWith("2 תלושי שכר אחרונים");
+
+    const [updated] = await db
+      .select()
+      .from(schema.clientDocumentRequirements)
+      .where(eq(schema.clientDocumentRequirements.id, profileRow.id));
+    expect(updated.status).toBe("confirmed");
+    // Real parsed quantity — no longer the old hardcoded requiredCount:1/
+    // semanticSpec:null every ad-hoc addition got before this fix.
+    expect(updated.requiredCount).toBe(2);
+    expect((updated.semanticSpec as { documentType?: string } | null)?.documentType).toBe("תלוש שכר");
+
+    // resolveEffectiveRequirementNames — what a real new collection
+    // request actually snapshots — reflects the parsed spec too, not just
+    // the raw DB row.
+    const effective = await resolveEffectiveRequirementNames(orgId, clientId, serviceId);
+    const addedRequirement = effective.find((r) => r.name === "2 תלושי שכר אחרונים");
+    expect(addedRequirement?.requiredCount).toBe(2);
+  });
+
+  it("document_profile_addition: declining never calls the semantic parser at all (never spent on a suggestion the client rejected)", async () => {
     const { orgId, clientId, requestId, conversationId } = await seedRequest();
     const [pending] = await db
       .insert(schema.pendingConfirmations)
@@ -114,7 +194,7 @@ describe("confirmation routing — every kind reaches its real handler, not a no
         question: "לזהות תמיד לצרף גם דף בנק?",
       })
       .returning();
-    const [profileRow] = await db
+    await db
       .insert(schema.clientDocumentRequirements)
       .values({
         organizationId: orgId,
@@ -123,18 +203,12 @@ describe("confirmation routing — every kind reaches its real handler, not a no
         action: "add",
         status: "pending",
         pendingConfirmationId: pending.id,
-      })
-      .returning();
+      });
 
-    const resolved = await respondToPendingConfirmationManually(orgId, pending.id, true);
-    expect(resolved).not.toBeNull();
+    const resolved = await respondToPendingConfirmationManually(orgId, pending.id, false);
     await applyFullFanOut(resolved!);
 
-    const [updated] = await db
-      .select()
-      .from(schema.clientDocumentRequirements)
-      .where(eq(schema.clientDocumentRequirements.id, profileRow.id));
-    expect(updated.status).toBe("confirmed");
+    expect(parseRequirementSemantics).not.toHaveBeenCalled();
   });
 
   it("unsolicited_document: declining marks the real document unsolicited_rejected (previously a silent no-op)", async () => {

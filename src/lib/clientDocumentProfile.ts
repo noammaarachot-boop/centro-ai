@@ -10,6 +10,7 @@ import {
 } from "@/db/schema";
 import { createPendingConfirmation, type PendingConfirmationKind } from "@/lib/pendingConfirmations";
 import { isOnDemandService } from "@/lib/data/organizations";
+import { parseRequirementSemantics } from "@/lib/ai/requirementSemantics";
 
 /**
  * Milestone 6 ("Adaptive Document Collection") — the one thing Architecture
@@ -97,10 +98,19 @@ export async function resolveEffectiveRequirementNames(
 
   for (const addition of confirmedAdditions) {
     // An ad-hoc client-profile addition (Milestone 6 — an employee assigned
-    // an unmatched document to a brand-new name for this client) was never
-    // a parsed template requirement — always exactly one document, no
-    // period/quantity semantics to speak of.
-    effective.push({ sourceRequirementId: null, name: addition.name, description: null, requiredCount: 1, semanticSpec: null });
+    // an unmatched document to a brand-new name for this client). Parsed
+    // via the semantic requirement engine at confirmation time
+    // (applyDocumentProfileConfirmation, below) — real quantity/period
+    // understanding, not a hardcoded "always exactly one document."
+    // requiredCount/semanticSpec default to 1/null only for a row
+    // confirmed before that column existed.
+    effective.push({
+      sourceRequirementId: null,
+      name: addition.name,
+      description: null,
+      requiredCount: addition.requiredCount,
+      semanticSpec: addition.semanticSpec,
+    });
   }
 
   return effective;
@@ -342,7 +352,7 @@ export async function applyDocumentProfileConfirmation(resolved: {
 
   const db = await getDb();
   const [row] = await db
-    .select({ id: clientDocumentRequirements.id, action: clientDocumentRequirements.action })
+    .select({ id: clientDocumentRequirements.id, action: clientDocumentRequirements.action, name: clientDocumentRequirements.name })
     .from(clientDocumentRequirements)
     .where(eq(clientDocumentRequirements.pendingConfirmationId, resolved.id))
     .limit(1);
@@ -358,9 +368,22 @@ export async function applyDocumentProfileConfirmation(resolved: {
         ? "declined" // "yes, continue requesting it" -> the removal is declined
         : "confirmed"; // "no, stop" -> the removal is confirmed
 
+  // Semantic requirement engine — parsed only now, once (never on every
+  // Suggest/occurrence, and never for a "remove" row or a declined "add",
+  // which will never be snapshotted into a real request anyway). Honest,
+  // never-blocking, same discipline as createCollectionRequestDraft's bulk
+  // wizard step (templates/actions.ts) — a low-confidence result is still
+  // saved as the best available interpretation, not silently discarded.
+  const semantics =
+    row.action === "add" && newStatus === "confirmed" ? await parseRequirementSemantics(row.name) : null;
+
   await db
     .update(clientDocumentRequirements)
-    .set({ status: newStatus, updatedAt: new Date() })
+    .set({
+      status: newStatus,
+      updatedAt: new Date(),
+      ...(semantics ? { semanticSpec: semantics, requiredCount: semantics.requiredCount } : {}),
+    })
     .where(eq(clientDocumentRequirements.id, row.id));
 }
 
