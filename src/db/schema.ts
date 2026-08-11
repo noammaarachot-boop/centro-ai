@@ -167,6 +167,13 @@ export const organizations = pgTable("organizations", {
   // since every organization on this platform is an Israeli firm today.
   timezone: text("timezone").notNull().default("Asia/Jerusalem"),
   reminderIntervalDays: integer("reminder_interval_days").notNull().default(2),
+  // Hour-granularity reminder cadence (1-24h), replacing reminderIntervalDays
+  // above as the field the scheduler actually reads — reminderIntervalDays
+  // stays in the schema (not dropped) but is no longer consulted anywhere.
+  // Default 5h per product decision; UI/server actions clamp any value a
+  // user sets to 1..24 (never trust the client — see clampCollectionDay's
+  // own doc comment for the same discipline applied to another field).
+  reminderIntervalHours: integer("reminder_interval_hours").notNull().default(5),
   inactivityTimeoutMinutes: integer("inactivity_timeout_minutes")
     .notNull()
     .default(15),
@@ -534,6 +541,11 @@ export const services = pgTable("services", {
   // service created before Epic 3 has all five null, so scheduler.ts and
   // conversationOrchestration.ts behave exactly as before for it.
   reminderIntervalDaysOverride: integer("reminder_interval_days_override"),
+  // Hour-granularity override (1-24h), replacing reminderIntervalDaysOverride
+  // above as the field resolveScheduleConfig actually reads. Null = "use the
+  // organization's own reminderIntervalHours default", same convention as
+  // every other override on this table.
+  reminderIntervalHoursOverride: integer("reminder_interval_hours_override"),
   inactivityTimeoutMinutesOverride: integer(
     "inactivity_timeout_minutes_override"
   ),
@@ -802,6 +814,29 @@ export const collectionRequests = pgTable("collection_requests", {
   // actually re-completes (an explicit "finished" signal, or the
   // extension-finished-check confirmation), by attemptFinishCollectionRequest.
   extensionActive: boolean("extension_active").notNull().default(false),
+  // Human-review escalation policy — the request has a standing 3-day
+  // window to complete (from entering waiting_for_client, or reset to the
+  // resolved date + 3 days each time a client-requested deferral is
+  // granted). Null while not on this clock at all (draft/completed/
+  // cancelled/escalated). scheduler.ts's escalation pass transitions the
+  // request to "escalated" (the pre-existing, previously-unused status —
+  // see collectionRequestStateMachine.ts) the moment this is reached
+  // without completion, via the same atomic-claim discipline as every
+  // other scheduler pass.
+  reviewDeadlineAt: timestamp("review_deadline_at", { withTimezone: true }),
+  // How many deferral requests (dated or vague, any wording) this request
+  // has been granted. A plain UPDATE ... SET deferral_count = deferral_count
+  // + 1 RETURNING deferral_count is atomic under concurrent writers by
+  // Postgres row-level locking alone — no separate compare-and-swap needed
+  // for the increment itself. The 3rd request (returned count > 2) is
+  // never granted — it escalates immediately instead. Never derived from
+  // message text, so rewording never resets it.
+  deferralCount: integer("deferral_count").notNull().default(0),
+  // Human-readable reason shown next to StatusBadge whenever status is
+  // "escalated" (e.g. "חלפו 3 ימים ללא השלמת המסמכים") — so an employee
+  // never has to dig through audit_logs to understand why automation
+  // stopped on this request.
+  escalationReason: text("escalation_reason"),
 });
 
 // The per-cycle snapshot described in BR-002 above — copied from
@@ -1131,6 +1166,19 @@ export const conversations = pgTable("conversations", {
   // חמישי" or "בעוד יומיים, בתאריך 8 באוגוסט") — reused verbatim to build
   // the client-facing confirmation and kept here for audit/debugging.
   deferredReminderReason: text("deferred_reminder_reason"),
+  // Reminder-staleness clock (Bug 3 remediation) — set only in
+  // evaluateAndPrompt, the sole place a conversation enters
+  // "waiting_for_client", and bumped again by scheduler.ts's own atomic
+  // claim each time a plain-staleness reminder cycle is consumed.
+  // Deliberately NEVER touched by recordInboundMessage — an inbound
+  // message (question, wrong document, partial upload) must never reset
+  // how long it's been since the last reminder, only conversations.updatedAt
+  // (a different, correctly-client-activity-driven concern: the freeform
+  // session window and the separate idleOpenConversations inactivity pass)
+  // does that.
+  reminderAnchorAt: timestamp("reminder_anchor_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   // Silence-window case review (src/lib/caseReview.ts's
   // runAutomaticCaseStatusReview) — set to "now + 2 minutes" every time a
   // document arrives on an active (non-extension) collection request,
