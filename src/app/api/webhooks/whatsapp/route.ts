@@ -3,7 +3,6 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, documents, messages, organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
-import { classifyIntent } from "@/lib/ai/intentClassifier";
 import {
   CONFIRM_NO_BUTTON_ID,
   CONFIRM_YES_BUTTON_ID,
@@ -553,25 +552,15 @@ async function handleInboundMessage(
     // still awaiting an answer; continue into the normal resolver chain.
   }
 
-  // Mirrors simulateInboundMessage's own intent-classification + pending-
-  // confirmation-resolution block (conversationActions.ts) — kept as a
-  // separate copy rather than a shared extraction, since the approved
-  // plan explicitly leaves simulateInboundMessage itself unchanged.
+  // Mirrors simulateInboundMessage's own pending-confirmation-resolution
+  // block (conversationActions.ts) — kept as a separate copy rather than a
+  // shared extraction, matching correctionDispatch.ts's own precedent of
+  // never touching an already-working branch for a change like this.
   if (body) {
     console.log("[wa-inbound] customer reply received", {
       conversationId: conversation.id,
       collectionRequestId,
       bodyLength: body.length,
-    });
-    const intent = await classifyIntent(body);
-    await recordAuditEvent({
-      organizationId: organization.id,
-      eventType: "message.intent_classified",
-      description: `הודעת הלקוח סווגה כ-${intent}`,
-      actorType: "ai",
-      clientId: client.id,
-      collectionRequestId,
-      metadata: { intent },
     });
 
     // Smart notification grouping's reply counterpart: once several groups
@@ -798,17 +787,6 @@ async function replayHeldDisambiguation(
   }
 
   if (resolution.messageBody) {
-    const intent = await classifyIntent(resolution.messageBody);
-    await recordAuditEvent({
-      organizationId: organization.id,
-      eventType: "message.intent_classified",
-      description: `הודעת הלקוח סווגה כ-${intent}`,
-      actorType: "ai",
-      clientId: client.id,
-      collectionRequestId,
-      metadata: { intent },
-    });
-
     const batchResolved = await resolveBatchedIntakeReply(conversation.id, resolution.messageBody);
     if (batchResolved.length > 0) {
       for (const resolved of batchResolved) {
