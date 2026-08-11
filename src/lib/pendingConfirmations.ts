@@ -455,6 +455,24 @@ export async function respondToPendingConfirmationManually(
   return resolve(organizationId, id, confirmed, null);
 }
 
+// The document_clarification counterpart to respondToPendingConfirmationManually
+// above — an employee's manual-override equivalent of resolveOpenClarificationReply,
+// for the one confirmation kind that's genuinely open-ended (not yes/no):
+// a real reply text is required, not a boolean, since applyClarificationReply
+// re-classifies using those exact words. Scoped by id (like the boolean
+// variant), not "exactly one open on this conversation" (like the
+// automatic client-reply path) — the employee is targeting one specific
+// row directly.
+export async function respondToClarificationManually(
+  organizationId: string,
+  id: string,
+  replyText: string
+) {
+  const trimmed = replyText.trim();
+  if (!trimmed) return null;
+  return resolve(organizationId, id, true, replyText);
+}
+
 // "1"/"2" cover the numbered-option format the document-intake questions
 // use (e.g. "1. כן, שלחתי בכוונה" / "2. לא, שלחתי בטעות") — a bare digit
 // reply is unambiguous there. True WhatsApp interactive reply buttons

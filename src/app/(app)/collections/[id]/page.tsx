@@ -50,6 +50,7 @@ import {
   markFinished,
   markMoreDocuments,
   releaseConversation,
+  respondToClarification,
   respondToConfirmation,
   sendEmployeeMessage,
   simulateInboundMessage,
@@ -487,26 +488,50 @@ export default async function CollectionRequestDetailPage({
             {openConfirmations.map((confirmation) => (
               <li key={confirmation.id} className="rounded-xl border border-border bg-surface p-3">
                 <p className="mb-2 text-sm text-text-primary">{confirmation.question}</p>
-                <div className="flex gap-2">
-                  <form action={respondToConfirmation.bind(null, id, confirmation.id, true)}>
+                {confirmation.kind === "document_clarification" ? (
+                  // Open-ended, not yes/no — the client's actual words are
+                  // what re-classification needs, so this is a text
+                  // reply, not a confirm/decline choice.
+                  <form
+                    action={respondToClarification.bind(null, id, confirmation.id)}
+                    className="flex gap-2"
+                  >
+                    <input
+                      type="text"
+                      name="replyText"
+                      placeholder="מה הלקוח ענה לגבי המסמך?"
+                      required
+                      className="flex-1 rounded-full border border-border px-3 py-1.5 text-xs text-text-primary"
+                    />
                     <button
                       type="submit"
-                      className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-success transition-colors hover:border-success"
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-brand-purple transition-colors hover:border-brand-purple"
                     >
-                      <Check className="h-3 w-3" />
-                      הלקוח אישר
+                      שלח תשובה
                     </button>
                   </form>
-                  <form action={respondToConfirmation.bind(null, id, confirmation.id, false)}>
-                    <button
-                      type="submit"
-                      className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:border-danger"
-                    >
-                      <X className="h-3 w-3" />
-                      הלקוח סירב
-                    </button>
-                  </form>
-                </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <form action={respondToConfirmation.bind(null, id, confirmation.id, true)}>
+                      <button
+                        type="submit"
+                        className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-success transition-colors hover:border-success"
+                      >
+                        <Check className="h-3 w-3" />
+                        הלקוח אישר
+                      </button>
+                    </form>
+                    <form action={respondToConfirmation.bind(null, id, confirmation.id, false)}>
+                      <button
+                        type="submit"
+                        className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:border-danger"
+                      >
+                        <X className="h-3 w-3" />
+                        הלקוח סירב
+                      </button>
+                    </form>
+                  </div>
+                )}
               </li>
             ))}
           </ul>

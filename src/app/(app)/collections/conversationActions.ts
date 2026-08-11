@@ -16,6 +16,7 @@ import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";
 import { getLearnedDocumentPatterns } from "@/lib/documentLearning";
 import {
   flushDueIntakeNotifications,
+  respondToClarificationManually,
   respondToPendingConfirmationManually,
   resolveBatchedIntakeReply,
   resolveConfirmationFromReply,
@@ -49,7 +50,8 @@ import {
   scheduleCaseReviewRelay,
 } from "@/lib/caseReview";
 import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
-import { withdrawStaleFinishedCheck } from "@/lib/requestExtension";
+import { applyExtensionFinishedDecision, withdrawStaleFinishedCheck } from "@/lib/requestExtension";
+import { applyRequestReopenDecision } from "@/lib/requestReopen";
 import { classifyIntent } from "@/lib/ai/intentClassifier";
 import { requireSession } from "@/lib/auth/session";
 import {
@@ -1285,7 +1287,16 @@ export async function respondToConfirmation(
     confirmed
   );
   if (resolved) {
+    // The exact same 5-call fan-out the real client-reply paths already
+    // run (webhook route's own resolved branch; correctionDispatch.ts's
+    // applyResolvedConfirmationOutcome) — every confirmation kind gets its
+    // real effect applied here too, not just document_profile_addition/
+    // removal. Each applier no-ops for every kind but its own.
     await applyDocumentProfileConfirmation(resolved);
+    await applyUnsolicitedConfirmationDecision(resolved);
+    await applyIdentityAnomalyDecision(resolved);
+    await applyRequestReopenDecision(resolved, reprocessHeldReopenDocument);
+    await applyExtensionFinishedDecision(resolved);
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "pending_confirmation.resolved",
@@ -1295,6 +1306,45 @@ export async function respondToConfirmation(
       clientId: current.clientId,
       collectionRequestId,
       metadata: { kind: resolved.kind, status: resolved.status },
+    });
+  }
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
+// document_clarification is open-ended (not yes/no) — respondToConfirmation
+// above can't answer it, since applyClarificationReply needs the client's
+// actual words to re-classify against, not a boolean. This is the manual-
+// override equivalent for that one kind, mirroring how a real client
+// free-text reply resolves it (resolveOpenClarificationReply +
+// applyClarificationReply).
+export async function respondToClarification(
+  collectionRequestId: string,
+  pendingConfirmationId: string,
+  formData: FormData
+) {
+  const session = await requireSession();
+  const current = await getCollectionRequestOrRedirect(session.organizationId, collectionRequestId);
+
+  const replyText = String(formData.get("replyText") ?? "").trim();
+  if (!replyText) redirect(`/collections/${collectionRequestId}`);
+
+  const resolved = await respondToClarificationManually(
+    session.organizationId,
+    pendingConfirmationId,
+    replyText
+  );
+  if (resolved) {
+    await applyClarificationReply(resolved, replyText);
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "pending_confirmation.resolved",
+      description: `עובד ענה בשם הלקוח לשאלת הבהרה: "${resolved.question}" — "${replyText}"`,
+      actorType: "employee",
+      actorUserId: session.userId,
+      clientId: current.clientId,
+      collectionRequestId,
+      metadata: { kind: resolved.kind, status: resolved.status, replyText },
     });
   }
 
