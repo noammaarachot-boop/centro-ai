@@ -13,7 +13,7 @@ export interface BusinessHoursConfig {
 // Epic 3: the same six fields, but resolved per Collection Request's
 // Service instead of blanket per-organization — see resolveScheduleConfig.
 export interface ScheduleConfig extends BusinessHoursConfig {
-  reminderIntervalDays: number;
+  reminderIntervalHours: number;
   inactivityTimeoutMinutes: number;
   // Office policy (Architecture Ch.8) — the day of the month collection
   // begins. Stored and resolved alongside the other fields for UI
@@ -27,7 +27,7 @@ interface OrganizationScheduleFields {
   businessHoursEnd: string;
   businessDays: string;
   timezone: string;
-  reminderIntervalDays: number;
+  reminderIntervalHours: number;
   inactivityTimeoutMinutes: number;
   collectionDayOfMonth: number;
 }
@@ -36,7 +36,7 @@ interface ServiceScheduleOverrides {
   businessHoursStartOverride: string | null;
   businessHoursEndOverride: string | null;
   businessDaysOverride: string | null;
-  reminderIntervalDaysOverride: number | null;
+  reminderIntervalHoursOverride: number | null;
   inactivityTimeoutMinutesOverride: number | null;
   collectionDayOfMonthOverride: number | null;
 }
@@ -59,8 +59,8 @@ export function resolveScheduleConfig(
       service?.businessHoursEndOverride ?? organization.businessHoursEnd,
     businessDays: service?.businessDaysOverride ?? organization.businessDays,
     timezone: organization.timezone,
-    reminderIntervalDays:
-      service?.reminderIntervalDaysOverride ?? organization.reminderIntervalDays,
+    reminderIntervalHours:
+      service?.reminderIntervalHoursOverride ?? organization.reminderIntervalHours,
     inactivityTimeoutMinutes:
       service?.inactivityTimeoutMinutesOverride ??
       organization.inactivityTimeoutMinutes,
@@ -79,6 +79,16 @@ export function clampCollectionDay(value: FormDataEntryValue | null): number {
   const parsed = Number(value ?? 1);
   if (!Number.isInteger(parsed)) return 1;
   return Math.min(Math.max(parsed, 1), 31);
+}
+
+// Same discipline as clampCollectionDay above, for the hour-granularity
+// reminder interval (Bug 1 remediation) — 1-24h, never trusting the raw
+// client-submitted value. Shared by the onboarding wizard's per-service
+// override action and Settings' org-wide default action.
+export function clampReminderHours(value: FormDataEntryValue | null): number {
+  const parsed = Number(value ?? 5);
+  if (!Number.isInteger(parsed)) return 5;
+  return Math.min(Math.max(parsed, 1), 24);
 }
 
 const WEEKDAY_INDEX: Record<string, number> = {
@@ -222,4 +232,21 @@ export function nextBusinessOpenTime(config: BusinessHoursConfig, from: Date = n
   // Unreachable for any real configuration (businessDays always has at
   // least one allowed day) — a safe, non-throwing fallback.
   return new Date(from.getTime() + 86_400_000);
+}
+
+// A vague short-term promise ("אשלח בערב", "אשלח מאוחר יותר", "אשלח
+// כשאגיע הביתה") commits to no computable date — resolveDeferralDate has
+// nothing to work with — but must still suppress the regular reminder for
+// a bounded, honest window rather than either nagging immediately or
+// inventing a specific hour the client never said. The only defensible
+// reading of "later"/"soon"/"this evening" without fabricating a time: by
+// the end of TODAY's business hours, if any remain — otherwise there's no
+// "today" left to speak of, so this degrades to exactly
+// nextBusinessOpenTime. Symmetric to that function, same primitives.
+export function endOfTodayOrNextOpen(config: BusinessHoursConfig, from: Date = new Date()): Date {
+  if (!isWithinBusinessHours(config, from)) return nextBusinessOpenTime(config, from);
+
+  const [endHour, endMinute] = config.businessHoursEnd.split(":").map(Number);
+  const parts = zonedDateParts(from, config.timezone);
+  return zonedWallTimeToUtc(parts.year, parts.month, parts.day, endHour, endMinute, config.timezone);
 }

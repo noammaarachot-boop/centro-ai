@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isWithinBusinessHours, nextBusinessOpenTime, type BusinessHoursConfig } from "./businessHours";
+import { endOfTodayOrNextOpen, isWithinBusinessHours, nextBusinessOpenTime, type BusinessHoursConfig } from "./businessHours";
 
 const DEFAULT_CONFIG: BusinessHoursConfig = {
   businessHoursStart: "09:00",
@@ -89,5 +89,31 @@ describe("nextBusinessOpenTime", () => {
     const parts = localParts(result, "Asia/Jerusalem");
     expect(parts.weekday).toBe("Sun");
     expect(parts.hour).toBe(9);
+  });
+});
+
+describe("endOfTodayOrNextOpen", () => {
+  it("returns the end of today's business hours when called while still open", () => {
+    const at = new Date("2026-01-11T08:00:00Z"); // Sunday 10:00 local
+    const result = endOfTodayOrNextOpen(DEFAULT_CONFIG, at);
+    const parts = localParts(result, "Asia/Jerusalem");
+    expect(parts.weekday).toBe("Sun");
+    expect(parts.hour).toBe(18);
+    expect(parts.minute).toBe(0);
+  });
+
+  it("degrades to nextBusinessOpenTime when called before opening (no 'today' left to bound)", () => {
+    const at = new Date("2026-01-11T04:00:00Z"); // Sunday 06:00 local
+    expect(endOfTodayOrNextOpen(DEFAULT_CONFIG, at).getTime()).toBe(nextBusinessOpenTime(DEFAULT_CONFIG, at).getTime());
+  });
+
+  it("degrades to nextBusinessOpenTime when called after closing", () => {
+    const at = new Date("2026-01-11T17:00:00Z"); // Sunday 19:00 local (after 18:00 close)
+    expect(endOfTodayOrNextOpen(DEFAULT_CONFIG, at).getTime()).toBe(nextBusinessOpenTime(DEFAULT_CONFIG, at).getTime());
+  });
+
+  it("degrades to nextBusinessOpenTime on a day not in businessDays", () => {
+    const at = new Date("2026-01-16T08:00:00Z"); // Friday 10:00 local, closed all day
+    expect(endOfTodayOrNextOpen(DEFAULT_CONFIG, at).getTime()).toBe(nextBusinessOpenTime(DEFAULT_CONFIG, at).getTime());
   });
 });

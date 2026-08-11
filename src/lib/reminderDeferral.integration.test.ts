@@ -145,8 +145,12 @@ describe("applyDeferralIfAny — a real dated commitment", () => {
     expect(secondDeferral.deferredReminderAt!.getTime()).not.toBe(firstDeferral.deferredReminderAt!.getTime());
   });
 
-  it("an ambiguous dated promise asks a short clarifying question instead of guessing", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedWaitingRequest();
+  it("an ambiguous dated promise asks a short clarifying question AND grants a bounded defer window (counts toward the 2-deferral limit)", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedWaitingRequest({
+      businessHoursStart: "00:00",
+      businessHoursEnd: "23:59",
+      businessDays: "0,1,2,3,4,5,6",
+    });
     resolveLanguageModel.mockResolvedValue({ modelId: "fake" });
     generateObject.mockResolvedValueOnce({
       object: { kind: "ambiguous", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
@@ -163,11 +167,18 @@ describe("applyDeferralIfAny — a real dated commitment", () => {
     expect(sendTextMessage.mock.calls[0][2]).toContain("לאיזה יום");
 
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    expect(conversation.deferredReminderAt).toBeNull();
+    // endOfTodayOrNextOpen — bounded, never invented, never left unset.
+    expect(conversation.deferredReminderAt).not.toBeNull();
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.deferralCount).toBe(1);
   });
 
-  it("a vague short-term promise falls through unchanged to the pre-existing ack-only path (no stored date)", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedWaitingRequest();
+  it("a vague short-term promise ('אשלח בערב') still gets the short ack, now also with a bounded defer window and a counted deferral", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedWaitingRequest({
+      businessHoursStart: "00:00",
+      businessHoursEnd: "23:59",
+      businessDays: "0,1,2,3,4,5,6",
+    });
     resolveLanguageModel.mockResolvedValue({ modelId: "fake" });
     // The deferral classifier says not_dated...
     generateObject.mockResolvedValueOnce({
@@ -187,7 +198,79 @@ describe("applyDeferralIfAny — a real dated commitment", () => {
     expect(sendTextMessage.mock.calls[0][2]).toBe("בסדר, תודה 😊");
 
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    expect(conversation.deferredReminderAt).toBeNull();
+    expect(conversation.deferredReminderAt).not.toBeNull();
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.deferralCount).toBe(1);
+  });
+
+  it("an ordinary message that isn't even a vague promise is still a no-op (not_dated + classifyFollowUpIntent both say no)", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedWaitingRequest();
+    resolveLanguageModel.mockResolvedValue({ modelId: "fake" });
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
+    });
+    generateObject.mockResolvedValueOnce({ object: { isFollowUpPromise: false } });
+
+    const handled = await applyDeferralIfAny({
+      organizationId: orgId,
+      conversationId,
+      collectionRequestId: requestId,
+      clientId,
+      replyText: "תודה רבה",
+    });
+    expect(handled).toBe(false);
+    expect(sendTextMessage).not.toHaveBeenCalled();
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.deferralCount).toBe(0); // never consumed a slot for a non-promise
+  });
+});
+
+describe("applyDeferralIfAny — max-2-deferrals-per-request escalation policy", () => {
+  it("grants the 1st and 2nd deferral (any wording, dated or vague), and immediately escalates the 3rd — no reminder, no wait, no message about the escalation itself", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedWaitingRequest({
+      businessHoursStart: "00:00",
+      businessHoursEnd: "23:59",
+      businessDays: "0,1,2,3,4,5,6",
+    });
+    resolveLanguageModel.mockResolvedValue({ modelId: "fake" });
+
+    // Deferral #1 — "אשלח כשאגיע הביתה" (ambiguous).
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "ambiguous", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
+    });
+    await applyDeferralIfAny({ organizationId: orgId, conversationId, collectionRequestId: requestId, clientId, replyText: "אשלח כשאגיע הביתה" });
+    let [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.deferralCount).toBe(1);
+    expect(request.status).toBe("waiting_for_client");
+
+    // Deferral #2 — "אשלח שבוע הבא" (scheduled).
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: 1, namedPeriod: null },
+    });
+    await applyDeferralIfAny({ organizationId: orgId, conversationId, collectionRequestId: requestId, clientId, replyText: "אשלח שבוע הבא" });
+    [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.deferralCount).toBe(2);
+    expect(request.status).toBe("waiting_for_client");
+
+    // Deferral #3 — "אשלח עוד יומיים" (scheduled) — NOT granted, escalates instead.
+    sendTextMessage.mockClear();
+    generateObject.mockResolvedValueOnce({
+      object: { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: 2, relativeWeeks: null, namedPeriod: null },
+    });
+    const handled = await applyDeferralIfAny({ organizationId: orgId, conversationId, collectionRequestId: requestId, clientId, replyText: "אשלח עוד יומיים" });
+    expect(handled).toBe(true);
+
+    [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("escalated");
+    expect(request.escalationReason).toContain("שלישית");
+    expect(request.reviewDeadlineAt).toBeNull();
+    // No message sent about the escalation itself — the transition is silent.
+    expect(sendTextMessage).not.toHaveBeenCalled();
+
+    // deferredReminderAt was NOT updated to the 3rd (unhonored) request.
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.deferredReminderOriginalText).not.toBe("אשלח עוד יומיים");
   });
 });
 

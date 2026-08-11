@@ -31,6 +31,7 @@ vi.mock("@/lib/whatsapp/send", async () => {
 });
 
 const { startConversation, sendOutboundMessage } = await import("./conversationOrchestration");
+const { WhatsAppSendError } = await import("./whatsapp/send");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -196,5 +197,93 @@ describe("sendOutboundMessage — Phase 3.1: the message row exists (and convers
     expect(rows[0].deliveryStatus).toBe("pending"); // never updated — the crash happened before that was possible
     const [conv] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
     expect(conv.updatedAt.getTime()).toBeGreaterThan(0); // already bumped before the crash — a later scheduler tick won't treat this as untouched
+  });
+});
+
+// Observability remediation — sendOutboundMessage is the single guaranteed
+// source of an audit_logs row for every send attempt, regardless of which
+// caller invoked it or whether that caller does its own additional
+// logging. Covers every exit path: blocked by the automation gate, a
+// genuine send (success and failure), and "not connected".
+describe("sendOutboundMessage — observability remediation: an audit_logs row for every exit path", () => {
+  it("blocked by the automation gate — records whatsapp.send_blocked with the collectionRequestId and reason, and creates no messages row at all", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    await db.update(schema.organizations).set({ documentCollectionEnabled: false }).where(eq(schema.organizations.id, orgId));
+    const [conversation] = await db
+      .insert(schema.conversations)
+      .values({ organizationId: orgId, clientId, collectionRequestId: requestId })
+      .returning();
+
+    const result = await sendOutboundMessage(orgId, conversation.id, "טקסט", "ai", "automated");
+    expect(result).toEqual({ sent: false });
+
+    const messageRows = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversation.id));
+    expect(messageRows).toHaveLength(0);
+
+    const auditRows = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0].eventType).toBe("whatsapp.send_blocked");
+  });
+
+  it("a genuine successful send — records whatsapp.send_completed with the messageId and deliveryStatus in metadata", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    const [conversation] = await db
+      .insert(schema.conversations)
+      .values({ organizationId: orgId, clientId, collectionRequestId: requestId })
+      .returning();
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.ok" });
+
+    await sendOutboundMessage(orgId, conversation.id, "הודעה חופשית", "employee");
+
+    const auditRows = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0].eventType).toBe("whatsapp.send_completed");
+    const metadata = auditRows[0].metadata as Record<string, unknown>;
+    expect(metadata.deliveryStatus).toBe("sent");
+    expect(metadata.whatsappMessageId).toBe("wamid.ok");
+    expect(typeof metadata.messageId).toBe("string");
+  });
+
+  it("not connected (no whatsappPhoneNumberId) — records whatsapp.send_failed with deliveryStatus 'not_connected'", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    await db.update(schema.organizations).set({ whatsappPhoneNumberId: null }).where(eq(schema.organizations.id, orgId));
+    const [conversation] = await db
+      .insert(schema.conversations)
+      .values({ organizationId: orgId, clientId, collectionRequestId: requestId })
+      .returning();
+
+    await sendOutboundMessage(orgId, conversation.id, "הודעה חופשית", "employee");
+
+    const auditRows = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0].eventType).toBe("whatsapp.send_failed");
+    expect((auditRows[0].metadata as Record<string, unknown>).deliveryStatus).toBe("not_connected");
+  });
+
+  it("a real Meta rejection (WhatsAppSendError) — still records whatsapp.send_failed (alongside the existing whatsapp.outbound_send_failed signal)", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    const [conversation] = await db
+      .insert(schema.conversations)
+      .values({ organizationId: orgId, clientId, collectionRequestId: requestId })
+      .returning();
+    sendTextMessage.mockRejectedValue(new WhatsAppSendError("recipient not on WhatsApp"));
+
+    await sendOutboundMessage(orgId, conversation.id, "הודעה חופשית", "employee");
+
+    const auditRows = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.collectionRequestId, requestId));
+    const eventTypes = auditRows.map((r) => r.eventType);
+    expect(eventTypes).toContain("whatsapp.send_failed");
   });
 });

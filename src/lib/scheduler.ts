@@ -15,7 +15,7 @@ import {
   flushDueIntakeNotificationsForOrganization,
   sendConfirmationRemindersAndEscalate,
 } from "@/lib/documentIntakeReview";
-import { checkCompletionGate } from "@/lib/collectionRequestStateMachine";
+import { checkCompletionGate, escalateToHumanReview } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest, runAutomaticCaseStatusReview } from "@/lib/caseReview";
 import { createExtensionFinishedCheckIfDue, EXTENSION_NUDGE_AFTER_MINUTES } from "@/lib/requestExtension";
 import { captureError } from "@/lib/monitoring/errorReporting";
@@ -176,8 +176,9 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         collectionRequestId: conversations.collectionRequestId,
         clientId: collectionRequests.clientId,
         clientName: clients.name,
-        updatedAt: conversations.updatedAt,
+        reminderAnchorAt: conversations.reminderAnchorAt,
         deferredReminderAt: conversations.deferredReminderAt,
+        reviewDeadlineAt: collectionRequests.reviewDeadlineAt,
         service: services,
       })
       .from(conversations)
@@ -200,16 +201,53 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
 
     for (const conversation of staleWaitingConversations) {
       const scheduleConfig = resolveScheduleConfig(organization, conversation.service);
-      const { reminderIntervalDays } = scheduleConfig;
+      const { reminderIntervalHours } = scheduleConfig;
+
+      // Checked first, before escalation and before any reminder logic, on
+      // every tick regardless of staleness — "ביטול תזכורת כאשר הדרישה
+      // הושלמה": a request can become fully satisfied without the client
+      // ever typing a "finished" phrase (e.g. the last outstanding document
+      // arrived, or a document.replace resolved what was missing).
+      // Critically, this must run BEFORE the review-deadline escalation
+      // check below — a request that's actually fully satisfied must never
+      // be escalated to human review just because reviewDeadlineAt happens
+      // to have already passed by the time this tick got to it.
+      const gateError = await checkCompletionGate(conversation.collectionRequestId);
+      if (gateError === null) {
+        await attemptFinishCollectionRequest({
+          organizationId: organization.id,
+          collectionRequestId: conversation.collectionRequestId,
+          conversationId: conversation.id,
+          clientId: conversation.clientId,
+          actorType: "client",
+        });
+        continue;
+      }
+
+      // Human-review escalation (3-day completion window) — a request
+      // overdue for review must never also receive a reminder in the same
+      // tick, and once escalated it must never re-enter the reminder
+      // machinery below (escalateToHumanReview's own CAS guards against a
+      // concurrent tick double-firing; a request that's already been
+      // claimed by another tick simply no-ops here).
+      if (conversation.reviewDeadlineAt && conversation.reviewDeadlineAt <= new Date()) {
+        await escalateToHumanReview(
+          organization.id,
+          conversation.collectionRequestId,
+          "חלפו 3 ימים ללא השלמת המסמכים",
+          "system"
+        );
+        continue;
+      }
 
       // Reminder deferral by explicit client commitment
       // (src/lib/reminderDeferral.ts) — a genuine dated promise ("אשלח ביום
-      // חמישי") suppresses the normal reminderIntervalDays staleness check
+      // חמישי") suppresses the normal reminderIntervalHours staleness check
       // entirely until that date, regardless of how long the conversation
-      // has been idle. A vague short-term promise ("אשלח בעוד שעה") never
-      // sets this at all — the client's own message already reset
-      // conversations.updatedAt (recordInboundMessage), which is exactly
-      // what the normal staleness check below measures against.
+      // has been idle. A vague short-term promise ("אשלח בערב") is now
+      // ALSO recorded here (reminderDeferral.ts's endOfTodayOrNextOpen
+      // path) — see that module's own doc comments; this branch no longer
+      // assumes only a dated commitment ever sets deferredReminderAt.
       if (conversation.deferredReminderAt) {
         if (conversation.deferredReminderAt > new Date()) continue; // not due yet
 
@@ -236,44 +274,42 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         // gate-check-then-send-or-complete logic as a normal stale
         // reminder, just without the interval-staleness gate above.
       } else {
-        const reminderCutoff = new Date(Date.now() - reminderIntervalDays * 24 * 60 * 60 * 1000);
-        if (conversation.updatedAt >= reminderCutoff) continue;
+        const reminderCutoff = new Date(Date.now() - reminderIntervalHours * 60 * 60 * 1000);
+        if (conversation.reminderAnchorAt >= reminderCutoff) continue;
 
-        // Atomic claim (Phase 4.3 remediation) — the deferred-reminder
-        // branch above already has its own claim (on deferredReminderAt);
-        // this is the same protection for the plain staleness path, so two
-        // concurrent ticks can never both fall through to the shared
-        // gate-check-then-send-or-complete logic below for the same
-        // conversation. Same tradeoff as the idle-conversation pass above:
-        // a conversation whose completion gate isn't yet satisfied gets
-        // re-evaluated on the next full reminderIntervalDays cycle instead
-        // of every tick.
+        // Atomic claim (Phase 4.3 remediation; Bug 3 remediation — claims
+        // on reminderAnchorAt, never conversations.updatedAt, so an inbound
+        // client message can never reset or delay this cycle). Bumped even
+        // on a round that ends up deferred (business hours closed) rather
+        // than sent — same accepted tradeoff already documented for
+        // idleOpenConversations above: re-evaluated on the next cycle
+        // rather than every tick, never double-processed.
         const claimed = await db
           .update(conversations)
-          .set({ updatedAt: new Date() })
-          .where(and(eq(conversations.id, conversation.id), eq(conversations.updatedAt, conversation.updatedAt)))
+          .set({ reminderAnchorAt: new Date() })
+          .where(and(eq(conversations.id, conversation.id), eq(conversations.reminderAnchorAt, conversation.reminderAnchorAt)))
           .returning({ id: conversations.id });
         if (claimed.length === 0) continue; // lost the race to another tick
-      }
 
-      // Reminder infrastructure — "ביטול תזכורת כאשר הדרישה הושלמה": a
-      // request can become fully satisfied without the client ever typing
-      // a "finished" phrase (e.g. the last outstanding document arrived,
-      // or a document.replace resolved what was missing). Nudging with a
-      // generic "still waiting for documents" reminder in that case would
-      // be actively misleading — check first, and if nothing is actually
-      // missing, complete the request the same way an explicit "finished"
-      // signal would, instead of sending the reminder at all.
-      const gateError = await checkCompletionGate(conversation.collectionRequestId);
-      if (gateError === null) {
-        await attemptFinishCollectionRequest({
-          organizationId: organization.id,
-          collectionRequestId: conversation.collectionRequestId,
-          conversationId: conversation.id,
-          clientId: conversation.clientId,
-          actorType: "client",
-        });
-        continue;
+        if (!isWithinBusinessHours(scheduleConfig)) {
+          // Bug 2 remediation — a reminder due while the office is closed
+          // must defer to the next opening, never silently vanish. Reuses
+          // the exact same deferredReminderAt/nextBusinessOpenTime
+          // mechanism the branch above already relies on for a client
+          // commitment, so the sibling branch picks it up on a later tick.
+          await db
+            .update(conversations)
+            .set({ deferredReminderAt: nextBusinessOpenTime(scheduleConfig) })
+            .where(eq(conversations.id, conversation.id));
+          await recordAuditEvent({
+            organizationId: organization.id,
+            eventType: "scheduler.reminder_deferred_outside_hours",
+            description: "תזכורת שהגיעה מחוץ לשעות הפעילות נדחתה לפתיחת יום העסקים הבא",
+            actorType: "system",
+            collectionRequestId: conversation.collectionRequestId,
+          });
+          continue;
+        }
       }
 
       // organization.reminderV2Approved — THIS organization's own Meta

@@ -91,6 +91,21 @@ export async function ensureConversation(
   return conversation;
 }
 
+// Observability remediation — sendOutboundMessage resolves this once for
+// every call so its own centralized recordAuditEvent (every exit path)
+// always carries the collectionRequestId, without every caller having to
+// supply one it may not have on hand (e.g. a caller that only has a
+// conversationId).
+async function getCollectionRequestIdForConversation(conversationId: string): Promise<string | null> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ collectionRequestId: conversations.collectionRequestId })
+    .from(conversations)
+    .where(eq(conversations.id, conversationId))
+    .limit(1);
+  return row?.collectionRequestId ?? null;
+}
+
 async function getClientPhoneForConversation(conversationId: string): Promise<string | null> {
   const db = await getDb();
   const [row] = await db
@@ -289,6 +304,10 @@ export async function sendOutboundMessage(
 ): Promise<{ sent: boolean; deliveryStatus?: string }> {
   const db = await getDb();
   const organization = await getOrganizationConfig(organizationId);
+  // Observability remediation — resolved once, up front, so it's available
+  // to recordAuditEvent on every exit path below (blocked, sent, failed),
+  // not just the ones a specific caller happened to already track.
+  const collectionRequestId = await getCollectionRequestIdForConversation(conversationId);
 
   console.log("[document-collection] document_collection_send_started", {
     organizationId,
@@ -328,6 +347,14 @@ export async function sendOutboundMessage(
         reason: decision.reason,
       });
       console.log("[wa-diag] BLOCKED (automated gate):", decision.reason, "→ sent:false, NO Meta call");
+      await recordAuditEvent({
+        organizationId,
+        eventType: "whatsapp.send_blocked",
+        description: `שליחת הודעה אוטומטית נחסמה: ${decision.reason}`,
+        actorType: "system",
+        collectionRequestId: collectionRequestId ?? undefined,
+        metadata: { conversationId, trigger, senderType, reason: decision.reason },
+      });
       return { sent: false };
     }
     console.log("[wa-diag] automated gates PASSED → calling sendViaWhatsApp");
@@ -391,6 +418,23 @@ export async function sendOutboundMessage(
   // repeated here (a second identical bump would be redundant, not more
   // correct).
   await db.update(messages).set({ whatsappMessageId, deliveryStatus }).where(eq(messages.id, pendingRow.id));
+
+  // Observability remediation — unconditional, covers every deliveryStatus
+  // outcome (sent/failed/not_connected/no_template/invalid_phone), so a
+  // message that left this function always has a paired audit_logs row
+  // provable back to its collectionRequestId, not just the sends whose
+  // specific caller happened to also log its own event.
+  await recordAuditEvent({
+    organizationId,
+    eventType: deliveryStatus === "sent" ? "whatsapp.send_completed" : "whatsapp.send_failed",
+    description:
+      deliveryStatus === "sent"
+        ? "הודעת WhatsApp נשלחה בהצלחה"
+        : `שליחת הודעת WhatsApp לא הושלמה: ${deliveryStatus}`,
+    actorType: "system",
+    collectionRequestId: collectionRequestId ?? undefined,
+    metadata: { messageId: pendingRow.id, conversationId, trigger, senderType, deliveryStatus, whatsappMessageId },
+  });
 
   return { sent: true, deliveryStatus };
 }
@@ -532,7 +576,7 @@ export async function evaluateAndPrompt(
 
   await db
     .update(conversations)
-    .set({ status: "waiting_for_client" })
+    .set({ status: "waiting_for_client", reminderAnchorAt: new Date() })
     .where(eq(conversations.id, conversationId));
 
   // Keep the Collection Request's own status (also part of the Ch.6

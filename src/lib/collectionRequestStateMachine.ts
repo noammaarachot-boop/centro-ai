@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   clients,
@@ -108,6 +108,48 @@ export async function checkCompletionGate(
   return null;
 }
 
+// Human-review escalation (business policy: 3-day completion window, and
+// max-2-deferrals-per-request — both implemented by scheduler.ts and
+// reminderDeferral.ts respectively) — the single, shared entry point both
+// callers use so the transition is atomic (CAS on status, never a
+// select-then-update race) and the audit trail is consistent regardless of
+// which trigger caused it. Reuses the pre-existing, previously-unused
+// "escalated" status (see ALLOWED_TRANSITIONS above) rather than inventing
+// a new one. Returns false (no-op) if the request already left an
+// automatable status — e.g. it just completed, or a concurrent caller (or
+// tick) already escalated it — so a caller never double-fires its own
+// side effects (a client-facing message, a second audit row) for the same
+// escalation.
+export async function escalateToHumanReview(
+  organizationId: string,
+  collectionRequestId: string,
+  reason: string,
+  actorType: "system" | "client"
+): Promise<boolean> {
+  const db = await getDb();
+  const claimed = await db
+    .update(collectionRequests)
+    .set({ status: "escalated", escalationReason: reason, reviewDeadlineAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(collectionRequests.id, collectionRequestId),
+        eq(collectionRequests.organizationId, organizationId),
+        inArray(collectionRequests.status, ["active", "waiting_for_client", "processing"])
+      )
+    )
+    .returning({ id: collectionRequests.id });
+  if (claimed.length === 0) return false;
+
+  await recordAuditEvent({
+    organizationId,
+    eventType: "collection_request.escalated",
+    description: reason,
+    actorType,
+    collectionRequestId,
+  });
+  return true;
+}
+
 export interface TransitionResult {
   ok: boolean;
   error?: string;
@@ -149,12 +191,27 @@ export async function applyTransition(
     if (gateError) return { ok: false, error: gateError };
   }
 
+  // Human-review escalation policy — every entry into "waiting_for_client"
+  // (the very first time, a reopen, or an employee manually un-escalating)
+  // starts a fresh 3-day review window and a fresh 2-deferral allowance,
+  // regardless of which of this function's three call sites triggered it.
+  // A deferral granted *within* an existing waiting_for_client episode
+  // (reminderDeferral.ts) never calls applyTransition — it only extends
+  // reviewDeadlineAt and increments deferralCount directly — so this reset
+  // only ever fires once per fresh episode, never mid-episode.
+  const reviewDeadlineAt =
+    nextStatus === "waiting_for_client" ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) : current.reviewDeadlineAt;
+  const deferralCount = nextStatus === "waiting_for_client" ? 0 : current.deferralCount;
+
   await db
     .update(collectionRequests)
     .set({
       status: nextStatus,
       updatedAt: new Date(),
       completedAt: nextStatus === "completed" ? new Date() : current.completedAt,
+      reviewDeadlineAt,
+      deferralCount,
+      escalationReason: nextStatus === "escalated" ? current.escalationReason : null,
     })
     .where(eq(collectionRequests.id, collectionRequestId));
 

@@ -1,9 +1,11 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { conversations, organizations } from "@/db/schema";
+import { collectionRequests, conversations, organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
+import { escalateToHumanReview } from "@/lib/collectionRequestStateMachine";
 import {
+  endOfTodayOrNextOpen,
   isWithinBusinessHours,
   nextBusinessOpenTime,
   zonedDateParts,
@@ -11,7 +13,18 @@ import {
   type BusinessHoursConfig,
 } from "@/lib/businessHours";
 import { classifyDeferralIntent, type DeferralDateHint } from "@/lib/ai/deferralIntent";
-import { applyFollowUpPromiseIfAny } from "@/lib/caseReview";
+import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
+
+// Human-review escalation policy — a collection request gets at most this
+// many client-requested deferrals (dated, vague, or ambiguous — any
+// wording) before automation stops and an employee takes over. Counted by
+// collectionRequests.deferralCount, never derived from message text.
+const MAX_DEFERRALS = 2;
+// A granted deferral genuinely restarts the 3-day completion window from
+// the new date (never from the original request date) — see
+// collectionRequestStateMachine.ts's applyTransition for the matching
+// initial-entry case (first time into waiting_for_client).
+const REVIEW_WINDOW_AFTER_DEFERRAL_MS = 3 * 24 * 60 * 60 * 1000;
 
 /**
  * Reminder deferral by explicit client commitment — "the client asked for
@@ -214,11 +227,70 @@ async function getOrgBusinessHoursConfig(organizationId: string): Promise<Busine
   };
 }
 
-// The single entry point the webhook route calls in place of the old
-// direct applyFollowUpPromiseIfAny call — tries the (narrower, dated-
-// commitment-only) deferral classifier first; a "not_dated" result falls
-// through unchanged to the existing vague-promise handling, so nothing
-// about that already-working path changes for a message like "אשלח בערב".
+// Human-review escalation policy (shared by all three deferral kinds
+// below) — a single atomic UPDATE ... SET deferral_count = deferral_count
+// + 1, safe under concurrent writers by Postgres row-level locking alone
+// (no separate compare-and-swap needed for a plain increment). The
+// deferral that would be the 3rd is never granted — escalateToHumanReview
+// fires instead, immediately, with no message about the escalation itself
+// (its own contract) and no wait for whatever date the client asked for.
+async function claimDeferralSlot(
+  organizationId: string,
+  collectionRequestId: string
+): Promise<{ granted: true; deferralCount: number } | { granted: false }> {
+  const db = await getDb();
+  const [row] = await db
+    .update(collectionRequests)
+    .set({ deferralCount: sql`${collectionRequests.deferralCount} + 1` })
+    .where(eq(collectionRequests.id, collectionRequestId))
+    .returning({ deferralCount: collectionRequests.deferralCount });
+
+  if (!row || row.deferralCount > MAX_DEFERRALS) {
+    await escalateToHumanReview(organizationId, collectionRequestId, "הלקוח ביקש דחייה בפעם השלישית", "client");
+    return { granted: false };
+  }
+  return { granted: true, deferralCount: row.deferralCount };
+}
+
+// Writes the granted deferral itself (conversations.deferredReminderAt and
+// friends — unchanged shape) and extends the request's own 3-day
+// review-escalation deadline to resolvedAt + 3 days: a granted deferral
+// genuinely restarts the completion window from the new date, never
+// leaves the original, now-irrelevant deadline in place (see
+// collectionRequestStateMachine.ts's applyTransition for the matching
+// first-entry case).
+async function recordGrantedDeferral(params: {
+  conversationId: string;
+  collectionRequestId: string;
+  resolvedAt: Date;
+  originalText: string;
+  timezone: string;
+  reason: string;
+}): Promise<void> {
+  const db = await getDb();
+  await db
+    .update(conversations)
+    .set({
+      deferredReminderAt: params.resolvedAt,
+      deferredReminderOriginalText: params.originalText,
+      deferredReminderTimezone: params.timezone,
+      deferredReminderReason: params.reason,
+    })
+    .where(eq(conversations.id, params.conversationId));
+
+  await db
+    .update(collectionRequests)
+    .set({ reviewDeadlineAt: new Date(params.resolvedAt.getTime() + REVIEW_WINDOW_AFTER_DEFERRAL_MS) })
+    .where(eq(collectionRequests.id, params.collectionRequestId));
+}
+
+// The single entry point the webhook route calls for every inbound message
+// the top-level classifier reads as a deferral promise. Tries the
+// (narrower, dated-commitment-only) deferral classifier first; "not_dated"
+// and "ambiguous" both still commit to *something* without a computable
+// date, so both now also consume a deferral slot and get a bounded,
+// honest defer window (endOfTodayOrNextOpen) — never nagging within the
+// same window, never inventing a specific hour the client never said.
 export async function applyDeferralIfAny(params: {
   organizationId: string;
   conversationId: string;
@@ -234,10 +306,56 @@ export async function applyDeferralIfAny(params: {
   const intent = await classifyDeferralIntent(params.replyText, referenceDateLabel);
 
   if (intent.kind === "not_dated") {
-    return applyFollowUpPromiseIfAny(params);
+    // A vague short-term promise ("אשלח בערב", "אשלח מאוחר יותר", "אשלח
+    // בקרוב") — classifyDeferralIntent itself has nothing more to say
+    // (no computable date); classifyFollowUpIntent is the one that
+    // actually recognizes this as a promise at all, same as before this
+    // policy existed.
+    const isFollowUpPromise = await classifyFollowUpIntent(params.replyText);
+    if (!isFollowUpPromise) return false;
+
+    const claim = await claimDeferralSlot(params.organizationId, params.collectionRequestId);
+    if (!claim.granted) return true; // escalated — no message sent about it, per policy
+
+    const resolvedAt = endOfTodayOrNextOpen(businessHours, now);
+    await recordGrantedDeferral({
+      conversationId: params.conversationId,
+      collectionRequestId: params.collectionRequestId,
+      resolvedAt,
+      originalText: params.replyText,
+      timezone: businessHours.timezone,
+      reason: "הלקוח ציין שישלח מאוחר יותר, ללא מועד מדויק",
+    });
+
+    // A short, human acknowledgment — never a reminder, never a question.
+    await sendOutboundMessage(params.organizationId, params.conversationId, "בסדר, תודה 😊", "ai", "manual", undefined, true);
+
+    await recordAuditEvent({
+      organizationId: params.organizationId,
+      eventType: "conversation.reminder_deferred",
+      description: `הלקוח ציין שישלח מסמכים מאוחר יותר (ללא מועד מדויק) — תזכורות הושהו (דחייה ${claim.deferralCount} מתוך ${MAX_DEFERRALS})`,
+      actorType: "client",
+      clientId: params.clientId,
+      collectionRequestId: params.collectionRequestId,
+      metadata: { originalText: params.replyText, resolvedAt: resolvedAt.toISOString(), deferralCount: claim.deferralCount },
+    });
+    return true;
   }
 
   if (intent.kind === "ambiguous") {
+    const claim = await claimDeferralSlot(params.organizationId, params.collectionRequestId);
+    if (!claim.granted) return true; // escalated — no clarifying question sent either, per policy
+
+    const resolvedAt = endOfTodayOrNextOpen(businessHours, now);
+    await recordGrantedDeferral({
+      conversationId: params.conversationId,
+      collectionRequestId: params.collectionRequestId,
+      resolvedAt,
+      originalText: params.replyText,
+      timezone: businessHours.timezone,
+      reason: "הלקוח התחייב לשלוח, אך לא ציין מועד ברור",
+    });
+
     await sendOutboundMessage(
       params.organizationId,
       params.conversationId,
@@ -250,10 +368,11 @@ export async function applyDeferralIfAny(params: {
     await recordAuditEvent({
       organizationId: params.organizationId,
       eventType: "conversation.deferral_clarification_requested",
-      description: "הלקוח ציין שישלח מאוחר יותר, אך התאריך המדויק לא היה ברור — נשאלה שאלת הבהרה",
+      description: `הלקוח ציין שישלח מאוחר יותר, אך התאריך המדויק לא היה ברור — נשאלה שאלת הבהרה (דחייה ${claim.deferralCount} מתוך ${MAX_DEFERRALS})`,
       actorType: "client",
       clientId: params.clientId,
       collectionRequestId: params.collectionRequestId,
+      metadata: { deferralCount: claim.deferralCount },
     });
     return true;
   }
@@ -273,16 +392,17 @@ export async function applyDeferralIfAny(params: {
     return true;
   }
 
-  const db = await getDb();
-  await db
-    .update(conversations)
-    .set({
-      deferredReminderAt: resolved.date,
-      deferredReminderOriginalText: params.replyText,
-      deferredReminderTimezone: businessHours.timezone,
-      deferredReminderReason: resolved.humanPhrase,
-    })
-    .where(eq(conversations.id, params.conversationId));
+  const claim = await claimDeferralSlot(params.organizationId, params.collectionRequestId);
+  if (!claim.granted) return true; // escalated — no confirmation sent, no wait for the requested date
+
+  await recordGrantedDeferral({
+    conversationId: params.conversationId,
+    collectionRequestId: params.collectionRequestId,
+    resolvedAt: resolved.date,
+    originalText: params.replyText,
+    timezone: businessHours.timezone,
+    reason: resolved.humanPhrase,
+  });
 
   await sendOutboundMessage(
     params.organizationId,
@@ -297,11 +417,16 @@ export async function applyDeferralIfAny(params: {
   await recordAuditEvent({
     organizationId: params.organizationId,
     eventType: "conversation.reminder_deferred",
-    description: `הלקוח התחייב לשלוח מסמכים במועד עתידי — תזכורות הושהו עד ${resolved.finalDateLabel}`,
+    description: `הלקוח התחייב לשלוח מסמכים במועד עתידי — תזכורות הושהו עד ${resolved.finalDateLabel} (דחייה ${claim.deferralCount} מתוך ${MAX_DEFERRALS})`,
     actorType: "client",
     clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,
-    metadata: { originalText: params.replyText, resolvedAt: resolved.date.toISOString(), reason: resolved.humanPhrase },
+    metadata: {
+      originalText: params.replyText,
+      resolvedAt: resolved.date.toISOString(),
+      reason: resolved.humanPhrase,
+      deferralCount: claim.deferralCount,
+    },
   });
 
   return true;

@@ -1,14 +1,12 @@
 import { and, eq, isNotNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { collectionRequestRequirements, collectionRequests, conversations, documents, pendingConfirmations } from "@/db/schema";
-import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
 import { createClarificationRequest, createUnsolicitedDocumentConfirmation } from "@/lib/documentIntakeReview";
 import { createOrMergeIdentityAnomalyConfirmation, type IdentityAnomaly } from "@/lib/documentIdentityVerification";
 import { completeCollectionRequest } from "@/lib/collectionRequestStateMachine";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
-import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
 
 // Silence-window case review (runAutomaticCaseStatusReview, below) — how
 // long a collection request's conversation must go without a new document
@@ -16,7 +14,7 @@ import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
 // client to ever say "סיימתי". Exported so the scheduler and its tests
 // share one source of truth for the window length.
 //
-// Deliberately a different mechanism from the reminderIntervalDays-based
+// Deliberately a different mechanism from the reminderIntervalHours-based
 // staleness reminder (scheduler.ts's staleWaitingConversations pass): this
 // one is a direct reaction to activity the client themselves just
 // initiated (like the reactive document-intake questions, which already
@@ -498,7 +496,7 @@ export async function runAutomaticCaseStatusReview(params: {
     // this early, on every such tick, is exactly the premature/redundant
     // nudge product wants to avoid — the client already has the opening
     // request message. Stay silent here; the separate, business-hours-
-    // gated staleness reminder (scheduler.ts's reminderIntervalDays pass)
+    // gated staleness reminder (scheduler.ts's reminderIntervalHours pass)
     // is the only mechanism responsible for nudging a client who hasn't
     // sent anything real yet.
     return "nothing_to_report";
@@ -615,40 +613,3 @@ export async function scheduleCaseReviewRelay(params: {
   // did before this relay existed.
 }
 
-// Free-text "I'll send it later" understanding — called only when the
-// client's message didn't resolve any open confirmation and wasn't a
-// "finished" signal (see the webhook route / simulateInboundMessage), so
-// this never competes with either. A real send-later promise
-// ("אשלח בערב") sets conversations.nextFollowUpAt, which
-// runScheduledTasks (scheduler.ts) checks before sending its stale-
-// conversation reminder — a reminder must never go out before a time the
-// client explicitly committed to. Returns whether a promise was actually
-// recognized, purely for the caller's own logging.
-export async function applyFollowUpPromiseIfAny(params: {
-  organizationId: string;
-  conversationId: string;
-  collectionRequestId: string;
-  clientId: string;
-  replyText: string;
-}): Promise<boolean> {
-  const isFollowUpPromise = await classifyFollowUpIntent(params.replyText);
-  if (!isFollowUpPromise) return false;
-
-  // A short, human acknowledgment — never a reminder, never a question.
-  // No explicit deferral bookkeeping is needed beyond this: the client's
-  // own message already reset conversations.updatedAt (recordInboundMessage),
-  // which is exactly what the scheduler's stale-conversation reminder
-  // measures staleness against — see classifyFollowUpIntent's own doc
-  // comment for why that alone is enough.
-  await sendOutboundMessage(params.organizationId, params.conversationId, "בסדר, תודה 😊", "ai", "manual", undefined, true);
-
-  await recordAuditEvent({
-    organizationId: params.organizationId,
-    eventType: "conversation.follow_up_promised",
-    description: "הלקוח ציין שישלח מסמכים נוספים בהמשך",
-    actorType: "client",
-    clientId: params.clientId,
-    collectionRequestId: params.collectionRequestId,
-  });
-  return true;
-}

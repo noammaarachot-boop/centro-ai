@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -23,11 +23,6 @@ vi.mock("@/lib/googleAuth/driveTokens", async () => {
   const actual = await vi.importActual<typeof import("@/lib/googleAuth/driveTokens")>("@/lib/googleAuth/driveTokens");
   return { ...actual, getValidAccessToken: (...args: unknown[]) => getValidAccessToken(...args) };
 });
-
-const classifyFollowUpIntent = vi.fn();
-vi.mock("@/lib/ai/conversationReplyIntent", () => ({
-  classifyFollowUpIntent: (...args: unknown[]) => classifyFollowUpIntent(...args),
-}));
 
 interface FakeFolder {
   id: string;
@@ -96,9 +91,7 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
-const { isFinishedSignal, runCaseReview, attemptFinishCollectionRequest, applyFollowUpPromiseIfAny } = await import(
-  "./caseReview"
-);
+const { isFinishedSignal, runCaseReview, attemptFinishCollectionRequest } = await import("./caseReview");
 const { createOrMergeIdentityAnomalyConfirmation } = await import("./documentIdentityVerification");
 
 beforeAll(async () => {
@@ -116,8 +109,6 @@ beforeEach(() => {
   sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
   sendInteractiveButtonsMessage.mockReset();
   sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.out" });
-  classifyFollowUpIntent.mockReset();
-  classifyFollowUpIntent.mockResolvedValue(false);
 });
 
 describe("isFinishedSignal", () => {
@@ -367,48 +358,6 @@ describe("attemptFinishCollectionRequest", () => {
   });
 });
 
-// Free-text "I'll send it later" understanding (src/lib/ai/conversationReplyIntent.ts)
-// — deliberately no precise deferral timer: the client's own message
-// already resets conversations.updatedAt, which is what the scheduler's
-// staleness check measures against (see classifyFollowUpIntent's own doc
-// comment). This just sends a short acknowledgment and logs it.
-describe("applyFollowUpPromiseIfAny", () => {
-  it("recognizes a send-later promise, sends a short acknowledgment, and records an audit event", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedRequest([]);
-    classifyFollowUpIntent.mockResolvedValueOnce(true);
-
-    const result = await applyFollowUpPromiseIfAny({
-      organizationId: orgId,
-      conversationId,
-      collectionRequestId: requestId,
-      clientId,
-      replyText: "אשלח בערב",
-    });
-    expect(result).toBe(true);
-
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    const body = sendTextMessage.mock.calls[0][2] as string;
-    expect(body).toContain("בסדר");
-
-    const auditEvents = await db
-      .select()
-      .from(schema.auditLogs)
-      .where(and(eq(schema.auditLogs.collectionRequestId, requestId), eq(schema.auditLogs.eventType, "conversation.follow_up_promised")));
-    expect(auditEvents).toHaveLength(1);
-  });
-
-  it("is a no-op for an ordinary message", async () => {
-    const { orgId, clientId, requestId, conversationId } = await seedRequest([]);
-    classifyFollowUpIntent.mockResolvedValueOnce(false);
-
-    const result = await applyFollowUpPromiseIfAny({
-      organizationId: orgId,
-      conversationId,
-      collectionRequestId: requestId,
-      clientId,
-      replyText: "תודה רבה",
-    });
-    expect(result).toBe(false);
-    expect(sendTextMessage).not.toHaveBeenCalled();
-  });
-});
+// applyFollowUpPromiseIfAny moved into reminderDeferral.ts's applyDeferralIfAny
+// (the "not_dated" branch) as part of the deferral-count/escalation policy —
+// see reminderDeferral.integration.test.ts for its coverage now.
