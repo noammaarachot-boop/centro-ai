@@ -23,7 +23,7 @@ export function ServiceScheduleOverrideCard({
   businessHoursStart,
   businessHoursEnd,
   businessDays,
-  reminderIntervalDays,
+  reminderIntervalHours,
   inactivityTimeoutMinutes,
   collectionDayOfMonth,
   returnTo,
@@ -34,7 +34,7 @@ export function ServiceScheduleOverrideCard({
   businessHoursStart: string;
   businessHoursEnd: string;
   businessDays: string;
-  reminderIntervalDays: number;
+  reminderIntervalHours: number;
   inactivityTimeoutMinutes: number;
   collectionDayOfMonth: number;
   returnTo: string;
@@ -119,18 +119,19 @@ export function ServiceScheduleOverrideCard({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 flex items-center gap-1 text-xs font-medium text-text-secondary">
-                מרווח תזכורות (ימים)
+                מרווח תזכורות (שעות)
                 <span className="pointer-events-auto">
                   <HelpTip label="">
-                    אם הלקוח לא הגיב, Centro ישלח תזכורת נוספת אוטומטית כל X ימים.
+                    אם הלקוח לא הגיב, Centro ישלח תזכורת נוספת אוטומטית כל X שעות (1-24).
                   </HelpTip>
                 </span>
               </label>
               <input
-                name="reminderIntervalDays"
+                name="reminderIntervalHours"
                 type="number"
                 min={1}
-                defaultValue={reminderIntervalDays}
+                max={24}
+                defaultValue={reminderIntervalHours}
                 disabled={!useOverrides}
                 className={fieldClass("sm")}
               />

@@ -217,20 +217,21 @@ export default async function SettingsPage({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label
-                htmlFor="reminderIntervalDays"
+                htmlFor="reminderIntervalHours"
                 className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
               >
-                מרווח תזכורות (ימים)
+                מרווח תזכורות (שעות)
                 <HelpTip label="">
-                  אם הלקוח לא הגיב, Centro ישלח תזכורת נוספת אוטומטית כל X ימים.
+                  אם הלקוח לא הגיב, Centro ישלח תזכורת נוספת אוטומטית כל X שעות (1-24).
                 </HelpTip>
               </label>
               <input
-                id="reminderIntervalDays"
-                name="reminderIntervalDays"
+                id="reminderIntervalHours"
+                name="reminderIntervalHours"
                 type="number"
                 min={1}
-                defaultValue={organization.reminderIntervalDays}
+                max={24}
+                defaultValue={organization.reminderIntervalHours}
                 className={fieldClass("md")}
               />
             </div>

@@ -11,7 +11,7 @@ interface ServiceRow {
   businessHoursStartOverride: string | null;
   businessHoursEndOverride: string | null;
   businessDaysOverride: string | null;
-  reminderIntervalDaysOverride: number | null;
+  reminderIntervalHoursOverride: number | null;
   inactivityTimeoutMinutesOverride: number | null;
   collectionDayOfMonthOverride: number | null;
   collectionFrequencyIntervalMonths: number | null;
@@ -22,7 +22,7 @@ interface OrganizationDefaults {
   businessHoursEnd: string;
   businessDays: string;
   timezone: string;
-  reminderIntervalDays: number;
+  reminderIntervalHours: number;
   inactivityTimeoutMinutes: number;
   collectionDayOfMonth: number;
 }
@@ -50,7 +50,7 @@ export function Step7Reminders({
             service?.businessHoursStartOverride ||
             service?.businessHoursEndOverride ||
             service?.businessDaysOverride ||
-            service?.reminderIntervalDaysOverride ||
+            service?.reminderIntervalHoursOverride ||
             service?.inactivityTimeoutMinutesOverride ||
             service?.collectionDayOfMonthOverride
           );
@@ -69,7 +69,7 @@ export function Step7Reminders({
                 businessHoursStart={effective.businessHoursStart}
                 businessHoursEnd={effective.businessHoursEnd}
                 businessDays={effective.businessDays}
-                reminderIntervalDays={effective.reminderIntervalDays}
+                reminderIntervalHours={effective.reminderIntervalHours}
                 inactivityTimeoutMinutes={effective.inactivityTimeoutMinutes}
                 collectionDayOfMonth={effective.collectionDayOfMonth}
                 returnTo="/onboarding?step=9"

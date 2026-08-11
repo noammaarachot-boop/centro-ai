@@ -7,7 +7,7 @@ import { organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { runScheduledTasks } from "@/lib/scheduler";
-import { clampCollectionDay } from "@/lib/businessHours";
+import { clampCollectionDay, clampReminderHours } from "@/lib/businessHours";
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 
@@ -19,7 +19,7 @@ export async function updateBusinessHours(formData: FormData) {
   const businessHoursEnd = String(formData.get("businessHoursEnd") ?? "18:00");
   const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
   const timezone = String(formData.get("timezone") ?? "Asia/Jerusalem");
-  const reminderIntervalDays = Number(formData.get("reminderIntervalDays") ?? 2);
+  const reminderIntervalHours = clampReminderHours(formData.get("reminderIntervalHours"));
   const inactivityTimeoutMinutes = Number(formData.get("inactivityTimeoutMinutes") ?? 15);
   const collectionDayOfMonth = clampCollectionDay(formData.get("collectionDayOfMonth"));
 
@@ -31,7 +31,7 @@ export async function updateBusinessHours(formData: FormData) {
       businessHoursEnd,
       businessDays: businessDays || "0,1,2,3,4",
       timezone,
-      reminderIntervalDays,
+      reminderIntervalHours,
       inactivityTimeoutMinutes,
       collectionDayOfMonth,
       updatedAt: new Date(),

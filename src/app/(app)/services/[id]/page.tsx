@@ -60,7 +60,7 @@ export default async function ServiceDetailPage({
     service.businessHoursStartOverride ||
     service.businessHoursEndOverride ||
     service.businessDaysOverride ||
-    service.reminderIntervalDaysOverride ||
+    service.reminderIntervalHoursOverride ||
     service.inactivityTimeoutMinutesOverride ||
     service.collectionDayOfMonthOverride
   );
@@ -253,7 +253,7 @@ export default async function ServiceDetailPage({
         businessHoursStart={effectiveSchedule.businessHoursStart}
         businessHoursEnd={effectiveSchedule.businessHoursEnd}
         businessDays={effectiveSchedule.businessDays}
-        reminderIntervalDays={effectiveSchedule.reminderIntervalDays}
+        reminderIntervalHours={effectiveSchedule.reminderIntervalHours}
         inactivityTimeoutMinutes={effectiveSchedule.inactivityTimeoutMinutes}
         collectionDayOfMonth={effectiveSchedule.collectionDayOfMonth}
         returnTo={`/services/${service.id}`}

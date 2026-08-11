@@ -21,7 +21,7 @@ import { buildClientRowsFromMapping } from "@/lib/csv";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { markOnboardingComplete } from "@/lib/onboarding";
-import { clampCollectionDay } from "@/lib/businessHours";
+import { clampCollectionDay, clampReminderHours } from "@/lib/businessHours";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import { BUSINESS_CATEGORIES, type BusinessCategory } from "@/lib/businessCategories";
 import {
@@ -223,7 +223,7 @@ export async function updateServiceScheduleOverrides(
         businessHoursStartOverride: null,
         businessHoursEndOverride: null,
         businessDaysOverride: null,
-        reminderIntervalDaysOverride: null,
+        reminderIntervalHoursOverride: null,
         inactivityTimeoutMinutesOverride: null,
         collectionDayOfMonthOverride: null,
         updatedAt: new Date(),
@@ -240,7 +240,7 @@ export async function updateServiceScheduleOverrides(
         businessHoursStartOverride: String(formData.get("businessHoursStart") ?? "09:00"),
         businessHoursEndOverride: String(formData.get("businessHoursEnd") ?? "18:00"),
         businessDaysOverride: businessDaysOverride || "0,1,2,3,4",
-        reminderIntervalDaysOverride: Number(formData.get("reminderIntervalDays") ?? 2),
+        reminderIntervalHoursOverride: clampReminderHours(formData.get("reminderIntervalHours")),
         inactivityTimeoutMinutesOverride: Number(
           formData.get("inactivityTimeoutMinutes") ?? 15
         ),
@@ -1342,7 +1342,7 @@ export async function importClientsSimple(
 // reminder interval, inactivity timeout, or collection-day-of-month,
 // which are recurring-cadence concepts that don't apply to a one-off
 // request. These org-wide fields already have sensible defaults
-// (organizations.reminderIntervalDays etc.), so the shared scheduler
+// (organizations.reminderIntervalHours etc.), so the shared scheduler
 // engine works unchanged for a one-time org even though its onboarding
 // never asks about them.
 export async function updateWorkingHours(formData: FormData) {

@@ -169,6 +169,23 @@ export default async function CollectionRequestDetailPage({
         <p className="mt-1.5 text-sm text-text-secondary">
           תקופה: {collectionRequest.periodLabel}
         </p>
+        {collectionRequest.status === "escalated" && collectionRequest.escalationReason && (
+          <p className="mt-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm font-medium text-danger">
+            דורש בדיקת עובד — {collectionRequest.escalationReason}
+          </p>
+        )}
+        {collectionRequest.status !== "escalated" && conversation?.deferredReminderAt && (
+          <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm font-medium text-warning">
+            נדחה לבקשת הלקוח עד{" "}
+            {new Date(conversation.deferredReminderAt).toLocaleString("he-IL", {
+              dateStyle: "short",
+              timeStyle: "short",
+              timeZone: "Asia/Jerusalem",
+            })}{" "}
+            — דחייה {collectionRequest.deferralCount} מתוך 2
+            {conversation.deferredReminderOriginalText && ` ("${conversation.deferredReminderOriginalText}")`}
+          </p>
+        )}
       </div>
 
       {error && (
