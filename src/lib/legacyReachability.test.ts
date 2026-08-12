@@ -94,12 +94,28 @@ describe("legacy reachability — production dispatch paths never call the pre-u
   // Positive checks — the real replacement must actually be wired in,
   // not just "the old thing is gone" (a file could satisfy every check
   // above by calling nothing at all).
-  it("the real WhatsApp webhook route calls runConversationUnderstanding", () => {
+  //
+  // Phase 4 cutover (conversation-intelligence redesign) — the real
+  // WhatsApp webhook route now calls understandConversationTurn
+  // (src/lib/conversation/conversationUnderstanding.ts), never
+  // runConversationUnderstanding/classifyConversationIntent. This guard
+  // fails immediately if a future change quietly reintroduces the legacy
+  // call here.
+  it("the real WhatsApp webhook route calls understandConversationTurn, never the legacy runConversationUnderstanding", () => {
     const source = readSrc("src/app/api/webhooks/whatsapp/route.ts");
-    expect(callSites(source, "runConversationUnderstanding").length).toBeGreaterThan(0);
+    expect(callSites(source, "understandConversationTurn").length).toBeGreaterThan(0);
+    expect(callSites(source, "runConversationUnderstanding"), "legacy call must not be reintroduced in route.ts").toEqual([]);
   });
 
-  it("the DevTools inbound-message simulator calls runConversationUnderstanding (not a separate ladder)", () => {
+  // NOT updated to understandConversationTurn as part of Phase 4 — wiring
+  // the DevTools simulator into the new pipeline was explicitly out of
+  // scope for this phase (route.ts only). This assertion is deliberately
+  // unchanged so it stays true to what the code actually does: the
+  // simulator still reflects the OLD path, and after this cutover that
+  // means it no longer matches real production behavior — a real,
+  // reported gap (see the Phase 4 summary), not something this guard
+  // should silently paper over by also updating this expectation.
+  it("the DevTools inbound-message simulator still calls runConversationUnderstanding (not yet migrated to the new pipeline — known gap, see Phase 4 report)", () => {
     const source = readSrc("src/app/(app)/collections/conversationActions.ts");
     expect(callSites(source, "runConversationUnderstanding").length).toBeGreaterThan(0);
   });

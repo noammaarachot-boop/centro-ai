@@ -1,7 +1,20 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, documents, employeeReviewItems, messages, pendingConfirmations } from "@/db/schema";
+import {
+  clientConversationFocus,
+  collectionRequestRequirements,
+  collectionRequests,
+  conversations,
+  documents,
+  employeeReviewItems,
+  messages,
+  organizations,
+  pendingConfirmations,
+  services,
+} from "@/db/schema";
 import { buildRequirementFacts, type RequirementFact } from "@/lib/requestQnA";
+import { listActivePolicies } from "@/lib/policyKnowledgeBase";
+import type { ConfirmedFocus, DiscourseEntity } from "@/lib/conversation/conversationReasoning";
 
 /**
  * The unified document-conversation understanding layer's context builder —
@@ -74,6 +87,35 @@ export interface ConversationRecentMessage {
   createdAt: string;
 }
 
+// Phase 1 additions (conversation-intelligence redesign) — self-description
+// of the case, organization, and sibling requests a human assistant reading
+// the file would already know. Populated for real; not yet consumed by
+// classifyConversationIntent's prompt (that's Phase 3) — adding them here
+// first, with their own tests, keeps this a pure data-layer change.
+export interface ConversationActiveRequestInfo {
+  collectionRequestId: string;
+  serviceName: string;
+  periodLabel: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface ConversationOrganizationInfo {
+  name: string;
+  businessHoursStart: string;
+  businessHoursEnd: string;
+  businessDays: string;
+  timezone: string;
+}
+
+export interface ConversationSiblingRequest {
+  collectionRequestId: string;
+  conversationId: string;
+  serviceName: string;
+  periodLabel: string;
+  status: string;
+}
+
 export interface ConversationContext {
   collectionRequestId: string;
   conversationId: string;
@@ -83,6 +125,34 @@ export interface ConversationContext {
   recentResolvedConfirmations: ConversationCandidateConfirmation[];
   reviewItems: ConversationCandidateReviewItem[];
   recentMessages: ConversationRecentMessage[];
+  // Confirmed durable focus for this client, if any — see
+  // client_conversation_focus's schema doc comment. Always read fresh;
+  // never assumed still valid without checking it still points at an open
+  // request (see buildConversationContext's own implementation below).
+  confirmedFocus: ConfirmedFocus | null;
+  activeRequest: ConversationActiveRequestInfo;
+  organization: ConversationOrganizationInfo;
+  // Lightweight only (id/service/period/status) — deliberately NOT deep
+  // context (no requirementFacts/documents) for every open sibling request,
+  // to keep the token budget bounded. Enough for a cross-request reference
+  // ("ומה עם הבקשה השנייה?"); Phase 2/3 resolves what to do with it.
+  otherOpenRequests: ConversationSiblingRequest[];
+  // Real, current candidates recentMessages' pronouns/ordinals might refer
+  // to — never a parse of past outbound text, never persisted. See
+  // DiscourseEntity's own doc comment (conversationReasoning.ts).
+  recentDiscourseEntities: DiscourseEntity[];
+  // Phase 3 addition — office-approved policy knowledge (policyKnowledgeBase.ts),
+  // compact (id/question/decision only, no metadata), as one more grounded-fact
+  // source ANSWER may cite. Reused verbatim from the existing, already-proven
+  // mechanism (handlePotentialReviewQuestion's policy-match-first step) — not
+  // a new policy system, just made available earlier in the reasoning flow.
+  activePolicies: ConversationPolicyFact[];
+}
+
+export interface ConversationPolicyFact {
+  id: string;
+  questionSummary: string;
+  decisionText: string;
 }
 
 // Best-effort "what type of document was this" label — mirrors the same
@@ -93,6 +163,8 @@ function deriveDocumentType(fileName: string, requirementName: string | null): s
 }
 
 export async function buildConversationContext(params: {
+  organizationId: string;
+  clientId: string;
   collectionRequestId: string;
   conversationId: string;
 }): Promise<ConversationContext> {
@@ -213,6 +285,113 @@ export async function buildConversationContext(params: {
     .map((row) => ({ direction: row.direction, body: row.body, createdAt: row.createdAt.toISOString() }))
     .reverse();
 
+  // Self-description of the active request/organization — a human
+  // assistant reading the case file would already know both.
+  const [activeRequestRow] = await db
+    .select({
+      periodLabel: collectionRequests.periodLabel,
+      status: collectionRequests.status,
+      createdAt: collectionRequests.createdAt,
+      serviceName: services.name,
+    })
+    .from(collectionRequests)
+    .innerJoin(services, eq(collectionRequests.serviceId, services.id))
+    .where(eq(collectionRequests.id, params.collectionRequestId))
+    .limit(1);
+  const activeRequest: ConversationActiveRequestInfo = {
+    collectionRequestId: params.collectionRequestId,
+    serviceName: activeRequestRow?.serviceName ?? "",
+    periodLabel: activeRequestRow?.periodLabel ?? "",
+    status: activeRequestRow?.status ?? "",
+    createdAt: activeRequestRow?.createdAt.toISOString() ?? "",
+  };
+
+  const [organizationRow] = await db
+    .select({
+      name: organizations.name,
+      businessHoursStart: organizations.businessHoursStart,
+      businessHoursEnd: organizations.businessHoursEnd,
+      businessDays: organizations.businessDays,
+      timezone: organizations.timezone,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, params.organizationId))
+    .limit(1);
+  const organization: ConversationOrganizationInfo = {
+    name: organizationRow?.name ?? "",
+    businessHoursStart: organizationRow?.businessHoursStart ?? "",
+    businessHoursEnd: organizationRow?.businessHoursEnd ?? "",
+    businessDays: organizationRow?.businessDays ?? "",
+    timezone: organizationRow?.timezone ?? "",
+  };
+
+  // Confirmed durable focus — read fresh, never trusted past whether it
+  // still points at a genuinely open request (see client_conversation_focus's
+  // own schema doc comment: this row is authoritative only for what it
+  // currently points at, not forever).
+  const [focusRow] = await db
+    .select({
+      collectionRequestId: clientConversationFocus.collectionRequestId,
+      source: clientConversationFocus.source,
+      setAt: clientConversationFocus.setAt,
+      requestStatus: collectionRequests.status,
+    })
+    .from(clientConversationFocus)
+    .innerJoin(collectionRequests, eq(clientConversationFocus.collectionRequestId, collectionRequests.id))
+    .where(eq(clientConversationFocus.clientId, params.clientId))
+    .limit(1);
+  const confirmedFocus: ConfirmedFocus | null =
+    focusRow && focusRow.requestStatus !== "completed" && focusRow.requestStatus !== "cancelled"
+      ? { collectionRequestId: focusRow.collectionRequestId, source: focusRow.source, setAt: focusRow.setAt.toISOString() }
+      : null;
+
+  // Lightweight sibling requests — this client's other open conversations,
+  // id/service/period/status only (no deep per-request context), enough for
+  // a cross-request reference without exploding the token budget.
+  const siblingRows = await db
+    .select({
+      conversationId: conversations.id,
+      collectionRequestId: conversations.collectionRequestId,
+      status: conversations.status,
+      periodLabel: collectionRequests.periodLabel,
+      serviceName: services.name,
+    })
+    .from(conversations)
+    .innerJoin(collectionRequests, eq(conversations.collectionRequestId, collectionRequests.id))
+    .innerJoin(services, eq(collectionRequests.serviceId, services.id))
+    .where(and(eq(conversations.clientId, params.clientId), ne(conversations.id, params.conversationId), ne(conversations.status, "closed")));
+  const otherOpenRequests: ConversationSiblingRequest[] = siblingRows.map((row) => ({
+    collectionRequestId: row.collectionRequestId,
+    conversationId: row.conversationId,
+    serviceName: row.serviceName,
+    periodLabel: row.periodLabel,
+    status: row.status,
+  }));
+
+  // Real, current candidates for this turn's reference resolution (Phase 2)
+  // — assembled from data already fetched above, never from parsing past
+  // outbound text. Deliberately no attempt here to guess which one "the
+  // first one" means; that reasoning belongs to Phase 2/3, using this list
+  // together with recentMessages' own literal text.
+  const recentDiscourseEntities: DiscourseEntity[] = [
+    { kind: "collection_request", id: activeRequest.collectionRequestId, label: `${activeRequest.serviceName} — ${activeRequest.periodLabel}` },
+    ...otherOpenRequests.map((r) => ({
+      kind: "collection_request" as const,
+      id: r.collectionRequestId,
+      label: `${r.serviceName} — ${r.periodLabel}`,
+    })),
+    ...recentDocuments.map((d) => ({ kind: "document" as const, id: d.id, label: d.documentType ?? d.requirementName ?? "מסמך" })),
+    ...requirementFacts.map((f) => ({ kind: "requirement" as const, id: f.id, label: f.description })),
+    ...reviewItems.map((r) => ({ kind: "review_item" as const, id: r.id, label: r.clientQuestion })),
+  ];
+
+  const activePolicyRows = await listActivePolicies(params.organizationId);
+  const activePolicies: ConversationPolicyFact[] = activePolicyRows.map((p) => ({
+    id: p.id,
+    questionSummary: p.questionSummary,
+    decisionText: p.decisionText,
+  }));
+
   return {
     collectionRequestId: params.collectionRequestId,
     conversationId: params.conversationId,
@@ -222,5 +401,11 @@ export async function buildConversationContext(params: {
     recentResolvedConfirmations,
     reviewItems,
     recentMessages,
+    confirmedFocus,
+    activeRequest,
+    organization,
+    otherOpenRequests,
+    recentDiscourseEntities,
+    activePolicies,
   };
 }

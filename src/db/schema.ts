@@ -1413,6 +1413,43 @@ export const pendingRequestDisambiguations = pgTable(
   ]
 );
 
+// Confirmed durable conversational focus (conversation-intelligence design,
+// 2026-08) — which of a client's several open collection requests the
+// conversation is currently about. Deliberately holds ONLY authoritative
+// state: a row here is written exclusively by an explicit, unambiguous
+// signal (the trivial single-open-request case, a resolved numbered
+// disambiguation reply, or an explicit client topic switch) — never by a
+// bare LLM inference. An LLM's own hypothesis about focus is derived state,
+// recomputed fresh every turn from this row + recent conversation; it is
+// never persisted here and never treated as fact on its own. One row per
+// client — always the CURRENT confirmed focus, not a history (audit_logs
+// already records every change via whichever action set it).
+export const conversationFocusSource = pgEnum("conversation_focus_source", [
+  "single_open_request",
+  "disambiguation_reply",
+  "explicit_switch",
+]);
+
+export const clientConversationFocus = pgTable(
+  "client_conversation_focus",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    collectionRequestId: uuid("collection_request_id")
+      .notNull()
+      .references(() => collectionRequests.id, { onDelete: "cascade" }),
+    source: conversationFocusSource("source").notNull(),
+    setAt: timestamp("set_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("client_conversation_focus_client_idx").on(table.clientId)]
+);
+
 // Unified document-conversation understanding layer (src/lib/conversation/,
 // src/lib/employeeReview.ts, src/lib/policyKnowledgeBase.ts) — "the AI
 // understands, the office decides, and only an explicit office decision
@@ -1499,7 +1536,23 @@ export const employeeReviewItems = pgTable("employee_review_items", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+},
+  (table) => [
+    // ESCALATE dedup (Phase 4, conversation-intelligence redesign) — a
+    // retry/redelivery of the same inbound message re-runs reasoning with
+    // the exact same clientQuestion text; this is the real, race-safe
+    // guarantee (not just an application-level check-then-insert) that a
+    // second attempt can never open a second pending review item for the
+    // same still-open question on the same request. Same pattern as
+    // pending_request_disambiguations_client_open_idx. A client asking a
+    // genuinely new question (even if superficially similar) always has
+    // different literal wording, so this never suppresses a real second
+    // question — only an exact-text retry of one already pending.
+    uniqueIndex("employee_review_items_open_question_idx")
+      .on(table.collectionRequestId, table.clientQuestion)
+      .where(sql`${table.status} = 'pending'`),
+  ]
+);
 
 // approvedPolicies: the searchable, semantic "office knowledge" store this
 // queue feeds. A policy is NEVER created automatically — only when an

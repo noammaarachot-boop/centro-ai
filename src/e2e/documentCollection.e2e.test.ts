@@ -196,21 +196,24 @@ vi.mock("@/lib/ai/documentVisionClassifier", () => ({
   isVisionClassifiableMimeType: () => true,
 }));
 
-// ---- Shared text-classifier boundary (generateObject/resolveLanguageModel) ----
+// ---- Shared text-classifier boundary (generateObject/generateText/resolveLanguageModel) ----
 // Every AI-backed text classifier in this codebase (deferral intent,
 // follow-up intent, reopen intent, document-relation intent, yes/no,
-// request-message intent, requirement semantics) goes through this one
-// pair — queued per call, in the exact order route.ts's own resolver
-// chain invokes them, matching this whole codebase's established test
+// request-message intent, requirement semantics, and the two-call
+// conversation-understanding pipeline below) goes through this one pair —
+// queued per call, in the exact order route.ts's own resolver chain
+// invokes them, matching this whole codebase's established test
 // convention (vitest's own mockResolvedValueOnce queue) rather than
 // content-sniffing the prompt text.
 const resolveLanguageModel = vi.fn();
 const generateObject = vi.fn();
+const generateText = vi.fn();
 vi.mock("@/lib/aiCore/providers/resolveModel", () => ({
   resolveLanguageModel: (...args: unknown[]) => resolveLanguageModel(...args),
 }));
 vi.mock("ai", () => ({
   generateObject: (...args: unknown[]) => generateObject(...args),
+  generateText: (...args: unknown[]) => generateText(...args),
 }));
 
 const { POST } = await import("@/app/api/webhooks/whatsapp/route");
@@ -224,52 +227,97 @@ beforeAll(async () => {
 // The unified conversation-understanding layer (src/lib/conversation/) now
 // runs on EVERY inbound text message, by design — no deterministic
 // shortcut exists anymore even for a bare "כן"/"לא" (this is the whole
-// point of the architecture: no message bypasses real understanding). To
-// avoid hand-queuing an explicit mockResolvedValueOnce for every single
-// such message across this large file, a smart default mockImplementation
-// (set fresh in beforeEach, below any test's own explicit
-// mockResolvedValueOnce calls in the queue — vitest always drains queued
-// once-values first) recognizes MY classifier's own prompt shape (it
-// always opens with this exact sentence) and answers the mechanical common
-// case correctly: a bare "כן"/"לא" against exactly one open question
-// resolves it; anything else defaults to the safe "unrelated" reading, so
-// a test that needs something more specific (a correction, a deferral
-// promise, a review question, ...) still queues its own
-// mockResolvedValueOnce for it, exactly as before.
-// Unique to conversationIntent.ts's own prompt template — never appears in
-// any other classifier's prompt in this codebase.
-const CONVERSATION_INTENT_PROMPT_MARKER = String.fromCharCode(0x05d4, 0x05d4, 0x05d5, 0x05d3, 0x05e2, 0x05d4, 0x0020, 0x05d4, 0x05d7, 0x05d3, 0x05e9, 0x05d4, 0x0020, 0x05de, 0x05d4, 0x05dc, 0x05e7, 0x05d5, 0x05d7, 0x003a);
-function conversationIntentSmartDefault(args: unknown): { object: Record<string, unknown> } | undefined {
+// point of the architecture: no message bypasses real understanding).
+// Phase 4 cutover: this is no longer one generateObject call — it's TWO,
+// each with its own prompt and schema: resolveConversationReference
+// (referenceResolution.ts) runs first, then reasonAboutMessage
+// (conversationUnderstanding.ts). To avoid hand-queuing an explicit
+// mockResolvedValueOnce pair for every single such message across this
+// large file, a smart default mockImplementation (set fresh in beforeEach,
+// below any test's own explicit mockResolvedValueOnce calls in the queue —
+// vitest always drains queued once-values first) recognizes each of the
+// two prompts by a marker unique to its own template and answers the
+// mechanical common case correctly: reference resolution always defaults
+// to "no reference" (none of these scenarios exercise pronoun/ordinal
+// resolution — that is Phase 2's own dedicated test coverage elsewhere);
+// reasoning defaults to a bare "כן"/"לא" against exactly one open question
+// resolving it, "סיימתי" with no open question finishing the request, and
+// anything else defaulting to the safe "unrelated" reading — so a test
+// that needs something more specific (a correction, a deferral promise, a
+// review question, a real answer, ...) still queues its own mock for it,
+// exactly as before.
+const REFERENCE_RESOLUTION_PROMPT_MARKER = "המטרה כאן אינה לענות על ההודעה";
+const REASONING_PROMPT_MARKER = "שלח הודעה חדשה. Centro עוסק אך ורק בתחום המסמכים";
+
+function referenceResolutionSmartDefault(args: unknown): { object: Record<string, unknown> } | undefined {
   const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content;
-  if (typeof content !== "string" || !content.includes(CONVERSATION_INTENT_PROMPT_MARKER)) return undefined;
-  const base = {
-    confidence: 0.9,
-    pendingAnswer: null,
-    correctionTargetType: null,
-    correctionTargetId: null,
-    correctionDesiredOutcome: null,
-    missingDocumentMentionedType: null,
-    reviewCategory: null,
-    reviewGist: null,
-    reviewItemTargetId: null,
-    reviewItemAction: null,
-    reviewItemReason: null,
-    naturalAcknowledgment: null,
-    documentQuestionCategory: null,
+  if (typeof content !== "string" || !content.includes(REFERENCE_RESOLUTION_PROMPT_MARKER)) return undefined;
+  return {
+    object: { status: "no_reference", referentKind: null, referentId: null, provenance: null, confidence: 0.9, basis: null, ambiguousCandidateIds: null },
   };
+}
+
+const REASONING_BASE = {
+  confidence: 0.9,
+  actionKind: null,
+  actionOpenQuestionId: null,
+  actionAnswer: null,
+  actionReplyText: null,
+  actionTargetType: null,
+  actionTargetId: null,
+  actionDesiredOutcome: null,
+  actionMentionedType: null,
+  actionReviewItemId: null,
+  actionReviewAction: null,
+  actionReviewReason: null,
+  actionAcknowledgment: null,
+  answerGroundedOn: null,
+  clarifyQuestion: null,
+  clarifyMissing: null,
+  escalateCategory: null,
+  escalateGist: null,
+};
+
+function reasoningSmartDefault(args: unknown): { object: Record<string, unknown> } | undefined {
+  const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content;
+  if (typeof content !== "string" || !content.includes(REASONING_PROMPT_MARKER)) return undefined;
   const messageMatch = content.match(/ההודעה החדשה מהלקוח: "([^"]*)"/);
   const newMessage = messageMatch?.[1]?.trim() ?? "";
-  const hasOpenQuestion = content.includes('שאלה פתוחה שממתינה לתשובה כרגע');
-  if (hasOpenQuestion && newMessage === "כן") {
-    return { object: { ...base, kind: "resolves_pending", pendingAnswer: "confirm" } };
+  const openQuestionMatch = content.match(/שאלה פתוחה שממתינה לתשובה כרגע \(סוג: [^,]+, id=([^)]+)\):/);
+  const openQuestionId = openQuestionMatch?.[1] ?? null;
+  if (openQuestionId && newMessage === "כן") {
+    return { object: { ...REASONING_BASE, outcome: "ACT", actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: "confirm" } };
   }
-  if (hasOpenQuestion && newMessage === "לא") {
-    return { object: { ...base, kind: "resolves_pending", pendingAnswer: "decline" } };
+  if (openQuestionId && newMessage === "לא") {
+    return { object: { ...REASONING_BASE, outcome: "ACT", actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: "decline" } };
   }
-  if (!hasOpenQuestion && newMessage === "סיימתי") {
-    return { object: { ...base, kind: "finished_signal" } };
+  if (!openQuestionId && newMessage === "סיימתי") {
+    return { object: { ...REASONING_BASE, outcome: "ACT", actionKind: "finish_request" } };
   }
-  return { object: { ...base, kind: "unrelated", confidence: 0 } };
+  return { object: { ...REASONING_BASE, outcome: "UNRELATED", confidence: 0 } };
+}
+
+// composeGroundedAnswer (conversationUnderstanding.ts) is a plain
+// generateText call — the real production prompt embeds the exact,
+// code-validated fact set (never invented) as "- label: detail" lines.
+// Echoing those lines back is more faithful than a canned string: it
+// proves the real fact pool (buildGroundedFactPool, including this
+// session's own fix for partial-quantity progress) actually reached the
+// composition step, not just that "some text" was sent.
+function groundedAnswerSmartDefault(args: unknown): { text: string } | undefined {
+  const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content;
+  if (typeof content !== "string" || !content.startsWith('לקוח שאל:')) return undefined;
+  // composeGroundedAnswer's own prompt array is joined via .filter(Boolean)
+  // — the "" spacer elements are stripped, so there is no blank line
+  // between the facts block and the instruction line that follows it; the
+  // capture must end at that literal next line, not at "\n\n".
+  const factsMatch = content.match(/העובדות הידועות שמותר להשתמש בהן \(ואך ורק בהן\):\n([\s\S]*?)\nנסח תשובה/);
+  if (!factsMatch) return { text: "אין לי כרגע מידע מאומת שעונה על השאלה הזו." };
+  const lines = factsMatch[1]
+    .split("\n")
+    .map((line) => line.replace(/^-\s*/, ""))
+    .join(". ");
+  return { text: lines };
 }
 
 beforeEach(() => {
@@ -286,9 +334,17 @@ beforeEach(() => {
   resolveLanguageModel.mockResolvedValue({ modelId: "e2e-fake-model" });
   generateObject.mockReset();
   generateObject.mockImplementation((args: unknown) => {
-    const smartDefault = conversationIntentSmartDefault(args);
-    if (smartDefault) return Promise.resolve(smartDefault);
+    const referenceDefault = referenceResolutionSmartDefault(args);
+    if (referenceDefault) return Promise.resolve(referenceDefault);
+    const reasoningDefault = reasoningSmartDefault(args);
+    if (reasoningDefault) return Promise.resolve(reasoningDefault);
     return Promise.reject(new Error("[e2e] generateObject called with no queued mock and no smart default applies"));
+  });
+  generateText.mockReset();
+  generateText.mockImplementation((args: unknown) => {
+    const groundedDefault = groundedAnswerSmartDefault(args);
+    if (groundedDefault) return Promise.resolve(groundedDefault);
+    return Promise.reject(new Error("[e2e] generateText called with no smart default applies"));
   });
 });
 
@@ -538,6 +594,36 @@ describe("E2E Journey 1 — simple two-document request, golden path", () => {
 // exactly once per inbound text message — this queues its response,
 // matching its real schema (conversationIntent.ts), with sensible defaults
 // for every field not overridden.
+// Queues a response for the FIRST of the pipeline's two calls
+// (resolveConversationReference) — every scenario in this file is about
+// reasoning/action outcomes, never pronoun/ordinal reference resolution
+// (Phase 2's own dedicated tests cover that), so this is always
+// "no_reference" unless a test explicitly overrides it.
+function queueNoReference() {
+  generateObject.mockResolvedValueOnce({
+    object: { status: "no_reference", referentKind: null, referentId: null, provenance: null, confidence: 0.9, basis: null, ambiguousCandidateIds: null },
+  });
+}
+
+function extractOpenQuestionIdFromPrompt(content: string): string | null {
+  const match = content.match(/שאלה פתוחה שממתינה לתשובה כרגע \(סוג: [^,]+, id=([^)]+)\):/);
+  return match?.[1] ?? null;
+}
+
+function extractAllFactIdsFromPrompt(content: string): string[] {
+  return [...new Set([...content.matchAll(/\[id=([^\]]+)\]/g)].map((m) => m[1]))];
+}
+
+// Translates this codebase's old single-call classifier vocabulary
+// (conversationIntent.ts's ConversationIntentKind) into the Phase 4
+// reasonAboutMessage schema (outcomeSchema, conversationUnderstanding.ts).
+// Every test in this file was written against the old vocabulary; this
+// keeps that ergonomic, well-understood call shape at every call site
+// while genuinely exercising the new two-call, new-schema pipeline
+// end-to-end through the real webhook route — no test call site needed to
+// change. Queues BOTH of the pipeline's calls (reference, then reasoning);
+// callers that need a specific reference resolution result queue their own
+// override and call queueConversationIntent second.
 function queueConversationIntent(overrides: {
   kind:
     | "resolves_pending"
@@ -564,24 +650,111 @@ function queueConversationIntent(overrides: {
   naturalAcknowledgment?: string | null;
   documentQuestionCategory?: string | null;
 }) {
-  generateObject.mockResolvedValueOnce({
-    object: {
-      confidence: 0.9,
-      pendingAnswer: null,
-      correctionTargetType: null,
-      correctionTargetId: null,
-      correctionDesiredOutcome: null,
-      missingDocumentMentionedType: null,
-      reviewCategory: null,
-      reviewGist: null,
-      reviewItemTargetId: null,
-      reviewItemAction: null,
-      reviewItemReason: null,
-      naturalAcknowledgment: null,
-      documentQuestionCategory: null,
-      ...overrides,
-    },
-  });
+  queueNoReference();
+
+  const confidence = overrides.confidence ?? 0.9;
+
+  // resolve_pending and asks_document_question both need a real id
+  // (the open question's, or the full grounded-fact set's) that only
+  // exists once reasonAboutMessage's own prompt is built at call time —
+  // mockImplementationOnce reads the real prompt content to extract it,
+  // the same discipline the smart defaults above use, rather than
+  // guessing/hardcoding an id the test itself doesn't otherwise know.
+  if (overrides.kind === "resolves_pending") {
+    generateObject.mockImplementationOnce((args: unknown) => {
+      const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content ?? "";
+      const openQuestionId = extractOpenQuestionIdFromPrompt(content);
+      return Promise.resolve({
+        object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: overrides.pendingAnswer ?? "confirm" },
+      });
+    });
+    return;
+  }
+
+  if (overrides.kind === "asks_document_question") {
+    generateObject.mockImplementationOnce((args: unknown) => {
+      const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content ?? "";
+      const factIds = extractAllFactIdsFromPrompt(content);
+      return Promise.resolve({ object: { ...REASONING_BASE, confidence, outcome: "ANSWER", answerGroundedOn: factIds } });
+    });
+    return;
+  }
+
+  if (overrides.kind === "corrects_resolved") {
+    generateObject.mockResolvedValueOnce({
+      object: {
+        ...REASONING_BASE,
+        confidence,
+        outcome: "ACT",
+        actionKind: "correct_resolved",
+        actionTargetType: overrides.correctionTargetType ?? null,
+        actionTargetId: overrides.correctionTargetId ?? null,
+        actionDesiredOutcome: overrides.correctionDesiredOutcome ?? null,
+      },
+    });
+    return;
+  }
+
+  if (overrides.kind === "reports_missing_document") {
+    generateObject.mockResolvedValueOnce({
+      object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "report_missing_document", actionMentionedType: overrides.missingDocumentMentionedType ?? null },
+    });
+    return;
+  }
+
+  if (overrides.kind === "needs_employee_review") {
+    generateObject.mockResolvedValueOnce({
+      object: {
+        ...REASONING_BASE,
+        confidence,
+        outcome: "ESCALATE",
+        escalateCategory: (overrides.reviewCategory as "alternative_or_policy_question" | "human_request" | "other" | null) ?? "other",
+        escalateGist: overrides.reviewGist ?? "",
+      },
+    });
+    return;
+  }
+
+  if (overrides.kind === "resolves_review_item") {
+    generateObject.mockResolvedValueOnce({
+      object: {
+        ...REASONING_BASE,
+        confidence,
+        outcome: "ACT",
+        actionKind: "resolve_review_item",
+        actionReviewItemId: overrides.reviewItemTargetId ?? null,
+        actionReviewAction: overrides.reviewItemAction ?? "close_resolved",
+        actionReviewReason: overrides.reviewItemReason ?? "",
+        actionAcknowledgment: overrides.naturalAcknowledgment ?? "",
+      },
+    });
+    return;
+  }
+
+  if (overrides.kind === "finished_signal") {
+    generateObject.mockResolvedValueOnce({ object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "finish_request" } });
+    return;
+  }
+
+  if (overrides.kind === "deferral_promise") {
+    generateObject.mockImplementationOnce((args: unknown) => {
+      const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content ?? "";
+      const messageMatch = content.match(/ההודעה החדשה מהלקוח: "([^"]*)"/);
+      const replyText = messageMatch?.[1]?.trim() ?? "";
+      return Promise.resolve({ object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "defer", actionReplyText: replyText } });
+    });
+    return;
+  }
+
+  if (overrides.kind === "unclear") {
+    generateObject.mockResolvedValueOnce({
+      object: { ...REASONING_BASE, confidence, outcome: "CLARIFY", clarifyQuestion: "אפשר להבהיר בדיוק למה התכוונת?", clarifyMissing: "unclear reply" },
+    });
+    return;
+  }
+
+  // "unrelated"
+  generateObject.mockResolvedValueOnce({ object: { ...REASONING_BASE, confidence: overrides.confidence ?? 0, outcome: "UNRELATED" } });
 }
 
 // ======================================================================
@@ -1176,30 +1349,20 @@ describe("reply routing priority — an ambiguous yes/no answer with 2+ open que
     return { requestId, phoneNumberId, conversationId };
   }
 
-  // Matches the unified classifier's real schema (conversationIntent.ts) —
+  // Matches the new pipeline's real schema (conversationUnderstanding.ts) —
   // the realistic response for a bare "כן"/"לא" when the context builder
-  // reports no single open question (2 are open at once).
+  // reports no single open question (2 are open at once): CLARIFY, not a
+  // guess. queueConversationIntent queues both of the pipeline's calls
+  // (reference resolution, then reasoning).
   function queueUnclearClassification() {
-    generateObject.mockResolvedValueOnce({
-      object: {
-        kind: "unclear",
-        confidence: 0.3,
-        pendingAnswer: null,
-        correctionTargetType: null,
-        correctionTargetId: null,
-        correctionDesiredOutcome: null,
-        missingDocumentMentionedType: null,
-        reviewCategory: null,
-        reviewGist: null,
-        documentQuestionCategory: null,
-      },
-    });
+    queueConversationIntent({ kind: "unclear", confidence: 0.3 });
   }
 
   async function assertNoDeferralAndBothStillOpen(requestId: string) {
-    // Exactly one AI call — the unified classifier itself — never a second
-    // (old-style) deferral/generic classifier call layered on top.
-    expect(generateObject).toHaveBeenCalledTimes(1);
+    // Exactly two AI calls — resolveConversationReference then
+    // reasonAboutMessage, the pipeline's own two calls — never a third,
+    // stray (old-style) deferral/generic classifier call layered on top.
+    expect(generateObject).toHaveBeenCalledTimes(2);
     // Never sent a reminder-flavored reply, and never silently dropped —
     // a real (if generic) clarification went out instead.
     expect(sentMessages.some((m) => m.body.includes("להזכיר") || m.body.includes("יום"))).toBe(false);
@@ -1242,20 +1405,7 @@ describe("reply routing priority — an ambiguous yes/no answer with 2+ open que
 
   it("a genuine dated future commitment (\"אשלח שבוע הבא\") with NO open confirmation still triggers real deferral logic", async () => {
     const { phoneNumberId, conversationId } = await seedActiveRequest(["תעודת זהות"]);
-    generateObject.mockResolvedValueOnce({
-      object: {
-        kind: "deferral_promise",
-        confidence: 0.9,
-        pendingAnswer: null,
-        correctionTargetType: null,
-        correctionTargetId: null,
-        correctionDesiredOutcome: null,
-        missingDocumentMentionedType: null,
-        reviewCategory: null,
-        reviewGist: null,
-        documentQuestionCategory: null,
-      },
-    });
+    queueConversationIntent({ kind: "deferral_promise" });
     generateObject.mockResolvedValueOnce({
       object: { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: 1, namedPeriod: null },
     });
@@ -1267,20 +1417,7 @@ describe("reply routing priority — an ambiguous yes/no answer with 2+ open que
 
   it("a genuine vague future commitment (\"אשלח בקרוב\") with NO open confirmation still triggers real deferral logic", async () => {
     const { phoneNumberId, requestId } = await seedActiveRequest(["תעודת זהות"]);
-    generateObject.mockResolvedValueOnce({
-      object: {
-        kind: "deferral_promise",
-        confidence: 0.9,
-        pendingAnswer: null,
-        correctionTargetType: null,
-        correctionTargetId: null,
-        correctionDesiredOutcome: null,
-        missingDocumentMentionedType: null,
-        reviewCategory: null,
-        reviewGist: null,
-        documentQuestionCategory: null,
-      },
-    });
+    queueConversationIntent({ kind: "deferral_promise" });
     generateObject.mockResolvedValueOnce({
       object: { kind: "not_dated", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: null, namedPeriod: null },
     });

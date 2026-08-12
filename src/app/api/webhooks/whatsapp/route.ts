@@ -13,7 +13,7 @@ import { applyUnsolicitedConfirmationDecision } from "@/lib/documentIntakeReview
 import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification";
 import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
 import { createRequestReopenConfirmation, decidePostCompletionGate, POST_COMPLETION_WINDOW_MS } from "@/lib/requestReopen";
-import { runConversationUnderstanding } from "@/lib/conversation/conversationDispatch";
+import { understandConversationTurn } from "@/lib/conversation/conversationUnderstanding";
 import { ensureConversation, recordInboundMessage } from "@/lib/conversationOrchestration";
 import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
 import {
@@ -234,7 +234,11 @@ function resolveAttachment(
   return null;
 }
 
-async function handleInboundMessage(
+// Exported for route.test.ts only (Phase 4) — proves the real production
+// entry point (not a paraphrase of it) now routes through
+// understandConversationTurn, the same discipline already used for
+// isUniqueViolation/resolveInteractiveReplyText below.
+export async function handleInboundMessage(
   organization: typeof organizations.$inferSelect,
   message: WhatsAppInboundMessage
 ) {
@@ -469,15 +473,18 @@ async function handleInboundMessage(
       .limit(1);
     const withinPostCompletionWindow = !!request?.completedAt && Date.now() - request.completedAt.getTime() <= POST_COMPLETION_WINDOW_MS;
 
-    // Unified document-conversation understanding layer — a text-only
-    // message within the window that refers to something already resolved
-    // on the just-completed request (e.g. "שלחתי בטעות"), or any other
-    // document-related follow-up, is understood here, before the coarser
-    // classifyReopenIntent boolean gate below ever runs. No-op
-    // (handled: false) for anything it doesn't recognize — classifyReopenIntent
-    // /the rest of this gate then runs exactly as before.
+    // Unified document-conversation understanding layer (Phase 1-4,
+    // conversation-intelligence redesign) — a text-only message within the
+    // window that refers to something already resolved on the just-completed
+    // request (e.g. "שלחתי בטעות"), or any other document-related follow-up,
+    // is understood here, before the coarser classifyReopenIntent boolean
+    // gate below ever runs. No-op (handled: false) for anything it doesn't
+    // recognize (UNRELATED or REASONING_FAILED — see understandConversationTurn's
+    // own doc comment for why the latter never falls back to legacy
+    // classification either) — classifyReopenIntent/the rest of this gate
+    // then runs exactly as before.
     if (withinPostCompletionWindow && !attachment && body && openConfirmations.length === 0) {
-      const { handled } = await runConversationUnderstanding({
+      const { handled } = await understandConversationTurn({
         organizationId: organization.id,
         clientId: client.id,
         collectionRequestId,
@@ -589,27 +596,33 @@ async function handleInboundMessage(
         });
       }
     } else {
-      // Unified document-conversation understanding layer
-      // (src/lib/conversation/) — the single decision point for every
-      // remaining inbound text message. Full context (open question of
-      // any kind, recent documents/resolved decisions, recent messages,
-      // requirement facts) is understood FIRST, before anything commits to
-      // a specific interpretation — replacing the old rigid ordering where
-      // an open pending_confirmation/document_clarification could resolve
-      // (and terminate) a message regardless of its actual meaning. Every
-      // existing safe action (pending-confirmation resolution, the
-      // correction layer, requirement exceptions, Q&A, deferral, finish)
-      // is reused as the execution backend; this only decides which one
-      // to run and on what. Always terminal — see runConversationUnderstanding's
-      // own doc comment.
-      const { handled } = await runConversationUnderstanding({
+      // Unified conversation-intelligence pipeline (Phase 1-4 — see
+      // src/lib/conversation/) — the single authoritative decision point
+      // for every remaining inbound text message: buildConversationContext
+      // -> resolveConversationReference -> reasonAboutMessage -> exactly one
+      // final disposition (ACT/ANSWER/CLARIFY/ESCALATE/UNRELATED/
+      // REASONING_FAILED). Full context (open question of any kind,
+      // confirmed durable focus, discourse entities, recent
+      // documents/resolved decisions, recent messages, requirement facts,
+      // organization info, active policies) is understood FIRST, before
+      // anything commits to a specific interpretation. Every existing safe
+      // action (pending-confirmation resolution, the correction layer,
+      // requirement exceptions, deferral, finish) is reused as the
+      // execution backend via validateAndExecuteAction's own deterministic
+      // validation — this only decides which one to run and on what.
+      // Always terminal for this turn — the legacy classifier
+      // (classifyConversationIntent/conversationDispatch.ts) is never
+      // invoked from this branch anymore, including on REASONING_FAILED
+      // (see understandConversationTurn's own doc comment for why a
+      // second AI call there would add no real resilience).
+      const { handled, outcome } = await understandConversationTurn({
         organizationId: organization.id,
         clientId: client.id,
         collectionRequestId,
         conversationId: conversation.id,
         messageText: body,
       });
-      console.log("[wa-inbound] conversation understanding outcome", { collectionRequestId, handled });
+      console.log("[wa-inbound] conversation understanding outcome", { collectionRequestId, handled, outcome });
     }
   }
 
@@ -745,7 +758,7 @@ async function replayHeldDisambiguation(
   // the clarification question being asked and the client actually
   // answering it (an employee finishes it manually, or the scheduler
   // completes it because nothing was left missing). Blindly running
-  // processInboundAttachment/runConversationUnderstanding here would bypass
+  // processInboundAttachment/understandConversationTurn here would bypass
   // the same "already completed" protection the live path enforces via its
   // own closed-conversation gate (decidePostCompletionGate) — reuse the
   // identical stash-and-ask mechanism instead of silently filing a document
@@ -803,7 +816,7 @@ async function replayHeldDisambiguation(
         });
       }
     } else {
-      await runConversationUnderstanding({
+      await understandConversationTurn({
         organizationId: organization.id,
         clientId: client.id,
         collectionRequestId,

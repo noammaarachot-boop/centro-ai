@@ -27,6 +27,12 @@ const emptyContext: ConversationContext = {
   recentResolvedConfirmations: [],
   reviewItems: [],
   recentMessages: [],
+  confirmedFocus: null,
+  activeRequest: { collectionRequestId: "req-1", serviceName: "Service", periodLabel: "p", status: "active", createdAt: "2026-01-01T00:00:00.000Z" },
+  organization: { name: "Org", businessHoursStart: "09:00", businessHoursEnd: "18:00", businessDays: "0,1,2,3,4", timezone: "Asia/Jerusalem" },
+  otherOpenRequests: [],
+  recentDiscourseEntities: [],
+  activePolicies: [],
 };
 
 describe("classifyCorrectionIntent", () => {

@@ -1,10 +1,44 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
+import type { Database } from "@/db";
 import { CONFIRM_NO_BUTTON_ID, CONFIRM_YES_BUTTON_ID } from "@/lib/pendingConfirmations";
-import { isUniqueViolation, resolveInteractiveReplyText } from "./route";
+
+// Phase 4 (conversation-intelligence redesign cutover) — sharedDb backs
+// handleInboundMessage's own getDb() calls for the routing-boundary test
+// below. The pre-existing isUniqueViolation tests below construct their
+// own local PGlite instance directly and never call getDb() at all, so
+// this mock does not affect them.
+let sharedDb: Database;
+vi.mock("@/db", () => ({
+  getDb: async () => sharedDb,
+}));
+
+const sendTextMessage = vi.fn();
+vi.mock("@/lib/whatsapp/send", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/whatsapp/send")>("@/lib/whatsapp/send");
+  return {
+    ...actual,
+    sendTextMessage: (...args: unknown[]) => sendTextMessage(...args),
+    sendInteractiveButtonsMessage: vi.fn().mockResolvedValue({ messageId: "wamid.out" }),
+    sendTemplateMessage: vi.fn(),
+  };
+});
+
+const resolveLanguageModel = vi.fn();
+const generateObject = vi.fn();
+vi.mock("@/lib/aiCore/providers/resolveModel", () => ({
+  resolveLanguageModel: (...args: unknown[]) => resolveLanguageModel(...args),
+}));
+vi.mock("ai", () => ({
+  generateObject: (...args: unknown[]) => generateObject(...args),
+  generateText: vi.fn().mockResolvedValue({ text: "תשובה" }),
+}));
+
+const { isUniqueViolation, resolveInteractiveReplyText, handleInboundMessage } = await import("./route");
 
 // WhatsApp Interactive Reply Buttons — mandatory scenario "הלקוח לוחץ על
 // כפתור". A button tap arrives with no message.text at all; this proves
@@ -116,5 +150,79 @@ describe("isUniqueViolation", () => {
     expect(isUniqueViolation("plain string error", "documents_whatsapp_message_id_idx")).toBe(false);
     expect(isUniqueViolation(null, "documents_whatsapp_message_id_idx")).toBe(false);
     expect(isUniqueViolation(undefined, "documents_whatsapp_message_id_idx")).toBe(false);
+  });
+});
+
+// Phase 4 — the real production routing-boundary proof. handleInboundMessage
+// is the exact function processClaimedMessages (this same file's POST
+// handler) calls for every real WhatsApp message — not a paraphrase, not
+// understandConversationTurn tested in isolation. This proves the actual
+// production entry point now reaches the new conversation-intelligence
+// pipeline and never the legacy classifier, without needing a deployed
+// webhook or a live Meta call.
+describe("handleInboundMessage — Phase 4 cutover: the real entry point routes through understandConversationTurn, never legacy", () => {
+  beforeAll(async () => {
+    const client = new PGlite();
+    sharedDb = drizzle(client, { schema }) as unknown as Database;
+    await migrate(sharedDb as never, { migrationsFolder: "./drizzle" });
+  }, 60_000);
+
+  beforeEach(() => {
+    sendTextMessage.mockReset();
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.out" });
+    resolveLanguageModel.mockReset();
+    resolveLanguageModel.mockResolvedValue({});
+    generateObject.mockReset();
+  });
+
+  async function seedOpenConversation() {
+    const [org] = await sharedDb
+      .insert(schema.organizations)
+      .values({ name: "Org", googleDriveFolderId: "root-1", documentCollectionEnabled: true, whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
+      .returning();
+    const [clientRow] = await sharedDb
+      .insert(schema.clients)
+      .values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" })
+      .returning();
+    const [service] = await sharedDb.insert(schema.services).values({ organizationId: org.id, name: "Service" }).returning();
+    const [request] = await sharedDb
+      .insert(schema.collectionRequests)
+      .values({ organizationId: org.id, clientId: clientRow.id, serviceId: service.id, periodLabel: "p1" })
+      .returning();
+    await sharedDb
+      .insert(schema.conversations)
+      .values({ organizationId: org.id, clientId: clientRow.id, collectionRequestId: request.id, status: "open" });
+    return { org, requestId: request.id };
+  }
+
+  it("a real inbound text message reaches the NEW pipeline's audit trail, never the legacy classifier's", async () => {
+    const { org, requestId } = await seedOpenConversation();
+
+    generateObject.mockResolvedValueOnce({ object: { status: "no_reference" } }); // resolveConversationReference
+    generateObject.mockResolvedValueOnce({
+      object: {
+        // reasonAboutMessage
+        outcome: "UNRELATED",
+        confidence: 0.9,
+        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
+        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
+        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
+        answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
+      },
+    });
+
+    await handleInboundMessage(org, {
+      from: "972500000000",
+      id: `wamid.route-test-${crypto.randomUUID()}`,
+      type: "text",
+      text: { body: "הודעה כלשהי" },
+    } as never);
+
+    const audits = await sharedDb.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    const newPipelineEvents = audits.filter((a) => a.eventType === "message.conversation_reasoning_outcome");
+    const legacyEvents = audits.filter((a) => a.eventType === "message.conversation_intent_classified" || a.eventType === "message.intent_classified");
+
+    expect(newPipelineEvents).toHaveLength(1); // the new pipeline genuinely ran
+    expect(legacyEvents).toEqual([]); // the legacy classifier never ran for this turn
   });
 });

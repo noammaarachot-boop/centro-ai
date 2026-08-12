@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "employee_review_items_open_question_idx" ON "employee_review_items" USING btree ("collection_request_id","client_question") WHERE "employee_review_items"."status" = 'pending';

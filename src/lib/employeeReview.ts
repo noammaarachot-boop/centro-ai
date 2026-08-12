@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { approvedPolicies, clients, employeeReviewItems, reviewItemCategory } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -54,6 +54,15 @@ export async function handlePotentialReviewQuestion(params: {
   }
 
   const db = await getDb();
+  // ESCALATE dedup (Phase 4) — a retry/redelivery of the same inbound
+  // message calls this with the exact same clientQuestion text. The real,
+  // race-safe guarantee is the partial unique index
+  // (employee_review_items_open_question_idx, schema.ts) — onConflictDoNothing
+  // means two genuinely concurrent attempts can never both insert; only one
+  // of them ever sends the client-facing acknowledgment / records
+  // review_item.opened. A client asking a NEW question always has
+  // different literal wording, so a real second question is never
+  // suppressed by this.
   const [reviewItem] = await db
     .insert(employeeReviewItems)
     .values({
@@ -67,7 +76,34 @@ export async function handlePotentialReviewQuestion(params: {
       understoodContext: params.understoodContext ?? null,
       status: "pending",
     })
+    .onConflictDoNothing({
+      target: [employeeReviewItems.collectionRequestId, employeeReviewItems.clientQuestion],
+      where: sql`${employeeReviewItems.status} = 'pending'`,
+    })
     .returning();
+
+  if (!reviewItem) {
+    // Lost the race (or this is a retry of an already-open identical
+    // question) — the existing pending row is authoritative; return it
+    // without sending a second acknowledgment or a second audit event.
+    const [existing] = await db
+      .select({ id: employeeReviewItems.id })
+      .from(employeeReviewItems)
+      .where(
+        and(
+          eq(employeeReviewItems.collectionRequestId, params.collectionRequestId),
+          eq(employeeReviewItems.clientQuestion, params.clientQuestion),
+          eq(employeeReviewItems.status, "pending")
+        )
+      )
+      .limit(1);
+    // Defensive only — the unique index guarantees this row exists; if it
+    // somehow doesn't (e.g. resolved between the conflict and this read),
+    // there is nothing left to report back safely, so surface that plainly
+    // rather than fabricate an id.
+    if (!existing) throw new Error("employee review item insert conflicted but no matching pending row was found");
+    return { outcome: "opened_review_item", reviewItemId: existing.id };
+  }
 
   await sendOutboundMessage(params.organizationId, params.conversationId, REVIEW_QUESTION_RECEIVED_MESSAGE, "ai", "manual", undefined, true);
   await recordAuditEvent({

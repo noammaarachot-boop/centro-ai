@@ -443,6 +443,8 @@ export async function runCorrectionLayer(params: {
   messageText: string;
 }): Promise<{ handled: boolean }> {
   const context = await buildConversationContext({
+    organizationId: params.organizationId,
+    clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,
     conversationId: params.conversationId,
   });

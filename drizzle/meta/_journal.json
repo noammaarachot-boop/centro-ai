@@ -421,6 +421,20 @@
       "when": 1786433755958,
       "tag": "0059_outstanding_gladiator",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1786480973482,
+      "tag": "0060_quick_groot",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1786556443457,
+      "tag": "0061_superb_albert_cleary",
+      "breakpoints": true
     }
   ]
 }
