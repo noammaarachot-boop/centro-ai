@@ -103,7 +103,15 @@ export async function getValidAccessToken(organizationId: string): Promise<strin
 
 // Disconnect: best-effort revoke with Google, then clear every stored
 // credential and the selected folder — Centro must have nothing left to
-// act on after this.
+// act on after this. "Best-effort" is honored literally: a stored token
+// that can no longer be decrypted (e.g. GOOGLE_TOKEN_ENCRYPTION_KEY was
+// rotated since it was saved) can never be revoked with Google either way
+// — the local credentials must still be cleared so the organization can
+// reconnect, rather than leaving an already-unusable connection stuck in
+// place. This is reached ONLY from an explicit user-initiated Disconnect
+// (see this function's own callers) — a routine token check elsewhere
+// (getValidAccessToken above) never calls this and never deletes anything
+// on its own failure.
 export async function clearTokens(organizationId: string): Promise<void> {
   const db = await getDb();
   const [row] = await db
@@ -117,7 +125,14 @@ export async function clearTokens(organizationId: string): Promise<void> {
 
   const tokenToRevoke = row?.googleRefreshTokenEnc ?? row?.googleAccessTokenEnc;
   if (tokenToRevoke) {
-    await revokeToken(decryptToken(tokenToRevoke));
+    try {
+      await revokeToken(decryptToken(tokenToRevoke));
+    } catch (error) {
+      console.error(
+        "[google-drive] token revoke failed during explicit disconnect (clearing local credentials anyway)",
+        error
+      );
+    }
   }
 
   await db
