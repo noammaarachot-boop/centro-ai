@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte, notInArray } from "drizzle-orm";
+import { and, eq, isNotNull, lte, notInArray, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, messages, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -170,12 +170,27 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
 
     // Ch.16 FR-16.11 / Ch.18 Reminder Interval: nudge clients who haven't
     // replied Finished/More Documents after the configured interval.
+    //
+    // Root-cause fix (2026-08-15 production incident — reminders never
+    // fired at all): widened from waiting_for_client-only. evaluateAndPrompt
+    // (the only place that used to set a request up for a reminder) never
+    // transitions a conversation to waiting_for_client while any requirement
+    // is still unsatisfied — see its own doc comment — so a request with
+    // zero or partial documents stayed on status=active/open forever and
+    // never reached this pass at all. Added second branch below: same
+    // reminderAnchorAt/reminderIntervalHours/business-hours machinery,
+    // applied to status=active/open too. reminderAnchorAt already anchors
+    // correctly for this case with no further change needed: it defaults to
+    // the conversation's own creation time (real request-sent time) and is
+    // never reset by an inbound message, so a request recovered into this
+    // pass keeps its real historical clock rather than resetting to "now".
     const staleWaitingConversations = await db
       .select({
         id: conversations.id,
         collectionRequestId: conversations.collectionRequestId,
         clientId: collectionRequests.clientId,
         clientName: clients.name,
+        conversationStatus: conversations.status,
         reminderAnchorAt: conversations.reminderAnchorAt,
         deferredReminderAt: conversations.deferredReminderAt,
         reviewDeadlineAt: collectionRequests.reviewDeadlineAt,
@@ -191,8 +206,10 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       .where(
         and(
           eq(conversations.organizationId, organization.id),
-          eq(conversations.status, "waiting_for_client"),
-          eq(collectionRequests.status, "waiting_for_client"),
+          or(
+            and(eq(conversations.status, "waiting_for_client"), eq(collectionRequests.status, "waiting_for_client")),
+            and(eq(conversations.status, "open"), eq(collectionRequests.status, "active"))
+          ),
           // See the matching exclusion on idleOpenConversations above — an
           // active extension has its own dedicated nudge pass below.
           eq(collectionRequests.extensionActive, false)
@@ -207,13 +224,26 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       // every tick regardless of staleness — "ביטול תזכורת כאשר הדרישה
       // הושלמה": a request can become fully satisfied without the client
       // ever typing a "finished" phrase (e.g. the last outstanding document
-      // arrived, or a document.replace resolved what was missing).
+      // arrived, or a document.replace resolved what was missing). Re-run
+      // fresh on every tick — never a cached/stale list — so a request that
+      // becomes complete between one tick and the next stops being nagged
+      // immediately, and the exact missing set below is always current.
       // Critically, this must run BEFORE the review-deadline escalation
       // check below — a request that's actually fully satisfied must never
       // be escalated to human review just because reviewDeadlineAt happens
       // to have already passed by the time this tick got to it.
       const gateError = await checkCompletionGate(conversation.collectionRequestId);
       if (gateError === null) {
+        // status=active/open only reaches this loop via the widened branch
+        // above; idleOpenConversations (earlier in this same tick) is the
+        // sole, pre-existing owner of that transition (thank-you send +
+        // move to waiting_for_client) — completing it here too would mean
+        // a client who just sent their last document, on a conversation
+        // already idle past inactivityTimeoutMinutes, gets both that
+        // thank-you AND this completion message in the same tick. Skip
+        // silently; idleOpenConversations already catches it this tick or
+        // the next.
+        if (conversation.conversationStatus === "open") continue;
         await attemptFinishCollectionRequest({
           organizationId: organization.id,
           collectionRequestId: conversation.collectionRequestId,
@@ -229,7 +259,10 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       // tick, and once escalated it must never re-enter the reminder
       // machinery below (escalateToHumanReview's own CAS guards against a
       // concurrent tick double-firing; a request that's already been
-      // claimed by another tick simply no-ops here).
+      // claimed by another tick simply no-ops here). reviewDeadlineAt is
+      // only ever set by evaluateAndPrompt, so it's always null for a
+      // status=active/open request reached via the widened branch above —
+      // this check naturally never fires for that case.
       if (conversation.reviewDeadlineAt && conversation.reviewDeadlineAt <= new Date()) {
         await escalateToHumanReview(
           organization.id,
@@ -239,6 +272,18 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         );
         continue;
       }
+
+      // restoreOnFailure — set by whichever branch below actually claims a
+      // send attempt, and invoked only if the attempt doesn't genuinely
+      // result in deliveryStatus "sent". Without this, a real send failure
+      // (Meta rejection, no_template, invalid_phone — anything short of an
+      // actual delivery) would silently consume a full reminder cycle: the
+      // claim already moved the anchor forward, so the client would wait a
+      // full reminderIntervalHours (or until the original deferred date)
+      // for a reminder they never actually received. Same restore-on-
+      // failure discipline already established in
+      // documentIntakeReview.ts's sendConfirmationRemindersAndEscalate.
+      let restoreOnFailure: (() => Promise<void>) | null = null;
 
       // Reminder deferral by explicit client commitment
       // (src/lib/reminderDeferral.ts) — a genuine dated promise ("אשלח ביום
@@ -251,6 +296,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       if (conversation.deferredReminderAt) {
         if (conversation.deferredReminderAt > new Date()) continue; // not due yet
 
+        const originalDeferredReminderAt = conversation.deferredReminderAt;
         // Atomic claim (same compare-and-swap pattern as
         // flushDueIntakeNotifications) — prevents two concurrent scheduler
         // ticks from both acting on the same due deferral. Clears the
@@ -273,17 +319,26 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         // Due and within business hours — fall through to the same
         // gate-check-then-send-or-complete logic as a normal stale
         // reminder, just without the interval-staleness gate above.
+        restoreOnFailure = async () => {
+          await db
+            .update(conversations)
+            .set({ deferredReminderAt: originalDeferredReminderAt })
+            .where(eq(conversations.id, conversation.id));
+        };
       } else {
         const reminderCutoff = new Date(Date.now() - reminderIntervalHours * 60 * 60 * 1000);
         if (conversation.reminderAnchorAt >= reminderCutoff) continue;
 
+        const originalReminderAnchorAt = conversation.reminderAnchorAt;
         // Atomic claim (Phase 4.3 remediation; Bug 3 remediation — claims
         // on reminderAnchorAt, never conversations.updatedAt, so an inbound
         // client message can never reset or delay this cycle). Bumped even
         // on a round that ends up deferred (business hours closed) rather
         // than sent — same accepted tradeoff already documented for
         // idleOpenConversations above: re-evaluated on the next cycle
-        // rather than every tick, never double-processed.
+        // rather than every tick, never double-processed. A genuine send
+        // failure (as opposed to a business-hours defer) is restored via
+        // restoreOnFailure below, never left silently "consumed".
         const claimed = await db
           .update(conversations)
           .set({ reminderAnchorAt: new Date() })
@@ -310,19 +365,35 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
           });
           continue;
         }
+        restoreOnFailure = async () => {
+          await db
+            .update(conversations)
+            .set({ reminderAnchorAt: originalReminderAnchorAt })
+            .where(eq(conversations.id, conversation.id));
+        };
       }
 
       // organization.reminderV2Approved — THIS organization's own Meta
       // template-approval state (Phase 2.1 remediation), never the old
       // global flag (Meta approves per-WABA, not for every connected
-      // office at once).
+      // office at once). buildReminderSend re-reads the requirement/
+      // document state fresh on every call (listMissingRequirementNames —
+      // no caching), so the missing-items list is always the current one,
+      // never stale text from an earlier tick.
       const reminderSend = await buildReminderSend(
         conversation.id,
         conversation.collectionRequestId,
         conversation.clientName,
         organization.reminderV2Approved
       );
-      const { sent } = await sendOutboundMessage(
+      // deliveryStatus, not the broader `sent` flag, is the true signal —
+      // sendOutboundMessage returns sent:true for any attempt that wasn't
+      // blocked by the automation gate, even one Meta itself rejected
+      // (deliveryStatus "failed"/"not_connected"/"no_template"/
+      // "invalid_phone"). Only deliveryStatus === "sent" is a genuine
+      // delivery — the same distinction startConversation already relies on
+      // for its own v2-template-rejection fallback.
+      const { deliveryStatus } = await sendOutboundMessage(
         organization.id,
         conversation.id,
         reminderSend.body,
@@ -331,12 +402,21 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         reminderSend.templateSend,
         reminderSend.allowFreeform
       );
-      if (sent) {
+      if (deliveryStatus === "sent") {
         reminded += 1;
         await recordAuditEvent({
           organizationId: organization.id,
           eventType: "scheduler.reminder_sent",
           description: "תזכורת אוטומטית נשלחה עקב חוסר תגובה",
+          actorType: "system",
+          collectionRequestId: conversation.collectionRequestId,
+        });
+      } else {
+        if (restoreOnFailure) await restoreOnFailure();
+        await recordAuditEvent({
+          organizationId: organization.id,
+          eventType: "scheduler.reminder_send_failed",
+          description: `שליחת תזכורת אוטומטית נכשלה (${deliveryStatus ?? "blocked"}) — המחזור ינוסה שוב בטיק הבא, לא נחשב כתזכורת שנשלחה`,
           actorType: "system",
           collectionRequestId: conversation.collectionRequestId,
         });

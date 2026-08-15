@@ -91,7 +91,9 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
-const { isFinishedSignal, runCaseReview, attemptFinishCollectionRequest } = await import("./caseReview");
+const { isFinishedSignal, runCaseReview, attemptFinishCollectionRequest, listMissingRequirementNames } = await import(
+  "./caseReview"
+);
 const { createOrMergeIdentityAnomalyConfirmation } = await import("./documentIdentityVerification");
 
 beforeAll(async () => {
@@ -292,6 +294,70 @@ describe("attemptFinishCollectionRequest", () => {
     expect(body).toContain("1 מתוך 3");
   });
 
+  // Reminder-content precision (2026-08-15) — regression coverage confirming
+  // the computeCaseStatusLists change (shared by the reminder AND this
+  // client-facing "still missing" reply) reads correctly end-to-end through
+  // the real message-composing function, not just the raw list.
+  it("the real 'still missing' reply distinguishes never-received from received-but-rejected/needs_review, in plain wording, no exposed status names", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest([
+      "תעודת זהות", // never received
+      "תלוש שכר", // rejected
+      "אישור ניהול חשבון", // needs_review
+      "דף בנק", // approved — must not appear at all
+    ]);
+    await db.insert(schema.documents).values([
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[1].id, fileName: "a.pdf", status: "rejected" },
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[2].id, fileName: "b.pdf", status: "needs_review" },
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[3].id, fileName: "c.pdf", status: "approved" },
+    ]);
+
+    const outcome = await attemptFinishCollectionRequest({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      conversationId,
+      clientId,
+      actorType: "client",
+    });
+
+    expect(outcome).toBe("missing_requirements");
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("עדיין חסר"); // existing tone/wording untouched
+    expect(body).toContain("• תעודת זהות"); // never received — plain
+    expect(body).not.toContain("• תעודת זהות —"); // no attention suffix on this one
+    expect(body).toContain("• תלוש שכר — "); // rejected — named and flagged
+    expect(body).toContain("• אישור ניהול חשבון — "); // needs_review — named and flagged
+    expect(body).not.toContain("דף בנק"); // approved — never appears as missing
+    expect(body).not.toContain("rejected");
+    expect(body).not.toContain("needs_review");
+  });
+
+  it("a fully-completed request (including a document that was rejected and later re-sent and approved) still sends the normal, unaffected completion message", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    await db.insert(schema.documents).values([
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[0].id, fileName: "bad.pdf", status: "rejected" },
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[0].id, fileName: "good.pdf", status: "approved" },
+    ]);
+
+    const outcome = await attemptFinishCollectionRequest({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      conversationId,
+      clientId,
+      actorType: "client",
+    });
+
+    expect(outcome).toBe("completed");
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו:");
+    expect(body).toContain("• תעודת זהות");
+    // The earlier rejection is fully moot once satisfied — no lingering
+    // "needs attention" mention in the completion message at all.
+    expect(body).not.toContain("דורש בדיקה");
+  });
+
   it("reviews the whole case first — a deferred exception is asked about instead of the request completing or failing silently", async () => {
     const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
     const [doc] = await db
@@ -355,6 +421,104 @@ describe("attemptFinishCollectionRequest", () => {
     });
 
     expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+});
+
+// Reminder-content precision (2026-08-15) — listMissingRequirementNames is
+// the real source of truth for every reminder/summary/finished-reply
+// message. "Missing" used to mean one thing (nothing approved), whether the
+// client never sent anything or sent something that was rejected/needs
+// review — this distinguishes the two using only documents.status, which
+// already exists and is real, never an invented rejection reason.
+describe("listMissingRequirementNames — distinguishes never-received from received-but-not-accepted", () => {
+  it("a requirement with no document at all — plain name, no suffix", async () => {
+    const { requestId } = await seedRequest(["תעודת זהות"]);
+
+    const missing = await listMissingRequirementNames(requestId);
+
+    expect(missing).toEqual(["תעודת זהות"]);
+  });
+
+  it("a requirement whose only document was rejected — flagged as needing attention, in plain language", async () => {
+    const { orgId, requestId, requirements } = await seedRequest(["תעודת זהות"]);
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId: requirements[0].id,
+      fileName: "id.jpg",
+      status: "rejected",
+    });
+
+    const missing = await listMissingRequirementNames(requestId);
+
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toContain("תעודת זהות");
+    expect(missing[0]).not.toBe("תעודת זהות"); // distinguishable from the never-received case above
+    // Plain, client-facing wording only — never a technical status name, never an invented reason.
+    expect(missing[0]).not.toContain("rejected");
+    expect(missing[0]).not.toContain("needs_review");
+    expect(missing[0]).not.toContain("נדחה"); // the technical/status-sounding term, not the plain phrasing actually used
+  });
+
+  it("a requirement whose only document is needs_review — same plain flag as rejected, no status name exposed", async () => {
+    const { orgId, requestId, requirements } = await seedRequest(["אישור ניהול חשבון"]);
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId: requirements[0].id,
+      fileName: "doc.jpg",
+      status: "needs_review",
+    });
+
+    const missing = await listMissingRequirementNames(requestId);
+
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toContain("אישור ניהול חשבון");
+    expect(missing[0]).not.toBe("אישור ניהול חשבון");
+    expect(missing[0]).not.toContain("needs_review");
+  });
+
+  it("a requirement with a document still processing — plain name only, never told to resend something mid-processing", async () => {
+    const { orgId, requestId, requirements } = await seedRequest(["תלוש שכר"]);
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId: requirements[0].id,
+      fileName: "doc.jpg",
+      status: "processing",
+    });
+
+    const missing = await listMissingRequirementNames(requestId);
+
+    expect(missing).toEqual(["תלוש שכר"]); // no attention-suffix — nothing for the client to do right now
+  });
+
+  it("an approved document never appears as missing at all, regardless of any earlier rejected attempt", async () => {
+    const { orgId, requestId, requirements } = await seedRequest(["תעודת זהות"]);
+    await db.insert(schema.documents).values([
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[0].id, fileName: "old.jpg", status: "rejected" },
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[0].id, fileName: "new.jpg", status: "approved" },
+    ]);
+
+    const missing = await listMissingRequirementNames(requestId);
+
+    expect(missing).toEqual([]); // satisfied — the earlier rejection no longer matters
+  });
+
+  it("a mixed case — one never received, one rejected, one approved — each represented correctly and distinctly", async () => {
+    const { orgId, requestId, requirements } = await seedRequest(["תעודת זהות", "תלוש שכר", "אישור ניהול חשבון"]);
+    await db.insert(schema.documents).values([
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[1].id, fileName: "payslip.jpg", status: "rejected" },
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirements[2].id, fileName: "bank.jpg", status: "approved" },
+    ]);
+
+    const missing = await listMissingRequirementNames(requestId);
+
+    expect(missing).toHaveLength(2); // בנק approved — never in the missing list
+    const idRow = missing.find((m) => m.startsWith("תעודת זהות"))!;
+    const payslipRow = missing.find((m) => m.startsWith("תלוש שכר"))!;
+    expect(idRow).toBe("תעודת זהות"); // never received — plain
+    expect(payslipRow).not.toBe("תלוש שכר"); // received but rejected — flagged
   });
 });
 

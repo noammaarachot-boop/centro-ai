@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { collectionRequestRequirements, collectionRequests, conversations, documents, pendingConfirmations } from "@/db/schema";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
@@ -251,6 +251,32 @@ async function computeCaseStatusLists(collectionRequestId: string): Promise<Case
     .from(documents)
     .where(and(eq(documents.collectionRequestId, collectionRequestId), eq(documents.status, "approved")));
 
+  // Reminder-content precision (2026-08-15) — a requirement can be "missing"
+  // for two genuinely different real reasons: nothing was ever received, or
+  // something was received but landed in "rejected"/"needs_review" (Ch.6:
+  // Received → Processing → Approved / Rejected / Needs Review — these two
+  // are the real "the system looked at it and it isn't acceptable as-is"
+  // states). "processing" is deliberately excluded — that document is
+  // actively being handled, not something the client needs to act on again,
+  // and checkCompletionGate already blocks completion outright while
+  // anything is processing. Uses only documents.status, which already
+  // exists and is already real — never an invented rejection reason (no
+  // such field exists in the data model).
+  const needsAttentionRequirementIds = new Set(
+    (
+      await db
+        .select({ requirementId: documents.requirementId })
+        .from(documents)
+        .where(
+          and(
+            eq(documents.collectionRequestId, collectionRequestId),
+            isNotNull(documents.requirementId),
+            inArray(documents.status, ["rejected", "needs_review"])
+          )
+        )
+    ).map((row) => row.requirementId)
+  );
+
   const received: string[] = [];
   const missing: string[] = [];
   for (const requirement of requirements) {
@@ -264,7 +290,12 @@ async function computeCaseStatusLists(collectionRequestId: string): Promise<Case
       received.push(`${requirement.name}${progressSuffix}`);
     }
     if (!satisfied) {
-      missing.push(`${requirement.name}${progressSuffix}`);
+      // Plain, non-technical wording — never names a status, never claims a
+      // specific reason the system doesn't actually know.
+      const attentionSuffix = needsAttentionRequirementIds.has(requirement.id)
+        ? " — התקבל אך עדיין דורש בדיקה, מומלץ לשלוח שוב"
+        : "";
+      missing.push(`${requirement.name}${progressSuffix}${attentionSuffix}`);
     }
   }
 

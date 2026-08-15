@@ -454,6 +454,60 @@ describe("runAutomaticCaseStatusReview", () => {
       .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
     expect(confirmation.status).toBe("pending");
   });
+
+  // Reminder-content precision (2026-08-15) — the same computeCaseStatusLists
+  // change the reminder relies on also flows through this real silence-
+  // window summary path; confirming it reads correctly here too, end-to-end.
+  it("the real silence-window summary distinguishes never-received from received-but-rejected/needs_review, in plain wording, no exposed status names", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest([
+      "תעודת זהות", // approved — triggers the summary at all (received.length > 0)
+      "תלוש שכר", // never received
+      "אישור ניהול חשבון בנק", // rejected
+    ]);
+    await approveDocument(orgId, requestId, requirements[0].id, "id.pdf");
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId: requirements[2].id,
+      fileName: "bank.pdf",
+      status: "rejected",
+    });
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+
+    expect(outcome).toBe("summary_sent");
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("קיבלתי"); // existing tone/structure untouched
+    expect(body).toContain("• תעודת זהות");
+    expect(body).toContain("חסרים לי"); // existing tone/structure untouched
+    expect(body).toContain("• תלוש שכר"); // never received — plain
+    expect(body).not.toContain("• תלוש שכר —");
+    expect(body).toContain("• אישור ניהול חשבון בנק — "); // rejected — named and flagged
+    expect(body).not.toContain("rejected");
+    expect(body).not.toContain("needs_review");
+  });
+
+  it("full completion is unaffected by an earlier-rejected document that was superseded by an approved one — no lingering attention text", async () => {
+    const { orgId, requestId, conversationId, clientId, requirements } = await seedWaitingRequest(["תעודת זהות"]);
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId: requirements[0].id,
+      fileName: "bad.pdf",
+      status: "rejected",
+    });
+    await approveDocument(orgId, requestId, requirements[0].id, "good.pdf");
+
+    const outcome = await runAutomaticCaseStatusReview({ organizationId: orgId, collectionRequestId: requestId, conversationId, clientId });
+
+    expect(outcome).toBe("completed");
+    const body = sendTextMessage.mock.calls[0][2] as string;
+    expect(body).toContain("קיבלתי את כל המסמכים שנדרשו:");
+    expect(body).toContain("• תעודת זהות");
+    expect(body).not.toContain("דורש בדיקה");
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
+  });
 });
 
 describe("scheduler — silence-window due-check (mandatory: debounce, then act, race-safe)", () => {

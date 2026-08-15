@@ -1,5 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { endOfTodayOrNextOpen, isWithinBusinessHours, nextBusinessOpenTime, type BusinessHoursConfig } from "./businessHours";
+import { clampReminderHours, endOfTodayOrNextOpen, isWithinBusinessHours, nextBusinessOpenTime, type BusinessHoursConfig } from "./businessHours";
+
+// Reminder-mechanism root-cause fix (2026-08-15) — the office's own
+// reminderIntervalHours is never a hardcoded business rule; this is the
+// single validation point every entry (Settings' org-wide default,
+// onboarding's per-service override) already routes through. Never trust
+// the raw client-submitted value.
+describe("clampReminderHours", () => {
+  it("passes through any valid integer 1..24 unchanged", () => {
+    expect(clampReminderHours("1")).toBe(1);
+    expect(clampReminderHours("5")).toBe(5);
+    expect(clampReminderHours("24")).toBe(24);
+  });
+
+  it("clamps a value below 1 up to 1 — including an empty string, which Number() coerces to 0", () => {
+    expect(clampReminderHours("0")).toBe(1);
+    expect(clampReminderHours("-3")).toBe(1);
+    expect(clampReminderHours("")).toBe(1);
+  });
+
+  it("clamps a value above 24 down to 24", () => {
+    expect(clampReminderHours("25")).toBe(24);
+    expect(clampReminderHours("1000")).toBe(24);
+  });
+
+  it("falls back to the default (5) only for null or genuinely non-numeric/non-integer input", () => {
+    expect(clampReminderHours(null)).toBe(5);
+    expect(clampReminderHours("not-a-number")).toBe(5);
+    expect(clampReminderHours("3.5")).toBe(5);
+  });
+});
 
 const DEFAULT_CONFIG: BusinessHoursConfig = {
   businessHoursStart: "09:00",
