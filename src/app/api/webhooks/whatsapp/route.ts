@@ -19,6 +19,7 @@ import { processInboundAttachment } from "@/app/(app)/collections/conversationAc
 import {
   createRequestDisambiguation,
   findOpenDisambiguationForClient,
+  mostRecentlyActiveOpenConversation,
   resendDisambiguationClarification,
   resolveClientConversation,
   resolveDisambiguationReply,
@@ -278,6 +279,17 @@ export async function handleInboundMessage(
   // this exact reply consumed as the answer, never processed as a fresh
   // new message against a guessed conversation.
   const openDisambiguation = await findOpenDisambiguationForClient(organization.id, client.id);
+  // Set only when an open disambiguation exists AND this specific reply
+  // doesn't resolve it — production incident (2026-08-13): a client asked
+  // a genuinely new question days after an unrelated disambiguation was
+  // never answered, and got the exact same stale re-ask forever, since
+  // nothing here ever expired or yielded. The disambiguation row itself is
+  // deliberately left untouched (a later numbered/ordinal/named reply can
+  // still resolve it normally) — this turn alone falls through to the
+  // client's most recently active open conversation instead of asking
+  // again, so a real, unrelated message is never stuck behind a stale
+  // question the client may never answer in the expected format.
+  let bypassConversation: typeof conversations.$inferSelect | null = null;
   if (openDisambiguation) {
     if (attachment && openDisambiguation.whatsappMessageId === message.id) {
       console.log("[wa-inbound] SKIPPED (idempotency): redelivery of the exact message already held for disambiguation", {
@@ -286,104 +298,117 @@ export async function handleInboundMessage(
       return;
     }
     const resolution = await resolveDisambiguationReply(openDisambiguation, body ?? "");
-    if (!resolution) {
-      console.log("[wa-inbound] disambiguation reply not understood as a single valid choice — re-asking, not guessing");
+    if (resolution) {
+      console.log("[wa-inbound] disambiguation resolved", {
+        clientId: client.id,
+        resolvedCollectionRequestId: resolution.collectionRequestId,
+      });
+      await replayHeldDisambiguation(organization, client, resolution);
+      return;
+    }
+    console.log("[wa-inbound] open disambiguation exists but this reply doesn't resolve it — bypassing for this turn only (not re-asking, not deleting)", {
+      clientId: client.id,
+      disambiguationId: openDisambiguation.id,
+    });
+    bypassConversation = await mostRecentlyActiveOpenConversation(organization.id, client.id);
+    if (!bypassConversation) {
+      // Extremely defensive — an open disambiguation implies at least one
+      // real conversation must already exist; if it somehow doesn't,
+      // fall back to the original re-ask rather than silently drop this.
       await resendDisambiguationClarification(openDisambiguation);
       return;
     }
-    console.log("[wa-inbound] disambiguation resolved", {
-      clientId: client.id,
-      resolvedCollectionRequestId: resolution.collectionRequestId,
-    });
-    await replayHeldDisambiguation(organization, client, resolution);
-    return;
   }
 
-  const resolution = await resolveClientConversation(organization.id, client.id);
-  if (resolution.outcome === "no_conversation") {
-    console.log("[wa-inbound] STOPPED: client matched but has no collection request at all");
-    await recordAuditEvent({
-      organizationId: organization.id,
-      eventType: "whatsapp.inbound_unmatched",
-      description: `התקבלה הודעת WhatsApp מלקוח ללא בקשת איסוף פעילה (${message.from})`,
-      actorType: "system",
-      clientId: client.id,
-    });
-    return;
-  }
   let conversation: typeof conversations.$inferSelect;
-  if (resolution.outcome === "resolved") {
-    conversation = resolution.conversation;
+  if (bypassConversation) {
+    conversation = bypassConversation;
   } else {
-    // outcome === "ambiguous" — two or more genuinely active requests.
-    console.log("[wa-inbound] multiple active collection requests", {
-      clientId: client.id,
-      candidateCount: resolution.candidates.length,
-    });
-    const unambiguous = await tryUnambiguousMatchByOpenQuestion(resolution.candidates);
-    if (!unambiguous) {
-      // Tier 3 — hold, ask, touch nothing on any candidate request.
-      let attachmentContent: { fileName: string; mimeType: string; content: Buffer } | null = null;
-      if (attachment) {
-        try {
-          const media = await downloadMedia(attachment.mediaId);
-          attachmentContent = { fileName: attachment.fileName, mimeType: media.mimeType, content: media.bytes };
-        } catch (error) {
-          console.error("[wa-inbound] downloadMedia FAILED (disambiguation hold path)", error);
-          await recordAuditEvent({
-            organizationId: organization.id,
-            eventType: "whatsapp.inbound_media_download_failed",
-            description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
-            actorType: "system",
-            clientId: client.id,
-          });
-          return;
-        }
-      }
-      try {
-        await createRequestDisambiguation({
-          organizationId: organization.id,
-          clientId: client.id,
-          candidates: resolution.candidates,
-          messageBody: body,
-          attachment: attachmentContent,
-          whatsappMessageId: attachment ? message.id : null,
-        });
-      } catch (error) {
-        // Race backstop — the partial unique index on
-        // pendingRequestDisambiguations (one open question per client) is
-        // the real guarantee behind the findOpenDisambiguationForClient
-        // check above, which only ever sees a snapshot: two messages from
-        // the same client processed by genuinely concurrent invocations
-        // (two separate webhook deliveries, not two messages in the same
-        // payload — those are handled sequentially by processClaimedMessages)
-        // could both pass that check before either INSERT commits. Whichever
-        // one loses the race never sent a second clarification (the insert
-        // failed before sendOutboundMessage was ever reached) — the winner's
-        // question already covers this client, so the losing message is
-        // safely dropped rather than crashing the whole webhook attempt.
-        if (isUniqueViolation(error, "pending_request_disambiguations_client_open_idx")) {
-          console.log("[wa-inbound] SKIPPED (idempotency, race): another concurrent message already opened a disambiguation for this client", {
-            clientId: client.id,
-          });
-          return;
-        }
-        throw error;
-      }
+    const resolution = await resolveClientConversation(organization.id, client.id);
+    if (resolution.outcome === "no_conversation") {
+      console.log("[wa-inbound] STOPPED: client matched but has no collection request at all");
+      await recordAuditEvent({
+        organizationId: organization.id,
+        eventType: "whatsapp.inbound_unmatched",
+        description: `התקבלה הודעת WhatsApp מלקוח ללא בקשת איסוף פעילה (${message.from})`,
+        actorType: "system",
+        clientId: client.id,
+      });
       return;
     }
-    console.log("[wa-inbound] disambiguation auto-resolved — exactly one candidate has an open question", {
-      clientId: client.id,
-      collectionRequestId: unambiguous.collectionRequestId,
-    });
-    const db = await getDb();
-    const [resolvedConversation] = await db
-      .select()
-      .from(conversations)
-      .where(eq(conversations.id, unambiguous.conversationId))
-      .limit(1);
-    if (!resolvedConversation) return; // defensive — vanished between the two lookups above
-    conversation = resolvedConversation;
+    if (resolution.outcome === "resolved") {
+      conversation = resolution.conversation;
+    } else {
+      // outcome === "ambiguous" — two or more genuinely active requests.
+      console.log("[wa-inbound] multiple active collection requests", {
+        clientId: client.id,
+        candidateCount: resolution.candidates.length,
+      });
+      const unambiguous = await tryUnambiguousMatchByOpenQuestion(resolution.candidates);
+      if (!unambiguous) {
+        // Tier 3 — hold, ask, touch nothing on any candidate request.
+        let attachmentContent: { fileName: string; mimeType: string; content: Buffer } | null = null;
+        if (attachment) {
+          try {
+            const media = await downloadMedia(attachment.mediaId);
+            attachmentContent = { fileName: attachment.fileName, mimeType: media.mimeType, content: media.bytes };
+          } catch (error) {
+            console.error("[wa-inbound] downloadMedia FAILED (disambiguation hold path)", error);
+            await recordAuditEvent({
+              organizationId: organization.id,
+              eventType: "whatsapp.inbound_media_download_failed",
+              description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+              actorType: "system",
+              clientId: client.id,
+            });
+            return;
+          }
+        }
+        try {
+          await createRequestDisambiguation({
+            organizationId: organization.id,
+            clientId: client.id,
+            candidates: resolution.candidates,
+            messageBody: body,
+            attachment: attachmentContent,
+            whatsappMessageId: attachment ? message.id : null,
+          });
+        } catch (error) {
+          // Race backstop — the partial unique index on
+          // pendingRequestDisambiguations (one open question per client) is
+          // the real guarantee behind the findOpenDisambiguationForClient
+          // check above, which only ever sees a snapshot: two messages from
+          // the same client processed by genuinely concurrent invocations
+          // (two separate webhook deliveries, not two messages in the same
+          // payload — those are handled sequentially by processClaimedMessages)
+          // could both pass that check before either INSERT commits. Whichever
+          // one loses the race never sent a second clarification (the insert
+          // failed before sendOutboundMessage was ever reached) — the winner's
+          // question already covers this client, so the losing message is
+          // safely dropped rather than crashing the whole webhook attempt.
+          if (isUniqueViolation(error, "pending_request_disambiguations_client_open_idx")) {
+            console.log("[wa-inbound] SKIPPED (idempotency, race): another concurrent message already opened a disambiguation for this client", {
+              clientId: client.id,
+            });
+            return;
+          }
+          throw error;
+        }
+        return;
+      }
+      console.log("[wa-inbound] disambiguation auto-resolved — exactly one candidate has an open question", {
+        clientId: client.id,
+        collectionRequestId: unambiguous.collectionRequestId,
+      });
+      const db = await getDb();
+      const [resolvedConversation] = await db
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, unambiguous.conversationId))
+        .limit(1);
+      if (!resolvedConversation) return; // defensive — vanished between the two lookups above
+      conversation = resolvedConversation;
+    }
   }
   const collectionRequestId = conversation.collectionRequestId;
 

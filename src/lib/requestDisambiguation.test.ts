@@ -35,6 +35,7 @@ const {
   findOpenDisambiguationForClient,
   resolveDisambiguationReply,
   resendDisambiguationClarification,
+  mostRecentlyActiveOpenConversation,
 } = await import("./requestDisambiguation");
 
 beforeAll(async () => {
@@ -304,6 +305,97 @@ describe("createRequestDisambiguation / resolveDisambiguationReply", () => {
     // Still open after every failed attempt — never silently resolved.
     const stillOpen = await findOpenDisambiguationForClient(orgId, clientId);
     expect(stillOpen).not.toBeNull();
+  });
+
+  // Root-cause fix (production incident, 2026-08-13) — resolveDisambiguationReply
+  // now also accepts Hebrew ordinal words and an unambiguous name match, not
+  // only a literal digit. These reproduce the user's own scenarios A-D.
+  describe("accepts ordinal words and name matches, not only a literal digit", () => {
+    async function seedTwoCandidatesAndAsk(orgId: string, clientId: string) {
+      const reqX = await seedRequestAndConversation(orgId, clientId, { periodLabel: "פתיחת תיק — אוגוסט 2026" });
+      const reqY = await seedRequestAndConversation(orgId, clientId, { periodLabel: "בדיקת V2 — אוגוסט 2026" });
+      const result = await resolveClientConversation(orgId, clientId);
+      if (result.outcome !== "ambiguous") throw new Error("expected ambiguous");
+      await createRequestDisambiguation({
+        organizationId: orgId,
+        clientId,
+        candidates: result.candidates,
+        messageBody: null,
+        attachment: null,
+        whatsappMessageId: null,
+      });
+      const held = (await findOpenDisambiguationForClient(orgId, clientId))!;
+      return { held, reqX, reqY };
+    }
+
+    // Candidates are ordered by most-recently-updated first (same ordering
+    // resolveClientConversation always uses), not by seeding order — these
+    // derive the real 1-based position from the held row itself, the same
+    // way this file's own pre-existing tests already do (see "resolves
+    // with a valid numbered reply" above), rather than assuming which of
+    // reqX/reqY ends up first.
+    it("A. a literal reply with the first candidate's own number resolves to it", async () => {
+      const { orgId, clientId } = await seedOrgAndClient();
+      const { held, reqX } = await seedTwoCandidatesAndAsk(orgId, clientId);
+      const choiceIndex = held.candidateCollectionRequestIds.indexOf(reqX.requestId) + 1;
+      const resolution = await resolveDisambiguationReply(held, String(choiceIndex));
+      expect(resolution?.collectionRequestId).toBe(reqX.requestId);
+    });
+
+    it("B. a literal reply with the second candidate's own number resolves to it", async () => {
+      const { orgId, clientId } = await seedOrgAndClient();
+      const { held, reqY } = await seedTwoCandidatesAndAsk(orgId, clientId);
+      const choiceIndex = held.candidateCollectionRequestIds.indexOf(reqY.requestId) + 1;
+      const resolution = await resolveDisambiguationReply(held, String(choiceIndex));
+      expect(resolution?.collectionRequestId).toBe(reqY.requestId);
+    });
+
+    it("C. Hebrew ordinal words ('הראשונה'/'השנייה') resolve to the matching candidate", async () => {
+      const ORDINALS = ["הראשונה", "השנייה"];
+      const { orgId, clientId } = await seedOrgAndClient();
+      const { held, reqX } = await seedTwoCandidatesAndAsk(orgId, clientId);
+      const choiceIndex = held.candidateCollectionRequestIds.indexOf(reqX.requestId) + 1;
+      const resolution = await resolveDisambiguationReply(held, ORDINALS[choiceIndex - 1]);
+      expect(resolution?.collectionRequestId).toBe(reqX.requestId);
+    });
+
+    it("D. text naming one candidate's own label unambiguously resolves to it", async () => {
+      const { orgId, clientId } = await seedOrgAndClient();
+      const { held, reqY } = await seedTwoCandidatesAndAsk(orgId, clientId);
+      const resolution = await resolveDisambiguationReply(held, "אני מתכוון לבדיקת V2");
+      expect(resolution?.collectionRequestId).toBe(reqY.requestId);
+    });
+
+    it("text that matches BOTH candidates' shared wording still resolves to null — never guesses", async () => {
+      const { orgId, clientId } = await seedOrgAndClient();
+      const { held } = await seedTwoCandidatesAndAsk(orgId, clientId);
+      // "אוגוסט 2026" alone is the common suffix of both labels — not a
+      // valid discriminator for either one specifically.
+      expect(await resolveDisambiguationReply(held, "אוגוסט 2026")).toBeNull();
+    });
+  });
+
+  describe("mostRecentlyActiveOpenConversation", () => {
+    it("returns the most recently updated OPEN conversation among several", async () => {
+      const { orgId, clientId } = await seedOrgAndClient();
+      await seedRequestAndConversation(orgId, clientId, { periodLabel: "P-old", updatedAt: new Date(Date.now() - 120_000) });
+      const newest = await seedRequestAndConversation(orgId, clientId, { periodLabel: "P-newest", updatedAt: new Date() });
+      const result = await mostRecentlyActiveOpenConversation(orgId, clientId);
+      expect(result?.id).toBe(newest.conversationId);
+    });
+
+    it("skips closed conversations even if they're the most recently updated", async () => {
+      const { orgId, clientId } = await seedOrgAndClient();
+      const openOne = await seedRequestAndConversation(orgId, clientId, { periodLabel: "P-open", updatedAt: new Date(Date.now() - 60_000) });
+      await seedRequestAndConversation(orgId, clientId, { periodLabel: "P-closed", conversationStatus: "closed", updatedAt: new Date() });
+      const result = await mostRecentlyActiveOpenConversation(orgId, clientId);
+      expect(result?.id).toBe(openOne.conversationId);
+    });
+
+    it("returns null for a client with no conversations at all", async () => {
+      const { orgId, clientId } = await seedOrgAndClient();
+      expect(await mostRecentlyActiveOpenConversation(orgId, clientId)).toBeNull();
+    });
   });
 
   it("resendDisambiguationClarification re-sends the same options without creating a second held row", async () => {

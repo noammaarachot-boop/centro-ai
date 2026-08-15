@@ -123,6 +123,33 @@ export async function tryUnambiguousMatchByOpenQuestion(
   return withOpenQuestion.length === 1 ? withOpenQuestion[0] : null;
 }
 
+// Used ONLY when an open disambiguation already exists but the current
+// message doesn't resolve as an answer to it (see route.ts) — picks the
+// client's most recently active open conversation as this one turn's
+// target, without creating a second disambiguation (which would violate
+// the one-open-per-client partial unique index) and without touching the
+// existing pending disambiguation at all, so a later numbered/ordinal/
+// named reply can still resolve it exactly as before. Mirrors
+// resolveClientConversation's own "most recently updated" fallback
+// ordering (never guesses a *different* rule for this closely related
+// situation) — the difference here is only that this is used to bypass a
+// stale, unresolved question for one turn, not to route a message that
+// never had an open disambiguation at all.
+export async function mostRecentlyActiveOpenConversation(
+  organizationId: string,
+  clientId: string
+): Promise<typeof conversations.$inferSelect | null> {
+  const db = await getDb();
+  const all = await db
+    .select()
+    .from(conversations)
+    .where(and(eq(conversations.organizationId, organizationId), eq(conversations.clientId, clientId)))
+    .orderBy(desc(conversations.updatedAt));
+  if (all.length === 0) return null;
+  const open = all.filter((c) => c.status !== "closed");
+  return open[0] ?? all[0];
+}
+
 export async function findOpenDisambiguationForClient(organizationId: string, clientId: string) {
   const db = await getDb();
   const [row] = await db
@@ -256,22 +283,79 @@ export interface DisambiguationResolution {
   whatsappMessageId: string | null;
 }
 
+// Hebrew ordinal words accepted alongside a literal digit as an equally
+// unambiguous choice ("הראשונה" == "1"). Deliberately a small, closed list
+// — not general NLP — matching this module's own "never guess" discipline:
+// anything not a digit, not on this list, and not an exact single-candidate
+// name match resolves to null, same as an unparseable reply always has.
+const ORDINAL_WORDS: Record<string, number> = {
+  "ראשון": 1, "ראשונה": 1, "הראשון": 1, "הראשונה": 1,
+  "שני": 2, "שנייה": 2, "השני": 2, "השנייה": 2,
+  "שלישי": 3, "שלישית": 3, "השלישי": 3, "השלישית": 3,
+  "רביעי": 4, "רביעית": 4, "הרביעי": 4, "הרביעית": 4,
+  "חמישי": 5, "חמישית": 5, "החמישי": 5, "החמישית": 5,
+};
+
+// Resolves a reply against the REAL, CURRENT candidate list (never the
+// stale one on the row) — a digit ("2"), an ordinal word ("השנייה"), or
+// text that names exactly one candidate's own periodLabel unambiguously.
+// Returns the 1-based index into `candidates`, or null when nothing
+// resolves to exactly one candidate — callers must never guess among ties
+// (two distinct numbers, an ordinal AND a different number, or text that
+// matches more than one candidate's label all resolve to null, same as an
+// unparseable reply always has).
+function parseDisambiguationChoice(candidates: ConversationCandidate[], replyText: string): number | null {
+  const trimmed = replyText.trim();
+  if (!trimmed) return null;
+
+  // A standalone digit only — never one embedded in a larger alphanumeric
+  // word (e.g. the "2" inside a candidate's own name like "בדיקת V2" must
+  // never be misread as "the user picked option 2").
+  const numbers = [...trimmed.matchAll(/(?<![A-Za-zא-ת0-9])\d+(?![A-Za-zא-ת0-9])/g)].map((m) => Number.parseInt(m[0], 10));
+  const numericChoices = [...new Set(numbers)].filter((n) => n >= 1 && n <= candidates.length);
+  if (numericChoices.length === 1) return numericChoices[0];
+  if (numericChoices.length > 1) return null; // more than one distinct number named — don't guess
+
+  const words = trimmed.split(/\s+/);
+  const ordinalChoices = [
+    ...new Set(words.map((w) => ORDINAL_WORDS[w]).filter((n): n is number => !!n && n <= candidates.length)),
+  ];
+  if (ordinalChoices.length === 1) return ordinalChoices[0];
+  if (ordinalChoices.length > 1) return null; // named more than one distinct ordinal — don't guess
+
+  // Name match — the part of periodLabel before " — " (its own natural
+  // discriminator, e.g. "בדיקת V2" out of "בדיקת V2 — אוגוסט 2026") must
+  // appear verbatim in the reply, and in exactly one candidate's label —
+  // never a generic/shared word (e.g. a shared serviceName, or the month
+  // both labels happen to share) that would match more than one.
+  const nameMatches = candidates
+    .map((c, i) => ({ index: i + 1, label: (c.periodLabel.split("—")[0] ?? c.periodLabel).trim() }))
+    .filter((c) => c.label.length >= 2 && trimmed.includes(c.label));
+  if (nameMatches.length === 1) return nameMatches[0].index;
+
+  return null;
+}
+
 // Parses the client's reply as a choice among the exact candidates the
-// question was actually sent with (never re-derives them by content
-// matching — a number is the only signal this accepts, so there is
-// nothing here to guess). Returns null (never throws, never picks a
-// default) when the reply doesn't unambiguously pick exactly one option —
-// the caller re-asks instead of proceeding.
+// question was actually sent with, re-derived fresh (never trusting a
+// stale label on the row — same discipline as resendDisambiguationClarification).
+// Returns null (never throws, never picks a default) when the reply
+// doesn't unambiguously pick exactly one option — the caller decides what
+// to do next (re-ask, or fall through to normal understanding) instead of
+// this function ever guessing.
 export async function resolveDisambiguationReply(
   row: typeof pendingRequestDisambiguations.$inferSelect,
   replyText: string
 ): Promise<DisambiguationResolution | null> {
-  const candidateIds = row.candidateCollectionRequestIds;
-  const numbers = [...replyText.matchAll(/\d+/g)].map((m) => Number.parseInt(m[0], 10));
-  const uniqueChoices = [...new Set(numbers)].filter((n) => n >= 1 && n <= candidateIds.length);
-  if (uniqueChoices.length !== 1) return null; // no number, or more than one distinct choice — ambiguous, don't guess
+  const candidates = await currentCandidates(row.candidateCollectionRequestIds);
+  const choice = parseDisambiguationChoice(candidates, replyText);
+  if (choice === null) return null;
 
-  const collectionRequestId = candidateIds[uniqueChoices[0] - 1];
+  // Indexed into `candidates` (the freshly re-fetched, possibly-shorter
+  // list — see currentCandidates' own doc comment), never back into the
+  // row's original candidateCollectionRequestIds — a vanished candidate
+  // in between would otherwise silently shift every later index.
+  const collectionRequestId = candidates[choice - 1].collectionRequestId;
 
   const db = await getDb();
   // Atomic claim — the same compare-and-swap discipline used throughout

@@ -1891,4 +1891,140 @@ describe("Multi-active-collection-request disambiguation", () => {
     // reqY (never chosen, never involved) is completely unaffected.
     expect(await currentRequestStatus(reqY.requestId)).toBe("active");
   });
+
+  // Root-cause fix (production incident, 2026-08-13) — a disambiguation
+  // that's genuinely open but doesn't resolve as an answer (not a number,
+  // not an ordinal, not a candidate name) must never be re-asked forever;
+  // it falls through to real conversation understanding for that turn,
+  // while the disambiguation row itself is left completely untouched.
+  it("E/F/G. a real question that doesn't answer the pending disambiguation is NOT re-asked — it reaches real conversation understanding once, and the disambiguation stays open unchanged", async () => {
+    const { phoneNumberId, clientId, seedRequest } = await seedClientWithTwoActiveRequests();
+    const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    const idDoc = await makeTestDocument("id_card");
+    await sendDocument(phoneNumberId, idDoc);
+    expect(sentMessages).toHaveLength(1); // the clarification question
+    const [heldBefore] = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(and(eq(schema.pendingRequestDisambiguations.clientId, clientId), isNull(schema.pendingRequestDisambiguations.resolvedAt)));
+    expect(heldBefore).toBeDefined();
+
+    sentMessages.length = 0;
+    generateObject.mockClear();
+
+    // E. "מתי הכי מאוחר" — neither a number, an ordinal, nor a candidate
+    // name — the exact real production incident's own reproduction.
+    queueConversationIntent({ kind: "needs_employee_review", reviewCategory: "alternative_or_policy_question", reviewGist: "מתי הכי מאוחר אפשר לשלוח" });
+    await sendText(phoneNumberId, "מתי הכי מאוחר אני יכול לשלוח");
+
+    // Never re-sent the stale disambiguation question.
+    expect(sentMessages.some((m) => m.body.includes("כמה בקשות איסוף מסמכים פתוחות"))).toBe(false);
+    // The real understanding pipeline actually ran — never silently dropped.
+    expect(generateObject).toHaveBeenCalled();
+    // G. exactly one response for this turn — never a double response.
+    expect(sentMessages).toHaveLength(1);
+
+    // The pending disambiguation itself is untouched — still open, same
+    // two candidates — a later numbered/ordinal/named reply can still
+    // resolve it normally.
+    const [heldAfterE] = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(eq(schema.pendingRequestDisambiguations.id, heldBefore.id));
+    expect(heldAfterE.resolvedAt).toBeNull();
+    expect(new Set(heldAfterE.candidateCollectionRequestIds)).toEqual(new Set([reqX.requestId, reqY.requestId]));
+
+    sentMessages.length = 0;
+    generateObject.mockClear();
+
+    // F. "עד מתי אפשר לשלוח?" — same scenario, a second genuinely
+    // different real message, proving this isn't a one-off.
+    queueConversationIntent({ kind: "unrelated", confidence: 0 });
+    await sendText(phoneNumberId, "עד מתי אפשר לשלוח?");
+
+    expect(sentMessages.some((m) => m.body.includes("כמה בקשות איסוף מסמכים פתוחות"))).toBe(false);
+    expect(generateObject).toHaveBeenCalled();
+
+    const [heldAfterF] = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(eq(schema.pendingRequestDisambiguations.id, heldBefore.id));
+    expect(heldAfterF.resolvedAt).toBeNull();
+
+    // H. existing disambiguation behavior is NOT broken — the same
+    // still-open row can still be resolved normally by a real numbered
+    // reply, exactly like the pre-existing tests above.
+    sentMessages.length = 0;
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.97,
+      matchedRequirementId: reqX.requirementId,
+      matchConfidence: 0.95,
+      extractedPersonName: "ישראל ישראלי בדיקה",
+      identityExtractionConfidence: 0.9,
+    });
+    const choiceIndex = heldBefore.candidateCollectionRequestIds.indexOf(reqX.requestId) + 1;
+    await sendText(phoneNumberId, String(choiceIndex));
+    const [heldAfterChoice] = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(eq(schema.pendingRequestDisambiguations.id, heldBefore.id));
+    expect(heldAfterChoice.resolvedAt).not.toBeNull();
+    expect(heldAfterChoice.resolvedCollectionRequestId).toBe(reqX.requestId);
+  });
+
+  // Point 7 — the full, real production incident reproduced end to end:
+  // an old, still-open disambiguation between two OLD requests must never
+  // hijack a natural follow-up about a BRAND-NEW request that didn't even
+  // exist when that disambiguation was created.
+  it("Point 7 — a stale disambiguation between two old requests never hijacks a natural follow-up about a brand-new request just sent", async () => {
+    const { phoneNumberId, orgId, clientId, seedRequest } = await seedClientWithTwoActiveRequests();
+    const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
+    const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
+
+    // A genuine disambiguation between the two OLD requests — mirrors the
+    // real incident: created earlier, never answered.
+    const idDoc = await makeTestDocument("id_card");
+    await sendDocument(phoneNumberId, idDoc);
+    expect(sentMessages).toHaveLength(1);
+    sentMessages.length = 0;
+
+    // A brand-new THIRD request is created and its real initial WhatsApp
+    // message sent — the exact same production function (startConversation)
+    // the real "Send Now"/wizard flow uses — while the old disambiguation
+    // (which doesn't even know this request exists) is still open.
+    const reqZ = await seedRequest("שירות Z", "תקופה-Z-חדשה", "אישור ניהול חשבון חדש");
+    const { startConversation } = await import("@/lib/conversationOrchestration");
+    await startConversation(orgId, reqZ.requestId, clientId, "manual");
+    expect(sentMessages).toHaveLength(1); // the new request's own initial message
+
+    sentMessages.length = 0;
+    generateObject.mockClear();
+
+    // A natural follow-up about the brand-new request.
+    queueConversationIntent({ kind: "needs_employee_review", reviewCategory: "alternative_or_policy_question", reviewGist: "מתי הכי מאוחר אפשר לשלוח" });
+    await sendText(phoneNumberId, "מתי הכי מאוחר אני יכול לשלוח");
+
+    // Never the stale re-ask naming the two OLD requests.
+    expect(sentMessages.some((m) => m.body.includes("כמה בקשות איסוף מסמכים פתוחות"))).toBe(false);
+    expect(generateObject).toHaveBeenCalled();
+    expect(sentMessages).toHaveLength(1);
+
+    // Routed to the brand-new request specifically (the most recently
+    // active conversation) — not silently to one of the two old ones.
+    const reviewItems = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.collectionRequestId, reqZ.requestId));
+    expect(reviewItems).toHaveLength(1);
+
+    // The old disambiguation (reqX/reqY only) is still exactly as it was —
+    // never touched, never resolved, never includes reqZ.
+    const [heldAfter] = await db
+      .select()
+      .from(schema.pendingRequestDisambiguations)
+      .where(and(eq(schema.pendingRequestDisambiguations.clientId, clientId), isNull(schema.pendingRequestDisambiguations.resolvedAt)));
+    expect(heldAfter).toBeDefined();
+    expect(new Set(heldAfter.candidateCollectionRequestIds)).toEqual(new Set([reqX.requestId, reqY.requestId]));
+  });
 });
