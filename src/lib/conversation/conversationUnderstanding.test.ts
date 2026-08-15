@@ -107,15 +107,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
 
     mockObjectSequence(
       NO_REFERENCE, // reference resolution
-      {
-        outcome: "ANSWER",
-        confidence: 0.9,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: [req.id],
-        clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      }
+      { outcome: "ANSWER", confidence: 0.9, answerGroundedOn: [req.id] }
     );
     mockText("אישור ניהול חשבון בנק עדיין לא התקבל אצלנו.");
 
@@ -137,15 +129,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
 
     mockObjectSequence(
       NO_REFERENCE,
-      {
-        outcome: "ANSWER",
-        confidence: 0.7,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: [], // nothing relevant known
-        clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      }
+      { outcome: "ANSWER", confidence: 0.7, answerGroundedOn: [] } // nothing relevant known
     );
     mockText("אין לי כרגע מידע מאומת שעונה על השאלה הזו — אבדוק ואחזור אליך.");
 
@@ -170,12 +154,8 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
       {
         outcome: "CLARIFY",
         confidence: 0.5,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: null,
-        clarifyQuestion: "לאיזה מהמסמכים האחרונים שלך זה מתייחס?", clarifyMissing: "which document 'it' refers to",
-        escalateCategory: null, escalateGist: null,
+        clarifyQuestion: "לאיזה מהמסמכים האחרונים שלך זה מתייחס?",
+        clarifyMissing: "which document 'it' refers to",
       }
     );
 
@@ -198,15 +178,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
 
     mockObjectSequence(
       { status: "ambiguous", referentKind: null, referentId: null, provenance: null, confidence: 0.4, basis: null, ambiguousCandidateIds: ["irrelevant-1", "irrelevant-2"] },
-      {
-        outcome: "ANSWER",
-        confidence: 0.85,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: ["active_request"],
-        clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      }
+      { outcome: "ANSWER", confidence: 0.85, answerGroundedOn: ["active_request"] }
     );
     mockText("הבקשה שלך עדיין פתוחה, לא הושלמה.");
 
@@ -229,12 +201,8 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
       {
         outcome: "ESCALATE",
         confidence: 0.8,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: null,
-        clarifyQuestion: null, clarifyMissing: null,
-        escalateCategory: "alternative_or_policy_question", escalateGist: "האם אפשר להגיש מסמך על שם קרוב משפחה במקום",
+        escalateCategory: "alternative_or_policy_question",
+        escalateGist: "האם אפשר להגיש מסמך על שם קרוב משפחה במקום",
       }
     );
 
@@ -256,15 +224,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
 
     mockObjectSequence(
       NO_REFERENCE,
-      {
-        outcome: "ANSWER",
-        confidence: 0.88,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: ["organization"],
-        clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      }
+      { outcome: "ANSWER", confidence: 0.88, answerGroundedOn: ["organization"] }
     );
     mockText("אנחנו פתוחים 09:00-18:00, ימים א-ה.");
 
@@ -288,13 +248,12 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
       {
         outcome: "ACT",
         confidence: 0.95,
-        actionKind: "correct_resolved",
-        actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: "document",
-        actionTargetId: "00000000-0000-0000-0000-000000000000", // hallucinated, not a real row
-        actionDesiredOutcome: "mark_withdrawn",
-        actionMentionedType: null, actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
+        action: {
+          actionKind: "correct_resolved",
+          actionTargetType: "document",
+          actionTargetId: "00000000-0000-0000-0000-000000000000", // hallucinated, not a real row
+          actionDesiredOutcome: "mark_withdrawn",
+        },
       }
     );
 
@@ -314,15 +273,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
 
     mockObjectSequence(
       NO_REFERENCE,
-      {
-        outcome: "ANSWER",
-        confidence: 0.9,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: [doc.id], // cites the real document as a fact, but this is ANSWER, not ACT
-        clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      }
+      { outcome: "ANSWER", confidence: 0.9, answerGroundedOn: [doc.id] } // cites the real document as a fact, but this is ANSWER, not ACT
     );
     mockText("כן, קיבלנו את זה, זה כבר מאושר אצלנו.");
 
@@ -346,13 +297,12 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
       {
         outcome: "ACT",
         confidence: 0.9,
-        actionKind: "correct_resolved",
-        actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: "document",
-        actionTargetId: docB.id, // reasoning correctly used the corrected referent, not docA
-        actionDesiredOutcome: "save_as_extra",
-        actionMentionedType: null, actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
+        action: {
+          actionKind: "correct_resolved",
+          actionTargetType: "document",
+          actionTargetId: docB.id, // reasoning correctly used the corrected referent, not docA
+          actionDesiredOutcome: "save_as_extra",
+        },
       }
     );
 
@@ -384,12 +334,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
       {
         outcome: "ACT",
         confidence: 0.9,
-        actionKind: "resolve_pending",
-        actionOpenQuestionId: pending.id,
-        actionAnswer: "confirm",
-        actionReplyText: null, actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
+        action: { actionKind: "resolve_pending", actionOpenQuestionId: pending.id, actionAnswer: "confirm" },
       }
     );
 
@@ -408,15 +353,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
 
     mockObjectSequence(
       NO_REFERENCE,
-      {
-        outcome: "ANSWER",
-        confidence: 0.75,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: [], // no deadline fact exists anywhere in the pool — nothing to cite
-        clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      }
+      { outcome: "ANSWER", confidence: 0.75, answerGroundedOn: [] } // no deadline fact exists anywhere in the pool — nothing to cite
     );
     mockText("אין לנו מועד אחרון קבוע שנקבע מולך — אפשר לשלוח בכל שלב עד שנקבל את כל המסמכים.");
 
@@ -443,15 +380,7 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
 
     mockObjectSequence(
       NO_REFERENCE,
-      {
-        outcome: "ANSWER",
-        confidence: 0.7,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: [], // the model correctly did NOT cite the unrelated policy
-        clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      }
+      { outcome: "ANSWER", confidence: 0.7, answerGroundedOn: [] } // the model correctly did NOT cite the unrelated policy
     );
     mockText("אין לי כרגע מידע מאומת שעונה על השאלה הזו — אבדוק ואחזור אליך.");
 
@@ -463,6 +392,154 @@ describe("understandConversationTurn — Phase 3 general reasoning outcomes", ()
     const textCallArgs = generateText.mock.calls[0]?.[0];
     const promptContent = JSON.stringify(textCallArgs);
     expect(promptContent).not.toContain("צילום ברור מספיק");
+  });
+});
+
+// Root-cause fix (production incident, 2026-08-15) — the schema
+// restructure (discriminated union) touched every outcome/actionKind's own
+// shape. These prove each one still reaches its real handler and produces
+// the same real business effect as before the schema change — the
+// "mapping compatibility" proof at the business-logic level, complementing
+// conversationUnderstanding.schema.test.ts's real-provider schema-validity
+// proof. Covers the outcome (UNRELATED) and the five actionKind branches
+// (resolve_clarification, report_missing_document, finish_request, defer,
+// resolve_review_item) the Phase 3 suite above didn't already exercise.
+describe("understandConversationTurn — every outcome/actionKind branch still reaches its real handler after the schema restructure", () => {
+  it("UNRELATED — no reply, no mutation, nothing escalated", async () => {
+    const { orgId, clientId, serviceId } = await seedOrgAndClient();
+    const { requestId, conversationId } = await seedRequest(orgId, clientId, serviceId, "p1");
+
+    mockObjectSequence(NO_REFERENCE, { outcome: "UNRELATED", confidence: 0.9 });
+
+    const result = await understandConversationTurn({
+      organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+      messageText: "מה שלומך היום",
+    });
+    expect(result).toEqual({ handled: false, outcome: "UNRELATED" });
+    expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it("ACT / resolve_clarification — the real document_clarification handler runs", async () => {
+    const { orgId, clientId, serviceId } = await seedOrgAndClient();
+    const { requestId, conversationId } = await seedRequest(orgId, clientId, serviceId, "p1");
+    const [doc] = await db.insert(schema.documents).values({ organizationId: orgId, collectionRequestId: requestId, fileName: "mystery.pdf", status: "needs_review" }).returning();
+    const [pending] = await db
+      .insert(schema.pendingConfirmations)
+      .values({
+        organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+        kind: "document_clarification", status: "pending",
+        question: "איזה מסמך זה?",
+        payload: { documentId: doc.id },
+      })
+      .returning();
+
+    mockObjectSequence(
+      NO_REFERENCE,
+      { outcome: "ACT", confidence: 0.9, action: { actionKind: "resolve_clarification", actionOpenQuestionId: pending.id, actionReplyText: "זו תעודת זהות" } }
+    );
+
+    const result = await understandConversationTurn({
+      organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+      messageText: "זו תעודת זהות",
+    });
+    expect(result.handled).toBe(true);
+    const [row] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.id, pending.id));
+    expect(row.status).toBe("confirmed"); // the real handler actually resolved it
+  });
+
+  it("ACT / report_missing_document — the real requirement-exception handler runs", async () => {
+    const { orgId, clientId, serviceId } = await seedOrgAndClient();
+    const { requestId, conversationId } = await seedRequest(orgId, clientId, serviceId, "p1");
+    const [req] = await db.insert(schema.collectionRequestRequirements).values({ collectionRequestId: requestId, name: "אישור ניהול חשבון בנק" }).returning();
+
+    mockObjectSequence(
+      NO_REFERENCE,
+      { outcome: "ACT", confidence: 0.9, action: { actionKind: "report_missing_document", actionMentionedType: "אישור ניהול חשבון" } }
+    );
+
+    const result = await understandConversationTurn({
+      organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+      messageText: "אין לי אישור ניהול חשבון, איבדתי אותו",
+    });
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.collectionRequestRequirements).where(eq(schema.collectionRequestRequirements.id, req.id));
+    expect(after.exceptionStatus).toBe("reported_missing"); // the real handler actually ran
+  });
+
+  it("ACT / finish_request — the real completion handler runs", async () => {
+    const { orgId, clientId, serviceId } = await seedOrgAndClient();
+    const { requestId, conversationId } = await seedRequest(orgId, clientId, serviceId, "p1");
+    // A single, already-satisfied requirement — nothing left for the real
+    // completion gate to block on.
+    await db.update(schema.collectionRequests).set({ status: "active" }).where(eq(schema.collectionRequests.id, requestId));
+    const [req] = await db.insert(schema.collectionRequestRequirements).values({ collectionRequestId: requestId, name: "תעודת זהות" }).returning();
+    await db.insert(schema.documents).values({ organizationId: orgId, collectionRequestId: requestId, requirementId: req.id, fileName: "id.pdf", status: "approved" });
+
+    mockObjectSequence(NO_REFERENCE, { outcome: "ACT", confidence: 0.9, action: { actionKind: "finish_request" } });
+
+    const result = await understandConversationTurn({
+      organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+      messageText: "סיימתי לשלוח הכל",
+    });
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).toBe("completed"); // the real handler actually ran
+  });
+
+  it("ACT / defer — the real deferral handler runs (and its own downstream classifyDeferralIntent call is unaffected by this schema)", async () => {
+    const { orgId, clientId, serviceId } = await seedOrgAndClient();
+    const { requestId, conversationId } = await seedRequest(orgId, clientId, serviceId, "p1");
+
+    mockObjectSequence(
+      NO_REFERENCE,
+      { outcome: "ACT", confidence: 0.9, action: { actionKind: "defer", actionReplyText: "אשלח בעוד שבוע" } },
+      // classifyDeferralIntent (src/lib/ai/deferralIntent.ts) — a
+      // completely separate, narrower schema, untouched by this fix.
+      { kind: "scheduled", weekday: null, explicitDay: null, explicitMonth: null, explicitYear: null, relativeDays: null, relativeWeeks: 1, namedPeriod: null }
+    );
+
+    const result = await understandConversationTurn({
+      organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+      messageText: "אשלח בעוד שבוע",
+    });
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(after.deferredReminderAt).not.toBeNull(); // the real handler actually ran
+  });
+
+  it("ACT / resolve_review_item — the real review-item handler runs", async () => {
+    const { orgId, clientId, serviceId } = await seedOrgAndClient();
+    const { requestId, conversationId } = await seedRequest(orgId, clientId, serviceId, "p1");
+    const [item] = await db
+      .insert(schema.employeeReviewItems)
+      .values({
+        organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+        clientQuestion: "אפשר להגיש מאוחר יותר?", category: "alternative_or_policy_question", status: "pending",
+      })
+      .returning();
+
+    mockObjectSequence(
+      NO_REFERENCE,
+      {
+        outcome: "ACT",
+        confidence: 0.9,
+        action: {
+          actionKind: "resolve_review_item",
+          actionReviewItemId: item.id,
+          actionReviewAction: "close_resolved",
+          actionReviewReason: "הלקוח הבהיר בעצמו",
+          actionAcknowledgment: "תודה, הבנתי!",
+        },
+      }
+    );
+
+    const result = await understandConversationTurn({
+      organizationId: orgId, clientId, collectionRequestId: requestId, conversationId,
+      messageText: "בעצם זה לא משנה, אשלח בזמן",
+    });
+    expect(result.handled).toBe(true);
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
+    expect(after.status).toBe("resolved"); // the real handler actually ran
   });
 });
 
@@ -513,13 +590,12 @@ describe("understandConversationTurn — Phase 4: cross-organization / wrong-req
       {
         outcome: "ACT",
         confidence: 0.95,
-        actionKind: "correct_resolved",
-        actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: "document",
-        actionTargetId: foreignDoc.id, // real row, real id — just the wrong organization/request
-        actionDesiredOutcome: "mark_withdrawn",
-        actionMentionedType: null, actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
+        action: {
+          actionKind: "correct_resolved",
+          actionTargetType: "document",
+          actionTargetId: foreignDoc.id, // real row, real id — just the wrong organization/request
+          actionDesiredOutcome: "mark_withdrawn",
+        },
       }
     );
 
@@ -542,11 +618,8 @@ describe("understandConversationTurn — Phase 4: ESCALATE dedup", () => {
     const escalateOutcome = {
       outcome: "ESCALATE",
       confidence: 0.8,
-      actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-      actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-      actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-      answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null,
-      escalateCategory: "alternative_or_policy_question", escalateGist: "בקשה שאדם אחר יגיש",
+      escalateCategory: "alternative_or_policy_question",
+      escalateGist: "בקשה שאדם אחר יגיש",
     };
 
     // Turn 1 — the "original" attempt.
@@ -586,12 +659,10 @@ describe("understandConversationTurn — Phase 4: ESCALATE dedup", () => {
     const { requestId, conversationId } = await seedRequest(orgId, clientId, serviceId, "p1");
 
     const escalateFor = (gist: string) => ({
-      outcome: "ESCALATE", confidence: 0.8,
-      actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-      actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-      actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-      answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null,
-      escalateCategory: "other" as const, escalateGist: gist,
+      outcome: "ESCALATE",
+      confidence: 0.8,
+      escalateCategory: "other" as const,
+      escalateGist: gist,
     });
 
     generateObject.mockResolvedValueOnce({ object: NO_REFERENCE });

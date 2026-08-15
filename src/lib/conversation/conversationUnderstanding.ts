@@ -71,59 +71,109 @@ function buildGroundedFactPool(context: ConversationContext): GroundedFact[] {
   return facts;
 }
 
-const outcomeSchema = z.object({
-  outcome: z.enum(["ACT", "ANSWER", "CLARIFY", "ESCALATE", "UNRELATED"]).describe(
-    '"ACT" — ההודעה דורשת/מבצעת פעולה קונקרטית ומוגדרת (מענה על שאלה פתוחה, תיקון החלטה קודמת, דיווח על מסמך חסר, סיום, הבטחה לשלוח בעתיד, פתרון פריט לבדיקת עובד). ' +
-      '"ANSWER" — יש שאלה, וניתן לענות עליה מהעובדות הידועות (למטה) — בכל ניסוח, גם כזה שלא הוגדר מראש. ' +
-      '"CLARIFY" — לא ניתן לענות/לפעול בלי פרט חסר מהלקוח, וזה פרט הכרחי (לא נוחות בלבד). ' +
-      '"ESCALATE" — נדרשת החלטה/מידע אנושי אמיתי שאין למערכת סמכות או יכולת לספק — לא כי הניסוח לא מוכר, לא כי חסר מידע שאפשר לענות עליו בכנות שהוא לא קיים. ' +
-      '"UNRELATED" — ההודעה לא קשורה כלל לבקשת המסמכים הפעילה.'
-  ),
-  confidence: z.number().min(0).max(1).describe("רמת ביטחון כללית, 0 עד 1. נמוך כשלא בטוחה."),
+// Root-cause fix (production incident, 2026-08-15) — the previous flat
+// object (19 fields, 17 of them nullable — every ACT/ANSWER/CLARIFY/
+// ESCALATE-specific field always present but null unless relevant) hit a
+// real provider-side limit: "Schemas contains too many parameters with
+// union types ... limit: 16 parameters with unions". Restructured as a
+// discriminated union (by `outcome`, and — inside ACT — by `actionKind`)
+// so each branch declares only the fields that outcome/action actually
+// uses, all required within their own branch. This is the exact same
+// information as before, just structurally impossible to contradict
+// (e.g. outcome="ANSWER" with a non-null actionKind could never happen
+// before either, but now the schema itself guarantees it, not just
+// convention) — confirmed against the real provider (not just locally)
+// that this shape no longer hits the parameter-count limit.
+const actionSchema = z
+  .discriminatedUnion("actionKind", [
+    z.object({
+      actionKind: z.literal("resolve_pending"),
+      actionOpenQuestionId: z.string().describe("ה-id המדויק של השאלה הפתוחה."),
+      actionAnswer: z.enum(["confirm", "decline"]).describe('כשהשאלה הפתוחה היא כן/לא.'),
+    }),
+    z.object({
+      actionKind: z.literal("resolve_clarification"),
+      actionOpenQuestionId: z.string().describe("ה-id המדויק של השאלה הפתוחה."),
+      actionReplyText: z.string().describe("הטקסט הרלוונטי מההודעה עצמה."),
+    }),
+    z.object({
+      actionKind: z.literal("correct_resolved"),
+      actionTargetType: z.enum(["document", "confirmation"]),
+      actionTargetId: z.string().describe("ה-id המדויק מהרשימות למטה. לעולם אל תמציאי."),
+      actionDesiredOutcome: z.enum(["attach_to_requirement", "save_as_extra", "mark_withdrawn"]),
+    }),
+    z.object({
+      actionKind: z.literal("report_missing_document"),
+      // Genuinely optional even within this branch — the client saying
+      // "אין לי" doesn't always name which document, unlike every other
+      // field here (which the schema itself now guarantees is present).
+      actionMentionedType: z.string().nullable().describe("איזה מסמך צוין, אם צוין."),
+    }),
+    z.object({
+      actionKind: z.literal("finish_request"),
+    }),
+    z.object({
+      actionKind: z.literal("defer"),
+      actionReplyText: z.string().describe("הטקסט הרלוונטי מההודעה עצמה."),
+    }),
+    z.object({
+      actionKind: z.literal("resolve_review_item"),
+      actionReviewItemId: z.string().describe("ה-id המדויק מרשימת פריטי הבדיקה למטה."),
+      actionReviewAction: z.enum(["close_resolved", "add_context_note"]),
+      actionReviewReason: z.string().describe("הסבר פנימי קצר, לעולם לא מוצג ללקוח."),
+      actionAcknowledgment: z.string().describe("תגובה טבעית קצרה ללקוח, מבוססת אך ורק על מה שההודעה אמרה."),
+    }),
+  ])
+  .describe(
+    '"resolve_pending"/"resolve_clarification" — עונה על השאלה הפתוחה המוצגת למטה (clarification אם היא פתוחה חופשית, אחרת yes/no). "correct_resolved" — מתייחס למסמך/החלטה שכבר טופלו ומבקש לשנות. "report_missing_document" — אומר בבירור שאין לו מסמך נדרש. "finish_request" — אומר בבירור שסיים לשלוח הכל. "defer" — מבטיח לשלוח בעתיד. "resolve_review_item" — מתייחס בבירור לאחד מפריטי הבדיקה המוצגים למטה.'
+  );
 
-  actionKind: z
-    .enum([
-      "resolve_pending",
-      "resolve_clarification",
-      "correct_resolved",
-      "report_missing_document",
-      "finish_request",
-      "defer",
-      "resolve_review_item",
-    ])
-    .nullable()
-    .describe(
-      'רק כאשר outcome="ACT". "resolve_pending"/"resolve_clarification" — עונה על השאלה הפתוחה המוצגת למטה (clarification אם היא פתוחה חופשית, אחרת yes/no). "correct_resolved" — מתייחס למסמך/החלטה שכבר טופלו ומבקש לשנות. "report_missing_document" — אומר בבירור שאין לו מסמך נדרש. "finish_request" — אומר בבירור שסיים לשלוח הכל. "defer" — מבטיח לשלוח בעתיד. "resolve_review_item" — מתייחס בבירור לאחד מפריטי הבדיקה המוצגים למטה.'
-    ),
-  actionOpenQuestionId: z.string().nullable().describe('רק ל-resolve_pending/resolve_clarification: ה-id המדויק של השאלה הפתוחה.'),
-  actionAnswer: z.enum(["confirm", "decline"]).nullable().describe('רק ל-resolve_pending כשהשאלה הפתוחה היא כן/לא.'),
-  actionReplyText: z.string().nullable().describe('רק ל-resolve_clarification/defer: הטקסט הרלוונטי מההודעה עצמה.'),
-  actionTargetType: z.enum(["document", "confirmation"]).nullable().describe('רק ל-correct_resolved.'),
-  actionTargetId: z.string().nullable().describe('רק ל-correct_resolved: ה-id המדויק מהרשימות למטה. לעולם אל תמציאי.'),
-  actionDesiredOutcome: z
-    .enum(["attach_to_requirement", "save_as_extra", "mark_withdrawn"])
-    .nullable()
-    .describe('רק ל-correct_resolved.'),
-  actionMentionedType: z.string().nullable().describe('רק ל-report_missing_document: איזה מסמך צוין, אם צוין.'),
-  actionReviewItemId: z.string().nullable().describe('רק ל-resolve_review_item: ה-id המדויק מרשימת פריטי הבדיקה למטה.'),
-  actionReviewAction: z.enum(["close_resolved", "add_context_note"]).nullable().describe('רק ל-resolve_review_item.'),
-  actionReviewReason: z.string().nullable().describe('רק ל-resolve_review_item: הסבר פנימי קצר, לעולם לא מוצג ללקוח.'),
-  actionAcknowledgment: z.string().nullable().describe('רק ל-resolve_review_item: תגובה טבעית קצרה ללקוח, מבוססת אך ורק על מה שההודעה אמרה.'),
-
-  answerGroundedOn: z
-    .array(z.string())
-    .nullable()
-    .describe('רק כאשר outcome="ANSWER": אילו id-ים מרשימת העובדות למטה רלוונטיים לתשובה. רשימה ריקה מותרת אם התשובה היא שאין מידע.'),
-
-  clarifyQuestion: z.string().nullable().describe('רק כאשר outcome="CLARIFY": שאלת הבהרה ממוקדת וקצרה ללקוח.'),
-  clarifyMissing: z.string().nullable().describe('רק כאשר outcome="CLARIFY": מה בדיוק חסר, הסבר פנימי קצר.'),
-
-  escalateCategory: z
-    .enum(["alternative_or_policy_question", "human_request", "other"])
-    .nullable()
-    .describe('רק כאשר outcome="ESCALATE".'),
-  escalateGist: z.string().nullable().describe('רק כאשר outcome="ESCALATE": תקציר קצר וברור עבור העובד, בעברית.'),
-});
+// Exported for conversationUnderstanding.schema.test.ts only — that file
+// proves this exact schema (not a hand-copied approximation of it) passes
+// real structured generation against the real provider, the only kind of
+// test that would have caught the 2026-08-15 production incident (a mocked
+// generateObject never validates the schema itself, only the shape of
+// whatever a test hands back).
+export const outcomeSchema = z.discriminatedUnion("outcome", [
+  z.object({
+    outcome: z
+      .literal("ACT")
+      .describe(
+        "ההודעה דורשת/מבצעת פעולה קונקרטית ומוגדרת (מענה על שאלה פתוחה, תיקון החלטה קודמת, דיווח על מסמך חסר, סיום, הבטחה לשלוח בעתיד, פתרון פריט לבדיקת עובד)."
+      ),
+    confidence: z.number().min(0).max(1).describe("רמת ביטחון כללית, 0 עד 1. נמוך כשלא בטוחה."),
+    action: actionSchema,
+  }),
+  z.object({
+    outcome: z
+      .literal("ANSWER")
+      .describe("יש שאלה, וניתן לענות עליה מהעובדות הידועות (למטה) — בכל ניסוח, גם כזה שלא הוגדר מראש."),
+    confidence: z.number().min(0).max(1).describe("רמת ביטחון כללית, 0 עד 1. נמוך כשלא בטוחה."),
+    answerGroundedOn: z
+      .array(z.string())
+      .describe("אילו id-ים מרשימת העובדות למטה רלוונטיים לתשובה. רשימה ריקה מותרת אם התשובה היא שאין מידע."),
+  }),
+  z.object({
+    outcome: z.literal("CLARIFY").describe("לא ניתן לענות/לפעול בלי פרט חסר מהלקוח, וזה פרט הכרחי (לא נוחות בלבד)."),
+    confidence: z.number().min(0).max(1).describe("רמת ביטחון כללית, 0 עד 1. נמוך כשלא בטוחה."),
+    clarifyQuestion: z.string().describe("שאלת הבהרה ממוקדת וקצרה ללקוח."),
+    clarifyMissing: z.string().describe("מה בדיוק חסר, הסבר פנימי קצר."),
+  }),
+  z.object({
+    outcome: z
+      .literal("ESCALATE")
+      .describe(
+        "נדרשת החלטה/מידע אנושי אמיתי שאין למערכת סמכות או יכולת לספק — לא כי הניסוח לא מוכר, לא כי חסר מידע שאפשר לענות עליו בכנות שהוא לא קיים."
+      ),
+    confidence: z.number().min(0).max(1).describe("רמת ביטחון כללית, 0 עד 1. נמוך כשלא בטוחה."),
+    escalateCategory: z.enum(["alternative_or_policy_question", "human_request", "other"]),
+    escalateGist: z.string().describe("תקציר קצר וברור עבור העובד, בעברית."),
+  }),
+  z.object({
+    outcome: z.literal("UNRELATED").describe("ההודעה לא קשורה כלל לבקשת המסמכים הפעילה."),
+    confidence: z.number().min(0).max(1).describe("רמת ביטחון כללית, 0 עד 1. נמוך כשלא בטוחה."),
+  }),
+]);
 
 function formatFacts(facts: GroundedFact[]): string {
   if (facts.length === 0) return "אין עובדות ידועות.";
@@ -240,15 +290,11 @@ function mapToOutcome(object: z.infer<typeof outcomeSchema>): ReasoningOutcome {
   if (object.outcome === "UNRELATED") return { kind: "UNRELATED" };
 
   if (object.outcome === "CLARIFY") {
-    return { kind: "CLARIFY", question: object.clarifyQuestion ?? "אפשר להבהיר?", missing: object.clarifyMissing ?? "" };
+    return { kind: "CLARIFY", question: object.clarifyQuestion, missing: object.clarifyMissing };
   }
 
   if (object.outcome === "ESCALATE") {
-    return {
-      kind: "ESCALATE",
-      category: object.escalateCategory ?? "other",
-      gist: object.escalateGist ?? "",
-    };
+    return { kind: "ESCALATE", category: object.escalateCategory, gist: object.escalateGist };
   }
 
   if (object.outcome === "ANSWER") {
@@ -256,46 +302,45 @@ function mapToOutcome(object: z.infer<typeof outcomeSchema>): ReasoningOutcome {
     // the caller (understandConversationTurn) validates those ids and
     // composes the actual reply via composeGroundedAnswer, using only the
     // validated facts. This is the second, independent grounding check.
-    return { kind: "ANSWER", text: "", groundedOn: object.answerGroundedOn ?? [] };
+    return { kind: "ANSWER", text: "", groundedOn: object.answerGroundedOn };
   }
 
-  // outcome === "ACT"
-  const action = buildActionContract(object);
+  // outcome === "ACT" — every field buildActionContract reads is now
+  // required within its own branch (the schema itself guarantees it), so
+  // the null-check/fallback below is unreachable in practice; kept anyway
+  // as the same defensive backstop this had before the schema change, in
+  // case a future schema edit ever loosens that guarantee again.
+  const action = buildActionContract(object.action);
   if (!action) return { kind: "CLARIFY", question: "אפשר להבהיר בדיוק למה התכוונת?", missing: "malformed action proposal" };
   return { kind: "ACT", action, confidence: object.confidence };
 }
 
-function buildActionContract(object: z.infer<typeof outcomeSchema>): ActionContract | null {
-  switch (object.actionKind) {
+function buildActionContract(action: z.infer<typeof actionSchema>): ActionContract | null {
+  switch (action.actionKind) {
     case "resolve_pending":
-      if (!object.actionOpenQuestionId || !object.actionAnswer) return null;
-      return { kind: "resolve_pending", openQuestionId: object.actionOpenQuestionId, answer: object.actionAnswer };
+      return { kind: "resolve_pending", openQuestionId: action.actionOpenQuestionId, answer: action.actionAnswer };
     case "resolve_clarification":
-      if (!object.actionOpenQuestionId || !object.actionReplyText) return null;
-      return { kind: "resolve_clarification", openQuestionId: object.actionOpenQuestionId, replyText: object.actionReplyText };
+      return { kind: "resolve_clarification", openQuestionId: action.actionOpenQuestionId, replyText: action.actionReplyText };
     case "correct_resolved":
-      if (!object.actionTargetType || !object.actionTargetId || !object.actionDesiredOutcome) return null;
       return {
         kind: "correct_resolved",
-        targetType: object.actionTargetType,
-        targetId: object.actionTargetId,
-        desiredOutcome: object.actionDesiredOutcome,
+        targetType: action.actionTargetType,
+        targetId: action.actionTargetId,
+        desiredOutcome: action.actionDesiredOutcome,
       };
     case "report_missing_document":
-      return { kind: "report_missing_document", mentionedType: object.actionMentionedType };
+      return { kind: "report_missing_document", mentionedType: action.actionMentionedType };
     case "finish_request":
       return { kind: "finish_request" };
     case "defer":
-      if (!object.actionReplyText) return null;
-      return { kind: "defer", replyText: object.actionReplyText };
+      return { kind: "defer", replyText: action.actionReplyText };
     case "resolve_review_item":
-      if (!object.actionReviewItemId || !object.actionReviewAction) return null;
       return {
         kind: "resolve_review_item",
-        reviewItemId: object.actionReviewItemId,
-        action: object.actionReviewAction,
-        reason: object.actionReviewReason ?? "",
-        acknowledgment: object.actionAcknowledgment ?? "",
+        reviewItemId: action.actionReviewItemId,
+        action: action.actionReviewAction,
+        reason: action.actionReviewReason,
+        acknowledgment: action.actionAcknowledgment,
       };
     default:
       return null;

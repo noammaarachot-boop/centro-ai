@@ -257,27 +257,11 @@ function referenceResolutionSmartDefault(args: unknown): { object: Record<string
   };
 }
 
-const REASONING_BASE = {
-  confidence: 0.9,
-  actionKind: null,
-  actionOpenQuestionId: null,
-  actionAnswer: null,
-  actionReplyText: null,
-  actionTargetType: null,
-  actionTargetId: null,
-  actionDesiredOutcome: null,
-  actionMentionedType: null,
-  actionReviewItemId: null,
-  actionReviewAction: null,
-  actionReviewReason: null,
-  actionAcknowledgment: null,
-  answerGroundedOn: null,
-  clarifyQuestion: null,
-  clarifyMissing: null,
-  escalateCategory: null,
-  escalateGist: null,
-};
-
+// Root-cause fix (production incident, 2026-08-15) — reasonAboutMessage's
+// real schema is now a discriminated union (by outcome, and — inside ACT —
+// by actionKind), not one flat object with every field nullable. Every
+// mock built here matches that real shape: only the fields the chosen
+// branch actually declares, nothing else.
 function reasoningSmartDefault(args: unknown): { object: Record<string, unknown> } | undefined {
   const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content;
   if (typeof content !== "string" || !content.includes(REASONING_PROMPT_MARKER)) return undefined;
@@ -286,15 +270,15 @@ function reasoningSmartDefault(args: unknown): { object: Record<string, unknown>
   const openQuestionMatch = content.match(/שאלה פתוחה שממתינה לתשובה כרגע \(סוג: [^,]+, id=([^)]+)\):/);
   const openQuestionId = openQuestionMatch?.[1] ?? null;
   if (openQuestionId && newMessage === "כן") {
-    return { object: { ...REASONING_BASE, outcome: "ACT", actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: "confirm" } };
+    return { object: { outcome: "ACT", confidence: 0.9, action: { actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: "confirm" } } };
   }
   if (openQuestionId && newMessage === "לא") {
-    return { object: { ...REASONING_BASE, outcome: "ACT", actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: "decline" } };
+    return { object: { outcome: "ACT", confidence: 0.9, action: { actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: "decline" } } };
   }
   if (!openQuestionId && newMessage === "סיימתי") {
-    return { object: { ...REASONING_BASE, outcome: "ACT", actionKind: "finish_request" } };
+    return { object: { outcome: "ACT", confidence: 0.9, action: { actionKind: "finish_request" } } };
   }
-  return { object: { ...REASONING_BASE, outcome: "UNRELATED", confidence: 0 } };
+  return { object: { outcome: "UNRELATED", confidence: 0 } };
 }
 
 // composeGroundedAnswer (conversationUnderstanding.ts) is a plain
@@ -660,12 +644,16 @@ function queueConversationIntent(overrides: {
   // mockImplementationOnce reads the real prompt content to extract it,
   // the same discipline the smart defaults above use, rather than
   // guessing/hardcoding an id the test itself doesn't otherwise know.
+  //
+  // Root-cause fix (production incident, 2026-08-15) — every object below
+  // matches reasonAboutMessage's real discriminated-union schema: only the
+  // fields the chosen outcome/actionKind branch actually declares.
   if (overrides.kind === "resolves_pending") {
     generateObject.mockImplementationOnce((args: unknown) => {
       const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content ?? "";
-      const openQuestionId = extractOpenQuestionIdFromPrompt(content);
+      const openQuestionId = extractOpenQuestionIdFromPrompt(content) ?? "";
       return Promise.resolve({
-        object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: overrides.pendingAnswer ?? "confirm" },
+        object: { outcome: "ACT", confidence, action: { actionKind: "resolve_pending", actionOpenQuestionId: openQuestionId, actionAnswer: overrides.pendingAnswer ?? "confirm" } },
       });
     });
     return;
@@ -675,7 +663,7 @@ function queueConversationIntent(overrides: {
     generateObject.mockImplementationOnce((args: unknown) => {
       const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content ?? "";
       const factIds = extractAllFactIdsFromPrompt(content);
-      return Promise.resolve({ object: { ...REASONING_BASE, confidence, outcome: "ANSWER", answerGroundedOn: factIds } });
+      return Promise.resolve({ object: { outcome: "ANSWER", confidence, answerGroundedOn: factIds } });
     });
     return;
   }
@@ -683,13 +671,14 @@ function queueConversationIntent(overrides: {
   if (overrides.kind === "corrects_resolved") {
     generateObject.mockResolvedValueOnce({
       object: {
-        ...REASONING_BASE,
-        confidence,
         outcome: "ACT",
-        actionKind: "correct_resolved",
-        actionTargetType: overrides.correctionTargetType ?? null,
-        actionTargetId: overrides.correctionTargetId ?? null,
-        actionDesiredOutcome: overrides.correctionDesiredOutcome ?? null,
+        confidence,
+        action: {
+          actionKind: "correct_resolved",
+          actionTargetType: overrides.correctionTargetType ?? "document",
+          actionTargetId: overrides.correctionTargetId ?? "",
+          actionDesiredOutcome: (overrides.correctionDesiredOutcome as "attach_to_requirement" | "save_as_extra" | "mark_withdrawn" | null) ?? "save_as_extra",
+        },
       },
     });
     return;
@@ -697,7 +686,7 @@ function queueConversationIntent(overrides: {
 
   if (overrides.kind === "reports_missing_document") {
     generateObject.mockResolvedValueOnce({
-      object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "report_missing_document", actionMentionedType: overrides.missingDocumentMentionedType ?? null },
+      object: { outcome: "ACT", confidence, action: { actionKind: "report_missing_document", actionMentionedType: overrides.missingDocumentMentionedType ?? null } },
     });
     return;
   }
@@ -705,9 +694,8 @@ function queueConversationIntent(overrides: {
   if (overrides.kind === "needs_employee_review") {
     generateObject.mockResolvedValueOnce({
       object: {
-        ...REASONING_BASE,
-        confidence,
         outcome: "ESCALATE",
+        confidence,
         escalateCategory: (overrides.reviewCategory as "alternative_or_policy_question" | "human_request" | "other" | null) ?? "other",
         escalateGist: overrides.reviewGist ?? "",
       },
@@ -718,21 +706,22 @@ function queueConversationIntent(overrides: {
   if (overrides.kind === "resolves_review_item") {
     generateObject.mockResolvedValueOnce({
       object: {
-        ...REASONING_BASE,
-        confidence,
         outcome: "ACT",
-        actionKind: "resolve_review_item",
-        actionReviewItemId: overrides.reviewItemTargetId ?? null,
-        actionReviewAction: overrides.reviewItemAction ?? "close_resolved",
-        actionReviewReason: overrides.reviewItemReason ?? "",
-        actionAcknowledgment: overrides.naturalAcknowledgment ?? "",
+        confidence,
+        action: {
+          actionKind: "resolve_review_item",
+          actionReviewItemId: overrides.reviewItemTargetId ?? "",
+          actionReviewAction: overrides.reviewItemAction ?? "close_resolved",
+          actionReviewReason: overrides.reviewItemReason ?? "",
+          actionAcknowledgment: overrides.naturalAcknowledgment ?? "",
+        },
       },
     });
     return;
   }
 
   if (overrides.kind === "finished_signal") {
-    generateObject.mockResolvedValueOnce({ object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "finish_request" } });
+    generateObject.mockResolvedValueOnce({ object: { outcome: "ACT", confidence, action: { actionKind: "finish_request" } } });
     return;
   }
 
@@ -741,20 +730,20 @@ function queueConversationIntent(overrides: {
       const content = (args as { messages?: Array<{ content?: string }> })?.messages?.[0]?.content ?? "";
       const messageMatch = content.match(/ההודעה החדשה מהלקוח: "([^"]*)"/);
       const replyText = messageMatch?.[1]?.trim() ?? "";
-      return Promise.resolve({ object: { ...REASONING_BASE, confidence, outcome: "ACT", actionKind: "defer", actionReplyText: replyText } });
+      return Promise.resolve({ object: { outcome: "ACT", confidence, action: { actionKind: "defer", actionReplyText: replyText } } });
     });
     return;
   }
 
   if (overrides.kind === "unclear") {
     generateObject.mockResolvedValueOnce({
-      object: { ...REASONING_BASE, confidence, outcome: "CLARIFY", clarifyQuestion: "אפשר להבהיר בדיוק למה התכוונת?", clarifyMissing: "unclear reply" },
+      object: { outcome: "CLARIFY", confidence, clarifyQuestion: "אפשר להבהיר בדיוק למה התכוונת?", clarifyMissing: "unclear reply" },
     });
     return;
   }
 
   // "unrelated"
-  generateObject.mockResolvedValueOnce({ object: { ...REASONING_BASE, confidence: overrides.confidence ?? 0, outcome: "UNRELATED" } });
+  generateObject.mockResolvedValueOnce({ object: { outcome: "UNRELATED", confidence: overrides.confidence ?? 0 } });
 }
 
 // ======================================================================

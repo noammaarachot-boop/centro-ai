@@ -199,17 +199,9 @@ describe("handleInboundMessage — Phase 4 cutover: the real entry point routes 
     const { org, requestId } = await seedOpenConversation();
 
     generateObject.mockResolvedValueOnce({ object: { status: "no_reference" } }); // resolveConversationReference
-    generateObject.mockResolvedValueOnce({
-      object: {
-        // reasonAboutMessage
-        outcome: "UNRELATED",
-        confidence: 0.9,
-        actionKind: null, actionOpenQuestionId: null, actionAnswer: null, actionReplyText: null,
-        actionTargetType: null, actionTargetId: null, actionDesiredOutcome: null, actionMentionedType: null,
-        actionReviewItemId: null, actionReviewAction: null, actionReviewReason: null, actionAcknowledgment: null,
-        answerGroundedOn: null, clarifyQuestion: null, clarifyMissing: null, escalateCategory: null, escalateGist: null,
-      },
-    });
+    // reasonAboutMessage's real schema is a discriminated union — only the
+    // fields the UNRELATED branch actually declares.
+    generateObject.mockResolvedValueOnce({ object: { outcome: "UNRELATED", confidence: 0.9 } });
 
     await handleInboundMessage(org, {
       from: "972500000000",
