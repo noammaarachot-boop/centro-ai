@@ -267,7 +267,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         await escalateToHumanReview(
           organization.id,
           conversation.collectionRequestId,
-          "חלפו 3 ימים ללא השלמת המסמכים",
+          "לא ענה — חלפו 3 ימים והבקשה עדיין לא הושלמה",
           "system"
         );
         continue;

@@ -30,7 +30,7 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
-const { startConversation, sendOutboundMessage } = await import("./conversationOrchestration");
+const { startConversation, sendOutboundMessage, ensureConversation } = await import("./conversationOrchestration");
 const { WhatsAppSendError } = await import("./whatsapp/send");
 
 beforeAll(async () => {
@@ -285,5 +285,58 @@ describe("sendOutboundMessage — observability remediation: an audit_logs row f
       .where(eq(schema.auditLogs.collectionRequestId, requestId));
     const eventTypes = auditRows.map((r) => r.eventType);
     expect(eventTypes).toContain("whatsapp.send_failed");
+  });
+});
+
+// Reminder-lifecycle root-cause fix (2026-08-16 production incident) — a
+// request the client never responds to at all previously had no 3-day
+// escalation clock, since reviewDeadlineAt was only ever set on entry into
+// waiting_for_client or on an explicit deferral resolving — neither of
+// which a silent request ever reaches. Set once, here, at the real moment
+// a conversation first exists for a request.
+describe("ensureConversation — sets a 3-day reviewDeadlineAt at the real moment a request is first sent", () => {
+  it("a brand-new conversation gets reviewDeadlineAt ~3 days out, anchored to the real creation moment", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    const before = Date.now();
+
+    await ensureConversation(orgId, requestId, clientId);
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.reviewDeadlineAt).not.toBeNull();
+    const deltaMs = request.reviewDeadlineAt!.getTime() - before;
+    expect(deltaMs).toBeGreaterThan(2.9 * 24 * 60 * 60 * 1000);
+    expect(deltaMs).toBeLessThan(3.1 * 24 * 60 * 60 * 1000);
+  });
+
+  it("calling it again for the same request (conversation already exists) never overwrites an already-set reviewDeadlineAt", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    await ensureConversation(orgId, requestId, clientId);
+    const [first] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+
+    await ensureConversation(orgId, requestId, clientId);
+    const [second] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+
+    expect(second.reviewDeadlineAt!.getTime()).toBe(first.reviewDeadlineAt!.getTime());
+  });
+
+  it("never overwrites a reviewDeadlineAt that was already explicitly set before the conversation existed (defensive IS NULL guard)", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    const explicitDeadline = new Date(Date.now() + 60 * 60 * 1000); // an unusual, already-set value
+    await db.update(schema.collectionRequests).set({ reviewDeadlineAt: explicitDeadline }).where(eq(schema.collectionRequests.id, requestId));
+
+    await ensureConversation(orgId, requestId, clientId);
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.reviewDeadlineAt!.getTime()).toBe(explicitDeadline.getTime());
+  });
+
+  it("startConversation (the real send path) also gets a reviewDeadlineAt through this same mechanism, with no extra wiring needed", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    sendTemplateMessage.mockResolvedValue({ messageId: "wamid.out" });
+
+    await startConversation(orgId, requestId, clientId, "manual");
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.reviewDeadlineAt).not.toBeNull();
   });
 });

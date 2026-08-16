@@ -4,6 +4,7 @@ import {
   clients,
   collectionRequestRequirements,
   collectionRequests,
+  conversations,
   documents,
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -199,9 +200,20 @@ export async function applyTransition(
   // (reminderDeferral.ts) never calls applyTransition — it only extends
   // reviewDeadlineAt and increments deferralCount directly — so this reset
   // only ever fires once per fresh episode, never mid-episode.
-  const reviewDeadlineAt =
-    nextStatus === "waiting_for_client" ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) : current.reviewDeadlineAt;
-  const deferralCount = nextStatus === "waiting_for_client" ? 0 : current.deferralCount;
+  //
+  // Explicit resend (2026-08-16) — "only an explicit resend reopens a new
+  // lifecycle": an employee moving a request out of "escalated" back to
+  // "active" (the automated-reminder track, not "waiting_for_client" —
+  // this is the request-never-really-responded case, not the client-said-
+  // done case above) is the one intentional, human-triggered action that
+  // may restart the automation clock. Nothing else ever transitions a
+  // request out of "escalated" automatically — the scheduler's own queries
+  // exclude it entirely — so this branch can only ever fire from a real,
+  // deliberate employee action (transitionStatus).
+  const isExplicitResendFromEscalation = current.status === "escalated" && nextStatus === "active";
+  const startsFreshCycle = nextStatus === "waiting_for_client" || isExplicitResendFromEscalation;
+  const reviewDeadlineAt = startsFreshCycle ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) : current.reviewDeadlineAt;
+  const deferralCount = startsFreshCycle ? 0 : current.deferralCount;
 
   await db
     .update(collectionRequests)
@@ -214,6 +226,18 @@ export async function applyTransition(
       escalationReason: nextStatus === "escalated" ? current.escalationReason : null,
     })
     .where(eq(collectionRequests.id, collectionRequestId));
+
+  if (isExplicitResendFromEscalation) {
+    // Same fresh start for the reminder side of the clock (conversations
+    // table, untouched by the update above) — reminderAnchorAt anchors to
+    // this resend, not the original (long-stale) send, and any leftover
+    // deferral from before the escalation is cleared rather than
+    // immediately re-suppressing the freshly-restarted reminders.
+    await db
+      .update(conversations)
+      .set({ reminderAnchorAt: new Date(), deferredReminderAt: null })
+      .where(eq(conversations.collectionRequestId, collectionRequestId));
+  }
 
   await recordAuditEvent({
     organizationId,
@@ -261,6 +285,25 @@ async function exitLearningModeIfFirstCycle(organizationId: string, clientId: st
 // Steps through whichever valid intermediate transitions are needed to
 // reach `completed` from the current status (e.g. waiting_for_client ->
 // processing -> completed), stopping at the first failure.
+//
+// Root-cause fix (2026-08-16 production incident — reminders silently
+// stopped after a partial document arrived) — this used to transition to
+// "processing" unconditionally BEFORE checking whether the request was
+// actually complete, then attempt processing -> completed, which fails
+// (via applyTransition's own gate check) whenever real requirements are
+// still outstanding. The processing pre-transition was never rolled back
+// on that failure, and "processing" has no legal transition back to
+// "active" (see ALLOWED_TRANSITIONS) — so any request that reached this
+// function while still genuinely incomplete (e.g. runAutomaticCaseStatusReview
+// calling this after a partial document, or a client prematurely saying
+// "finished") got permanently stranded in "processing": invisible to every
+// scheduler pass that only queries "active"/"waiting_for_client". The
+// caller-facing behavior (reporting exactly what's still missing) was
+// unaffected, which is why this went unnoticed — only the request's own
+// status silently broke. Checking the gate FIRST, before ever touching
+// status, means an incomplete request is simply left exactly where it
+// already was — still visible to reminders/evaluation — with the real
+// missing-requirements error still returned to the caller unchanged.
 export async function completeCollectionRequest(
   organizationId: string,
   actorUserId: string | undefined,
@@ -275,7 +318,12 @@ export async function completeCollectionRequest(
     .limit(1);
   if (!current) return { ok: false, error: "בקשת האיסוף לא נמצאה." };
 
-  if (current.status !== "processing" && current.status !== "completed") {
+  if (current.status === "completed") return { ok: true };
+
+  if (current.status !== "processing") {
+    const gateError = await checkCompletionGate(collectionRequestId);
+    if (gateError) return { ok: false, error: gateError };
+
     const toProcessing = await applyTransition(
       organizationId,
       actorUserId,
@@ -285,8 +333,6 @@ export async function completeCollectionRequest(
     );
     if (!toProcessing.ok) return toProcessing;
   }
-
-  if (current.status === "completed") return { ok: true };
 
   return applyTransition(
     organizationId,

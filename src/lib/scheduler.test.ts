@@ -570,6 +570,145 @@ describe("runScheduledTasks — human-review escalation after the 3-day completi
   });
 });
 
+// Reminder-lifecycle root-cause fix (2026-08-16 production incident) — the
+// SAME 3-day escalation window, but for a request that never once reached
+// waiting_for_client at all (the client never claimed to be done — this is
+// the "no response" case the fix targets specifically). reviewDeadlineAt
+// now gets set at real conversation-creation time (ensureConversation),
+// so this path is exercised identically to the waiting_for_client one
+// above, via the same shared scheduler loop.
+describe("runScheduledTasks — 'no response' lifecycle: escalation on the morning of day 4 for a request that never left status=active/open", () => {
+  it("escalates with a clear 'לא ענה' reason, no reminder sent instead — matches the day-4 morning behavior", async () => {
+    const { orgId, requestId } = await seedReminderScenario({
+      requestStatus: "active",
+      conversationStatus: "open",
+      requirementCount: 1,
+      satisfiedCount: 0,
+      reviewDeadlineAt: new Date(Date.now() - 60_000), // 3-day window from the original send has passed
+      reminderAnchorAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+    });
+
+    await runScheduledTasks(orgId);
+
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("escalated");
+    expect(request.escalationReason).toContain("לא ענה");
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+    expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it("no further reminders or requests are ever sent again once escalated (active/open-originated case)", async () => {
+    const { orgId, requestId, conversationId } = await seedReminderScenario({
+      requestStatus: "active",
+      conversationStatus: "open",
+      reviewDeadlineAt: new Date(Date.now() - 60_000),
+      reminderAnchorAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+    });
+    await runScheduledTasks(orgId);
+    let [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("escalated");
+
+    // Even a conversation still marked "open" with a very stale anchor is
+    // never picked up again — the widened branch's own query excludes
+    // "escalated" from both its status arms.
+    await db
+      .update(schema.conversations)
+      .set({ reminderAnchorAt: new Date(Date.now() - 48 * 60 * 60 * 1000) })
+      .where(eq(schema.conversations.id, conversationId));
+    sendTextMessage.mockClear();
+    sendTemplateMessage.mockClear();
+    await runScheduledTasks(orgId);
+
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+    expect(sendTextMessage).not.toHaveBeenCalled();
+    [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("escalated");
+  });
+
+  it("an explicit employee resend (escalated -> active) reopens a fresh cycle — the very next due tick sends a real reminder again", async () => {
+    const { orgId, requestId, conversationId } = await seedReminderScenario({
+      requestStatus: "active",
+      conversationStatus: "open",
+      reviewDeadlineAt: new Date(Date.now() - 60_000),
+      reminderAnchorAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+    });
+    await runScheduledTasks(orgId);
+    let [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("escalated");
+
+    // Explicit employee action — the one thing allowed to reopen the cycle.
+    const { applyTransition } = await import("./collectionRequestStateMachine");
+    const resendResult = await applyTransition(orgId, undefined, "employee", requestId, "active");
+    expect(resendResult.ok).toBe(true);
+
+    // Freshly reset — not immediately due again (anchored to the resend, not the original stale send).
+    sendTextMessage.mockClear();
+    sendTemplateMessage.mockClear();
+    await runScheduledTasks(orgId);
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+
+    // A genuine new interval later, still incomplete — reminders resume normally.
+    await db
+      .update(schema.conversations)
+      .set({ reminderAnchorAt: new Date(Date.now() - 6 * 60 * 60 * 1000) })
+      .where(eq(schema.conversations.id, conversationId));
+    await runScheduledTasks(orgId);
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+
+    [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("active"); // still on the normal automated track, not re-escalated
+  });
+});
+
+// Reminder-lifecycle root-cause fix (2026-08-16) — regression coverage for
+// the exact real production incident: a partial document arrives, the
+// silence-window case review (runAutomaticCaseStatusReview) attempts
+// completeCollectionRequest, which correctly fails (real requirements
+// still outstanding) — this must never strand the request in "processing",
+// and the reminder cycle must continue normally afterward.
+describe("runScheduledTasks — a failed completion attempt (partial document, still incomplete) never strands the request or the reminder cycle", () => {
+  it("collectionRequests.status stays 'active' (never 'processing') after a failed completion attempt, and the next due reminder still fires", async () => {
+    const { orgId, requestId, conversationId, requirementIds } = await seedReminderScenario({
+      requestStatus: "active",
+      conversationStatus: "open",
+      requirementCount: 2,
+      satisfiedCount: 0,
+      reminderAnchorAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+    });
+
+    // Simulates exactly what runAutomaticCaseStatusReview does on a partial
+    // document: attempt completion, which correctly fails.
+    const { completeCollectionRequest } = await import("./collectionRequestStateMachine");
+    const result = await completeCollectionRequest(orgId, undefined, "client", requestId);
+    expect(result.ok).toBe(false);
+
+    const [afterFailedAttempt] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(afterFailedAttempt.status).toBe("active"); // never "processing"
+
+    // The reminder cycle is completely unaffected — still fires normally.
+    await runScheduledTasks(orgId);
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+
+    // Client sends the rest — genuinely completes now, normally.
+    await db.insert(schema.documents).values([
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirementIds[0], fileName: "a.pdf", status: "approved" },
+      { organizationId: orgId, collectionRequestId: requestId, requirementId: requirementIds[1], fileName: "b.pdf", status: "approved" },
+    ]);
+    // Also genuinely idle again (real elapsed time) — idleOpenConversations
+    // is the sole owner of completing a still-"open" conversation (see the
+    // widened branch's own doc comment); the reminder-cycle test above it
+    // doesn't need this, but completion specifically does.
+    await db
+      .update(schema.conversations)
+      .set({ reminderAnchorAt: new Date(Date.now() - 6 * 60 * 60 * 1000), updatedAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(schema.conversations.id, conversationId));
+    sendTemplateMessage.mockClear();
+    await runScheduledTasks(orgId);
+    const [finalRequest] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(finalRequest.status).toBe("completed");
+  });
+});
+
 // Root-cause fix (2026-08-15 production incident) — a request that never
 // once had every requirement satisfied never left status=active/open
 // (evaluateAndPrompt's own completion gate never promotes it to

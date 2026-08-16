@@ -1,4 +1,4 @@
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   clients,
@@ -71,6 +71,16 @@ async function getServiceForConversation(conversationId: string) {
 }
 
 // BR-003: one conversation per active Collection Request.
+// Reminder-lifecycle root-cause fix (2026-08-16) — reviewDeadlineAt used to
+// be set only on entry into waiting_for_client (the "client says done,
+// employee has 3 days to double-check" window) or on an explicit deferral
+// resolving. A request the client never responds to at all — never reaches
+// waiting_for_client, never triggers a deferral — had no 3-day clock at
+// all, so it could sit "active" forever with no escalation path. Set here,
+// once, at the single moment a conversation is first created for a request
+// (the real "request sent" instant, matching reminderAnchorAt's own
+// semantics) — guarded by IS NULL so a later, legitimate reset (waiting_for_
+// client entry, deferral resolution, explicit resend) is never overwritten.
 export async function ensureConversation(
   organizationId: string,
   collectionRequestId: string,
@@ -88,6 +98,10 @@ export async function ensureConversation(
     .insert(conversations)
     .values({ organizationId, clientId, collectionRequestId })
     .returning();
+  await db
+    .update(collectionRequests)
+    .set({ reviewDeadlineAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) })
+    .where(and(eq(collectionRequests.id, collectionRequestId), isNull(collectionRequests.reviewDeadlineAt)));
   return conversation;
 }
 
