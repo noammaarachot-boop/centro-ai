@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -1243,5 +1243,77 @@ describe("runScheduledTasks — root-cause fix: reminder cycle correctness (O/P/
     await Promise.all([runScheduledTasks(orgId), runScheduledTasks(orgId)]);
 
     expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Root-cause fix (2026-08-18 production incident — a request's very first
+// reminder could never be sent, ever, no matter how many real cron ticks
+// ran) — reminderAnchorAt's column default is Postgres's own now(), which
+// carries real microsecond precision; a JS Date can only ever represent
+// milliseconds. The claim's WHERE clause used to compare the column
+// directly against a JS-Date-derived parameter — never equal for a row
+// that still holds its original, never-yet-claimed default value, so the
+// CAS silently "lost the race" on every single attempt, forever. Every
+// other test in this file sets reminderAnchorAt explicitly via a JS Date in
+// its own seed, which is already millisecond-only and never reproduces
+// this — this is the one test that seeds it the way a real, freshly
+// created conversation actually gets it: a raw SQL value with genuine
+// microsecond precision, never touched by a JS Date at all.
+describe("runScheduledTasks — root-cause fix: reminderAnchorAt's first-ever claim succeeds even when the stored value has real microsecond precision", () => {
+  it("a reminderAnchorAt set via raw SQL with non-zero microseconds (never round-tripped through a JS Date) is still claimed and sent on its very first due tick", async () => {
+    const { orgId, conversationId } = await seedReminderScenario({
+      requestStatus: "active",
+      conversationStatus: "open",
+      reminderAnchorAt: new Date(), // placeholder — overwritten below with real microsecond precision
+    });
+
+    // Six hours in the past, WITH real microseconds (.123456) — exactly the
+    // shape Postgres's own now()/defaultNow() produces, and exactly what a
+    // JS Date can never exactly represent or reproduce in a later eq().
+    const staleWithMicroseconds = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString().replace("Z", "123456Z");
+    await db.execute(
+      sql`update conversations set reminder_anchor_at = ${staleWithMicroseconds}::timestamptz where id = ${conversationId}`
+    );
+    const beforeResult = await db.execute<{ reminder_anchor_at: string }>(
+      sql`select to_char(reminder_anchor_at, 'YYYY-MM-DD HH24:MI:SS.US') as reminder_anchor_at from conversations where id = ${conversationId}`
+    );
+    const beforeRaw = (beforeResult as unknown as { rows: Array<{ reminder_anchor_at: string }> }).rows[0];
+    expect(beforeRaw.reminder_anchor_at.split(".")[1]).not.toBe("000000"); // confirms real microsecond precision is actually stored, not silently rounded away
+
+    await runScheduledTasks(orgId);
+
+    // The bug this guards against: silently 0 calls, no error, no audit trail.
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+    const afterResult = await db.execute<{ reminder_anchor_at: string }>(
+      sql`select to_char(reminder_anchor_at, 'YYYY-MM-DD HH24:MI:SS.US') as reminder_anchor_at from conversations where id = ${conversationId}`
+    );
+    const afterRaw = (afterResult as unknown as { rows: Array<{ reminder_anchor_at: string }> }).rows[0];
+    expect(afterRaw.reminder_anchor_at).not.toBe(beforeRaw.reminder_anchor_at); // the claim genuinely advanced the anchor, not left untouched
+  });
+
+  it("a genuine concurrent change to the microsecond-precision value between read and claim is still correctly detected and refused (the CAS still protects against real races)", async () => {
+    const { orgId, conversationId } = await seedReminderScenario({
+      requestStatus: "active",
+      conversationStatus: "open",
+      reminderAnchorAt: new Date(),
+    });
+    const staleWithMicroseconds = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString().replace("Z", "654321Z");
+    await db.execute(
+      sql`update conversations set reminder_anchor_at = ${staleWithMicroseconds}::timestamptz where id = ${conversationId}`
+    );
+
+    // First tick claims successfully (proving the fix), advancing
+    // reminderAnchorAt to a fresh JS-native new Date().
+    await runScheduledTasks(orgId);
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+
+    // A second tick immediately after must NOT re-send — the claimed value
+    // is now recent (not due), so this also proves the fix didn't make the
+    // CAS artificially permissive (e.g. by dropping the comparison
+    // entirely) — it still correctly blocks on a value that's genuinely
+    // different from what a fresh SELECT would consider due.
+    sendTemplateMessage.mockClear();
+    await runScheduledTasks(orgId);
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
   });
 });

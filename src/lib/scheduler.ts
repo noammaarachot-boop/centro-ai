@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte, notInArray, or } from "drizzle-orm";
+import { and, eq, isNotNull, lte, notInArray, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, messages, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -339,10 +339,32 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         // rather than every tick, never double-processed. A genuine send
         // failure (as opposed to a business-hours defer) is restored via
         // restoreOnFailure below, never left silently "consumed".
+        //
+        // Root-cause fix (2026-08-18 production incident — a request's
+        // very first reminder attempt could never succeed, ever) —
+        // reminderAnchorAt's column default is Postgres's own now(), which
+        // carries real microsecond precision; a JS Date can only ever
+        // represent milliseconds. For a conversation whose reminderAnchorAt
+        // still holds that original, never-yet-claimed default value, a
+        // plain eq() comparison here compares the column's true
+        // microsecond-precision value against a parameter that already lost
+        // its sub-millisecond digits on the round trip through JS — never
+        // equal, every single time, deterministically (not the "lost the
+        // race to a concurrent tick" this claim otherwise guards against).
+        // date_trunc('milliseconds', ...) on the column side makes the
+        // comparison symmetric with what a JS Date can actually hold, so a
+        // genuinely untouched row can be claimed on its very first attempt,
+        // while still correctly failing to match if some other write really
+        // did change the value in the meantime.
         const claimed = await db
           .update(conversations)
           .set({ reminderAnchorAt: new Date() })
-          .where(and(eq(conversations.id, conversation.id), eq(conversations.reminderAnchorAt, conversation.reminderAnchorAt)))
+          .where(
+            and(
+              eq(conversations.id, conversation.id),
+              sql`date_trunc('milliseconds', ${conversations.reminderAnchorAt}) = ${conversation.reminderAnchorAt.toISOString()}::timestamptz`
+            )
+          )
           .returning({ id: conversations.id });
         if (claimed.length === 0) continue; // lost the race to another tick
 
