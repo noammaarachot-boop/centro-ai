@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or, type SQL } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   clients,
@@ -52,12 +52,59 @@ export function nextStatusOptions(
   return ALLOWED_TRANSITIONS[from] ?? [];
 }
 
+// Canonical "the system is genuinely waiting on the client right now"
+// condition — the exact OR the reminder scheduler (scheduler.ts's own
+// staleWaitingConversations query) uses to decide whether a request is due
+// for a nudge:
+//   - conversations.status="waiting_for_client" AND
+//     collectionRequests.status="waiting_for_client" — the client said
+//     they're done and the system is waiting on their final confirmation.
+//   - conversations.status="open" AND collectionRequests.status="active"
+//     — the request never even reached that point: it's still missing
+//     requirements and the client hasn't engaged (see scheduler.ts's own
+//     "root-cause fix (2026-08-15)" comment for why this second branch
+//     exists at all).
+// Single source of truth: scheduler.ts imports and uses this directly in
+// its own query (never re-declares the OR itself), and any other caller
+// (e.g. a dashboard's own "waiting for client" count) must do the same —
+// never re-derive an equivalent-looking condition independently, since
+// that's exactly how a dashboard and the engine it's supposed to reflect
+// can silently drift apart.
+export function isWaitingForClientCondition(): SQL {
+  return or(
+    and(eq(conversations.status, "waiting_for_client"), eq(collectionRequests.status, "waiting_for_client")),
+    and(eq(conversations.status, "open"), eq(collectionRequests.status, "active"))
+  ) as SQL;
+}
+
 // BR-11.2: the request remains open until all required documents are
 // received. BR-6.1: only validated (approved) documents satisfy a
 // requirement. BR-6.2: documents still "processing" block completion.
-export async function checkCompletionGate(
+export interface RequirementsProgress {
+  // How many of the request's own requirements are, right now, genuinely
+  // satisfied per computeRequirementSatisfaction — the same real algorithm
+  // checkCompletionGate itself relies on. Never a document count, a
+  // percentage guess, or any other stand-in.
+  satisfiedCount: number;
+  totalCount: number;
+  unsatisfiedCount: number;
+  // A document mid-AI-processing blocks completion outright (see
+  // checkCompletionGate below) even though it isn't tied to any specific
+  // requirement's satisfied/unsatisfied count — surfaced separately so a
+  // caller (e.g. a dashboard) can distinguish "genuinely missing
+  // documents" from "already sent, still being read by the system".
+  hasProcessingDocuments: boolean;
+}
+
+// Single source of truth for "how much of this request is actually done"
+// — checkCompletionGate (below) and any other caller (e.g. a dashboard's
+// own X/Y progress display) both call this one function, so there is
+// never a second, possibly-diverging completion algorithm anywhere in the
+// codebase. Reuses exactly the same fetch/loop checkCompletionGate always
+// has; this is a pure extraction, not a behavior change.
+export async function computeRequirementsProgress(
   collectionRequestId: string
-): Promise<string | null> {
+): Promise<RequirementsProgress> {
   const db = await getDb();
 
   const requirements = await db
@@ -83,10 +130,7 @@ export async function checkCompletionGate(
     .from(documents)
     .where(eq(documents.collectionRequestId, collectionRequestId));
 
-  if (requestDocuments.some((doc) => doc.status === "processing")) {
-    return "לא ניתן להשלים בקשה כאשר יש מסמכים בעיבוד.";
-  }
-
+  const hasProcessingDocuments = requestDocuments.some((doc) => doc.status === "processing");
   const approvedDocuments = requestDocuments.filter((doc) => doc.status === "approved" && doc.requirementId);
 
   // Semantic requirement engine (src/lib/ai/requirementSemantics.ts): a
@@ -96,14 +140,32 @@ export async function checkCompletionGate(
   // to exactly the pre-semantic one-approved-document/distinct-period
   // check, unchanged. Multi-page continuation pages (continuationOfDocumentId
   // set) are never counted as their own unit.
-  const unsatisfied = requirements.filter((requirement) => {
+  let satisfiedCount = 0;
+  for (const requirement of requirements) {
     const docs = approvedDocuments
       .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
       .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
-    return !computeRequirementSatisfaction(requirement, docs).satisfied;
-  });
-  if (unsatisfied.length > 0) {
-    return `יש ${unsatisfied.length} דרישות מסמכים שטרם אושרו.`;
+    if (computeRequirementSatisfaction(requirement, docs).satisfied) satisfiedCount += 1;
+  }
+
+  return {
+    satisfiedCount,
+    totalCount: requirements.length,
+    unsatisfiedCount: requirements.length - satisfiedCount,
+    hasProcessingDocuments,
+  };
+}
+
+export async function checkCompletionGate(
+  collectionRequestId: string
+): Promise<string | null> {
+  const progress = await computeRequirementsProgress(collectionRequestId);
+
+  if (progress.hasProcessingDocuments) {
+    return "לא ניתן להשלים בקשה כאשר יש מסמכים בעיבוד.";
+  }
+  if (progress.unsatisfiedCount > 0) {
+    return `יש ${progress.unsatisfiedCount} דרישות מסמכים שטרם אושרו.`;
   }
 
   return null;

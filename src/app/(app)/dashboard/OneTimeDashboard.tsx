@@ -1,48 +1,14 @@
 import Link from "next/link";
-import { FolderKanban, Users, Activity, CheckCircle2, Plus } from "lucide-react";
+import { clsx } from "clsx";
+import { AlertTriangle, CheckCircle2, Clock, Activity, FolderKanban, Plus } from "lucide-react";
 import { CentroStatusIndicator } from "@/components/app/CentroStatusIndicator";
 import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
-import { AiBriefing } from "@/components/app/AiBriefing";
 import { KpiCard } from "@/components/app/KpiCard";
 import { TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 import { buttonVariants } from "@/components/app/Button";
 import { StatusBadge } from "../collections/StatusBadge";
-import {
-  getOneTimeDashboardCounts,
-  listRecentOneTimeRequests,
-} from "@/lib/data/oneTimeDashboard";
-import { resolveOnDemandDraft, hasSentAnyOnDemandRequest } from "@/lib/data/collectionRequestDrafts";
-
-function relativeTime(date: Date) {
-  const diffMs = Date.now() - new Date(date).getTime();
-  const minutes = Math.round(diffMs / 60000);
-  if (minutes < 1) return "עכשיו";
-  if (minutes < 60) return `לפני ${minutes} דקות`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `לפני ${hours} שעות`;
-  const days = Math.round(hours / 24);
-  return `לפני ${days} ימים`;
-}
-
-// Rule-based headline from getOneTimeDashboardCounts' own numbers — no
-// live AI/LLM call. This workflow has no queues/classification, so the
-// briefing is deliberately simpler than the recurring dashboard's.
-function buildBriefing(counts: Awaited<ReturnType<typeof getOneTimeDashboardCounts>>) {
-  if (counts.templateCount === 0) {
-    return "עדיין אין בקשות איסוף מוגדרות — צרו את הבקשה הראשונה כדי להתחיל לשלוח.";
-  }
-
-  const parts: string[] = [];
-  if (counts.activeRequestCount > 0) parts.push(`${counts.activeRequestCount} בקשות פעילות`);
-  if (counts.completedThisWeekCount > 0) parts.push(`${counts.completedThisWeekCount} הושלמו השבוע`);
-
-  if (parts.length === 0) {
-    return "אין בקשות פעילות כרגע — הכול נקי ומעודכן.";
-  }
-
-  return `${parts.join(", ")}.`;
-}
+import { getOneTimeDashboardView, type OneTimeDashboardView } from "@/lib/data/oneTimeDashboardView";
 
 // First-Send Journey — the two-state focal card from the locked design:
 // "Create" before any Collection Request definition exists at all,
@@ -74,17 +40,183 @@ function FirstSendFocalCard({ draftId }: { draftId: string | null }) {
   );
 }
 
+// Dynamic summary hero — state A ("attention": one or more real
+// needs-review items exist) vs state B ("calm": none do). Every number and
+// phrase here is pre-composed by oneTimeDashboardView.ts from the same
+// getItemsNeedingReview() the KPI tile and the priority list below also
+// use — never a separate count computed here.
+function DashboardHero({ hero }: { hero: OneTimeDashboardView["hero"] }) {
+  const isCalm = hero.state === "calm";
+  return (
+    <div className="centro-glass-strong relative mb-8 overflow-hidden rounded-[24px] border border-border p-8 shadow-card-lg sm:p-9">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -inset-x-[6%] -inset-y-[22%] -z-10 blur-[24px]"
+        style={{
+          background: isCalm
+            ? "radial-gradient(55% 90% at 15% 30%, color-mix(in oklab, var(--color-brand-emerald) 14%, transparent), transparent 72%), radial-gradient(40% 70% at 85% 80%, color-mix(in oklab, var(--color-brand-cyan) 10%, transparent), transparent 74%)"
+            : "radial-gradient(55% 90% at 15% 30%, color-mix(in oklab, var(--color-danger) 14%, transparent), transparent 72%), radial-gradient(40% 70% at 85% 80%, color-mix(in oklab, var(--color-brand-purple) 12%, transparent), transparent 74%)",
+        }}
+      />
+      <h2 className="max-w-[58ch] text-xl leading-relaxed font-bold text-text-primary sm:text-[23px]">
+        {hero.headline}
+      </h2>
+      {hero.subtext && <p className="mt-2 max-w-[62ch] text-sm text-text-secondary">{hero.subtext}</p>}
+      {hero.chips.length > 0 && (
+        <div className="mt-5 flex flex-wrap gap-2.5">
+          {hero.chips.map((chip) => (
+            <Link
+              key={chip.label}
+              href="/collections"
+              className="inline-flex items-center gap-2.5 rounded-full border border-border bg-surface px-4 py-2.5 text-[13.5px] font-semibold text-text-primary shadow-card transition-all duration-200 ease-[var(--ease-standard)] hover:-translate-y-0.5"
+            >
+              <span
+                className={clsx(
+                  "inline-grid h-5 min-w-5 place-items-center rounded-full px-1.5 text-[11px] font-extrabold text-white",
+                  chip.tone === "danger" ? "bg-danger" : "bg-warning"
+                )}
+              >
+                {chip.count}
+              </span>
+              {chip.label}
+              <span className="text-text-muted" aria-hidden="true">←</span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NeedsAttentionSection({ rows }: { rows: OneTimeDashboardView["needsAttention"] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="mb-8">
+      <div className="mb-3.5 flex items-baseline justify-between">
+        <h2 className="flex items-center gap-2 text-[17px] font-bold text-text-primary">
+          מחכה לטיפול שלך
+          <span className="inline-grid h-[22px] min-w-[22px] place-items-center rounded-full bg-danger px-1.5 text-xs font-extrabold text-white">
+            {rows.length}
+          </span>
+        </h2>
+        <Link href="/collections" className="text-sm font-semibold text-brand-purple">
+          הצג הכול ←
+        </Link>
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {rows.map((row) => (
+          <div
+            key={row.collectionRequestId}
+            className={clsx(
+              "centro-glass flex items-center gap-4 rounded-2xl border border-border p-4 shadow-card",
+              row.severity === "danger" ? "border-s-4 border-s-danger" : "border-s-4 border-s-warning"
+            )}
+          >
+            <span
+              className={clsx(
+                "grid h-9.5 w-9.5 shrink-0 place-items-center rounded-xl",
+                row.severity === "danger" ? "centro-icon-danger" : "centro-icon-warning"
+              )}
+            >
+              {row.severity === "danger" ? (
+                <Clock className="h-4.5 w-4.5" aria-hidden="true" />
+              ) : (
+                <AlertTriangle className="h-4.5 w-4.5" aria-hidden="true" />
+              )}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-bold text-text-primary">{row.title}</p>
+              <p className="mt-0.5 truncate text-[12.5px] text-text-secondary">{row.meta}</p>
+            </div>
+            <Link
+              href={row.actionHref}
+              className="shrink-0 rounded-lg border border-border bg-surface-muted px-3.5 py-2 text-[12.5px] font-bold whitespace-nowrap text-text-primary"
+            >
+              {row.actionLabel} ←
+            </Link>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InProgressTable({ rows }: { rows: OneTimeDashboardView["inProgress"] }) {
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        icon={FolderKanban}
+        title="אין בקשות בתהליך כרגע"
+        description="ברגע שתשלחו בקשת איסוף ללקוח, היא תופיע כאן."
+        action={
+          <Link href="/collections/new" className={buttonVariants({ variant: "primary", size: "sm" })}>
+            יצירת בקשת איסוף
+          </Link>
+        }
+      />
+    );
+  }
+
+  return (
+    <Card padding="none" className="overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-end text-sm">
+          <TableHead>
+            <TableHeadCell>לקוח</TableHeadCell>
+            <TableHeadCell>בקשת איסוף</TableHeadCell>
+            <TableHeadCell>התקדמות</TableHeadCell>
+            <TableHeadCell>מצב נוכחי</TableHeadCell>
+            <TableHeadCell>עדכון אחרון</TableHeadCell>
+            <TableHeadCell>{" "}</TableHeadCell>
+          </TableHead>
+          <tbody>
+            {rows.map((row) => {
+              const percent = row.totalCount === 0 ? 100 : Math.round((row.satisfiedCount / row.totalCount) * 100);
+              return (
+                <TableRow key={row.collectionRequestId}>
+                  <TableCell className="font-medium text-text-primary">{row.clientName}</TableCell>
+                  <TableCell className="text-text-secondary">
+                    {row.serviceName} · {row.periodLabel}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-muted">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-l from-brand-blue to-brand-cyan"
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
+                      <span className="text-xs whitespace-nowrap text-text-muted tabular-nums">
+                        {row.satisfiedCount}/{row.totalCount}
+                      </span>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={row.status} />
+                  </TableCell>
+                  <TableCell className="text-text-muted">{row.lastActivityLabel}</TableCell>
+                  <TableCell>
+                    <Link href={row.href} className="text-[12.5px] font-bold text-brand-purple">
+                      פתיחה
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 // Workflow B's own dashboard — a deliberately different, smaller surface
-// than the recurring dashboard's queue-card system, since none of that
-// vocabulary (business-type suggestions, pending classification
-// confirmations, etc.) exists in this workflow. Reuses shared UI
-// primitives (Card, EmptyState, StatusBadge) and the recurring dashboard's
-// composition pattern, not its content.
+// than the recurring dashboard's queue-card system. Every KPI, priority-
+// list row, and table row here is a direct rendering of
+// getOneTimeDashboardView()'s already-computed view props — this
+// component makes no completion/status/review decisions of its own.
 export async function OneTimeDashboard({ organizationId }: { organizationId: string }) {
-  const counts = await getOneTimeDashboardCounts(organizationId);
-  const recentRequests = await listRecentOneTimeRequests(organizationId);
-  const hasSent = await hasSentAnyOnDemandRequest(organizationId);
-  const draftId = hasSent ? null : await resolveOnDemandDraft(organizationId);
+  const view = await getOneTimeDashboardView(organizationId);
 
   return (
     <div className="mx-auto max-w-5xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -100,87 +232,56 @@ export async function OneTimeDashboard({ organizationId }: { organizationId: str
           </div>
         </div>
         <p className="mt-1.5 max-w-2xl text-sm text-text-secondary">
-          בקשות איסוף מסמכים חד-פעמיות, נשלחות בכל עת.
+          כל מה שקורה עם הלקוחות שלך, במקום אחד — תמיד מעודכן.
         </p>
       </div>
 
-      {!hasSent ? (
-        <FirstSendFocalCard draftId={draftId} />
+      {!view.hasSentAnyRequest ? (
+        <FirstSendFocalCard draftId={view.draftId} />
       ) : (
         <>
-          <AiBriefing text={buildBriefing(counts)} />
+          <DashboardHero hero={view.hero} />
 
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
             <KpiCard
               href="/collections"
-              label="בקשות מוגדרות"
-              value={counts.templateCount}
-              icon={<FolderKanban className="h-4.5 w-4.5" aria-hidden="true" />}
-              accent="purple"
+              label="דורש בדיקה"
+              value={view.kpis.needsReviewCount}
+              icon={<AlertTriangle className="h-4.5 w-4.5" aria-hidden="true" />}
+              accent="danger"
             />
             <KpiCard
-              href="/clients"
-              label="לקוחות"
-              value={counts.clientCount}
-              icon={<Users className="h-4.5 w-4.5" aria-hidden="true" />}
-              accent="blue"
+              href="/collections"
+              label="ממתינים ללקוח"
+              value={view.kpis.waitingForClientCount}
+              icon={<Clock className="h-4.5 w-4.5" aria-hidden="true" />}
+              accent="warning"
             />
             <KpiCard
               href="/collections"
               label="בקשות פעילות"
-              value={counts.activeRequestCount}
+              value={view.kpis.activeRequestsCount}
               icon={<Activity className="h-4.5 w-4.5" aria-hidden="true" />}
               accent="cyan"
             />
             <KpiCard
               href="/collections"
               label="הושלמו השבוע"
-              value={counts.completedThisWeekCount}
+              value={view.kpis.completedThisWeekCount}
               icon={<CheckCircle2 className="h-4.5 w-4.5" aria-hidden="true" />}
               accent="emerald"
             />
           </div>
 
-          {recentRequests.length === 0 ? (
-            <EmptyState
-              icon={FolderKanban}
-              title="עדיין לא נשלחו בקשות"
-              description="שלחו בקשת איסוף ללקוח כדי להתחיל."
-              action={
-                <Link href="/collections/new" className={buttonVariants({ variant: "primary", size: "sm" })}>
-                  יצירת בקשת איסוף
-                </Link>
-              }
-            />
-          ) : (
-            <Card padding="none" className="overflow-hidden">
-              <div className="border-b border-border px-5 py-4">
-                <h2 className="text-sm font-semibold text-text-primary">בקשות אחרונות</h2>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[480px] text-end text-sm">
-                  <TableHead>
-                    <TableHeadCell>לקוח</TableHeadCell>
-                    <TableHeadCell>בקשת איסוף</TableHeadCell>
-                    <TableHeadCell>סטטוס</TableHeadCell>
-                    <TableHeadCell>נשלח</TableHeadCell>
-                  </TableHead>
-                  <tbody>
-                    {recentRequests.map((row) => (
-                      <TableRow key={row.id}>
-                        <TableCell className="font-medium text-text-primary">{row.clientName}</TableCell>
-                        <TableCell className="text-text-secondary">{row.templateName}</TableCell>
-                        <TableCell>
-                          <StatusBadge status={row.status} />
-                        </TableCell>
-                        <TableCell className="text-text-muted">{relativeTime(row.createdAt)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          )}
+          <NeedsAttentionSection rows={view.needsAttention} />
+
+          <div className="mb-3.5 flex items-baseline justify-between">
+            <h2 className="text-[17px] font-bold text-text-primary">בקשות בתהליך</h2>
+            <Link href="/collections" className="text-sm font-semibold text-brand-purple">
+              כל הבקשות ←
+            </Link>
+          </div>
+          <InProgressTable rows={view.inProgress} />
         </>
       )}
     </div>

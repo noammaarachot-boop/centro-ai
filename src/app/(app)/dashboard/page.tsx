@@ -31,6 +31,7 @@ import { EmptyState } from "@/components/app/EmptyState";
 import { AiBriefing, type AiBriefingAction } from "@/components/app/AiBriefing";
 import { ProgressBar } from "@/components/app/ProgressBar";
 import { Table, TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
+import { formatRelativeTime } from "@/lib/formatRelativeTime";
 
 const QUEUE_CARDS: Array<{
   queue: DashboardQueue;
@@ -130,17 +131,6 @@ function buildBriefingActions(
     });
   }
   return actions;
-}
-
-function relativeTime(date: Date) {
-  const diffMs = Date.now() - new Date(date).getTime();
-  const minutes = Math.round(diffMs / 60000);
-  if (minutes < 1) return "עכשיו";
-  if (minutes < 60) return `לפני ${minutes} דקות`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `לפני ${hours} שעות`;
-  const days = Math.round(hours / 24);
-  return `לפני ${days} ימים`;
 }
 
 export default async function DashboardPage({
@@ -266,7 +256,7 @@ export default async function DashboardPage({
                     </Link>
                   </TableCell>
                   <TableCell className="text-text-secondary">{row.question}</TableCell>
-                  <TableCell className="text-text-secondary">{relativeTime(row.createdAt)}</TableCell>
+                  <TableCell className="text-text-secondary">{formatRelativeTime(row.createdAt)}</TableCell>
                 </TableRow>
               ))}
             </tbody>
@@ -324,7 +314,7 @@ export default async function DashboardPage({
                   <TableCell className="text-text-secondary">
                     {row.missingDocuments.length > 0 ? row.missingDocuments.join(", ") : "—"}
                   </TableCell>
-                  <TableCell className="text-text-secondary">{relativeTime(row.lastActivity)}</TableCell>
+                  <TableCell className="text-text-secondary">{formatRelativeTime(row.lastActivity)}</TableCell>
                   <TableCell>
                     <StatusBadge status={row.status as CollectionRequestStatus} />
                   </TableCell>

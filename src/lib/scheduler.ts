@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, lte, notInArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, messages, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -15,7 +15,7 @@ import {
   flushDueIntakeNotificationsForOrganization,
   sendConfirmationRemindersAndEscalate,
 } from "@/lib/documentIntakeReview";
-import { checkCompletionGate, escalateToHumanReview } from "@/lib/collectionRequestStateMachine";
+import { checkCompletionGate, escalateToHumanReview, isWaitingForClientCondition } from "@/lib/collectionRequestStateMachine";
 import { attemptFinishCollectionRequest, runAutomaticCaseStatusReview } from "@/lib/caseReview";
 import { createExtensionFinishedCheckIfDue, EXTENSION_NUDGE_AFTER_MINUTES } from "@/lib/requestExtension";
 import { captureError } from "@/lib/monitoring/errorReporting";
@@ -206,10 +206,10 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       .where(
         and(
           eq(conversations.organizationId, organization.id),
-          or(
-            and(eq(conversations.status, "waiting_for_client"), eq(collectionRequests.status, "waiting_for_client")),
-            and(eq(conversations.status, "open"), eq(collectionRequests.status, "active"))
-          ),
+          // Shared with any other "is the system waiting on the client"
+          // consumer (e.g. a dashboard) via collectionRequestStateMachine.ts
+          // — never redeclared here, so there is exactly one definition.
+          isWaitingForClientCondition(),
           // See the matching exclusion on idleOpenConversations above — an
           // active extension has its own dedicated nudge pass below.
           eq(collectionRequests.extensionActive, false)

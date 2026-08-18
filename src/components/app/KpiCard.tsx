@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 
-type Accent = "purple" | "blue" | "cyan" | "emerald" | "warning";
+type Accent = "purple" | "blue" | "cyan" | "emerald" | "warning" | "danger";
 
 // Centro Glow — icon badges are a soft two-stop gradient + a small
 // colored shadow (never a flat tint), and the card's own hover glow
@@ -16,6 +16,7 @@ const ACCENT_ICON_CLASS: Record<Accent, string> = {
   cyan: "centro-icon-teal",
   emerald: "centro-icon-emerald",
   warning: "centro-icon-warning",
+  danger: "centro-icon-danger",
 };
 
 const ACCENT_GLOW_CLASS: Record<Accent, string> = {
@@ -24,6 +25,7 @@ const ACCENT_GLOW_CLASS: Record<Accent, string> = {
   cyan: "centro-glow-teal",
   emerald: "centro-glow-emerald",
   warning: "centro-glow-warning",
+  danger: "centro-glow-danger",
 };
 
 function useCountUp(target: number, durationMs = 700) {
