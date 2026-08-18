@@ -1,80 +1,78 @@
 import Link from "next/link";
-import { FolderKanban, Plus } from "lucide-react";
+import { FileText, FolderKanban, Plus } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
-import { listCollectionRequests } from "@/lib/data/collectionRequests";
-import { StatusBadge } from "./StatusBadge";
+import { listTemplatesWithActiveCounts } from "@/lib/data/templates";
 import { PageHeader } from "@/components/app/PageHeader";
+import { Card } from "@/components/app/Card";
+import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
-import { Table, TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 import { buttonVariants } from "@/components/app/Button";
 
-// Product Evolution M9 — an organization can have both Recurring
-// Collections and On-Demand Templates producing requests here at once, so
-// this page (and its wording) is deliberately mode-neutral rather than
-// picking one word based on the organization's onboarding choice.
+// Template gallery — "בקשות איסוף" now shows on-demand templates as cards
+// rather than a flat table of individual requests. Every number here
+// (activeRequestCount, requirementCount) comes straight from
+// listTemplatesWithActiveCounts (src/lib/data/templates.ts), which itself
+// only reads the real collectionRequests/serviceDocumentRequirements
+// tables via the state machine's own NON_TERMINAL_STATUSES — never a
+// manual counter, never invented data.
 //
-// First-Send Journey — this page is also now the on-demand path's front
-// door: "+ New" opens the Collection Requests wizard (/collections/new),
-// which replaces the retired /templates list. Recurring requests (opened
-// automatically by src/lib/recurringScheduler.ts) still land in this same
-// list unchanged — this page's own content stays mode-neutral, only a
-// creation entry point was added.
+// Recurring Collections (services.collectionMode="recurring") are
+// deliberately not shown here or anywhere in nav right now (Sidebar.tsx's
+// "איסוף מחזורי" is hidden) — the org's own choice to focus the visible UI
+// on on-demand templates for now. Nothing about the recurring engine,
+// routes, or data changed; only this screen's own content did.
 export default async function CollectionsPage() {
   const session = await requireSession();
-  const collectionRequests = await listCollectionRequests(session.organizationId);
+  const templates = await listTemplatesWithActiveCounts(session.organizationId);
 
   return (
-    <div className="mx-auto max-w-4xl animate-fade-in-up px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
       <PageHeader
         title="בקשות איסוף"
-        description="כל בקשות איסוף המסמכים מכל הלקוחות, מאיסוף מחזורי ומאיסוף לפי צורך כאחד."
+        description="תבניות בקשות המסמכים שלכם — כל תבנית אפשר לשלוח לכל לקוח, בכל זמן."
         actions={
           <Link href="/collections/new" className={buttonVariants({ variant: "primary", size: "sm" })}>
             <Plus className="h-4 w-4" />
-            בקשת איסוף חדשה
+            תבנית חדשה
           </Link>
         }
       />
 
-      {collectionRequests.length === 0 ? (
+      {templates.length === 0 ? (
         <EmptyState
           icon={FolderKanban}
-          title="עדיין אין בקשות איסוף"
-          description="צרו בקשת איסוף כדי לשלוח בקשה לקוח ראשון, או המתינו למחזור האיסוף הבא."
+          title="עדיין אין תבניות בקשות איסוף"
+          description="צרו תבנית — למשל 'מסמכים לפתיחת תיק' — כדי להתחיל לשלוח בקשות ללקוחות."
           action={
             <Link href="/collections/new" className={buttonVariants({ variant: "primary", size: "sm" })}>
-              יצירת בקשת איסוף
+              יצירת תבנית ראשונה
             </Link>
           }
         />
       ) : (
-        <Table minWidth={560}>
-          <TableHead>
-            <TableHeadCell>לקוח</TableHeadCell>
-            <TableHeadCell>איסוף</TableHeadCell>
-            <TableHeadCell>תקופה</TableHeadCell>
-            <TableHeadCell>סטטוס</TableHeadCell>
-          </TableHead>
-          <tbody>
-            {collectionRequests.map((cr) => (
-              <TableRow key={cr.id}>
-                <TableCell>
-                  <Link
-                    href={`/collections/${cr.id}`}
-                    className="font-medium text-text-primary transition-colors hover:text-brand-purple"
-                  >
-                    {cr.clientName}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-text-secondary">{cr.serviceName}</TableCell>
-                <TableCell className="text-text-secondary">{cr.periodLabel}</TableCell>
-                <TableCell>
-                  <StatusBadge status={cr.status} />
-                </TableCell>
-              </TableRow>
-            ))}
-          </tbody>
-        </Table>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {templates.map((template) => (
+            <Link key={template.id} href={`/collections/manage/${template.id}`}>
+              <Card interactive glow="purple" className="h-full">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="font-semibold text-text-primary">{template.name}</p>
+                  {template.activeRequestCount > 0 && (
+                    <Badge tone="blue">{template.activeRequestCount} פעילות</Badge>
+                  )}
+                </div>
+                {template.description && (
+                  <p className="mt-1.5 text-sm text-text-secondary">{template.description}</p>
+                )}
+                <p className="mt-3 flex items-center gap-1.5 text-xs text-text-muted">
+                  <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                  {template.requirementCount === 0
+                    ? "עדיין לא הוגדרו מסמכים"
+                    : `${template.requirementCount} מסמכים נדרשים`}
+                </p>
+              </Card>
+            </Link>
+          ))}
+        </div>
       )}
     </div>
   );

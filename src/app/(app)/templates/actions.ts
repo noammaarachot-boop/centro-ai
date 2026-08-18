@@ -16,6 +16,7 @@ import { requireSession } from "@/lib/auth/session";
 import { snapshotServiceRequirements } from "@/lib/collectionRequestStateMachine";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 import { parseRequirementSemantics, requiresClarification } from "@/lib/ai/requirementSemantics";
+import { findClientIdsWithActiveRequest } from "@/lib/data/templates";
 
 // Product Evolution M5 — a Template is a bare `services` row for a
 // one-time-workflow organization (see ARCHITECTURE.md); these actions are
@@ -631,14 +632,65 @@ export async function removeClientFromTemplate(templateId: string, assignmentId:
 // same action, same DB effect, just a different place to report the result.
 // Defaults to the manage page so every existing call site keeps working
 // unchanged.
+//
+// `newClientName`/`newClientPhone` (both optional) let one submit both add
+// a brand-new client and send to them — the "בקשות איסוף" template
+// gallery's combined "שלח ללקוחות" action passes these; every existing
+// caller (the wizard, the old two-step manage-page flow) never sets them,
+// so this branch is a no-op for them. Duplicate phone reuses the existing
+// client, same dedup rule as createAndAssignClientToTemplate.
+//
+// Duplicate-active guard — the real gap this now closes: previously this
+// unconditionally created a new collection_requests row for every
+// submitted clientId, even one who already had a non-terminal request from
+// this exact template (the old UI defaulted to every assigned client
+// pre-checked, so simply re-opening the page and clicking Send again
+// silently duplicated the request and re-sent a real WhatsApp message).
+// Now: any client already carrying a non-terminal request for this
+// template (NON_TERMINAL_STATUSES — draft/active/waiting_for_client/
+// processing/escalated) is skipped, counted separately, and reported back
+// explicitly via `alreadyActive` — never silently absorbed into `sent`.
 export async function sendTemplateRequest(templateId: string, formData: FormData) {
   const session = await requireSession();
   await getOrgScopedTemplate(session.organizationId, templateId);
 
-  const clientIds = formData.getAll("clientId").map(String).filter(Boolean);
+  const db = await getDb();
+  const explicitClientIds = formData.getAll("clientId").map(String).filter(Boolean);
+  const newClientName = String(formData.get("newClientName") ?? "").trim();
+  const newClientPhone = String(formData.get("newClientPhone") ?? "").trim();
   const sendMode = String(formData.get("sendMode") ?? "now");
   const redirectTo = formData.get("redirectTo")?.toString() || `/collections/manage/${templateId}`;
   const sep = redirectTo.includes("?") ? "&" : "?";
+
+  const clientIds = [...explicitClientIds];
+  if (newClientName && newClientPhone) {
+    const [duplicate] = await db
+      .select({ id: clients.id })
+      .from(clients)
+      .where(and(eq(clients.organizationId, session.organizationId), eq(clients.phone, newClientPhone)))
+      .limit(1);
+
+    let newClientId: string;
+    if (duplicate) {
+      newClientId = duplicate.id;
+    } else {
+      const [created] = await db
+        .insert(clients)
+        .values({ organizationId: session.organizationId, name: newClientName, phone: newClientPhone })
+        .returning({ id: clients.id });
+      newClientId = created.id;
+
+      await recordAuditEvent({
+        organizationId: session.organizationId,
+        eventType: "clients.created",
+        description: `הלקוח/ה "${newClientName}" נוצר/ה מתוך בקשת איסוף`,
+        actorType: "employee",
+        actorUserId: session.userId,
+        clientId: newClientId,
+      });
+    }
+    if (!clientIds.includes(newClientId)) clientIds.push(newClientId);
+  }
 
   if (clientIds.length === 0) {
     redirect(`${redirectTo}${sep}error=no-clients-selected`);
@@ -654,7 +706,6 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     scheduledAt = parsed;
   }
 
-  const db = await getDb();
   const [template] = await db
     .select()
     .from(services)
@@ -686,7 +737,11 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
   let sentCount = 0;
   let scheduledCount = 0;
 
-  for (const clientId of clientIds) {
+  const clientIdsWithActiveRequest = await findClientIdsWithActiveRequest(session.organizationId, templateId, clientIds);
+  const alreadyActiveCount = clientIdsWithActiveRequest.size;
+  const clientIdsToSend = clientIds.filter((id) => !clientIdsWithActiveRequest.has(id));
+
+  for (const clientId of clientIdsToSend) {
     const [client] = await db
       .select({ id: clients.id })
       .from(clients)
@@ -735,5 +790,5 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     }
   }
 
-  redirect(`${redirectTo}${sep}sent=${sentCount}&scheduled=${scheduledCount}`);
+  redirect(`${redirectTo}${sep}sent=${sentCount}&scheduled=${scheduledCount}&alreadyActive=${alreadyActiveCount}`);
 }

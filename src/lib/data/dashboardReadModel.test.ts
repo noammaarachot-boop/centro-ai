@@ -132,7 +132,13 @@ describe("computeRequirementsProgress / checkCompletionGate — X/Y agrees exact
       .returning();
 
     let progress = await computeRequirementsProgress(request.id);
-    expect(progress).toEqual({ satisfiedCount: 0, totalCount: 2, unsatisfiedCount: 2, hasProcessingDocuments: false });
+    expect(progress).toEqual({
+      satisfiedCount: 0,
+      totalCount: 2,
+      unsatisfiedCount: 2,
+      hasProcessingDocuments: false,
+      missingRequirementNames: ["תעודת זהות", "תלוש שכר"],
+    });
     expect(await checkCompletionGate(request.id)).not.toBeNull();
 
     await db.insert(schema.documents).values({

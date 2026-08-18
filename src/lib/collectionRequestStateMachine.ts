@@ -52,6 +52,23 @@ export function nextStatusOptions(
   return ALLOWED_TRANSITIONS[from] ?? [];
 }
 
+// Canonical "this request is still real, outstanding work" — every status
+// except the two truly terminal ones. Used both to count a template's
+// "active requests" (src/lib/data/templates.ts) and to decide whether
+// sending a template to a client again would create a silent duplicate —
+// the same one predicate for both, never two independently-drifting
+// definitions. Deliberately includes "draft" (a genuinely queued/scheduled
+// send, not yet delivered — see scheduledSend.ts) and "escalated" (still
+// unresolved, just waiting on a human) — only completed/cancelled work is
+// actually done.
+export const NON_TERMINAL_STATUSES: CollectionRequestStatus[] = [
+  "draft",
+  "active",
+  "waiting_for_client",
+  "processing",
+  "escalated",
+];
+
 // Canonical "the system is genuinely waiting on the client right now"
 // condition — the exact OR the reminder scheduler (scheduler.ts's own
 // staleWaitingConversations query) uses to decide whether a request is due
@@ -94,6 +111,11 @@ export interface RequirementsProgress {
   // caller (e.g. a dashboard) can distinguish "genuinely missing
   // documents" from "already sent, still being read by the system".
   hasProcessingDocuments: boolean;
+  // The unsatisfied requirements' own names, in the same order they were
+  // fetched — "what's missing" for a caller that wants to show it (e.g. a
+  // template's active-requests list), computed from the exact same
+  // per-requirement loop as satisfiedCount, never a second pass.
+  missingRequirementNames: string[];
 }
 
 // Single source of truth for "how much of this request is actually done"
@@ -110,6 +132,7 @@ export async function computeRequirementsProgress(
   const requirements = await db
     .select({
       id: collectionRequestRequirements.id,
+      name: collectionRequestRequirements.name,
       requiredCount: collectionRequestRequirements.requiredCount,
       semanticSpec: collectionRequestRequirements.semanticSpec,
       exceptionStatus: collectionRequestRequirements.exceptionStatus,
@@ -141,11 +164,16 @@ export async function computeRequirementsProgress(
   // check, unchanged. Multi-page continuation pages (continuationOfDocumentId
   // set) are never counted as their own unit.
   let satisfiedCount = 0;
+  const missingRequirementNames: string[] = [];
   for (const requirement of requirements) {
     const docs = approvedDocuments
       .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
       .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
-    if (computeRequirementSatisfaction(requirement, docs).satisfied) satisfiedCount += 1;
+    if (computeRequirementSatisfaction(requirement, docs).satisfied) {
+      satisfiedCount += 1;
+    } else {
+      missingRequirementNames.push(requirement.name);
+    }
   }
 
   return {
@@ -153,6 +181,7 @@ export async function computeRequirementsProgress(
     totalCount: requirements.length,
     unsatisfiedCount: requirements.length - satisfiedCount,
     hasProcessingDocuments,
+    missingRequirementNames,
   };
 }
 

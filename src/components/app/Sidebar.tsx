@@ -43,11 +43,18 @@ const SUPPORT_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURI
 // /collections/new), so a separate nav link for it would just duplicate
 // this one. Recurring's own nav entry and terminology are deliberately
 // untouched — this only changes the on-demand side.
+//
+// Template gallery rework — "איסוף מחזורי" (/services) hidden the same way
+// "עוזר AI" already is: the org's own choice right now is to focus the
+// visible UI entirely on on-demand templates. Nothing about the recurring
+// engine, its routes, or its data changed — /services, /services/new,
+// /services/[id] and recurringScheduler.ts are all fully intact, just
+// unlinked from nav. Delete this one `hidden: true` line to bring it back.
 const NAV_LINKS = [
   { href: "/dashboard", label: "לוח בקרה", icon: LayoutDashboard },
   { href: "/assistant", label: "עוזר AI", icon: Sparkles, hidden: true },
   { href: "/clients", label: "לקוחות", icon: Users },
-  { href: "/services", label: "איסוף מחזורי", icon: Layers },
+  { href: "/services", label: "איסוף מחזורי", icon: Layers, hidden: true },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
   { href: "/audit", label: "פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },

@@ -3,12 +3,9 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, Copy, FileText, Sparkles, Trash2 } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { getOrganization } from "@/lib/data/organizations";
-import {
-  getService,
-  listServiceClients,
-  listServiceRequirements,
-  listUnassignedClientsForService,
-} from "@/lib/data/services";
+import { getService, listServiceRequirements } from "@/lib/data/services";
+import { listClients } from "@/lib/data/clients";
+import { findClientIdsWithActiveRequest, listActiveRequestsForTemplate } from "@/lib/data/templates";
 import {
   addTemplateRequirement,
   addTemplateRequirementWithClarification,
@@ -20,8 +17,8 @@ import { resolveRequirementSemantics } from "@/lib/requirementSemanticsActions";
 import { requiresClarification, type RequirementSemanticSpec } from "@/lib/ai/requirementSemantics";
 import { TemplateForm } from "../../../templates/TemplateForm";
 import { TemplateRequirementRow } from "../../../templates/TemplateRequirementRow";
-import { TemplateClientAssignment } from "../../../templates/TemplateClientAssignment";
-import { TemplateSendRequest } from "../../../templates/TemplateSendRequest";
+import { TemplateSendToClients } from "../../../templates/TemplateSendToClients";
+import { TemplateActiveRequests } from "../../../templates/TemplateActiveRequests";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
@@ -50,11 +47,18 @@ export default async function CollectionRequestManagePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; sent?: string; scheduled?: string; clarifyName?: string; clarifyQuestion?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    sent?: string;
+    scheduled?: string;
+    alreadyActive?: string;
+    clarifyName?: string;
+    clarifyQuestion?: string;
+  }>;
 }) {
   const session = await requireSession();
   const { id } = await params;
-  const { error, sent, scheduled, clarifyName, clarifyQuestion } = await searchParams;
+  const { error, sent, scheduled, alreadyActive, clarifyName, clarifyQuestion } = await searchParams;
 
   const organization = await getOrganization(session.organizationId);
   if (!organization) notFound();
@@ -63,9 +67,17 @@ export default async function CollectionRequestManagePage({
   if (!template) notFound();
   if (template.collectionMode !== "on_demand") notFound();
 
-  const requirements = await listServiceRequirements(id);
-  const assignedClients = await listServiceClients(session.organizationId, id);
-  const unassignedClients = await listUnassignedClientsForService(session.organizationId, id);
+  const [requirements, allClients, activeRequests] = await Promise.all([
+    listServiceRequirements(id),
+    listClients(session.organizationId),
+    listActiveRequestsForTemplate(session.organizationId, id),
+  ]);
+  const clientIdsWithActiveRequest = await findClientIdsWithActiveRequest(
+    session.organizationId,
+    id,
+    allClients.map((c) => c.id)
+  );
+  const candidateClients = allClients.filter((c) => !clientIdsWithActiveRequest.has(c.id));
 
   const boundUpdate = updateTemplate.bind(null, template.id);
   const boundDelete = deleteTemplate.bind(null, template.id);
@@ -105,12 +117,15 @@ export default async function CollectionRequestManagePage({
         </p>
       )}
 
-      {(sent || scheduled) && (Number(sent) > 0 || Number(scheduled) > 0) && (
-        <p className="animate-fade-in-up rounded-xl border border-brand-emerald/25 bg-brand-emerald/5 px-4 py-3 text-sm font-medium text-text-primary">
-          {Number(sent) > 0 && `נשלח ל-${sent} לקוחות. `}
-          {Number(scheduled) > 0 && `${scheduled} בקשות תוזמנו לשליחה.`}
-        </p>
-      )}
+      {(sent || scheduled || alreadyActive) &&
+        (Number(sent) > 0 || Number(scheduled) > 0 || Number(alreadyActive) > 0) && (
+          <p className="animate-fade-in-up rounded-xl border border-brand-emerald/25 bg-brand-emerald/5 px-4 py-3 text-sm font-medium text-text-primary">
+            {Number(sent) > 0 && `נשלח ל-${sent} לקוחות. `}
+            {Number(scheduled) > 0 && `${scheduled} בקשות תוזמנו לשליחה. `}
+            {Number(alreadyActive) > 0 &&
+              `${alreadyActive} לקוחות דולגו — כבר יש להם בקשה פעילה מהתבנית הזו.`}
+          </p>
+        )}
 
       {template.isSampleTemplate && (
         <div className="flex items-start gap-2.5 rounded-xl border border-brand-purple/25 bg-brand-purple/5 px-4 py-3 text-sm text-text-secondary">
@@ -223,13 +238,9 @@ export default async function CollectionRequestManagePage({
         )}
       </Card>
 
-      <TemplateClientAssignment
-        templateId={template.id}
-        assignedClients={assignedClients}
-        unassignedClients={unassignedClients}
-      />
+      <TemplateActiveRequests requests={activeRequests} />
 
-      <TemplateSendRequest templateId={template.id} assignedClients={assignedClients} />
+      <TemplateSendToClients templateId={template.id} candidateClients={candidateClients} />
 
       <ConfirmDialog
         title="מחיקת בקשת איסוף"
