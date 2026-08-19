@@ -30,7 +30,9 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
-const { startConversation, sendOutboundMessage, ensureConversation } = await import("./conversationOrchestration");
+const { startConversation, sendOutboundMessage, ensureConversation, recordInboundMessage } = await import(
+  "./conversationOrchestration"
+);
 const { WhatsAppSendError } = await import("./whatsapp/send");
 
 beforeAll(async () => {
@@ -338,5 +340,33 @@ describe("ensureConversation — sets a 3-day reviewDeadlineAt at the real momen
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(request.reviewDeadlineAt).not.toBeNull();
+  });
+});
+
+describe("recordInboundMessage — whatsappMessageId is persisted, not silently dropped", () => {
+  it("stores the given whatsappMessageId on the inbound message row when the caller has one (a real attachment)", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    const conversation = await ensureConversation(orgId, requestId, clientId);
+
+    await recordInboundMessage(orgId, conversation.id, "[קובץ מצורף]", "wamid.inbound-attachment-1");
+
+    const [row] = await db
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.conversationId, conversation.id));
+    expect(row.whatsappMessageId).toBe("wamid.inbound-attachment-1");
+  });
+
+  it("leaves whatsappMessageId null for a plain text inbound message (no id given), same as before", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    const conversation = await ensureConversation(orgId, requestId, clientId);
+
+    await recordInboundMessage(orgId, conversation.id, "סיימתי");
+
+    const [row] = await db
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.conversationId, conversation.id));
+    expect(row.whatsappMessageId).toBeNull();
   });
 });

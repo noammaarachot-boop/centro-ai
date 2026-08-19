@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { ATTACHMENT_PLACEHOLDER_TEXT, resolveDocumentDisplayLabel, resolveMessageDisplayBody } from "@/lib/documents/displayLabel";
 
 let db: Database;
 
@@ -77,5 +78,55 @@ describe("listDocumentsByWhatsappMessageId — feeds the conversation thread's d
     const rows = await listDocumentsByWhatsappMessageId(requestId);
     expect(rows).toHaveLength(1);
     expect(rows[0].displayLabel).toBeNull();
+  });
+});
+
+describe("full thread-display pipeline — messages.whatsappMessageId is now actually populated for inbound rows", () => {
+  it("a new inbound attachment message (placeholder body, real whatsappMessageId) upgrades to the document's real displayLabel", async () => {
+    const { orgId, requestId, requirementId } = await seedRequest();
+    const wamid = "wamid.new-inbound-1";
+
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId,
+      status: "approved",
+      fileName: "image_wamid.new-inbound-1.jpg",
+      displayLabel: "תעודת זהות",
+      whatsappMessageId: wamid,
+    });
+    // Mirrors what recordInboundMessage now writes (conversationOrchestration.ts)
+    // for a real WhatsApp attachment — the same wamid on both rows.
+    const rows = await listDocumentsByWhatsappMessageId(requestId);
+    const label = resolveDocumentDisplayLabel(rows[0].displayLabel);
+    const displayBody = resolveMessageDisplayBody(ATTACHMENT_PLACEHOLDER_TEXT, label);
+
+    expect(displayBody).toBe("[קובץ מצורף: תעודת זהות]");
+    expect(displayBody).not.toMatch(/wamid|\.(jpg|jpeg|png|pdf)/i);
+  });
+
+  it("a legacy raw-filename message (real production shape) resolves to the matched requirement's name, never the raw filename", async () => {
+    const { orgId, requestId, requirementId } = await seedRequest(); // requirement: "תעודת זהות"
+    const wamid = "wamid.HBgMOTcyNTU5ODU4Njg1FQIAEhgUMkFBMDgxMjIxNEM4NTUzMjM5NzMA";
+    const legacyBody = `[קובץ: image_wamid.${wamid}.jpg]`;
+
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId,
+      status: "approved",
+      fileName: `image_wamid.${wamid}.jpg`,
+      displayLabel: null, // pre-migration document, never backfilled
+      whatsappMessageId: wamid,
+    });
+
+    const rows = await listDocumentsByWhatsappMessageId(requestId);
+    const requirementName = "תעודת זהות";
+    const label = resolveDocumentDisplayLabel(rows[0].displayLabel, requirementName);
+    const displayBody = resolveMessageDisplayBody(legacyBody, label);
+
+    expect(displayBody).toBe("[קובץ מצורף: תעודת זהות]");
+    expect(displayBody).not.toContain(wamid);
+    expect(displayBody).not.toMatch(/\.(jpg|jpeg|png|pdf)/i);
   });
 });

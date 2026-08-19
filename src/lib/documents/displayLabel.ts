@@ -32,11 +32,27 @@ export function resolveDocumentDisplayLabel(
 // filename at either point.
 export const ATTACHMENT_PLACEHOLDER_TEXT = "[קובץ מצורף]";
 
+// Historical inbound-attachment message bodies from before this module
+// existed — the webhook route used to write `[קובץ: <fileName>]` and the
+// DevTools simulator `[מסמך: <fileName>]`, both baking the raw storage
+// filename directly into the stored text (never a placeholder that a later
+// upgrade could swap out). Those rows are never rewritten (audit/history
+// integrity), so the display layer must recognize this exact legacy shape
+// on every read and never render the captured filename — either upgrade it
+// to the real resolved label (same as the placeholder path below) or fall
+// back to the same neutral placeholder, never the raw text in between.
+const LEGACY_RAW_FILENAME_MESSAGE = /^\[(?:קובץ|מסמך): .+\]$/;
+
 // The conversation thread's own display-time upgrade — a pure function so
 // it's directly testable without a DB/React render. Never mutates
 // anything; a caller (the collection request page) is the one deciding
 // whether to persist nothing at all, which it never does.
 export function resolveMessageDisplayBody(messageBody: string, resolvedDocumentLabel: string | undefined): string {
-  if (messageBody !== ATTACHMENT_PLACEHOLDER_TEXT || !resolvedDocumentLabel) return messageBody;
-  return `[קובץ מצורף: ${resolvedDocumentLabel}]`;
+  if (messageBody === ATTACHMENT_PLACEHOLDER_TEXT) {
+    return resolvedDocumentLabel ? `[קובץ מצורף: ${resolvedDocumentLabel}]` : messageBody;
+  }
+  if (LEGACY_RAW_FILENAME_MESSAGE.test(messageBody)) {
+    return resolvedDocumentLabel ? `[קובץ מצורף: ${resolvedDocumentLabel}]` : ATTACHMENT_PLACEHOLDER_TEXT;
+  }
+  return messageBody;
 }

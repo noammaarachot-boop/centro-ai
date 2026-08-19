@@ -40,3 +40,29 @@ describe("resolveMessageDisplayBody — the conversation thread's display-time u
     expect(upgraded).not.toMatch(/wamid|\.(jpg|jpeg|png|pdf)/i);
   });
 });
+
+describe("resolveMessageDisplayBody — legacy raw-filename messages (written before this module existed)", () => {
+  it("upgrades a legacy '[קובץ: ...]' message (the old webhook-route format) to the resolved human label", () => {
+    const legacy = "[קובץ: image_wamid.HBgMOTcyNTU5ODU4Njg1FQIAEhgUMkE3MkU1MTUzM0MzRkZBMzkxQkIA.jpg]";
+    expect(resolveMessageDisplayBody(legacy, "תעודת זהות")).toBe("[קובץ מצורף: תעודת זהות]");
+  });
+
+  it("upgrades a legacy '[מסמך: ...]' message (the old DevTools-simulator format) to the resolved human label", () => {
+    expect(resolveMessageDisplayBody("[מסמך: IMG_9931.jpg]", "דרכון")).toBe("[קובץ מצורף: דרכון]");
+  });
+
+  it("falls back to the neutral placeholder — never the raw filename — when no label can be resolved", () => {
+    const legacy = "[קובץ: image_wamid.HBgMOTcyNTU5ODU4Njg1FQIAEhgUMkE3MkU1MTUzM0MzRkZBMzkxQkIA.jpg]";
+    expect(resolveMessageDisplayBody(legacy, undefined)).toBe(ATTACHMENT_PLACEHOLDER_TEXT);
+  });
+
+  it("never produces a string containing the raw filename for any legacy message, resolved or not", () => {
+    const legacy = "[קובץ: image_wamid.HBgMOTcyNTU5ODU4Njg1FQIAEhgUMkE3MkU1MTUzM0MzRkZBMzkxQkIA.jpg]";
+    expect(resolveMessageDisplayBody(legacy, "תעודת זהות")).not.toMatch(/wamid|\.(jpg|jpeg|png|pdf)/i);
+    expect(resolveMessageDisplayBody(legacy, undefined)).not.toMatch(/wamid|\.(jpg|jpeg|png|pdf)/i);
+  });
+
+  it("leaves an ordinary message that merely contains brackets untouched (not the legacy attachment shape)", () => {
+    expect(resolveMessageDisplayBody("קיבלתי [עדכון] תודה", "תעודת זהות")).toBe("קיבלתי [עדכון] תודה");
+  });
+});

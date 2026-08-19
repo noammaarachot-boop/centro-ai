@@ -456,7 +456,14 @@ export async function sendOutboundMessage(
 export async function recordInboundMessage(
   organizationId: string,
   conversationId: string,
-  body: string
+  body: string,
+  // The inbound WhatsApp media/message id (Meta's wamid) when this message
+  // came with one — set for a real attachment so the conversation thread's
+  // display-time upgrade (resolveMessageDisplayBody, joined against
+  // documents.whatsappMessageId) can later find the matching document and
+  // resolve its human label. Omitted for plain text turns and the DevTools
+  // simulator, which have no real wamid.
+  whatsappMessageId?: string
 ) {
   const db = await getDb();
   await db.insert(messages).values({
@@ -465,6 +472,7 @@ export async function recordInboundMessage(
     direction: "inbound",
     senderType: "client",
     body,
+    whatsappMessageId,
   });
   await db
     .update(conversations)

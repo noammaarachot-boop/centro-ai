@@ -428,7 +428,12 @@ export async function handleInboundMessage(
     // (documents.fileName is WhatsApp-media-id-derived, not a human label;
     // see src/lib/documents/displayLabel.ts). A generic, honest placeholder
     // until the real document row (with its resolved displayLabel) exists.
-    body || (attachment ? ATTACHMENT_PLACEHOLDER_TEXT : "[הודעה מסוג לא נתמך]")
+    body || (attachment ? ATTACHMENT_PLACEHOLDER_TEXT : "[הודעה מסוג לא נתמך]"),
+    // Same wamid processInboundAttachment will later write onto the
+    // document row (below) — lets the thread's display-time upgrade
+    // (resolveMessageDisplayBody) find that document and resolve its
+    // human label once classified.
+    attachment ? message.id : undefined
   );
 
   // Human-control silencing gate (src/app/(app)/collections/conversationActions.ts's
@@ -755,7 +760,8 @@ async function replayHeldDisambiguation(
     conversation.id,
     // Same reasoning as the primary intake path above — no classification
     // result exists yet at this point, never the raw storage filename.
-    resolution.messageBody || (resolution.pendingFileContent ? ATTACHMENT_PLACEHOLDER_TEXT : "[הודעה מסוג לא נתמך]")
+    resolution.messageBody || (resolution.pendingFileContent ? ATTACHMENT_PLACEHOLDER_TEXT : "[הודעה מסוג לא נתמך]"),
+    resolution.whatsappMessageId ?? undefined
   );
 
   // Human-control silencing gate — same rule as the live path (see its own
