@@ -6,6 +6,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { getValidAccessToken } from "@/lib/googleAuth/driveTokens";
 import { downloadDriveFile, updateDriveFileContent, uploadDriveFile } from "@/lib/googleAuth/drive";
 import { ensureCollectionRequestDriveFolder } from "@/lib/storage/driveAdapter";
+import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
 
 /**
  * Real single-PDF merging — once multi-signal detection
@@ -92,6 +93,7 @@ export async function mergeContinuationGroupToPdf(
   if (uploadedContinuations.length === 0) return;
 
   const allPageDocs = [head, ...uploadedContinuations];
+  const headLabel = resolveDocumentDisplayLabel(head.displayLabel);
 
   try {
     const accessToken = await getValidAccessToken(organizationId);
@@ -111,7 +113,7 @@ export async function mergeContinuationGroupToPdf(
       await recordAuditEvent({
         organizationId,
         eventType: "document.merged_pdf_updated",
-        description: `קובץ ה-PDF המאוחד עבור "${head.fileName}" עודכן לגרסה ${newVersion} (${allPageDocs.length} עמודים) לאחר קבלת עמוד נוסף`,
+        description: `קובץ ה-PDF המאוחד עבור "${headLabel}" עודכן לגרסה ${newVersion} (${allPageDocs.length} עמודים) לאחר קבלת עמוד נוסף`,
         actorType: "system",
         collectionRequestId,
         metadata: { documentId: headDocumentId, driveFileId: head.mergedPdfDriveFileId, version: newVersion, pageCount: allPageDocs.length },
@@ -131,7 +133,7 @@ export async function mergeContinuationGroupToPdf(
       await recordAuditEvent({
         organizationId,
         eventType: "document.merged_pdf_created",
-        description: `נוצר קובץ PDF מאוחד אחד עבור "${head.fileName}" (${allPageDocs.length} עמודים)`,
+        description: `נוצר קובץ PDF מאוחד אחד עבור "${headLabel}" (${allPageDocs.length} עמודים)`,
         actorType: "system",
         collectionRequestId,
         metadata: { documentId: headDocumentId, driveFileId: uploaded.id, pageCount: allPageDocs.length },
@@ -142,7 +144,7 @@ export async function mergeContinuationGroupToPdf(
     await recordAuditEvent({
       organizationId,
       eventType: "document.merge_failed",
-      description: `איחוד עמודי המסמך "${head.fileName}" לקובץ PDF אחד נכשל — כל הקבצים המקוריים עדיין שמורים ב-Drive`,
+      description: `איחוד עמודי המסמך "${headLabel}" לקובץ PDF אחד נכשל — כל הקבצים המקוריים עדיין שמורים ב-Drive`,
       actorType: "system",
       collectionRequestId,
       metadata: { documentId: headDocumentId },

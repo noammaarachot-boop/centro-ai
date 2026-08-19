@@ -130,8 +130,7 @@ export async function recordAdHocDocumentObservation(
   organizationId: string,
   clientId: string,
   collectionRequestId: string,
-  rawName: string,
-  fileName: string
+  rawName: string
 ): Promise<void> {
   const db = await getDb();
 
@@ -191,7 +190,7 @@ export async function recordAdHocDocumentObservation(
     return;
   }
 
-  const question = `שלום! שמנו לב שגם החודש שלחתם מסמך "${fileName}" מסוג "${name}". האם נכון לבקש מסמך כזה גם באיסופים הבאים באופן קבוע? השיבו 'כן' או 'לא'.`;
+  const question = `שלום! שמנו לב שגם החודש שלחתם מסמך מסוג "${name}". האם נכון לבקש מסמך כזה גם באיסופים הבאים באופן קבוע? השיבו 'כן' או 'לא'.`;
 
   const confirmation = await createPendingConfirmation({
     organizationId,

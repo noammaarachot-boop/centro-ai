@@ -155,11 +155,14 @@ export interface ConversationPolicyFact {
   decisionText: string;
 }
 
-// Best-effort "what type of document was this" label — mirrors the same
-// fallback every existing extra-document rename already uses (documentType
-// when known, else the requirement it was matched to, else nothing).
-function deriveDocumentType(fileName: string, requirementName: string | null): string | null {
-  return requirementName ?? (fileName.includes(".") ? fileName.slice(0, fileName.lastIndexOf(".")) : fileName) ?? null;
+// Best-effort "what type of document was this" label, fed into the LLM
+// reasoning prompt — the AI classifier's own displayLabel (e.g. "תעודת
+// זהות") when known, else the matched requirement's name, else null.
+// Never derived from documents.fileName (a storage key, not a document
+// type) — see src/lib/documents/displayLabel.ts. A null here just omits
+// the type from the prompt fact, never guesses one from the filename.
+function deriveDocumentType(displayLabel: string | null, requirementName: string | null): string | null {
+  return displayLabel ?? requirementName ?? null;
 }
 
 export async function buildConversationContext(params: {
@@ -188,7 +191,7 @@ export async function buildConversationContext(params: {
   const recentDocs = await db
     .select({
       id: documents.id,
-      fileName: documents.fileName,
+      displayLabel: documents.displayLabel,
       requirementId: documents.requirementId,
       status: documents.status,
       extractedPersonName: documents.extractedPersonName,
@@ -219,7 +222,7 @@ export async function buildConversationContext(params: {
     const requirementName = doc.requirementId ? requirementNameById.get(doc.requirementId) ?? null : null;
     return {
       id: doc.id,
-      documentType: deriveDocumentType(doc.fileName, requirementName),
+      documentType: deriveDocumentType(doc.displayLabel, requirementName),
       requirementName,
       extractedPersonName: doc.extractedPersonName,
       extractedCompanyName: doc.extractedCompanyName,

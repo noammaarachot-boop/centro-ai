@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   clients,
@@ -110,4 +110,25 @@ export async function listUnmatchedDocuments(collectionRequestId: string) {
         eq(documents.status, "needs_review")
       )
     );
+}
+
+// Every real WhatsApp-attachment document for this request, regardless of
+// status or requirement (unlike listRequirementsWithDocuments/
+// listUnmatchedDocuments, which only cover documents already tied to a
+// requirement or sitting in needs_review) — the conversation thread's own
+// display layer joins this back to messages.whatsappMessageId (the same
+// id a real inbound attachment always shares with its document row) so a
+// historical "[קובץ מצורף]" placeholder can be upgraded to the document's
+// real resolveDocumentDisplayLabel() once it's known, without ever
+// rewriting the stored message itself.
+export async function listDocumentsByWhatsappMessageId(collectionRequestId: string) {
+  const db = await getDb();
+  return db
+    .select({
+      whatsappMessageId: documents.whatsappMessageId,
+      displayLabel: documents.displayLabel,
+      requirementId: documents.requirementId,
+    })
+    .from(documents)
+    .where(and(eq(documents.collectionRequestId, collectionRequestId), isNotNull(documents.whatsappMessageId)));
 }

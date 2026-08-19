@@ -991,7 +991,26 @@ export const documents = pgTable("documents", {
     () => collectionRequestRequirements.id
   ),
   status: documentStatus("status").notNull().default("received"),
+  // Internal storage key only — for a real WhatsApp attachment this is
+  // derived from the message id (images always: WhatsApp never supplies a
+  // real filename for a photo), never something a human typed. NEVER shown
+  // directly to a person (office employee, client, AI-generated message,
+  // audit description) — see displayLabel below, the one column that's
+  // safe to surface. Keep reading/writing this only for Drive/storage
+  // bookkeeping.
   fileName: text("file_name").notNull(),
+  // The one human-safe label for this document — resolveDocumentDisplayLabel
+  // (src/lib/documents/displayLabel.ts) is the single place that reads this
+  // (falling back to the matched requirement's own name, then a generic
+  // "מסמך שהתקבל" — never to fileName) and the only function any UI,
+  // WhatsApp message, AI prompt, or audit description may use to describe a
+  // document to a person. Populated once, at intake time
+  // (processInboundAttachment), from the AI classifier's own already-computed
+  // aiDocumentType (e.g. "תעודת זהות") — never fileName, never a fresh guess.
+  // Null for documents received before this column existed, or when the
+  // classifier genuinely couldn't identify a type — both fall through to
+  // the same resolver, never left showing a raw filename.
+  displayLabel: text("display_label"),
   googleDriveFileId: text("google_drive_file_id"),
   // M-WA-4 — real WhatsApp attachments are downloaded once, at receipt
   // time, but only auto-approved documents upload to Drive immediately

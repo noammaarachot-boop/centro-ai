@@ -268,36 +268,41 @@ describe("resolveDocumentIntakeOutcome", () => {
 
 describe("buildResendGuidanceMessage", () => {
   it("prefers the AI's own crafted message when one is available", () => {
-    const message = buildResendGuidanceMessage(
-      {
-        kind: "needs_resend",
-        reason: "unreadable_quality",
-        suspectedDocumentType: "רישיון נהיגה",
-        issueDetail: "רק חצי מהמסמך נראה בתמונה",
-        aiClientMessage: "קיבלתי את רישיון הנהיגה, אבל רק חצי ממנו נראה בתמונה. אפשר לצלם מחדש את המסמך במלואו?",
-      },
-      "license.jpg"
-    );
+    const message = buildResendGuidanceMessage({
+      kind: "needs_resend",
+      reason: "unreadable_quality",
+      suspectedDocumentType: "רישיון נהיגה",
+      issueDetail: "רק חצי מהמסמך נראה בתמונה",
+      aiClientMessage: "קיבלתי את רישיון הנהיגה, אבל רק חצי ממנו נראה בתמונה. אפשר לצלם מחדש את המסמך במלואו?",
+    });
     expect(message).toBe("קיבלתי את רישיון הנהיגה, אבל רק חצי ממנו נראה בתמונה. אפשר לצלם מחדש את המסמך במלואו?");
   });
 
-  it("falls back to a deterministic template naming the file and the issue when no AI message is available", () => {
-    const message = buildResendGuidanceMessage(
-      { kind: "needs_resend", reason: "unreadable_quality", suspectedDocumentType: null, issueDetail: "התמונה כהה מדי", aiClientMessage: null },
-      "photo1.jpg"
-    );
-    expect(message).toContain("photo1.jpg");
+  it("falls back to a deterministic template naming the issue, never a raw storage filename, when no AI message is available", () => {
+    const message = buildResendGuidanceMessage({
+      kind: "needs_resend",
+      reason: "unreadable_quality",
+      suspectedDocumentType: null,
+      issueDetail: "התמונה כהה מדי",
+      aiClientMessage: null,
+    });
+    expect(message).toContain("המסמך האחרון ששלחת");
     expect(message).toContain("התמונה כהה מדי");
     expect(message).not.toContain("שלחת אותו בכוונה"); // never the wrong question for a technical defect
+    expect(message).not.toMatch(/\.(jpg|jpeg|png|pdf)/i); // never a raw filename
   });
 
-  it("falls back to a generic-but-still-file-identifying template when there's no AI message and no specific issue detail", () => {
-    const message = buildResendGuidanceMessage(
-      { kind: "needs_resend", reason: "unrecognized", suspectedDocumentType: null, issueDetail: null, aiClientMessage: null },
-      "IMG_0042.jpg"
-    );
-    expect(message).toContain("IMG_0042.jpg");
+  it("falls back to a generic template with no filename when there's no AI message and no specific issue detail", () => {
+    const message = buildResendGuidanceMessage({
+      kind: "needs_resend",
+      reason: "unrecognized",
+      suspectedDocumentType: null,
+      issueDetail: null,
+      aiClientMessage: null,
+    });
+    expect(message).toContain("המסמך האחרון ששלחת");
     expect(message).toContain("לא הצלחתי לזהות");
+    expect(message).not.toMatch(/\.(jpg|jpeg|png|pdf)/i);
   });
 });
 

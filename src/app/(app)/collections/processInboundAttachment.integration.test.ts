@@ -1483,7 +1483,7 @@ describe("processInboundAttachment — needs_resend: an unusable document gets a
     expect(openConfirmation?.kind).toBe("document_clarification");
   });
 
-  it("a genuinely unrecognized document also replies immediately, naming the file so the client knows which one", async () => {
+  it("a genuinely unrecognized document also replies immediately, referring to it without ever naming the raw storage filename", async () => {
     // Two outstanding requirements — with only one, the sole-outstanding
     // fallback (resolveRequirementAssignment) would auto-match this file
     // regardless of identified=false; that's a different, already-covered
@@ -1503,7 +1503,10 @@ describe("processInboundAttachment — needs_resend: an unusable document gets a
       .from(schema.messages)
       .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
     expect(outbound).toHaveLength(1);
-    expect(outbound[0].body).toContain("IMG_9931.jpg");
+    // "המסמך האחרון ששלחת" unambiguously refers to it — never the raw
+    // storage filename (see src/lib/documents/displayLabel.ts).
+    expect(outbound[0].body).toContain("המסמך האחרון ששלחת");
+    expect(outbound[0].body).not.toContain("IMG_9931.jpg");
     expect(outbound[0].body).not.toContain("שלחת אותו בכוונה"); // never the wrong question for this case
   });
 
@@ -1628,5 +1631,61 @@ describe("processInboundAttachment — silence-window case review timer (convers
     const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(conversation.status).toBe("closed");
     expect(conversation.pendingCaseReviewAt).toBeNull();
+  });
+});
+
+describe("processInboundAttachment — displayLabel, never the raw storage filename", () => {
+  it("a matched document gets a human displayLabel from the classifier, not the WhatsApp-media-id-derived fileName", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+    });
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "image_wamid.HBgMOTcyNTU5ODU4.jpg",
+      null,
+      Buffer.from("x"),
+      "image/jpeg",
+      "wamid.label1"
+    );
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    // The internal storage key is untouched (still WhatsApp-media-id-derived)...
+    expect(doc.fileName).toBe("image_wamid.HBgMOTcyNTU5ODU4.jpg");
+    // ...but the human label comes from the classifier's own real type, never that filename.
+    expect(doc.displayLabel).toBe("תעודת זהות");
+  });
+
+  it("a document the classifier couldn't identify (needs_resend) still gets no raw-filename displayLabel", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות", "רישיון נהיגה"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: false,
+      documentType: null,
+      identificationConfidence: 0.1,
+      matchedRequirementId: null,
+      matchConfidence: 0,
+    });
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "image_wamid.HBgMOTcyNTU5ODU4.jpg",
+      null,
+      Buffer.from("x"),
+      "image/jpeg",
+      "wamid.label2"
+    );
+
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(doc.fileName).toBe("image_wamid.HBgMOTcyNTU5ODU4.jpg");
+    expect(doc.displayLabel).toBeNull(); // never guessed from fileName — resolveDocumentDisplayLabel handles the fallback at read time
   });
 });

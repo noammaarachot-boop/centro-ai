@@ -24,6 +24,8 @@ import { createPendingConfirmation } from "@/lib/pendingConfirmations";
 import { uploadDocumentResiliently } from "@/lib/storage/driveAdapter";
 import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { resolveRequirementException, type RequirementExceptionDecision } from "@/lib/requirementException";
+import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
+import { resolveEmployeeReviewItem } from "@/lib/employeeReview";
 
 // The one place every mutation in this file gets the Collection Request
 // from — every lookup by ID (client, service, document) must be proven to
@@ -292,7 +294,7 @@ export async function reviewDocument(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "document.reviewed",
-    description: `מסמך "${document.fileName}" סומן כ${DOCUMENT_STATUS_LABELS[decision] ?? decision} על ידי עובד`,
+    description: `מסמך "${resolveDocumentDisplayLabel(document.displayLabel)}" סומן כ${DOCUMENT_STATUS_LABELS[decision] ?? decision} על ידי עובד`,
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,
@@ -316,7 +318,10 @@ export async function assignDocumentRequirement(
   if (!requirementId && !newTypeName) redirect(`/collections/${collectionRequestId}`);
 
   const current = await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
-  const scopedDocument = await getScopedDocument(session.organizationId, collectionRequestId, documentId);
+  // Tenant-isolation guard — throws/redirects if documentId doesn't belong
+  // to this org/request; the resolved row itself isn't needed below since
+  // the document's own display label is no longer surfaced from here.
+  await getScopedDocument(session.organizationId, collectionRequestId, documentId);
 
   // requirementId is a bare form value — before it's trusted for anything
   // below (writing documents.requirementId, disclosing a requirement name
@@ -354,14 +359,13 @@ export async function assignDocumentRequirement(
       session.organizationId,
       current.clientId,
       collectionRequestId,
-      newTypeName,
-      scopedDocument.fileName
+      newTypeName
     );
 
     await recordAuditEvent({
       organizationId: session.organizationId,
       eventType: "document.ad_hoc_type_observed",
-      description: `מסמך "${scopedDocument.fileName}" סומן כסוג מסמך חדש: "${newTypeName}"`,
+      description: `מסמך שהתקבל סומן כסוג מסמך חדש: "${newTypeName}"`,
       actorType: "employee",
       actorUserId: session.userId,
       clientId: current.clientId,
@@ -393,7 +397,7 @@ export async function assignDocumentRequirement(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "document.requirement_assigned",
-    description: `מסמך "${document.fileName}" שויך ידנית לדרישה`,
+    description: `מסמך "${resolveDocumentDisplayLabel(document.displayLabel, scopedRequirement?.name)}" שויך ידנית לדרישה`,
     actorType: "employee",
     actorUserId: session.userId,
     collectionRequestId,
@@ -405,7 +409,7 @@ export async function assignDocumentRequirement(
   // assignment, rather than waiting for Milestone 6's automatic
   // second-occurrence detection. Purely optional; unchecked by default.
   if (formData.get("askClient") === "on") {
-    const question = `שלום! שמנו לב שקיבלנו מכם מסמך "${document.fileName}" ושייכנו אותו ל"${scopedRequirement?.name ?? "דרישה"}". האם נכון לבקש מסמך כזה גם באיסופים הבאים באופן קבוע? השיבו 'כן' או 'לא'.`;
+    const question = `שלום! שמנו לב שקיבלנו מכם מסמך ושייכנו אותו ל"${scopedRequirement?.name ?? "דרישה"}". האם נכון לבקש מסמך כזה גם באיסופים הבאים באופן קבוע? השיבו 'כן' או 'לא'.`;
 
     const confirmation = await createPendingConfirmation({
       organizationId: session.organizationId,
@@ -504,7 +508,7 @@ export async function simulateDriveDeletion(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "document.deleted_from_drive",
-    description: `מסמך "${document.fileName}" נמחק ידנית מ-Google Drive`,
+    description: `מסמך "${resolveDocumentDisplayLabel(document.displayLabel)}" נמחק ידנית מ-Google Drive`,
     actorType: "system",
     collectionRequestId,
   });
@@ -535,6 +539,39 @@ export async function resolveRequirementExceptionAction(
     decision,
     alternativeText,
   });
+
+  redirect(`/collections/${collectionRequestId}`);
+}
+
+// Thin redirect-target wrapper around the real, already-built
+// resolveEmployeeReviewItem (src/lib/employeeReview.ts) — the same
+// function src/app/(app)/dashboard/review/actions.ts's resolveReviewItem
+// already calls, just landing back on this request's own page instead of
+// the orphaned /dashboard/review list. No new business logic: the reply
+// text is sent to the client exactly as resolveEmployeeReviewItem always
+// does. Policy-promotion (the dashboard/review page's own advanced option)
+// is intentionally not exposed here — a quick reply from the request page
+// doesn't need that extra step; an employee who wants it can still use the
+// existing /dashboard/review flow.
+export async function resolveReviewItemFromRequest(
+  collectionRequestId: string,
+  reviewItemId: string,
+  formData: FormData
+) {
+  const session = await requireSession();
+  const resolutionText = String(formData.get("resolutionText") ?? "").trim();
+
+  const result = await resolveEmployeeReviewItem({
+    organizationId: session.organizationId,
+    actorUserId: session.userId,
+    reviewItemId,
+    resolutionText,
+    promoteToPolicy: false,
+  });
+
+  if (!result.ok) {
+    redirect(`/collections/${collectionRequestId}?error=${encodeURIComponent(result.error ?? "שגיאה")}`);
+  }
 
   redirect(`/collections/${collectionRequestId}`);
 }

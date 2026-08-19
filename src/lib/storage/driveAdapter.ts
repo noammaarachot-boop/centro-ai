@@ -590,7 +590,7 @@ export async function uploadDocumentResiliently(
       await recordAuditEvent({
         organizationId,
         eventType: "document.drive_upload_skipped",
-        description: `המסמך "${fileName}" אושר אך לא הועלה ל-Drive — חשבון Google עדיין לא מחובר לתיקייה. המסמך נשמר באופן זמני ויועלה אוטומטית ברגע שהחיבור יחודש.`,
+        description: "המסמך אושר אך לא הועלה ל-Drive — חשבון Google עדיין לא מחובר לתיקייה. המסמך נשמר באופן זמני ויועלה אוטומטית ברגע שהחיבור יחודש.",
         actorType: "system",
         clientId,
         collectionRequestId,
@@ -622,8 +622,8 @@ export async function uploadDocumentResiliently(
       organizationId,
       eventType: exhausted ? "document.drive_upload_exhausted" : "document.drive_upload_failed",
       description: exhausted
-        ? `העלאת "${fileName}" ל-Drive נכשלה ${retryCount} פעמים ברציפות — נדרשת בדיקה ידנית דחופה. המסמך עדיין נשמר באופן זמני ולא אבד.`
-        : `העלאת "${fileName}" ל-Drive נכשלה (ניסיון ${retryCount}/${DRIVE_RETRY_MAX_ATTEMPTS}) — תתבצע אוטומטית התנסות חוזרת. המסמך נשמר באופן זמני ולא אבד.`,
+        ? `העלאת המסמך ל-Drive נכשלה ${retryCount} פעמים ברציפות — נדרשת בדיקה ידנית דחופה. המסמך עדיין נשמר באופן זמני ולא אבד.`
+        : `העלאת המסמך ל-Drive נכשלה (ניסיון ${retryCount}/${DRIVE_RETRY_MAX_ATTEMPTS}) — תתבצע אוטומטית התנסות חוזרת. המסמך נשמר באופן זמני ולא אבד.`,
       actorType: "system",
       clientId,
       collectionRequestId,

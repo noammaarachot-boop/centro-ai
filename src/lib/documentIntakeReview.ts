@@ -139,8 +139,7 @@ const READABILITY_ISSUE_LABELS: Record<NonNullable<DocumentClassification["reada
 // to send this?" — that's not the relevant question for a technical
 // defect or an unidentifiable file.
 export function buildResendGuidanceMessage(
-  outcome: Extract<DocumentIntakeOutcome, { kind: "needs_resend" }>,
-  fileName: string
+  outcome: Extract<DocumentIntakeOutcome, { kind: "needs_resend" }>
 ): string {
   if (outcome.aiClientMessage) return outcome.aiClientMessage;
 
@@ -148,7 +147,11 @@ export function buildResendGuidanceMessage(
   const issueNote =
     outcome.issueDetail ??
     (outcome.reason === "unreadable_quality" ? READABILITY_ISSUE_LABELS.other : "לא הצלחתי לזהות בוודאות איזה מסמך זה");
-  return `קיבלתי את המסמך האחרון ששלחת (${fileName}) ${typeNote}— ${issueNote}. אפשר לשלוח שוב צילום ברור ומלא?`;
+  // "המסמך האחרון ששלחת" already unambiguously refers to the file the
+  // client just sent — never a storage filename (documents.fileName is a
+  // WhatsApp-media-id-derived internal key, never something to show a
+  // client — see src/lib/documents/displayLabel.ts).
+  return `קיבלתי את המסמך האחרון ששלחת ${typeNote}— ${issueNote}. אפשר לשלוח שוב צילום ברור ומלא?`;
 }
 
 export async function getConfirmationReminderConfig(

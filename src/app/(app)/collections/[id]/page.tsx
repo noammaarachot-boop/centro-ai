@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowLeft,
   Check,
   ExternalLink,
@@ -15,6 +16,7 @@ import {
 import { requireSession } from "@/lib/auth/session";
 import {
   getCollectionRequest,
+  listDocumentsByWhatsappMessageId,
   listRequirementsWithDocuments,
   listUnmatchedDocuments,
 } from "@/lib/data/collectionRequests";
@@ -23,9 +25,13 @@ import {
   listMessages,
 } from "@/lib/conversationOrchestration";
 import {
+  computeRequirementsProgress,
   nextStatusOptions,
   type CollectionRequestStatus,
 } from "@/lib/collectionRequestStateMachine";
+import { getItemsNeedingReview, getLastActivityAtByRequest } from "@/lib/data/dashboardReadModel";
+import { resolveDocumentDisplayLabel, resolveMessageDisplayBody } from "@/lib/documents/displayLabel";
+import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { listAuditLog } from "@/lib/data/auditLog";
@@ -39,6 +45,7 @@ import {
   addManualDocument,
   assignDocumentRequirement,
   resolveRequirementExceptionAction,
+  resolveReviewItemFromRequest,
   reviewDocument,
   simulateDriveDeletion,
   transitionStatus,
@@ -74,12 +81,14 @@ const TRANSITION_LABELS: Record<CollectionRequestStatus, string> = {
   cancelled: "ביטול",
 };
 
+// Human, direct wording ("דורש בדיקה שלך", not just "דורש בדיקה") — every
+// document row speaks to the employee reading it, per the approved sketch.
 const DOCUMENT_STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {
-  received: { label: "התקבל", tone: "blue" },
+  received: { label: "התקבל, ממתין לבדיקה", tone: "blue" },
   processing: { label: "בעיבוד", tone: "purple" },
   approved: { label: "אושר", tone: "success" },
   rejected: { label: "נדחה", tone: "danger" },
-  needs_review: { label: "דורש בדיקה", tone: "warning" },
+  needs_review: { label: "דורש בדיקה שלך", tone: "warning" },
   deleted_from_drive: { label: "נמחק מ-Drive", tone: "neutral" },
   // Ch.6 3-way document intake split (src/lib/documentIntakeReview.ts) —
   // these never reach this per-requirement list in practice (they carry no
@@ -89,8 +98,6 @@ const DOCUMENT_STATUS_META: Record<string, { label: string; tone: BadgeTone }> =
   unsolicited_approved: { label: "אושר כמסמך נוסף", tone: "success" },
   unsolicited_rejected: { label: "נשלח בטעות", tone: "neutral" },
   clarification_requested: { label: "ממתין להבהרת הלקוח", tone: "purple" },
-  // Smart identity/consistency verification (documentIdentityVerification.ts)
-  // — same defensive-listing reasoning as the block above.
   identity_anomaly_pending_confirmation: { label: "ממתין לאישור זהות מהלקוח", tone: "purple" },
   identity_anomaly_confirmed: { label: "אושר על ידי הלקוח (חריגת זהות)", tone: "success" },
   identity_anomaly_rejected: { label: "נשלח בטעות (חריגת זהות)", tone: "neutral" },
@@ -121,6 +128,29 @@ function computeShouldSuggestReleasingControl(
   return Date.now() - lastMessage.createdAt.getTime() >= SUGGEST_RELEASE_IDLE_MS;
 }
 
+// The command-center summary line — composed entirely from numbers already
+// computed below (progress, the needs-attention counts, open confirmations)
+// for THIS one request. Never a new signal, never invented text — same
+// discipline as the dashboard's own buildBriefing/buildHero.
+function buildSummaryLine(params: {
+  status: CollectionRequestStatus;
+  escalationReason: string | null;
+  attentionCount: number;
+  unsatisfiedCount: number;
+  waitingOnClientCount: number;
+}): string {
+  const { status, escalationReason, attentionCount, unsatisfiedCount, waitingOnClientCount } = params;
+  if (status === "escalated") return escalationReason || "הבקשה הוסלמה לבדיקה ידנית";
+  if (attentionCount > 0 && unsatisfiedCount > 0) {
+    return `${attentionCount} דברים מחכים לטיפולך, וחסרים עוד ${unsatisfiedCount} מסמכים מהלקוח`;
+  }
+  if (attentionCount > 0) return `${attentionCount} דברים מחכים לטיפולך`;
+  if (unsatisfiedCount > 0) return `חסרים עוד ${unsatisfiedCount} מסמכים מהלקוח`;
+  if (waitingOnClientCount > 0) return "ממתינים לתשובת הלקוח";
+  if (status === "completed") return "כל המסמכים התקבלו ואושרו";
+  return "הכול תקין כרגע";
+}
+
 export default async function CollectionRequestDetailPage({
   params,
   searchParams,
@@ -145,49 +175,74 @@ export default async function CollectionRequestDetailPage({
   const auditHistory = await listAuditLog(session.organizationId, { collectionRequestId: id });
   const openConfirmations = await listOpenConfirmationsForCollectionRequest(id);
 
+  // Display-layer only — never rewrites the stored message. A historical
+  // inbound message that was only an attachment was recorded with
+  // ATTACHMENT_PLACEHOLDER_TEXT at intake time, before classification had
+  // run (see the webhook route's own comment). Once the matching document
+  // (same whatsappMessageId) has a real resolveDocumentDisplayLabel(), the
+  // thread shows that instead — still never the raw storage filename.
+  const requirementNameById = new Map(requirements.map((r) => [r.id, r.name]));
+  const documentsWithWhatsappId = await listDocumentsByWhatsappMessageId(id);
+  const documentLabelByWhatsappMessageId = new Map(
+    documentsWithWhatsappId
+      .filter((doc): doc is typeof doc & { whatsappMessageId: string } => doc.whatsappMessageId !== null)
+      .map((doc) => [
+        doc.whatsappMessageId,
+        resolveDocumentDisplayLabel(doc.displayLabel, doc.requirementId ? requirementNameById.get(doc.requirementId) : null),
+      ])
+  );
+
+  // Command-center numbers — every one of them a direct read of the real
+  // engine's own state, never a parallel calculation:
+  //  - progress: computeRequirementsProgress, the exact function
+  //    checkCompletionGate itself uses for X/Y and "what's missing".
+  //  - needsReviewItems: getItemsNeedingReview (dashboardReadModel.ts),
+  //    filtered to this one request — the same union the owner dashboard
+  //    already uses, never a second definition of "needs review".
+  //  - lastActivity: getLastActivityAtByRequest, same function, one-id call.
+  const progress = await computeRequirementsProgress(id);
+  const allNeedsReview = await getItemsNeedingReview(session.organizationId);
+  const myReviewReasons = allNeedsReview.find((item) => item.collectionRequestId === id)?.reasons ?? [];
+  const employeeQuestions = myReviewReasons.filter((r) => r.kind === "employee_question");
+  const lastActivityMap = await getLastActivityAtByRequest([id]);
+  const lastActivity = lastActivityMap.get(id) ?? null;
+
+  // "כשל בשליחה" — messages.deliveryStatus is the real, already-tracked
+  // WhatsApp delivery signal (scheduler.ts's stuck-pending detection, and
+  // Meta's own status webhook callbacks) — reused directly from the
+  // conversation thread already loaded above, never a new query.
+  const hasFailedOutbound = messages.some(
+    (m) => m.direction === "outbound" && (m.deliveryStatus === "failed" || m.deliveryStatus === "stuck")
+  );
+
+  const attentionCount = unmatchedDocuments.length + employeeQuestions.length + (hasFailedOutbound ? 1 : 0);
+  const summaryLine = buildSummaryLine({
+    status: collectionRequest.status,
+    escalationReason: collectionRequest.escalationReason,
+    attentionCount,
+    unsatisfiedCount: progress.unsatisfiedCount,
+    waitingOnClientCount: openConfirmations.length,
+  });
+
   const lastMessage = messages[messages.length - 1];
   const shouldSuggestReleasingControl = computeShouldSuggestReleasingControl(
     conversation?.status,
     lastMessage ? { senderType: lastMessage.senderType, createdAt: new Date(lastMessage.createdAt) } : undefined
   );
 
+  const RECENT_MESSAGES_COUNT = 3;
+  const recentMessages = messages.slice(-RECENT_MESSAGES_COUNT);
+  const olderMessages = messages.slice(0, -RECENT_MESSAGES_COUNT);
+
   return (
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
-      <div>
-        <Link
-          href="/collections"
-          className="mb-3 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          חזרה לבקשות איסוף
-        </Link>
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-[26px] font-bold tracking-tight text-text-primary">
-            {collectionRequest.clientName} — {collectionRequest.serviceName}
-          </h1>
-          <StatusBadge status={collectionRequest.status} />
-        </div>
-        <p className="mt-1.5 text-sm text-text-secondary">
-          תקופה: {collectionRequest.periodLabel}
-        </p>
-        {collectionRequest.status === "escalated" && collectionRequest.escalationReason && (
-          <p className="mt-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm font-medium text-danger">
-            דורש בדיקת עובד — {collectionRequest.escalationReason}
-          </p>
-        )}
-        {collectionRequest.status !== "escalated" && conversation?.deferredReminderAt && (
-          <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm font-medium text-warning">
-            נדחה לבקשת הלקוח עד{" "}
-            {new Date(conversation.deferredReminderAt).toLocaleString("he-IL", {
-              dateStyle: "short",
-              timeStyle: "short",
-              timeZone: "Asia/Jerusalem",
-            })}{" "}
-            — דחייה {collectionRequest.deferralCount} מתוך 2
-            {conversation.deferredReminderOriginalText && ` ("${conversation.deferredReminderOriginalText}")`}
-          </p>
-        )}
-      </div>
+      <Link
+        href="/collections"
+        className="inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        חזרה לבקשות איסוף
+      </Link>
 
       {error && (
         <div
@@ -204,12 +259,70 @@ export default async function CollectionRequestDetailPage({
         </div>
       )}
 
-      <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">שינוי סטטוס</h2>
-        {options.length === 0 ? (
-          <p className="text-sm text-text-muted">אין פעולות זמינות (סטטוס סופי).</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
+      {/* ===== Command center header ===== */}
+      <div className="centro-glass-strong relative overflow-hidden rounded-[28px] border border-border p-7 shadow-card-lg">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-x-[6%] -inset-y-[30%] -z-10 blur-[24px]"
+          style={{
+            background:
+              attentionCount > 0 || collectionRequest.status === "escalated"
+                ? "radial-gradient(50% 90% at 20% 20%, color-mix(in oklab, var(--color-danger) 12%, transparent), transparent 70%), radial-gradient(45% 90% at 85% 60%, color-mix(in oklab, var(--color-brand-purple) 10%, transparent), transparent 70%)"
+                : "radial-gradient(50% 90% at 20% 20%, color-mix(in oklab, var(--color-brand-emerald) 10%, transparent), transparent 70%), radial-gradient(45% 90% at 85% 60%, color-mix(in oklab, var(--color-brand-cyan) 10%, transparent), transparent 70%)",
+          }}
+        />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-text-primary">
+              {collectionRequest.clientName} — {collectionRequest.serviceName}
+            </h1>
+            <p className="mt-0.5 text-xs text-text-muted">
+              תקופה: {collectionRequest.periodLabel}
+              {lastActivity && <> · עדכון אחרון: {formatRelativeTime(lastActivity)}</>}
+            </p>
+          </div>
+          <StatusBadge status={collectionRequest.status} />
+        </div>
+
+        <p className="mt-3 text-sm font-semibold text-text-primary">{summaryLine}</p>
+
+        {collectionRequest.status !== "escalated" && conversation?.deferredReminderAt && (
+          <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm font-medium text-warning">
+            נדחה לבקשת הלקוח עד{" "}
+            {new Date(conversation.deferredReminderAt).toLocaleString("he-IL", {
+              dateStyle: "short",
+              timeStyle: "short",
+              timeZone: "Asia/Jerusalem",
+            })}{" "}
+            — דחייה {collectionRequest.deferralCount} מתוך 2
+            {conversation.deferredReminderOriginalText && ` ("${conversation.deferredReminderOriginalText}")`}
+          </p>
+        )}
+
+        <div className="mt-5 grid grid-cols-3 gap-2.5">
+          <div className="rounded-2xl border border-border bg-surface px-3.5 py-3">
+            <p className="text-[11px] font-semibold text-text-muted">התקבלו</p>
+            <p className="mt-1 text-xl font-bold tabular-nums text-text-primary">
+              {progress.satisfiedCount}/{progress.totalCount}
+            </p>
+            <p className="text-[10.5px] text-text-muted">מסמכים</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-surface px-3.5 py-3">
+            <p className="text-[11px] font-semibold text-text-muted">לטיפולך</p>
+            <p className={`mt-1 text-xl font-bold tabular-nums ${attentionCount > 0 ? "text-danger" : "text-text-primary"}`}>
+              {attentionCount}
+            </p>
+            <p className="text-[10.5px] text-text-muted">פריטים</p>
+          </div>
+          <div className="rounded-2xl border border-border bg-surface px-3.5 py-3">
+            <p className="text-[11px] font-semibold text-text-muted">מחכה ללקוח</p>
+            <p className="mt-1 text-xl font-bold tabular-nums text-text-primary">{openConfirmations.length}</p>
+            <p className="text-[10.5px] text-text-muted">שאלות פתוחות</p>
+          </div>
+        </div>
+
+        {options.length > 0 && (
+          <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">
             {options.map((status) => (
               <form key={status} action={boundTransition.bind(null, status)}>
                 <button type="submit" className={pillButtonClass}>
@@ -221,10 +334,117 @@ export default async function CollectionRequestDetailPage({
             ))}
           </div>
         )}
-      </Card>
+      </div>
 
+      {/* ===== דורש תשומת לב שלך — only rendered when there's something real to show ===== */}
+      {attentionCount > 0 && (
+        <div>
+          <h2 className="mb-3 flex items-center gap-2 text-base font-bold text-text-primary">
+            <AlertTriangle className="h-4.5 w-4.5 text-danger" aria-hidden="true" />
+            דורש תשומת לב שלך
+            <span className="inline-grid h-5 min-w-5 place-items-center rounded-full bg-danger px-1.5 text-[11px] font-extrabold text-white">
+              {attentionCount}
+            </span>
+          </h2>
+          <div className="space-y-2.5">
+            {hasFailedOutbound && (
+              <Card className="border-danger/25 bg-danger/5" padding="sm">
+                <div className="flex items-start gap-2.5">
+                  <span className="centro-icon-danger grid h-8 w-8 shrink-0 place-items-center rounded-lg">
+                    <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-text-primary">שליחת הודעה נכשלה</p>
+                    <p className="mt-0.5 text-xs text-text-secondary">
+                      הודעה אחרונה ללקוח לא נמסרה בהצלחה — כדאי לבדוק את השיחה למטה.
+                    </p>
+                  </div>
+                </div>
+              </Card>
+            )}
+
+            {employeeQuestions.map((reason) => (
+              <Card key={reason.sourceId} className="border-warning/30 bg-warning/5" padding="sm">
+                <div className="flex items-start gap-2.5">
+                  <span className="centro-icon-warning grid h-8 w-8 shrink-0 place-items-center rounded-lg">
+                    <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-text-primary">שאלת לקוח ממתינה למענה</p>
+                    <p className="mt-0.5 text-xs text-text-secondary">&ldquo;{reason.detail}&rdquo;</p>
+                    <form
+                      action={resolveReviewItemFromRequest.bind(null, id, reason.sourceId!)}
+                      className="mt-2 flex items-center gap-2"
+                    >
+                      <input
+                        type="text"
+                        name="resolutionText"
+                        required
+                        placeholder="התשובה שלך ללקוח..."
+                        className={fieldClass("sm", "flex-1")}
+                      />
+                      <button type="submit" className={compactButtonClass}>
+                        שליחת מענה
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </Card>
+            ))}
+
+            {unmatchedDocuments.map((doc) => (
+              <Card key={doc.id} className="border-warning/30 bg-warning/5" padding="sm">
+                <div className="flex items-start gap-2.5">
+                  <span className="centro-icon-warning grid h-8 w-8 shrink-0 place-items-center rounded-lg">
+                    <FileWarning className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-text-primary">
+                      מסמך לבדיקה: {resolveDocumentDisplayLabel(doc.displayLabel)}
+                    </p>
+                    <p className="mt-0.5 text-xs text-text-secondary">
+                      הסיווג האוטומטי לא הצליח לשייך אותו לדרישה בביטחון מספק — נדרש שיוך ידני.
+                    </p>
+                    <form action={assignDocumentRequirement.bind(null, id, doc.id)} className="mt-2 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <select name="requirementId" className={fieldClass("sm", "flex-1")}>
+                          <option value="">— בחירת דרישה קיימת —</option>
+                          {requirements.map((requirement) => (
+                            <option key={requirement.id} value={requirement.id}>
+                              {requirement.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button type="submit" className={compactButtonClass}>
+                          שיוך
+                        </button>
+                      </div>
+                      <input
+                        name="newTypeName"
+                        type="text"
+                        placeholder="או: סוג מסמך חדש שלא ברשימה (למשל: טופס 102)"
+                        className={fieldClass("sm")}
+                      />
+                      <label className="flex items-center gap-1.5 text-[11px] text-text-muted">
+                        <input
+                          type="checkbox"
+                          name="askClient"
+                          className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
+                        />
+                        בשיוך לדרישה קיימת: לשאול את הלקוח אם זה מסמך קבוע (וואטסאפ)
+                      </label>
+                    </form>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ===== מסמכים נדרשים ===== */}
       <Card>
-        <h2 className="mb-4 text-lg font-semibold text-text-primary">דרישות מסמכים</h2>
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">מסמכים נדרשים</h2>
         {requirements.length === 0 ? (
           <p className="text-sm text-text-muted">אין דרישות מסמכים מוגדרות לאיסוף זה.</p>
         ) : (
@@ -236,16 +456,21 @@ export default async function CollectionRequestDetailPage({
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-medium text-text-primary">{requirement.name}</p>
-                  {requirement.documents.length === 0 && (
-                    <form action={waiveRequirement.bind(null, id, requirement.id)}>
-                      <button
-                        type="submit"
-                        className="text-[11px] text-text-muted transition-colors hover:text-warning hover:underline"
-                      >
-                        לא רלוונטי הפעם
-                      </button>
-                    </form>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {requirement.documents.length === 0 && !requirement.exceptionStatus && (
+                      <Badge tone="neutral">חסר</Badge>
+                    )}
+                    {requirement.documents.length === 0 && (
+                      <form action={waiveRequirement.bind(null, id, requirement.id)}>
+                        <button
+                          type="submit"
+                          className="text-[11px] text-text-muted transition-colors hover:text-warning hover:underline"
+                        >
+                          לא רלוונטי הפעם
+                        </button>
+                      </form>
+                    )}
+                  </div>
                 </div>
 
                 {requirement.exceptionStatus === "reported_missing" && (
@@ -312,12 +537,11 @@ export default async function CollectionRequestDetailPage({
                   <ul className="mt-3 space-y-2.5">
                     {requirement.documents.map((doc) => {
                       const meta = DOCUMENT_STATUS_META[doc.status];
+                      const label = resolveDocumentDisplayLabel(doc.displayLabel, requirement.name);
                       return (
                         <li key={doc.id} className="text-xs text-text-secondary">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium text-text-primary">
-                              {doc.fileName}
-                            </span>
+                            <span className="font-medium text-text-primary">{label}</span>
                             <div className="flex items-center gap-2">
                               <Badge tone={meta.tone}>{meta.label}</Badge>
                               {doc.status !== "approved" && doc.status !== "rejected" && (
@@ -359,7 +583,7 @@ export default async function CollectionRequestDetailPage({
                               </a>
                               <ConfirmDialog
                                 title="הדמיית מחיקה מ-Drive"
-                                description={`לדמות מחיקה ידנית של "${doc.fileName}" מ-Google Drive? זו סימולציה לבדיקות בלבד.`}
+                                description={`לדמות מחיקה ידנית של "${label}" מ-Google Drive? זו סימולציה לבדיקות בלבד.`}
                                 confirmLabel="הדמיית מחיקה"
                                 formAction={simulateDriveDeletion.bind(null, id, doc.id)}
                                 triggerClassName="inline-flex items-center gap-1 text-text-muted transition-colors hover:text-danger hover:underline"
@@ -422,58 +646,7 @@ export default async function CollectionRequestDetailPage({
         )}
       </Card>
 
-      {unmatchedDocuments.length > 0 && (
-        <Card className="border-warning/30 bg-warning/5">
-          <div className="mb-4 flex items-center gap-2">
-            <FileWarning className="h-5 w-5 shrink-0 text-warning" />
-            <h2 className="text-lg font-semibold text-text-primary">מסמכים ללא שיוך</h2>
-          </div>
-          <p className="mb-4 text-sm text-text-muted">
-            הסיווג האוטומטי לא הצליח לשייך מסמכים אלו לדרישה בביטחון מספק (BR-11.3) — נדרש
-            שיוך ידני.
-          </p>
-          <ul className="space-y-3">
-            {unmatchedDocuments.map((doc) => (
-              <li key={doc.id} className="rounded-xl border border-border bg-surface p-3">
-                <p className="mb-2 text-sm font-medium text-text-primary">{doc.fileName}</p>
-                <form
-                  action={assignDocumentRequirement.bind(null, id, doc.id)}
-                  className="space-y-2"
-                >
-                  <div className="flex items-center gap-2">
-                    <select name="requirementId" className={fieldClass("sm", "flex-1")}>
-                      <option value="">— בחירת דרישה קיימת —</option>
-                      {requirements.map((requirement) => (
-                        <option key={requirement.id} value={requirement.id}>
-                          {requirement.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button type="submit" className={compactButtonClass}>
-                      שיוך
-                    </button>
-                  </div>
-                  <input
-                    name="newTypeName"
-                    type="text"
-                    placeholder="או: סוג מסמך חדש שלא ברשימה (למשל: טופס 102)"
-                    className={fieldClass("sm")}
-                  />
-                  <label className="flex items-center gap-1.5 text-[11px] text-text-muted">
-                    <input
-                      type="checkbox"
-                      name="askClient"
-                      className="h-3.5 w-3.5 rounded border-border accent-brand-purple"
-                    />
-                    בשיוך לדרישה קיימת: לשאול את הלקוח אם זה מסמך קבוע (וואטסאפ)
-                  </label>
-                </form>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
+      {/* ===== מחכה לתשובת הלקוח ===== */}
       {openConfirmations.length > 0 && (
         <Card className="border-brand-purple/30 bg-brand-purple/5">
           <div className="mb-4 flex items-center gap-2">
@@ -481,17 +654,13 @@ export default async function CollectionRequestDetailPage({
             <h2 className="text-lg font-semibold text-text-primary">ממתין לאישור הלקוח</h2>
           </div>
           <p className="mb-4 text-sm text-text-muted">
-            נשלחה שאלת אישור בוואטסאפ (Ch.3: Observe → Suggest → Confirm → Learn) — ממתינים
-            לתשובת הלקוח, או שאפשר לסמן ידנית.
+            נשלחה שאלת אישור בוואטסאפ — ממתינים לתשובת הלקוח, או שאפשר לסמן ידנית.
           </p>
           <ul className="space-y-3">
             {openConfirmations.map((confirmation) => (
               <li key={confirmation.id} className="rounded-xl border border-border bg-surface p-3">
                 <p className="mb-2 text-sm text-text-primary">{confirmation.question}</p>
                 {confirmation.kind === "document_clarification" ? (
-                  // Open-ended, not yes/no — the client's actual words are
-                  // what re-classification needs, so this is a text
-                  // reply, not a confirm/decline choice.
                   <form
                     action={respondToClarification.bind(null, id, confirmation.id)}
                     className="flex gap-2"
@@ -538,11 +707,12 @@ export default async function CollectionRequestDetailPage({
         </Card>
       )}
 
+      {/* ===== וואטסאפ — מצומצם ===== */}
       <Card>
         <div className="mb-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <MessageCircle className="h-5 w-5 shrink-0 text-brand-purple" />
-            <h2 className="text-lg font-semibold text-text-primary">שיחת וואטסאפ</h2>
+            <h2 className="text-lg font-semibold text-text-primary">וואטסאפ</h2>
           </div>
           {conversation && (
             <Badge tone={CONVERSATION_STATUS_META[conversation.status].tone}>
@@ -567,33 +737,33 @@ export default async function CollectionRequestDetailPage({
                 description="השיחה נפתחה אך טרם נשלחו או התקבלו הודעות."
               />
             ) : (
-              <ul className="mb-4 max-h-80 space-y-2 overflow-y-auto">
-                {messages.map((message) => {
-                  const isAi = message.direction === "outbound" && message.senderType === "ai";
-                  return (
-                    <li
+              <div className="mb-4">
+                {olderMessages.length > 0 && (
+                  <details className="mb-2">
+                    <summary className="cursor-pointer text-xs font-semibold text-brand-purple">
+                      פתיחת השיחה המלאה ({messages.length} הודעות)
+                    </summary>
+                    <ul className="mt-2 max-h-64 space-y-2 overflow-y-auto">
+                      {olderMessages.map((message) => (
+                        <MessageBubble
+                          key={message.id}
+                          message={message}
+                          documentLabelByWhatsappMessageId={documentLabelByWhatsappMessageId}
+                        />
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                <ul className="space-y-2">
+                  {recentMessages.map((message) => (
+                    <MessageBubble
                       key={message.id}
-                      className={
-                        isAi
-                          ? "centro-ai-gradient ms-auto max-w-[80%] rounded-2xl rounded-es-sm px-3 py-2 text-xs text-white"
-                          : message.direction === "outbound"
-                            ? "ms-auto max-w-[80%] rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
-                            : "me-auto max-w-[80%] rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
-                      }
-                    >
-                      <p>{message.body}</p>
-                      <p
-                        className={
-                          isAi ? "mt-0.5 text-[10px] text-white/75" : "mt-0.5 text-[10px] text-text-muted"
-                        }
-                      >
-                        {message.senderType} ·{" "}
-                        {new Date(message.createdAt).toLocaleTimeString("he-IL")}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
+                      message={message}
+                      documentLabelByWhatsappMessageId={documentLabelByWhatsappMessageId}
+                    />
+                  ))}
+                </ul>
+              </div>
             )}
 
             <div className="flex flex-wrap gap-2 border-t border-border pt-4">
@@ -689,26 +859,69 @@ export default async function CollectionRequestDetailPage({
         )}
       </Card>
 
-      <Card>
-        <div className="mb-4 flex items-center gap-2">
-          <ScrollText className="h-5 w-5 shrink-0 text-text-muted" />
-          <h2 className="text-lg font-semibold text-text-primary">היסטוריית ביקורת</h2>
+      {/* ===== היסטוריה טכנית — מקופלת כברירת מחדל ===== */}
+      <details className="group rounded-2xl border border-border bg-surface-muted/40">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary">
+          <ScrollText className="h-4 w-4 shrink-0" aria-hidden="true" />
+          היסטוריית ביקורת
+        </summary>
+        <div className="border-t border-border px-5 py-4">
+          {auditHistory.length === 0 ? (
+            <p className="text-sm text-text-muted">אין עדיין רשומות עבור בקשה זו.</p>
+          ) : (
+            <ul className="space-y-2">
+              {auditHistory.map((event) => (
+                <li key={event.id} className="text-xs text-text-secondary">
+                  <span className="text-text-muted">
+                    {new Date(event.occurredAt).toLocaleString("he-IL")} ·{" "}
+                  </span>
+                  {event.description}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-        {auditHistory.length === 0 ? (
-          <p className="text-sm text-text-muted">אין עדיין רשומות עבור בקשה זו.</p>
-        ) : (
-          <ul className="space-y-2">
-            {auditHistory.map((event) => (
-              <li key={event.id} className="text-xs text-text-secondary">
-                <span className="text-text-muted">
-                  {new Date(event.occurredAt).toLocaleString("he-IL")} ·{" "}
-                </span>
-                {event.description}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      </details>
     </div>
+  );
+}
+
+function MessageBubble({
+  message,
+  documentLabelByWhatsappMessageId,
+}: {
+  message: {
+    id: string;
+    direction: string;
+    senderType: string;
+    body: string;
+    createdAt: Date | string;
+    whatsappMessageId: string | null;
+  };
+  documentLabelByWhatsappMessageId: Map<string, string>;
+}) {
+  const isAi = message.direction === "outbound" && message.senderType === "ai";
+  // Display-layer upgrade only (see the page's own comment on
+  // documentLabelByWhatsappMessageId) — the stored message row is never
+  // rewritten. Still never the raw storage filename either way.
+  const resolvedLabel = message.whatsappMessageId
+    ? documentLabelByWhatsappMessageId.get(message.whatsappMessageId)
+    : undefined;
+  const displayBody = resolveMessageDisplayBody(message.body, resolvedLabel);
+  return (
+    <li
+      className={
+        isAi
+          ? "centro-ai-gradient ms-auto max-w-[80%] rounded-2xl rounded-es-sm px-3 py-2 text-xs text-white"
+          : message.direction === "outbound"
+            ? "ms-auto max-w-[80%] rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
+            : "me-auto max-w-[80%] rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
+      }
+    >
+      <p>{displayBody}</p>
+      <p className={isAi ? "mt-0.5 text-[10px] text-white/75" : "mt-0.5 text-[10px] text-text-muted"}>
+        {message.senderType} · {new Date(message.createdAt).toLocaleTimeString("he-IL")}
+      </p>
+    </li>
   );
 }

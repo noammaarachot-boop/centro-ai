@@ -77,7 +77,16 @@ export default async function CollectionRequestManagePage({
     id,
     allClients.map((c) => c.id)
   );
-  const candidateClients = allClients.filter((c) => !clientIdsWithActiveRequest.has(c.id));
+  // Every client is shown in the send drawer, not just the ones without an
+  // active request — marked + disabled per the approved sketch, so it's
+  // obvious why one can't be picked rather than silently missing from the
+  // list.
+  const pickableClients = allClients.map((c) => ({
+    id: c.id,
+    name: c.name,
+    phone: c.phone,
+    hasActiveRequest: clientIdsWithActiveRequest.has(c.id),
+  }));
 
   const boundUpdate = updateTemplate.bind(null, template.id);
   const boundDelete = deleteTemplate.bind(null, template.id);
@@ -98,12 +107,15 @@ export default async function CollectionRequestManagePage({
         <PageHeader
           title={template.name}
           actions={
-            <form action={boundDuplicate}>
-              <button type="submit" className={buttonVariants({ variant: "secondary", size: "sm" })}>
-                <Copy className="h-3.5 w-3.5" />
-                שכפול
-              </button>
-            </form>
+            <div className="flex items-center gap-2">
+              <form action={boundDuplicate}>
+                <button type="submit" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+                  <Copy className="h-3.5 w-3.5" />
+                  שכפול
+                </button>
+              </form>
+              <TemplateSendToClients templateId={template.id} clients={pickableClients} />
+            </div>
           }
         />
       </div>
@@ -239,8 +251,6 @@ export default async function CollectionRequestManagePage({
       </Card>
 
       <TemplateActiveRequests requests={activeRequests} />
-
-      <TemplateSendToClients templateId={template.id} candidateClients={candidateClients} />
 
       <ConfirmDialog
         title="מחיקת בקשת איסוף"

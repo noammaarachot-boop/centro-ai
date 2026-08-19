@@ -15,6 +15,7 @@ import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
 import { createRequestReopenConfirmation, decidePostCompletionGate, POST_COMPLETION_WINDOW_MS } from "@/lib/requestReopen";
 import { understandConversationTurn } from "@/lib/conversation/conversationUnderstanding";
 import { ensureConversation, recordInboundMessage } from "@/lib/conversationOrchestration";
+import { ATTACHMENT_PLACEHOLDER_TEXT } from "@/lib/documents/displayLabel";
 import { processInboundAttachment } from "@/app/(app)/collections/conversationActions";
 import {
   createRequestDisambiguation,
@@ -357,7 +358,7 @@ export async function handleInboundMessage(
             await recordAuditEvent({
               organizationId: organization.id,
               eventType: "whatsapp.inbound_media_download_failed",
-              description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+              description: "הורדת קובץ מ-WhatsApp נכשלה",
               actorType: "system",
               clientId: client.id,
             });
@@ -422,7 +423,12 @@ export async function handleInboundMessage(
   await recordInboundMessage(
     organization.id,
     conversation.id,
-    body || (attachment ? `[קובץ: ${attachment.fileName}]` : "[הודעה מסוג לא נתמך]")
+    // No classification has run yet at this point (that happens later, in
+    // processInboundAttachment) — never the raw storage filename
+    // (documents.fileName is WhatsApp-media-id-derived, not a human label;
+    // see src/lib/documents/displayLabel.ts). A generic, honest placeholder
+    // until the real document row (with its resolved displayLabel) exists.
+    body || (attachment ? ATTACHMENT_PLACEHOLDER_TEXT : "[הודעה מסוג לא נתמך]")
   );
 
   // Human-control silencing gate (src/app/(app)/collections/conversationActions.ts's
@@ -444,7 +450,7 @@ export async function handleInboundMessage(
         await recordAuditEvent({
           organizationId: organization.id,
           eventType: "whatsapp.inbound_media_download_failed",
-          description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+          description: "הורדת קובץ מ-WhatsApp נכשלה",
           actorType: "system",
           clientId: client.id,
           collectionRequestId,
@@ -541,7 +547,7 @@ export async function handleInboundMessage(
         await recordAuditEvent({
           organizationId: organization.id,
           eventType: "whatsapp.inbound_media_download_failed",
-          description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+          description: "הורדת קובץ מ-WhatsApp נכשלה",
           actorType: "system",
           clientId: client.id,
           collectionRequestId,
@@ -669,7 +675,7 @@ export async function handleInboundMessage(
     await recordAuditEvent({
       organizationId: organization.id,
       eventType: "whatsapp.inbound_media_download_failed",
-      description: `הורדת קובץ מ-WhatsApp נכשלה (${attachment.fileName})`,
+      description: "הורדת קובץ מ-WhatsApp נכשלה",
       actorType: "system",
       clientId: client.id,
       collectionRequestId,
@@ -719,7 +725,7 @@ export async function handleInboundMessage(
     await recordAuditEvent({
       organizationId: organization.id,
       eventType: "whatsapp.inbound_processing_failed",
-      description: `עיבוד המסמך שהתקבל מהלקוח נכשל (${attachment.fileName})`,
+      description: "עיבוד המסמך שהתקבל מהלקוח נכשל",
       actorType: "system",
       clientId: client.id,
       collectionRequestId,
@@ -747,7 +753,9 @@ async function replayHeldDisambiguation(
   await recordInboundMessage(
     organization.id,
     conversation.id,
-    resolution.messageBody || (resolution.pendingFileContent ? `[קובץ: ${resolution.fileName}]` : "[הודעה מסוג לא נתמך]")
+    // Same reasoning as the primary intake path above — no classification
+    // result exists yet at this point, never the raw storage filename.
+    resolution.messageBody || (resolution.pendingFileContent ? ATTACHMENT_PLACEHOLDER_TEXT : "[הודעה מסוג לא נתמך]")
   );
 
   // Human-control silencing gate — same rule as the live path (see its own
@@ -877,7 +885,7 @@ async function replayHeldDisambiguation(
     await recordAuditEvent({
       organizationId: organization.id,
       eventType: "whatsapp.inbound_processing_failed",
-      description: `עיבוד המסמך שהתקבל מהלקוח נכשל (${resolution.fileName})`,
+      description: "עיבוד המסמך שהתקבל מהלקוח נכשל",
       actorType: "system",
       clientId: client.id,
       collectionRequestId,

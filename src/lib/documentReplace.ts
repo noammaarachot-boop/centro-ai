@@ -4,6 +4,7 @@ import { documents } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { classifyDocumentRelationIntent } from "@/lib/ai/conversationReplyIntent";
 import { markDocumentSupersededInDrive } from "@/lib/storage/driveAdapter";
+import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
 
 /**
  * Document replace/supersede — "זה מחליף את הקודם" said alongside a new
@@ -42,7 +43,12 @@ export async function applyDocumentReplaceIntentIfCaptioned(params: {
 
   const db = await getDb();
   const candidates = await db
-    .select({ id: documents.id, fileName: documents.fileName, googleDriveFileId: documents.googleDriveFileId })
+    .select({
+      id: documents.id,
+      fileName: documents.fileName,
+      displayLabel: documents.displayLabel,
+      googleDriveFileId: documents.googleDriveFileId,
+    })
     .from(documents)
     .where(
       and(
@@ -71,7 +77,7 @@ export async function applyDocumentReplaceIntentIfCaptioned(params: {
   await recordAuditEvent({
     organizationId: params.organizationId,
     eventType: "document.superseded",
-    description: `הלקוח ציין שהמסמך "${target.fileName}" הוחלף על ידי מסמך חדש`,
+    description: `הלקוח ציין שהמסמך "${resolveDocumentDisplayLabel(target.displayLabel)}" הוחלף על ידי מסמך חדש`,
     actorType: "client",
     clientId: params.clientId,
     collectionRequestId: params.collectionRequestId,

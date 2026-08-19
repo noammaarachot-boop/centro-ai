@@ -10,6 +10,7 @@ import {
   messages,
 } from "@/db/schema";
 import { isWaitingForClientCondition } from "@/lib/collectionRequestStateMachine";
+import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
 
 // Single read-model layer for every owner-facing dashboard. Every function
 // here only reads the real engine's own state (collectionRequests.status,
@@ -84,6 +85,12 @@ export interface ReviewReason {
   kind: ReviewReasonKind;
   detail: string;
   occurredAt: Date;
+  // The underlying row's own id (employeeReviewItems.id / documents.id /
+  // collectionRequestRequirements.id) — undefined for "escalated" (there's
+  // no separate row to act on beyond the request itself). Lets a per-request
+  // detail view (or any other consumer) act directly on the specific item
+  // without a second, narrower lookup for the same table.
+  sourceId?: string;
 }
 
 export interface NeedsReviewItem {
@@ -130,9 +137,10 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
 
   const needsReviewDocs = await db
     .select({
+      id: documents.id,
       collectionRequestId: documents.collectionRequestId,
       clientId: collectionRequests.clientId,
-      fileName: documents.fileName,
+      displayLabel: documents.displayLabel,
       updatedAt: documents.updatedAt,
     })
     .from(documents)
@@ -147,13 +155,16 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
   for (const row of needsReviewDocs) {
     addReason(row.collectionRequestId, row.clientId, {
       kind: "document_needs_review",
-      detail: row.fileName,
+      // Never the raw storage filename — see src/lib/documents/displayLabel.ts.
+      detail: resolveDocumentDisplayLabel(row.displayLabel),
       occurredAt: row.updatedAt,
+      sourceId: row.id,
     });
   }
 
   const pendingQuestions = await db
     .select({
+      id: employeeReviewItems.id,
       collectionRequestId: employeeReviewItems.collectionRequestId,
       clientId: employeeReviewItems.clientId,
       clientQuestion: employeeReviewItems.clientQuestion,
@@ -173,11 +184,13 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
       kind: "employee_question",
       detail: row.clientQuestion,
       occurredAt: row.createdAt,
+      sourceId: row.id,
     });
   }
 
   const reportedMissing = await db
     .select({
+      id: collectionRequestRequirements.id,
       collectionRequestId: collectionRequestRequirements.collectionRequestId,
       clientId: collectionRequests.clientId,
       name: collectionRequestRequirements.name,
@@ -198,6 +211,7 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
       kind: "reported_missing",
       detail: row.exceptionNote ?? row.name,
       occurredAt: row.exceptionCreatedAt ?? new Date(0),
+      sourceId: row.id,
     });
   }
 

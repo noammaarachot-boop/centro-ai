@@ -1083,7 +1083,10 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
     });
     await sendDocument(phoneNumberId, mysteryDoc);
     expect(sentMessages).toHaveLength(1);
-    expect(sentMessages[0].body).toContain("mystery.pdf");
+    // "המסמך האחרון ששלחת" unambiguously refers to it — never the raw
+    // storage filename (see src/lib/documents/displayLabel.ts).
+    expect(sentMessages[0].body).toContain("המסמך האחרון ששלחת");
+    expect(sentMessages[0].body).not.toContain("mystery.pdf");
     expect(sentMessages[0].body).not.toContain("שלחת אותו בכוונה");
 
     // The client says they're done — the identity_anomaly confirmation was

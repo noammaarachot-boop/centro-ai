@@ -37,6 +37,7 @@ import {
   type IdentityAnomaly,
 } from "@/lib/documentIdentityVerification";
 import { computeRequirementSatisfaction, extractedPeriodLabelForStorage } from "@/lib/documentQuantity";
+import { ATTACHMENT_PLACEHOLDER_TEXT, resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
 import { computeContinuationConfidence, MIN_CONTINUATION_CONFIDENCE } from "@/lib/documentContinuation";
 import { applyDocumentReplaceIntentIfCaptioned } from "@/lib/documentReplace";
 import { mergeContinuationGroupToPdf } from "@/lib/documentMerge";
@@ -160,7 +161,10 @@ export async function simulateInboundMessage(
   await recordInboundMessage(
     session.organizationId,
     conversation.id,
-    body || `[מסמך: ${fileName}]`
+    // Same placeholder the real webhook route uses — never the (here,
+    // tester-typed) "fileName" value, for the same reason: nothing
+    // resembling a filename belongs in the conversation thread text.
+    body || ATTACHMENT_PLACEHOLDER_TEXT
   );
 
   // Runs the exact same unified document-conversation understanding layer
@@ -357,7 +361,7 @@ export async function processInboundAttachment(
     await recordAuditEvent({
       organizationId,
       eventType: "document.rejected_unsupported_type",
-      description: `הקובץ "${fileName}" נדחה אוטומטית - סוג קובץ לא נתמך`,
+      description: "הקובץ שנשלח נדחה אוטומטית - סוג קובץ לא נתמך",
       actorType: "ai",
       clientId,
       collectionRequestId,
@@ -379,7 +383,7 @@ export async function processInboundAttachment(
     await recordAuditEvent({
       organizationId,
       eventType: "document.duplicate_detected",
-      description: `מסמך "${fileName}" זוהה ככפילות`,
+      description: "מסמך שנשלח זוהה ככפילות של מסמך קיים",
       actorType: "ai",
       clientId,
       collectionRequestId,
@@ -519,7 +523,7 @@ export async function processInboundAttachment(
       await recordAuditEvent({
         organizationId,
         eventType: "document.unreadable",
-        description: `הקובץ "${fileName}" זוהה כלא קריא, נשלחה בקשה לעותק ברור`,
+        description: "הקובץ שנשלח זוהה כלא קריא, נשלחה בקשה לעותק ברור",
         actorType: "ai",
         clientId,
         collectionRequestId,
@@ -654,7 +658,7 @@ export async function processInboundAttachment(
     if (outcome.kind === "needs_resend") {
       status = "clarification_requested";
       requirementId = null;
-      needsResendMessage = buildResendGuidanceMessage(outcome, fileName);
+      needsResendMessage = buildResendGuidanceMessage(outcome);
     } else if (identityAnomaly) {
       status = "identity_anomaly_pending_confirmation";
       requirementId = null;
@@ -699,17 +703,18 @@ export async function processInboundAttachment(
       pendingUnsolicitedDocumentType = outcome.documentType;
     }
 
+    const classifiedLabel = resolveDocumentDisplayLabel(identityDocumentType);
     await recordAuditEvent({
       organizationId,
       eventType: "document.classified",
       description:
         outcome.kind === "needs_resend"
-          ? `מסמך "${fileName}" ${outcome.reason === "unreadable_quality" ? "התקבל עם בעיית איכות" : "לא זוהה בביטחון מספק"} — נשלחה בקשת שליחה חוזרת מיידית`
+          ? `מסמך "${classifiedLabel}" ${outcome.reason === "unreadable_quality" ? "התקבל עם בעיית איכות" : "לא זוהה בביטחון מספק"} — נשלחה בקשת שליחה חוזרת מיידית`
           : identityAnomaly
-            ? `מסמך "${fileName}" זוהה, אך התגלתה אי-התאמת זהות (${identityAnomaly.kind}) — הוחזק לבדיקת התיק בסיום האיסוף`
+            ? `מסמך "${classifiedLabel}" זוהה, אך התגלתה אי-התאמת זהות (${identityAnomaly.kind}) — הוחזק לבדיקת התיק בסיום האיסוף`
             : outcome.kind === "matched"
-              ? `מסמך "${fileName}" סווג ושויך לדרישה אוטומטית (ביטחון ${(outcome.confidence * 100).toFixed(0)}%)`
-              : `מסמך "${fileName}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, הוחזק לבדיקת התיק בסיום האיסוף`,
+              ? `מסמך "${classifiedLabel}" סווג ושויך לדרישה אוטומטית (ביטחון ${(outcome.confidence * 100).toFixed(0)}%)`
+              : `מסמך "${classifiedLabel}" זוהה כ"${outcome.documentType}" — אינו נכלל ברשימת הדרישות הפתוחות, הוחזק לבדיקת התיק בסיום האיסוף`,
       actorType: "ai",
       clientId,
       collectionRequestId,
@@ -725,6 +730,7 @@ export async function processInboundAttachment(
       requirementId,
       fileName,
       status,
+      ...(identityDocumentType ? { displayLabel: identityDocumentType } : {}),
       // Held whenever real bytes exist, regardless of status — a
       // needs_review document has no other way to get its bytes back later
       // (WhatsApp never re-sends media, and Meta's own media URLs expire
@@ -745,12 +751,16 @@ export async function processInboundAttachment(
     })
     .returning();
 
+  const receivedLabel = resolveDocumentDisplayLabel(
+    identityDocumentType,
+    requirements.find((r) => r.id === requirementId)?.name
+  );
   await recordAuditEvent({
     organizationId,
     eventType: "document.received",
     description: fileBytes
-      ? `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ)`
-      : `מסמך "${fileName}" התקבל מהלקוח (וואטסאפ, הדמיה)`,
+      ? `מסמך "${receivedLabel}" התקבל מהלקוח (וואטסאפ)`
+      : `מסמך "${receivedLabel}" התקבל מהלקוח (וואטסאפ, הדמיה)`,
     actorType: "client",
     clientId,
     collectionRequestId,
