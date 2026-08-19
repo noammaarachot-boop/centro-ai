@@ -57,6 +57,8 @@ export async function listServiceClients(
       assignmentId: clientServices.id,
       clientId: clients.id,
       clientName: clients.name,
+      clientPhone: clients.phone,
+      clientEmail: clients.email,
       assignedAt: clientServices.assignedAt,
     })
     .from(clientServices)

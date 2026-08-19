@@ -10,7 +10,7 @@ import {
 import { listClients } from "@/lib/data/clients";
 import { suggestTemplateLibrary } from "@/lib/ai/businessCategorySuggestions";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
-import { resolveOnDemandDraft } from "@/lib/data/collectionRequestDrafts";
+import { hasSentAnyOnDemandRequest, resolveOnDemandDraft } from "@/lib/data/collectionRequestDrafts";
 import { CollectionRequestWizard, type WizardStep } from "./CollectionRequestWizard";
 
 const VALID_STEPS: WizardStep[] = ["what", "who", "when", "connect", "review", "success"];
@@ -42,11 +42,23 @@ export default async function NewCollectionRequestPage({
   const organization = await getOrganization(session.organizationId);
   if (!organization) return null;
 
+  const isFirstRequest = !(await hasSentAnyOnDemandRequest(session.organizationId));
+
   let draftId = params.draft ?? null;
-  // Google OAuth's callback lands on a fixed, allowlisted path with no
-  // draft id (see /api/auth/google/start's RETURN_TO_ALLOWLIST comment) —
-  // re-resolve the org's one in-progress draft so Connect renders normally
-  // right after the redirect back from Google.
+  // Deliberately NOT auto-resolved for every plain "/collections/new" hit
+  // — investigated during the repeat-use rework's production-readiness
+  // audit and reverted. resolveOnDemandDraft can't distinguish a
+  // genuinely abandoned wizard draft from a deliberately-built, not-yet-
+  // sent Template (duplicateTemplate, reachable from /collections/manage,
+  // creates exactly that shape: on_demand, zero collection_requests, no
+  // wizard involved at all) — auto-resuming here risked silently steering
+  // a brand-new request into editing someone else's unrelated template.
+  // Kept scoped to its one original, unambiguous case: the Google OAuth
+  // callback lands on a fixed, allowlisted path with no draft id (see
+  // /api/auth/google/start's RETURN_TO_ALLOWLIST comment) — re-resolving
+  // here only re-attaches to the SAME draft the user was already actively
+  // connecting integrations for, seconds earlier in the same session, not
+  // a blind guess off stale DB state.
   if (!draftId && params.step === "connect") {
     draftId = await resolveOnDemandDraft(session.organizationId);
   }
@@ -57,7 +69,11 @@ export default async function NewCollectionRequestPage({
       organization.businessCategoryCustomLabel
     );
     return (
-      <CollectionRequestWizard step="what" suggestedRequirementNames={library[0]?.suggestedRequirements.map((r) => r.name) ?? []} />
+      <CollectionRequestWizard
+        step="what"
+        isFirstRequest={isFirstRequest}
+        suggestedRequirementNames={library[0]?.suggestedRequirements.map((r) => r.name) ?? []}
+      />
     );
   }
 
@@ -74,19 +90,37 @@ export default async function NewCollectionRequestPage({
     checkIntegrationStatus(session.organizationId),
   ]);
 
+  const integrationReady = integrationStatus.whatsappReady && integrationStatus.driveReady;
+
   const requestedStep = params.step && VALID_STEPS.includes(params.step as WizardStep) ? (params.step as WizardStep) : undefined;
+
+  // Point 5 of the repeat-use rework: connections are onboarding/setup, not
+  // a step that repeats on every request. Enforced here, server-side, off
+  // the same live-verified integrationReady the Review step's own send
+  // guard checks (sendTemplateRequest) — never a client-side flag alone —
+  // so a stale link or a WhenStep click that still points at ?step=connect
+  // (e.g. cached in a bookmark from before both were connected) skips
+  // straight to Review instead of showing an unnecessary connect screen.
+  if (requestedStep === "connect" && integrationReady) {
+    const qs = new URLSearchParams({ draft: draftId, step: "review" });
+    if (params.sendMode) qs.set("sendMode", params.sendMode);
+    if (params.scheduledFor) qs.set("scheduledFor", params.scheduledFor);
+    redirect(`/collections/new?${qs.toString()}`);
+  }
+
   const step: WizardStep = requestedStep ?? (assignedClients.length === 0 ? "who" : "when");
 
   return (
     <CollectionRequestWizard
       step={step}
       draftId={draftId}
+      isFirstRequest={isFirstRequest}
       definitionName={definition.name}
       requirements={requirements}
       assignedClients={assignedClients}
       unassignedClients={unassignedClients}
       totalOrgClients={allClients.length}
-      integrationReady={integrationStatus.whatsappReady && integrationStatus.driveReady}
+      integrationReady={integrationReady}
       googleConnectedAt={organization.googleConnectedAt}
       googleDriveFolderId={organization.googleDriveFolderId}
       googleDriveFolderName={organization.googleDriveFolderName}

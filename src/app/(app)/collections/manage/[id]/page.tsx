@@ -15,6 +15,7 @@ import {
 } from "../../../templates/actions";
 import { resolveRequirementSemantics } from "@/lib/requirementSemanticsActions";
 import { requiresClarification, type RequirementSemanticSpec } from "@/lib/ai/requirementSemantics";
+import { WHATSAPP_NOT_READY_MESSAGE, DRIVE_NOT_READY_MESSAGE } from "@/lib/integrationRequirements";
 import { TemplateForm } from "../../../templates/TemplateForm";
 import { TemplateRequirementRow } from "../../../templates/TemplateRequirementRow";
 import { TemplateSendToClients } from "../../../templates/TemplateSendToClients";
@@ -41,6 +42,12 @@ const ERROR_MESSAGES: Record<string, string> = {
     "לא הוגדרו מסמכים לבקשה זו. יש להגדיר לפחות מסמך אחד לפני השליחה — Centro לעולם לא שולח בקשה כללית ללא רשימת מסמכים.",
   "requirement-name": "יש להזין שם מסמך.",
   "client-fields": "יש למלא שם וטלפון עבור הלקוח החדש.",
+  // Repeat-use rework, point 5 — sendTemplateRequest's own server-side
+  // integration-readiness guard, now enforced regardless of which UI
+  // triggered the send (this page's own TemplateSendToClients drawer, or
+  // the /collections/new wizard).
+  "whatsapp-not-ready": WHATSAPP_NOT_READY_MESSAGE,
+  "drive-not-ready": DRIVE_NOT_READY_MESSAGE,
 };
 
 export default async function CollectionRequestManagePage({

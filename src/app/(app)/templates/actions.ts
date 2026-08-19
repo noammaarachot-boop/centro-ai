@@ -1,6 +1,6 @@
 "use server";
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { getDb } from "@/db";
@@ -17,6 +17,10 @@ import { snapshotServiceRequirements } from "@/lib/collectionRequestStateMachine
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 import { parseRequirementSemantics, requiresClarification } from "@/lib/ai/requirementSemantics";
 import { findClientIdsWithActiveRequest, hasActiveRequestsForTemplate } from "@/lib/data/templates";
+import { checkIntegrationStatus } from "@/lib/integrationRequirements";
+import { analyzeImportFileStructure, UnsupportedImportFormatError } from "@/lib/import/clientImportAdapter";
+import { analyzeColumnsWithAIFallback } from "@/lib/import/columnAnalyzer";
+import { buildClientRowsFromMapping } from "@/lib/csv";
 
 // Product Evolution M5 — a Template is a bare `services` row for a
 // one-time-workflow organization (see ARCHITECTURE.md); these actions are
@@ -99,18 +103,26 @@ export interface CollectionRequestDraftState {
   fieldErrors?: { name?: string };
 }
 
+// Repeat-use polish — the wizard's "What" step no longer forces a name on
+// every request past the first (see WhatStep's own isFirstRequest branch):
+// a blank name here is never rejected, only auto-filled with a safe,
+// server-generated default. The first-ever request still always arrives
+// with a real user-typed (or default-prefilled) name from the client, so
+// this branch is a no-op for it — nothing about that path changes.
+function defaultDraftName(): string {
+  return `בקשת מסמכים — ${new Date().toLocaleDateString("he-IL")}`;
+}
+
 export async function createCollectionRequestDraft(
   _prevState: CollectionRequestDraftState,
   formData: FormData
 ): Promise<CollectionRequestDraftState> {
   const session = await requireSession();
-  const name = String(formData.get("name") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim() || defaultDraftName();
   const requirementNames = formData
     .getAll("requirementName")
     .map((v) => String(v).trim())
     .filter(Boolean);
-
-  if (!name) return { fieldErrors: { name: "נא להזין שם לבקשת האיסוף." } };
 
   const db = await getDb();
   const [draft] = await db
@@ -221,6 +233,61 @@ export async function deleteTemplate(templateId: string) {
       actorType: "employee",
       actorUserId: session.userId,
       metadata: { templateId },
+    });
+  }
+
+  redirect("/collections");
+}
+
+// Repeat-use polish — the wizard's Cancel dialog's "מחיקת הבקשה" option.
+// Deliberately a real hard DELETE, unlike deleteTemplate's soft-delete
+// (retiredAt) above: that function's whole premise is preserving a
+// template's own send history (real collection_requests rows reference
+// it). A Draft — by this codebase's own existing definition
+// (resolveOnDemandDraft/hasSentAnyOnDemandRequest, src/lib/data/
+// collectionRequestDrafts.ts) — is a `services` row with ZERO
+// collection_requests ever created from it, so there is no history to
+// preserve; hard-deleting it (cascading its requirements and any
+// in-progress client assignments via the schema's own onDelete: "cascade")
+// is both safe and more honest than leaving a permanent tombstone for
+// something that was never actually sent. Refuses (falls back to the
+// safe soft-delete path instead) if that ever turns out not to hold —
+// defense in depth against a race with a concurrent send, not the
+// expected path from the wizard's own UI.
+export async function deleteDraftCollectionRequest(draftId: string) {
+  const session = await requireSession();
+  await getOrgScopedTemplate(session.organizationId, draftId);
+
+  const db = await getDb();
+  const [existingRequest] = await db
+    .select({ id: collectionRequests.id })
+    .from(collectionRequests)
+    .where(eq(collectionRequests.serviceId, draftId))
+    .limit(1);
+
+  if (existingRequest) {
+    // Already sent at least once by the time this ran (race with a send,
+    // or a stale UI) — this is no longer a Draft, so fall back to the same
+    // safe soft-delete every genuine template uses instead of losing data.
+    await db
+      .update(services)
+      .set({ retiredAt: new Date() })
+      .where(and(eq(services.id, draftId), eq(services.organizationId, session.organizationId)));
+    redirect("/collections");
+  }
+
+  const [deleted] = await db
+    .delete(services)
+    .where(and(eq(services.id, draftId), eq(services.organizationId, session.organizationId)))
+    .returning({ name: services.name });
+
+  if (deleted) {
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "collection_request_draft.deleted",
+      description: `הטיוטה "${deleted.name}" נמחקה`,
+      actorType: "employee",
+      actorUserId: session.userId,
     });
   }
 
@@ -534,6 +601,76 @@ export async function assignClientsToTemplate(templateId: string, formData: Form
   refresh();
 }
 
+// Repeat-use polish — the wizard's redesigned "Who" step picks recipients
+// from one unified, editable checkbox list (no more separate "all vs
+// selected" pre-choice, and no more auto-selecting everyone) — so unlike
+// assignClientsToTemplate above (add-only; also used by the template
+// management page and the recurring Services page, whose own "add more
+// clients" flows must keep their pure-add semantics untouched), this new
+// action reconciles the FULL submitted set against what's currently
+// assigned: adds newly-checked clients, removes newly-unchecked ones.
+// Kept as its own function rather than changing assignClientsToTemplate's
+// behavior, specifically so those other two callers are never affected.
+export async function syncDraftClients(draftId: string, formData: FormData) {
+  const session = await requireSession();
+  await getOrgScopedTemplate(session.organizationId, draftId);
+
+  const submittedIds = new Set(formData.getAll("clientId").map(String).filter(Boolean));
+
+  const db = await getDb();
+  const currentlyAssigned = await db
+    .select({ assignmentId: clientServices.id, clientId: clientServices.clientId })
+    .from(clientServices)
+    .where(eq(clientServices.serviceId, draftId));
+  const currentlyAssignedIds = new Set(currentlyAssigned.map((r) => r.clientId));
+
+  const candidateToAdd = [...submittedIds].filter((id) => !currentlyAssignedIds.has(id));
+  // Tenant isolation — a submitted clientId is client-controlled input, so
+  // it must never be trusted as-is (the same reasoning behind every other
+  // org-scoped lookup in this file). Only ids that genuinely belong to
+  // this organization are ever inserted; anything else is silently
+  // dropped, not errored — same "don't reveal whether a foreign id
+  // exists" posture as sendTemplateRequest's own per-client existence
+  // check below.
+  const toAdd =
+    candidateToAdd.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: clients.id })
+            .from(clients)
+            .where(and(eq(clients.organizationId, session.organizationId), inArray(clients.id, candidateToAdd)))
+        ).map((c) => c.id);
+  const toRemove = currentlyAssigned.filter((r) => !submittedIds.has(r.clientId));
+
+  if (toAdd.length > 0) {
+    for (const clientId of toAdd) {
+      await db.insert(clientServices).values({ clientId, serviceId: draftId }).onConflictDoNothing();
+    }
+  }
+  if (toRemove.length > 0) {
+    await db.delete(clientServices).where(
+      inArray(
+        clientServices.id,
+        toRemove.map((r) => r.assignmentId)
+      )
+    );
+  }
+
+  if (toAdd.length > 0 || toRemove.length > 0) {
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "template.clients_assigned",
+      description: `רשימת הנמענים לבקשת האיסוף עודכנה (${toAdd.length} נוספו, ${toRemove.length} הוסרו)`,
+      actorType: "employee",
+      actorUserId: session.userId,
+      metadata: { templateId: draftId },
+    });
+  }
+
+  redirect(`/collections/new?draft=${draftId}&step=when`);
+}
+
 // The template detail page's "create a new client" shortcut — same
 // required fields (name, phone) and duplicate-phone handling as the
 // standalone /clients/new form, just one step closer to the actual task
@@ -597,6 +734,107 @@ export async function createAndAssignClientToTemplate(templateId: string, formDa
   });
 
   refresh();
+}
+
+// Repeat-use polish — the wizard's "Who" step secondary "ייבוא לקוחות"
+// action. Reuses the exact same parsing engine already built and shipped
+// for onboarding's one-time-workflow import (analyzeImportFileStructure,
+// analyzeColumnsWithAIFallback, buildClientRowsFromMapping — all in
+// src/lib/import/ and src/lib/csv.ts, not onboarding-specific code) rather
+// than building a second one. Deliberately does NOT reuse
+// importClientsSimple (src/app/onboarding/actions.ts) itself: that
+// function's "replace" mode and importedDuringOnboarding bookkeeping are
+// onboarding-only concepts that don't apply once onboarding is done, and
+// it always finishes by calling finishOnboarding(). This is the minimal,
+// safe "add" counterpart for mid-lifecycle use — name+phone only, same as
+// importClientsSimple's own scope, no business-type classification. Every
+// imported client (both genuinely new ones and any that already existed
+// under the same phone number) is also assigned to this draft, since the
+// point of importing from inside the wizard is to add them as recipients
+// of THIS request.
+export interface ImportClientsForDraftState {
+  error?: string;
+  imported?: number;
+  skipped?: number;
+}
+
+export async function importClientsForDraft(
+  draftId: string,
+  _prevState: ImportClientsForDraftState,
+  formData: FormData
+): Promise<ImportClientsForDraftState> {
+  const session = await requireSession();
+  await getOrgScopedTemplate(session.organizationId, draftId);
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { error: "נא לבחור קובץ להעלאה." };
+  }
+
+  let structure;
+  try {
+    structure = await analyzeImportFileStructure(file);
+  } catch (error) {
+    if (error instanceof UnsupportedImportFormatError) {
+      return { error: error.message };
+    }
+    return { error: error instanceof Error ? error.message : "שגיאה בקריאת הקובץ." };
+  }
+
+  const analysis = await analyzeColumnsWithAIFallback(structure.rows);
+  if (analysis.mapping.name === undefined || analysis.mapping.phone === undefined) {
+    return {
+      error: "לא הצלחנו לזהות עמודות שם וטלפון בקובץ. ודאו שהקובץ כולל את הפרטים האלה ונסו שוב.",
+    };
+  }
+
+  const dataRows = analysis.hasHeaderRow ? structure.rows.slice(1) : structure.rows;
+  const parsedRows = buildClientRowsFromMapping(dataRows, analysis.mapping);
+
+  const db = await getDb();
+  const existing = await db
+    .select({ id: clients.id, phone: clients.phone })
+    .from(clients)
+    .where(eq(clients.organizationId, session.organizationId));
+  const existingByPhone = new Map(existing.map((c) => [c.phone, c.id]));
+
+  let imported = 0;
+  let skipped = 0;
+  const clientIdsToAssign: string[] = [];
+  for (const row of parsedRows) {
+    if (!row.name || !row.phone) {
+      skipped += 1;
+      continue;
+    }
+    const existingId = existingByPhone.get(row.phone);
+    if (existingId) {
+      clientIdsToAssign.push(existingId);
+      continue;
+    }
+    const [created] = await db
+      .insert(clients)
+      .values({ organizationId: session.organizationId, name: row.name, phone: row.phone })
+      .returning({ id: clients.id });
+    existingByPhone.set(row.phone, created.id);
+    clientIdsToAssign.push(created.id);
+    imported += 1;
+  }
+
+  for (const clientId of clientIdsToAssign) {
+    await db.insert(clientServices).values({ clientId, serviceId: draftId }).onConflictDoNothing();
+  }
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "clients.imported",
+    description: `${imported} לקוחות יובאו ושויכו לבקשת האיסוף (${skipped} שורות דולגו)`,
+    actorType: "employee",
+    actorUserId: session.userId,
+    metadata: { templateId: draftId, imported, skipped },
+  });
+
+  refresh();
+  return { imported, skipped };
 }
 
 export async function removeClientFromTemplate(templateId: string, assignmentId: string) {
@@ -687,6 +925,21 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
   const sendMode = String(formData.get("sendMode") ?? "now");
   const redirectTo = formData.get("redirectTo")?.toString() || `/collections/manage/${templateId}`;
   const sep = redirectTo.includes("?") ? "&" : "?";
+
+  // Server-side source of truth (point 5 of the repeat-use rework) — the
+  // wizard's own Connect step already blocks its "Continue" button
+  // client-side when a connection isn't ready, but that's UX only. This is
+  // the actual enforcement: verified live here (same checkIntegrationStatus
+  // the Connect step itself calls), regardless of what step the request
+  // came through, or whether a stale/direct form post skipped the wizard's
+  // own client-side gate entirely.
+  const integrationStatus = await checkIntegrationStatus(session.organizationId);
+  if (!integrationStatus.whatsappReady) {
+    redirect(`${redirectTo}${sep}error=whatsapp-not-ready`);
+  }
+  if (!integrationStatus.driveReady) {
+    redirect(`${redirectTo}${sep}error=drive-not-ready`);
+  }
 
   const clientIds = [...explicitClientIds];
   if (newClientName && newClientPhone) {

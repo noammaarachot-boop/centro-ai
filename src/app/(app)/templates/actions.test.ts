@@ -34,6 +34,13 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
+// refresh() throws outside a real Server Action invocation, same as every
+// other test file in this codebase that exercises an action calling it
+// (e.g. settings/actions.test.ts) — a pure test-harness shim.
+vi.mock("next/cache", () => ({
+  refresh: vi.fn(),
+}));
+
 const sendTextMessage = vi.fn();
 const sendTemplateMessage = vi.fn();
 const sendInteractiveButtonsMessage = vi.fn();
@@ -47,7 +54,32 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
-const { sendTemplateRequest, deleteTemplate } = await import("./actions");
+// checkIntegrationStatus's real Drive branch calls getValidAccessToken,
+// which does genuine encrypted-token-refresh work this unit test has no
+// business seeding — mocked here (defaulting to "both ready", matching
+// today's tests, which are about send/delete/assign behavior, not
+// integration readiness) so sendTemplateRequest's own new readiness guard
+// (repeat-use rework, point 5) can be exercised deliberately, in its own
+// dedicated tests below, without dragging real Google OAuth machinery in.
+const checkIntegrationStatus = vi.fn();
+vi.mock("@/lib/integrationRequirements", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/integrationRequirements")>(
+    "@/lib/integrationRequirements"
+  );
+  return {
+    ...actual,
+    checkIntegrationStatus: (...args: unknown[]) => checkIntegrationStatus(...args),
+  };
+});
+
+const {
+  sendTemplateRequest,
+  deleteTemplate,
+  createCollectionRequestDraft,
+  deleteDraftCollectionRequest,
+  syncDraftClients,
+  importClientsForDraft,
+} = await import("./actions");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -59,6 +91,7 @@ beforeEach(() => {
   sendTextMessage.mockReset().mockResolvedValue({ messageId: "wamid.out" });
   sendTemplateMessage.mockReset().mockResolvedValue({ messageId: "wamid.out" });
   sendInteractiveButtonsMessage.mockReset().mockResolvedValue({ messageId: "wamid.out" });
+  checkIntegrationStatus.mockReset().mockResolvedValue({ whatsappReady: true, driveReady: true });
 });
 
 async function seedOrgWithTemplate(requirementNames: string[] = ["תעודת זהות"]) {
@@ -137,6 +170,22 @@ async function del(templateId: string) {
     const url = message.slice("NEXT_REDIRECT:".length);
     return { pathname: url.split("?")[0], params: Object.fromEntries(new URL(url, "http://x").searchParams) };
   }
+}
+
+async function expectRedirect(fn: () => Promise<unknown>) {
+  try {
+    await fn();
+    throw new Error("expected a redirect");
+  } catch (err) {
+    const message = (err as Error).message;
+    if (!message.startsWith("NEXT_REDIRECT:")) throw err;
+    const url = message.slice("NEXT_REDIRECT:".length);
+    return { pathname: url.split("?")[0], params: Object.fromEntries(new URL(url, "http://x").searchParams) };
+  }
+}
+
+function csvFile(content: string, name = "clients.csv"): File {
+  return new File([content], name, { type: "text/csv" });
 }
 
 describe("sendTemplateRequest — creating real collection requests from a template", () => {
@@ -382,5 +431,233 @@ describe("deleteTemplate — soft-delete (retire), never a hard DELETE", () => {
     expect(result.error).toBe("template-deleted");
     const requests = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.clientId, clientId));
     expect(requests).toHaveLength(0);
+  });
+});
+
+// Repeat-use rework — point 5: connections are onboarding/setup, never a
+// per-request step, but the server (not a client-side flag) is what
+// actually enforces it before a real send is ever attempted.
+describe("sendTemplateRequest — server-side integration readiness guard", () => {
+  it("blocks the send when WhatsApp isn't ready, even though the client could claim otherwise", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientId = await seedClient(orgId);
+    checkIntegrationStatus.mockResolvedValue({ whatsappReady: false, driveReady: true });
+
+    const result = await send(templateId, { clientId, sendMode: "now" });
+    expect(result.error).toBe("whatsapp-not-ready");
+
+    const requests = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.clientId, clientId));
+    expect(requests).toHaveLength(0);
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+  });
+
+  it("blocks the send when Google Drive isn't ready", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientId = await seedClient(orgId);
+    checkIntegrationStatus.mockResolvedValue({ whatsappReady: true, driveReady: false });
+
+    const result = await send(templateId, { clientId, sendMode: "now" });
+    expect(result.error).toBe("drive-not-ready");
+
+    const requests = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.clientId, clientId));
+    expect(requests).toHaveLength(0);
+  });
+
+  it("sends normally once both are ready", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientId = await seedClient(orgId);
+    checkIntegrationStatus.mockResolvedValue({ whatsappReady: true, driveReady: true });
+
+    const result = await send(templateId, { clientId, sendMode: "now" });
+    expect(result.sent).toBe("1");
+  });
+});
+
+describe("createCollectionRequestDraft — repeat-use rework: name is never forced", () => {
+  it("auto-generates a safe default name when left blank (no fieldError)", async () => {
+    await seedOrgWithTemplate([]);
+    const fd = formData({});
+
+    let redirectedTo = "";
+    try {
+      await createCollectionRequestDraft({}, fd);
+      throw new Error("expected a redirect");
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!message.startsWith("NEXT_REDIRECT:")) throw err;
+      redirectedTo = message.slice("NEXT_REDIRECT:".length);
+    }
+
+    const draftId = new URL(redirectedTo, "http://x").searchParams.get("draft")!;
+    const [draft] = await db.select().from(schema.services).where(eq(schema.services.id, draftId));
+    expect(draft.name).toBeTruthy();
+    expect(draft.name).toContain("בקשת מסמכים");
+  });
+
+  it("still uses the real submitted name when one is provided", async () => {
+    await seedOrgWithTemplate([]);
+    const fd = formData({ name: "מסמכים לחידוש חוזה" });
+
+    let redirectedTo = "";
+    try {
+      await createCollectionRequestDraft({}, fd);
+    } catch (err) {
+      redirectedTo = (err as Error).message.slice("NEXT_REDIRECT:".length);
+    }
+    const draftId = new URL(redirectedTo, "http://x").searchParams.get("draft")!;
+    const [draft] = await db.select().from(schema.services).where(eq(schema.services.id, draftId));
+    expect(draft.name).toBe("מסמכים לחידוש חוזה");
+  });
+});
+
+// Draft vs Template (repeat-use rework, point 7) — a Draft is a services
+// row with zero collection_requests ever created from it; deleting one is
+// a real hard DELETE (cascading its requirements/assignments), never the
+// soft-delete (retiredAt) a genuine, already-used Template gets.
+describe("deleteDraftCollectionRequest — hard delete for a never-sent draft only", () => {
+  it("hard-deletes a never-sent draft: the row, its requirements, and its client assignments are all gone", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate(["תעודת זהות"]);
+    const clientId = await seedClient(orgId);
+    await db.insert(schema.clientServices).values({ clientId, serviceId: templateId });
+
+    const result = await expectRedirect(() => deleteDraftCollectionRequest(templateId));
+    expect(result.pathname).toBe("/collections");
+
+    const [row] = await db.select().from(schema.services).where(eq(schema.services.id, templateId));
+    expect(row).toBeUndefined(); // genuinely gone, not soft-deleted
+
+    const requirements = await db
+      .select()
+      .from(schema.serviceDocumentRequirements)
+      .where(eq(schema.serviceDocumentRequirements.serviceId, templateId));
+    expect(requirements).toHaveLength(0);
+
+    const assignments = await db.select().from(schema.clientServices).where(eq(schema.clientServices.serviceId, templateId));
+    expect(assignments).toHaveLength(0);
+
+    const audits = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.organizationId, orgId));
+    expect(audits.some((a) => a.eventType === "collection_request_draft.deleted")).toBe(true);
+  });
+
+  it("falls back to the safe soft-delete instead, if the draft turns out to have already been sent (race defense)", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientId = await seedClient(orgId);
+    await send(templateId, { clientId, sendMode: "now" });
+
+    const result = await expectRedirect(() => deleteDraftCollectionRequest(templateId));
+    expect(result.pathname).toBe("/collections");
+
+    const [row] = await db.select().from(schema.services).where(eq(schema.services.id, templateId));
+    expect(row).toBeDefined(); // never actually deleted — it has real history
+    expect(row.retiredAt).not.toBeNull();
+
+    const requests = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.serviceId, templateId));
+    expect(requests).toHaveLength(1); // untouched
+  });
+
+  it("tenant isolation: cannot delete another organization's draft", async () => {
+    const { templateId } = await seedOrgWithTemplate();
+    const otherOrgSession = currentSession;
+    const { orgId: otherOrgId } = await seedOrgWithTemplate(); // switches currentSession to a second org
+    void otherOrgId;
+
+    const result = await expectRedirect(() => deleteDraftCollectionRequest(templateId));
+    expect(result.pathname).toBe("/collections"); // getOrgScopedTemplate's own not-found redirect
+
+    currentSession = otherOrgSession; // restore, not strictly required but keeps intent clear
+    // The original org's draft must still exist, completely untouched.
+    const [row] = await db.select().from(schema.services).where(eq(schema.services.id, templateId));
+    expect(row).toBeDefined();
+  });
+});
+
+describe("syncDraftClients — reconciles the full picked set (adds and removes), tenant-isolated", () => {
+  it("adds newly-checked clients and removes newly-unchecked ones in one call", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientA = await seedClient(orgId, "לקוח א");
+    const clientB = await seedClient(orgId, "לקוח ב");
+    const clientC = await seedClient(orgId, "לקוח ג");
+    await db.insert(schema.clientServices).values([
+      { clientId: clientA, serviceId: templateId },
+      { clientId: clientB, serviceId: templateId },
+    ]);
+
+    // Now submit only B and C — A should be removed, C added, B untouched.
+    await expectRedirect(() => syncDraftClients(templateId, formData({ clientId: [clientB, clientC] })));
+
+    const assigned = await db
+      .select({ clientId: schema.clientServices.clientId })
+      .from(schema.clientServices)
+      .where(eq(schema.clientServices.serviceId, templateId));
+    expect(new Set(assigned.map((a) => a.clientId))).toEqual(new Set([clientB, clientC]));
+  });
+
+  it("submitting zero clientIds removes every current assignment (an explicit, deliberate empty selection)", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientA = await seedClient(orgId, "לקוח א");
+    await db.insert(schema.clientServices).values({ clientId: clientA, serviceId: templateId });
+
+    await expectRedirect(() => syncDraftClients(templateId, formData({})));
+
+    const assigned = await db.select().from(schema.clientServices).where(eq(schema.clientServices.serviceId, templateId));
+    expect(assigned).toHaveLength(0);
+  });
+
+  it("tenant isolation: a clientId belonging to a different organization is silently dropped, never assigned", async () => {
+    const { templateId } = await seedOrgWithTemplate();
+    const foreignSession = currentSession;
+    const { orgId: otherOrgId } = await seedOrgWithTemplate();
+    const foreignClientId = await seedClient(otherOrgId, "לקוח של ארגון אחר");
+    currentSession = foreignSession; // back to the original org, whose draft this is
+
+    await expectRedirect(() => syncDraftClients(templateId, formData({ clientId: foreignClientId })));
+
+    const assigned = await db.select().from(schema.clientServices).where(eq(schema.clientServices.serviceId, templateId));
+    expect(assigned).toHaveLength(0); // the foreign client was never actually linked
+  });
+});
+
+describe("importClientsForDraft — minimal add-only import, reusing the shared parsing engine", () => {
+  it("parses a real CSV, creates new clients, and assigns every one of them to the draft", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const file = csvFile("name,phone\nדנה כהן,0501111111\nיוסי לוי,0502222222");
+    const fd = new FormData();
+    fd.append("file", file);
+
+    const result = await importClientsForDraft(templateId, {}, fd);
+    expect(result.error).toBeUndefined();
+    expect(result.imported).toBe(2);
+
+    const created = await db.select().from(schema.clients).where(eq(schema.clients.organizationId, orgId));
+    expect(created.map((c) => c.name).sort()).toEqual(["דנה כהן", "יוסי לוי"]);
+
+    const assigned = await db.select().from(schema.clientServices).where(eq(schema.clientServices.serviceId, templateId));
+    expect(assigned).toHaveLength(2);
+  });
+
+  it("an existing client (matched by phone) is assigned to the draft, not duplicated", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    await db.insert(schema.clients).values({ organizationId: orgId, name: "דנה כהן", phone: "0501111111" });
+    const file = csvFile("name,phone\nדנה כהן,0501111111");
+    const fd = new FormData();
+    fd.append("file", file);
+
+    const result = await importClientsForDraft(templateId, {}, fd);
+    expect(result.imported).toBe(0); // not counted as a new import — it already existed
+
+    const allClients = await db.select().from(schema.clients).where(eq(schema.clients.organizationId, orgId));
+    expect(allClients).toHaveLength(1); // never duplicated
+
+    const assigned = await db.select().from(schema.clientServices).where(eq(schema.clientServices.serviceId, templateId));
+    expect(assigned).toHaveLength(1);
+  });
+
+  it("rejects when no file is provided, without touching the draft", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    void orgId;
+    const result = await importClientsForDraft(templateId, {}, new FormData());
+    expect(result.error).toBeTruthy();
+    const assigned = await db.select().from(schema.clientServices).where(eq(schema.clientServices.serviceId, templateId));
+    expect(assigned).toHaveLength(0);
   });
 });

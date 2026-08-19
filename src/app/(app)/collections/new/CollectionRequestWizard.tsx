@@ -1,19 +1,38 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useId, useMemo, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, FileText, Loader2, Plus, Send, UserPlus } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  FileSpreadsheet,
+  FileText,
+  Loader2,
+  Plus,
+  Search,
+  Send,
+  Upload,
+  UserPlus,
+  X,
+  AlertTriangle,
+} from "lucide-react";
 import { Button, buttonVariants } from "@/components/app/Button";
 import { fieldClass } from "@/components/app/FormField";
-import { AnimatedCheckBadge } from "@/components/app/AnimatedCheckBadge";
 import { GoogleDriveConnectionRow, WhatsAppConnectionRow } from "@/app/onboarding/steps/Step3Connect";
+import { TemplateRequirementRow } from "../../templates/TemplateRequirementRow";
 import {
-  assignClientsToTemplate,
+  addTemplateRequirement,
   createAndAssignClientToTemplate,
   createCollectionRequestDraft,
+  deleteDraftCollectionRequest,
+  importClientsForDraft,
   sendTemplateRequest,
+  syncDraftClients,
   type CollectionRequestDraftState,
+  type ImportClientsForDraftState,
 } from "../../templates/actions";
+import { WHATSAPP_NOT_READY_MESSAGE, DRIVE_NOT_READY_MESSAGE } from "@/lib/integrationMessages";
 
 export type WizardStep = "what" | "who" | "when" | "connect" | "review" | "success";
 
@@ -25,11 +44,24 @@ interface AssignedClientRow {
   assignmentId: string;
   clientId: string;
   clientName: string;
+  clientPhone: string;
+  clientEmail: string | null;
 }
 interface UnassignedClientRow {
   id: string;
   name: string;
   phone: string;
+  email: string | null;
+}
+
+// Point 3 of the repeat-use rework — a small count shows real names, a
+// large one shows a couple of names plus a count, instead of always just
+// "X לקוחות". Shared between WhoStep's own selection summary and the
+// Review step's recipient row so the two never phrase it differently.
+function formatClientListLabel(names: string[]): string {
+  if (names.length === 0) return "";
+  if (names.length <= 3) return names.join(", ");
+  return `${names.slice(0, 2).join(", ")} ועוד ${names.length - 2}`;
 }
 
 const STEP_ORDER: { key: WizardStep; label: string }[] = [
@@ -98,19 +130,93 @@ function SummarySidebar({
   );
 }
 
+// Repeat-use polish — the wizard's Cancel action. Modeled on
+// ConfirmDialog's own native-Popover-API pattern (same shell, same icon
+// treatment, same Button components), just with three outcomes instead of
+// two: ConfirmDialog itself is a strict confirm/cancel shape and doesn't
+// fit a "save as draft, or delete, or go back" choice. "שמירה כטיוטה" does
+// nothing beyond navigating away — every step already persists to the DB
+// as it's completed (this wizard has no unsaved client-only state), so the
+// in-progress services row is already a real Draft the moment you leave;
+// resolveOnDemandDraft (now called unconditionally from /collections/new,
+// see page.tsx) is what resumes it next time.
+function CancelDraftDialog({ draftId }: { draftId: string }) {
+  const popoverId = useId();
+  const boundDelete = deleteDraftCollectionRequest.bind(null, draftId);
+
+  return (
+    <>
+      <button
+        type="button"
+        popoverTarget={popoverId}
+        popoverTargetAction="show"
+        className="text-sm font-medium text-text-muted transition-colors hover:text-danger"
+      >
+        ביטול
+      </button>
+      <div
+        popover="auto"
+        id={popoverId}
+        className="centro-glass-strong m-auto w-full max-w-sm rounded-2xl border border-border p-6 shadow-card-lg backdrop:bg-text-primary/40 backdrop:backdrop-blur-sm"
+      >
+        <div className="mb-4 flex items-start gap-3">
+          <span className="centro-icon-danger grid h-10 w-10 shrink-0 place-items-center rounded-xl">
+            <AlertTriangle className="h-5 w-5" />
+          </span>
+          <div>
+            <h2 className="text-base font-semibold text-text-primary">לבטל את הבקשה?</h2>
+            <p className="mt-1 text-sm text-text-secondary">
+              אפשר לשמור את מה שהתחלתם כטיוטה ולחזור אליה מאוחר יותר, או למחוק את הבקשה לגמרי.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col gap-2">
+          <Link href="/collections" className={buttonVariants({ variant: "secondary", size: "sm", className: "w-full" })}>
+            שמירה כטיוטה
+          </Link>
+          <form action={boundDelete}>
+            <Button type="submit" variant="danger" size="sm" className="w-full">
+              מחיקת הבקשה
+            </Button>
+          </form>
+          <button
+            type="button"
+            popoverTarget={popoverId}
+            popoverTargetAction="hide"
+            className="w-full rounded-full px-4 py-2 text-center text-xs font-medium text-text-muted transition-colors hover:text-text-primary"
+          >
+            חזרה לעריכה
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // Step "What will be sent?" — only ever rendered before a draft exists.
-// Name + suggested documents (pre-checked, editable) in one submit, per the
-// locked design; see createCollectionRequestDraft's own comment for why
-// this needed a new combined action rather than reusing createTemplate +
-// addTemplateRequirement one call at a time.
-function WhatStep({ suggestedRequirementNames }: { suggestedRequirementNames: string[] }) {
+// First request keeps the exact original design: suggestions arrive
+// pre-checked and a name is required. From the second request on
+// (isFirstRequest === false, computed server-side in page.tsx from
+// hasSentAnyOnDemandRequest — never a client-side guess), nothing is
+// auto-selected: suggestions are click-to-add chips, the name is optional
+// (createCollectionRequestDraft auto-fills a safe default when left
+// blank), and every added document — suggested or typed — shows in one
+// list with its own remove (X), never a checkmark implying "done".
+function WhatStep({
+  isFirstRequest,
+  suggestedRequirementNames,
+}: {
+  isFirstRequest: boolean;
+  suggestedRequirementNames: string[];
+}) {
   const initialState: CollectionRequestDraftState = {};
   const [state, formAction, isPending] = useActionState(createCollectionRequestDraft, initialState);
-  const [checked, setChecked] = useState<Set<string>>(() => new Set(suggestedRequirementNames));
+  const [checked, setChecked] = useState<Set<string>>(() => new Set(isFirstRequest ? suggestedRequirementNames : []));
   const [customDocs, setCustomDocs] = useState<string[]>([]);
+  const [addedDocs, setAddedDocs] = useState<string[]>([]);
   const [newDoc, setNewDoc] = useState("");
 
-  function toggle(name: string) {
+  function toggleChecked(name: string) {
     setChecked((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
@@ -119,15 +225,31 @@ function WhatStep({ suggestedRequirementNames }: { suggestedRequirementNames: st
     });
   }
 
+  function addDoc(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed || addedDocs.includes(trimmed)) return;
+    setAddedDocs((prev) => [...prev, trimmed]);
+  }
+
+  function removeAddedDoc(name: string) {
+    setAddedDocs((prev) => prev.filter((d) => d !== name));
+  }
+
   function addCustomDoc() {
     const trimmed = newDoc.trim();
     if (!trimmed) return;
-    setCustomDocs((prev) => [...prev, trimmed]);
-    setChecked((prev) => new Set(prev).add(trimmed));
+    if (isFirstRequest) {
+      setCustomDocs((prev) => [...prev, trimmed]);
+      setChecked((prev) => new Set(prev).add(trimmed));
+    } else {
+      addDoc(trimmed);
+    }
     setNewDoc("");
   }
 
-  const allDocNames = [...suggestedRequirementNames, ...customDocs];
+  const firstRequestDocNames = [...suggestedRequirementNames, ...customDocs];
+  const availableSuggestions = suggestedRequirementNames.filter((n) => !addedDocs.includes(n));
+  const canSubmit = isFirstRequest ? checked.size > 0 : addedDocs.length > 0;
 
   if (isPending) {
     return (
@@ -142,14 +264,15 @@ function WhatStep({ suggestedRequirementNames }: { suggestedRequirementNames: st
     <form action={formAction} className="space-y-5" dir="rtl">
       <div>
         <label htmlFor="name" className="mb-1.5 block text-sm font-medium text-text-secondary">
-          שם הבקשה
+          שם הבקשה {!isFirstRequest && <span className="font-normal text-text-muted">(לא חובה)</span>}
         </label>
         <input
           id="name"
           name="name"
           type="text"
-          required
-          defaultValue="מסמכים לפתיחת תיק"
+          required={isFirstRequest}
+          defaultValue={isFirstRequest ? "מסמכים לפתיחת תיק" : undefined}
+          placeholder={isFirstRequest ? undefined : "לדוגמה: מסמכים לחידוש חוזה"}
           className={fieldClass("md")}
         />
         {state.fieldErrors?.name && (
@@ -159,29 +282,78 @@ function WhatStep({ suggestedRequirementNames }: { suggestedRequirementNames: st
         )}
       </div>
 
-      {allDocNames.length > 0 && (
-        <div className="overflow-hidden rounded-xl border border-border">
-          <div className="border-b border-border bg-brand-purple/5 px-4 py-2.5 text-xs font-bold text-brand-purple">
-            מסמכים מוצעים
+      {isFirstRequest ? (
+        firstRequestDocNames.length > 0 && (
+          <div className="overflow-hidden rounded-xl border border-border">
+            <div className="border-b border-border bg-brand-purple/5 px-4 py-2.5 text-xs font-bold text-brand-purple">
+              מסמכים מוצעים
+            </div>
+            <ul className="divide-y divide-border">
+              {firstRequestDocNames.map((docName) => (
+                <li key={docName} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                  <label className="flex flex-1 items-center gap-2.5 text-sm text-text-primary">
+                    <input
+                      type="checkbox"
+                      name="requirementName"
+                      value={docName}
+                      checked={checked.has(docName)}
+                      onChange={() => toggleChecked(docName)}
+                      className="h-4 w-4 rounded border-border accent-brand-purple"
+                    />
+                    {docName}
+                  </label>
+                </li>
+              ))}
+            </ul>
           </div>
-          <ul className="divide-y divide-border">
-            {allDocNames.map((docName) => (
-              <li key={docName} className="flex items-center justify-between gap-2 px-4 py-2.5">
-                <label className="flex flex-1 items-center gap-2.5 text-sm text-text-primary">
-                  <input
-                    type="checkbox"
-                    name="requirementName"
-                    value={docName}
-                    checked={checked.has(docName)}
-                    onChange={() => toggle(docName)}
-                    className="h-4 w-4 rounded border-border accent-brand-purple"
-                  />
-                  {docName}
-                </label>
-              </li>
-            ))}
-          </ul>
-        </div>
+        )
+      ) : (
+        <>
+          {availableSuggestions.length > 0 && (
+            <div>
+              <p className="mb-2 text-xs font-bold tracking-wide text-text-muted uppercase">
+                מסמכים מוצעים — לחצו כדי להוסיף
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {availableSuggestions.map((docName) => (
+                  <button
+                    key={docName}
+                    type="button"
+                    onClick={() => addDoc(docName)}
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-muted/40 px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:border-brand-purple/40 hover:bg-brand-purple/5 hover:text-brand-purple"
+                  >
+                    <Plus className="h-3 w-3" />
+                    {docName}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {addedDocs.length > 0 && (
+            <div className="overflow-hidden rounded-xl border border-border">
+              <div className="border-b border-border bg-brand-purple/5 px-4 py-2.5 text-xs font-bold text-brand-purple">
+                המסמכים לבקשה
+              </div>
+              <ul className="divide-y divide-border">
+                {addedDocs.map((docName) => (
+                  <li key={docName} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                    <span className="text-sm text-text-primary">{docName}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAddedDoc(docName)}
+                      aria-label={`הסרת ${docName}`}
+                      className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-text-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                    <input type="hidden" name="requirementName" value={docName} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
       )}
 
       <div className="flex items-center gap-2">
@@ -189,8 +361,8 @@ function WhatStep({ suggestedRequirementNames }: { suggestedRequirementNames: st
           type="text"
           value={newDoc}
           onChange={(e) => setNewDoc(e.currentTarget.value)}
-          placeholder="הוספת מסמך נוסף"
-          className={fieldClass("sm", "flex-1")}
+          placeholder="הוספת מסמך"
+          className={fieldClass("md", "flex-1")}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
@@ -201,10 +373,10 @@ function WhatStep({ suggestedRequirementNames }: { suggestedRequirementNames: st
         <button
           type="button"
           onClick={addCustomDoc}
-          className={buttonVariants({ variant: "secondary", size: "sm" })}
+          className={buttonVariants({ variant: "secondary", size: "md" })}
         >
-          <Plus className="h-3.5 w-3.5" />
-          הוספה
+          <Plus className="h-4 w-4" />
+          הוספת מסמך
         </button>
       </div>
 
@@ -214,16 +386,26 @@ function WhatStep({ suggestedRequirementNames }: { suggestedRequirementNames: st
         </p>
       )}
 
-      <Button type="submit" variant="primary" size="lg" className="w-full">
+      <Button type="submit" variant="primary" size="lg" className="w-full" disabled={!canSubmit}>
         המשך
       </Button>
     </form>
   );
 }
 
+interface SelectableClient {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+}
+
 // Step "Who should receive it?" — first-run (zero clients anywhere in the
-// org) gets the single-client inline form straight from the design; a
-// returning org gets an All clients / Selected clients choice.
+// org) still gets the single-client inline bootstrap form, unchanged.
+// Otherwise: one unified, always-editable checkbox list — every org client
+// shown, already-assigned ones pre-checked (not "all clients" auto-picked;
+// see point 2 of the repeat-use rework), with search and an explicit,
+// secondary "select all" action rather than that being the default.
 function WhoStep({
   draftId,
   totalOrgClients,
@@ -235,10 +417,48 @@ function WhoStep({
   assignedClients: AssignedClientRow[];
   unassignedClients: UnassignedClientRow[];
 }) {
-  const [mode, setMode] = useState<"all" | "selected">("all");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const boundAssign = assignClientsToTemplate.bind(null, draftId);
   const boundCreateAndAssign = createAndAssignClientToTemplate.bind(null, draftId);
+  const boundSync = syncDraftClients.bind(null, draftId);
+  const importInitialState: ImportClientsForDraftState = {};
+  const [importState, importAction, importPending] = useActionState(
+    importClientsForDraft.bind(null, draftId),
+    importInitialState
+  );
+
+  const allClients = useMemo<SelectableClient[]>(() => {
+    const assigned = assignedClients.map((c) => ({
+      id: c.clientId,
+      name: c.clientName,
+      phone: c.clientPhone,
+      email: c.clientEmail,
+    }));
+    return [...assigned, ...unassignedClients];
+  }, [assignedClients, unassignedClients]);
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(assignedClients.map((c) => c.clientId))
+  );
+  const [search, setSearch] = useState("");
+  const [showNewClient, setShowNewClient] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+
+  // A client added mid-step (inline "לקוח חדש" or "ייבוא לקוחות", both of
+  // which persist immediately and refresh() the page's server data) must
+  // show up checked once the refreshed assignedClients prop arrives. This
+  // is React's own documented "adjusting state when a prop changes"
+  // pattern — setState called during render, gated on a previous-value
+  // comparison held in state (never a ref: this project's stricter
+  // react-hooks/refs lint rule disallows reading/writing ref.current
+  // during render, see ConfirmDialog's own comment for why) — so it's one
+  // extra render pass, immediately, before paint, never a useEffect
+  // cascade. Only ever adds ids, never removes one the user already
+  // unchecked.
+  const assignedIdsKey = assignedClients.map((c) => c.clientId).join(",");
+  const [lastAssignedIdsKey, setLastAssignedIdsKey] = useState(assignedIdsKey);
+  if (assignedIdsKey !== lastAssignedIdsKey) {
+    setLastAssignedIdsKey(assignedIdsKey);
+    setSelectedIds((prev) => new Set([...prev, ...assignedClients.map((c) => c.clientId)]));
+  }
 
   function toggle(id: string) {
     setSelectedIds((prev) => {
@@ -249,7 +469,25 @@ function WhoStep({
     });
   }
 
-  if (totalOrgClients === 0 && assignedClients.length === 0) {
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredClients = normalizedSearch
+    ? allClients.filter(
+        (c) =>
+          c.name.toLowerCase().includes(normalizedSearch) ||
+          c.phone.includes(normalizedSearch) ||
+          (c.email ?? "").toLowerCase().includes(normalizedSearch)
+      )
+    : allClients;
+
+  function selectAllVisible() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      filteredClients.forEach((c) => next.add(c.id));
+      return next;
+    });
+  }
+
+  if (totalOrgClients === 0 && allClients.length === 0) {
     return (
       <form action={boundCreateAndAssign} className="space-y-4" dir="rtl">
         <p className="text-sm text-text-secondary">עדיין אין לקוחות — נתחיל עם לקוח אחד כדי לנסות.</p>
@@ -280,59 +518,40 @@ function WhoStep({
     );
   }
 
-  if (assignedClients.length > 0) {
-    // Already assigned (resumed mid-flow) — straight to the next step.
-    return (
-      <div className="space-y-4 text-center" dir="rtl">
-        <AnimatedCheckBadge size={28} className="mx-auto" />
-        <p className="text-sm text-text-secondary">
-          {assignedClients.length === 1
-            ? `${assignedClients[0].clientName} נבחר/ה`
-            : `${assignedClients.length} לקוחות נבחרו`}
-        </p>
-        <Link
-          href={`/collections/new?draft=${draftId}&step=when`}
-          className={buttonVariants({ variant: "primary", size: "lg", className: "w-full" })}
-        >
-          המשך
-        </Link>
-      </div>
-    );
-  }
+  const selectedNames = allClients.filter((c) => selectedIds.has(c.id)).map((c) => c.name);
 
   return (
     <div className="space-y-4" dir="rtl">
-      <div className="flex gap-3">
-        <button
-          type="button"
-          onClick={() => setMode("all")}
-          className={
-            "flex-1 rounded-xl border p-4 text-start transition-colors " +
-            (mode === "all" ? "border-brand-purple bg-brand-purple/5" : "border-border")
-          }
-        >
-          <p className="text-sm font-semibold text-text-primary">כל הלקוחות</p>
-          <p className="text-xs text-text-muted">{unassignedClients.length} לקוחות קיימים</p>
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("selected")}
-          className={
-            "flex-1 rounded-xl border p-4 text-start transition-colors " +
-            (mode === "selected" ? "border-brand-purple bg-brand-purple/5" : "border-border")
-          }
-        >
-          <p className="text-sm font-semibold text-text-primary">לקוחות נבחרים</p>
-          <p className="text-xs text-text-muted">בחירה ידנית</p>
+      <div className="relative">
+        <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" aria-hidden="true" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.currentTarget.value)}
+          placeholder="חיפוש לפי שם או טלפון..."
+          className={fieldClass("md", "ps-9")}
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-text-muted">
+          {selectedIds.size > 0 ? formatClientListLabel(selectedNames) : "לא נבחרו לקוחות"}
+        </p>
+        <button type="button" onClick={selectAllVisible} className="shrink-0 text-xs font-medium text-brand-purple hover:underline">
+          בחירת הכל{normalizedSearch ? " (מהתוצאות)" : ""}
         </button>
       </div>
 
-      <form action={boundAssign} className="space-y-3">
-        {mode === "selected" && (
-          <ul className="max-h-48 space-y-1.5 overflow-y-auto rounded-xl border border-border p-3">
-            {unassignedClients.map((client) => (
+      <form action={boundSync} className="space-y-3">
+        {filteredClients.length === 0 ? (
+          <p className="rounded-xl border border-border bg-surface-muted/40 px-4 py-6 text-center text-sm text-text-muted">
+            לא נמצאו לקוחות תואמים לחיפוש.
+          </p>
+        ) : (
+          <ul className="max-h-64 space-y-1 overflow-y-auto rounded-xl border border-border p-2">
+            {filteredClients.map((client) => (
               <li key={client.id}>
-                <label className="flex items-center gap-2 text-sm text-text-primary">
+                <label className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-text-primary transition-colors hover:bg-surface-muted">
                   <input
                     type="checkbox"
                     name="clientId"
@@ -350,28 +569,91 @@ function WhoStep({
             ))}
           </ul>
         )}
-        {mode === "all" &&
-          unassignedClients.map((client) => (
-            <input key={client.id} type="hidden" name="clientId" value={client.id} />
-          ))}
 
-        <Button
-          type="submit"
-          variant="primary"
-          size="lg"
-          className="w-full"
-          disabled={mode === "selected" && selectedIds.size === 0}
-        >
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={selectedIds.size === 0}>
           המשך
         </Button>
       </form>
+
+      <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+        <button
+          type="button"
+          onClick={() => setShowNewClient((v) => !v)}
+          className={buttonVariants({ variant: "secondary", size: "sm" })}
+        >
+          <UserPlus className="h-3.5 w-3.5" />
+          לקוח חדש
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowImport((v) => !v)}
+          className={buttonVariants({ variant: "secondary", size: "sm" })}
+        >
+          <Upload className="h-3.5 w-3.5" />
+          ייבוא לקוחות
+        </button>
+      </div>
+
+      {showNewClient && (
+        <form action={boundCreateAndAssign} className="space-y-2 rounded-xl border border-border bg-surface-muted/40 p-3">
+          <p className="text-xs font-semibold text-text-secondary">לקוח חדש</p>
+          <input name="name" type="text" required placeholder="שם הלקוח" className={fieldClass("sm")} />
+          <input name="phone" type="tel" dir="ltr" required placeholder="טלפון (WhatsApp)" className={fieldClass("sm")} />
+          <button type="submit" className={buttonVariants({ variant: "primary", size: "sm", className: "w-full" })}>
+            הוספה ושיוך לבקשה
+          </button>
+        </form>
+      )}
+
+      {showImport && (
+        <form action={importAction} className="space-y-2 rounded-xl border border-border bg-surface-muted/40 p-3">
+          <label
+            htmlFor="import-file"
+            className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-border bg-surface px-4 py-6 text-center transition-colors hover:border-brand-purple/40"
+          >
+            <FileSpreadsheet className="h-5 w-5 text-text-muted" aria-hidden="true" />
+            <span className="text-xs font-medium text-text-primary">לחצו לבחירת קובץ Excel / CSV</span>
+            <span className="text-[11px] text-text-muted">רק שם וטלפון יישמרו, ויצורפו כנמענים לבקשה.</span>
+            <input id="import-file" name="file" type="file" accept=".csv,.xlsx,.xls" required className="hidden" />
+          </label>
+          {importState.error && (
+            <p role="alert" className="text-xs font-medium text-danger">
+              {importState.error}
+            </p>
+          )}
+          {importState.imported !== undefined && (
+            <p className="text-xs font-medium text-brand-emerald">
+              {importState.imported} לקוחות יובאו ושויכו לבקשה
+              {importState.skipped ? ` (${importState.skipped} שורות דולגו)` : ""}.
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={importPending}
+            className={buttonVariants({ variant: "primary", size: "sm", className: "w-full" })}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            {importPending ? "מייבא..." : "ייבוא"}
+          </button>
+        </form>
+      )}
     </div>
   );
 }
 
-function WhenStep({ draftId }: { draftId: string }) {
-  const [sendMode, setSendMode] = useState<"now" | "schedule">("now");
-  const [defaultScheduleValue] = useState(() => new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 16));
+function WhenStep({
+  draftId,
+  initialSendMode,
+  initialScheduledFor,
+}: {
+  draftId: string;
+  initialSendMode?: string;
+  initialScheduledFor?: string;
+}) {
+  const [sendMode, setSendMode] = useState<"now" | "schedule">(initialSendMode === "schedule" ? "schedule" : "now");
+  const [defaultScheduleValue] = useState(
+    () => initialScheduledFor || new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 16)
+  );
 
   return (
     <form method="get" action="/collections/new" className="space-y-3" dir="rtl">
@@ -498,6 +780,19 @@ function ConnectStep({
   );
 }
 
+const REVIEW_ERROR_MESSAGES: Record<string, string> = {
+  "no-clients-selected": "יש לבחור לפחות לקוח אחד לשליחה.",
+  "invalid-schedule": "יש לבחור מועד עתידי לתזמון השליחה.",
+  "whatsapp-not-ready": WHATSAPP_NOT_READY_MESSAGE,
+  "drive-not-ready": DRIVE_NOT_READY_MESSAGE,
+};
+
+// Point 6 of the repeat-use rework — every summary row here is either a
+// real inline editor (documents: reuses TemplateRequirementRow, the exact
+// same row the template management page already uses, plus
+// addTemplateRequirement for adding one more) or a link back to the real
+// editing step for that field (clients -> who, when -> when), so a mistake
+// noticed at review never means starting the whole request over.
 function ReviewStep({
   draftId,
   definitionName,
@@ -516,19 +811,32 @@ function ReviewStep({
   error?: string;
 }) {
   const boundSend = sendTemplateRequest.bind(null, draftId);
-  const recipientLabel =
-    assignedClients.length === 1 ? assignedClients[0].clientName : `${assignedClients.length} לקוחות`;
+  const boundAddRequirement = addTemplateRequirement.bind(null, draftId);
+  const [docsExpanded, setDocsExpanded] = useState(false);
+  const [clientsExpanded, setClientsExpanded] = useState(false);
+  const [newDocName, setNewDocName] = useState("");
+  // Point 5 of the repeat-use rework — "double click cannot produce a
+  // duplicate send". sendTemplateRequest itself isn't wrapped in
+  // useActionState (it always redirects, never returns state to render),
+  // so there's no built-in `pending` here — disabling synchronously in
+  // onSubmit (same idiom as the "add document" mini-form's onSubmit
+  // below) is what stops a second click on the real button from ever
+  // reaching the server, covering the overwhelming majority of real
+  // double-clicks. It intentionally never resets to false: a successful
+  // submit navigates away (to Success or, on a validation error, back to
+  // this same Review step with a fresh server-rendered component), so
+  // there's nothing to "re-enable" for.
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const clientNames = assignedClients.map((c) => c.clientName);
+  const recipientLabel = formatClientListLabel(clientNames);
   const whenLabel = sendMode === "schedule" ? "מתוזמן" : "עכשיו";
 
   return (
-    <form action={boundSend} dir="rtl">
+    <form action={boundSend} dir="rtl" onSubmit={() => setIsSubmitting(true)}>
       <input type="hidden" name="sendMode" value={sendMode} />
       {sendMode === "schedule" && <input type="hidden" name="scheduledFor" value={scheduledFor} />}
-      <input
-        type="hidden"
-        name="redirectTo"
-        value={`/collections/new?draft=${draftId}&step=success`}
-      />
+      <input type="hidden" name="redirectTo" value={`/collections/new?draft=${draftId}&step=success`} />
       {assignedClients.map((c) => (
         <input key={c.clientId} type="hidden" name="clientId" value={c.clientId} />
       ))}
@@ -539,23 +847,104 @@ function ReviewStep({
           <p className="text-base font-bold text-text-primary">{definitionName}</p>
         </div>
         <div className="space-y-0 px-6">
-          <div className="flex items-center justify-between gap-3 border-b border-border py-3">
-            <span className="flex items-center gap-2 text-xs text-text-muted">
-              <FileText className="h-3.5 w-3.5" />
-              מה נשלח
-            </span>
-            <span className="text-sm font-semibold text-text-primary">{requirements.length} מסמכים</span>
+          <div className="border-b border-border py-3">
+            <button
+              type="button"
+              onClick={() => setDocsExpanded((v) => !v)}
+              className="flex w-full items-center justify-between gap-3 text-start"
+            >
+              <span className="flex items-center gap-2 text-xs text-text-muted">
+                <FileText className="h-3.5 w-3.5" />
+                מה נשלח
+              </span>
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
+                {requirements.length} מסמכים
+                {docsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              </span>
+            </button>
+            {docsExpanded && (
+              <div className="mt-3 space-y-2">
+                {requirements.length > 0 && (
+                  <ul className="space-y-1.5">
+                    {requirements.map((req, index) => (
+                      <TemplateRequirementRow
+                        key={req.id}
+                        templateId={draftId}
+                        requirementId={req.id}
+                        name={req.name}
+                        isFirst={index === 0}
+                        isLast={index === requirements.length - 1}
+                      />
+                    ))}
+                  </ul>
+                )}
+                <form
+                  action={boundAddRequirement}
+                  className="flex items-center gap-2"
+                  onSubmit={() => setNewDocName("")}
+                >
+                  <input
+                    name="name"
+                    type="text"
+                    value={newDocName}
+                    onChange={(e) => setNewDocName(e.currentTarget.value)}
+                    placeholder="הוספת מסמך"
+                    className={fieldClass("sm", "flex-1")}
+                  />
+                  <button type="submit" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+                    <Plus className="h-3.5 w-3.5" />
+                    הוספה
+                  </button>
+                </form>
+              </div>
+            )}
           </div>
-          <div className="flex items-center justify-between gap-3 border-b border-border py-3">
-            <span className="flex items-center gap-2 text-xs text-text-muted">
-              <UserPlus className="h-3.5 w-3.5" />
-              למי
-            </span>
-            <span className="text-sm font-semibold text-text-primary">{recipientLabel}</span>
+
+          <div className="border-b border-border py-3">
+            <button
+              type="button"
+              onClick={() => setClientsExpanded((v) => !v)}
+              className="flex w-full items-center justify-between gap-3 text-start"
+            >
+              <span className="flex items-center gap-2 text-xs text-text-muted">
+                <UserPlus className="h-3.5 w-3.5" />
+                למי
+              </span>
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
+                {recipientLabel || "—"}
+                {clientsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              </span>
+            </button>
+            {clientsExpanded && (
+              <div className="mt-3 space-y-2">
+                <ul className="max-h-32 space-y-1 overflow-y-auto rounded-xl border border-border bg-surface-muted/40 p-2 text-sm text-text-primary">
+                  {assignedClients.map((c) => (
+                    <li key={c.clientId} className="px-2 py-1">
+                      {c.clientName}{" "}
+                      <span dir="ltr" className="text-text-muted">
+                        ({c.clientPhone})
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <Link
+                  href={`/collections/new?draft=${draftId}&step=who`}
+                  className="inline-block text-xs font-medium text-brand-purple hover:underline"
+                >
+                  עריכת הבחירה
+                </Link>
+              </div>
+            )}
           </div>
+
           <div className="flex items-center justify-between gap-3 py-3">
             <span className="text-xs text-text-muted">מתי</span>
-            <span className="text-sm font-semibold text-text-primary">{whenLabel}</span>
+            <Link
+              href={`/collections/new?draft=${draftId}&step=when`}
+              className="text-sm font-semibold text-text-primary underline decoration-dotted underline-offset-4 hover:text-brand-purple"
+            >
+              {whenLabel}
+            </Link>
           </div>
         </div>
         <div className="flex items-center justify-between gap-2 bg-brand-emerald/5 px-6 py-3 text-sm font-semibold text-brand-emerald">
@@ -565,18 +954,19 @@ function ReviewStep({
             WhatsApp + Drive מחוברים
           </span>
         </div>
-        <div className="space-y-2 px-6 py-5">
+        <div className="space-y-3 px-6 py-5">
           {error && (
             <p role="alert" className="text-sm font-medium text-danger">
-              {error === "no-clients-selected"
-                ? "יש לבחור לפחות לקוח אחד לשליחה."
-                : "יש לבחור מועד עתידי לתזמון השליחה."}
+              {REVIEW_ERROR_MESSAGES[error] ?? "אירעה שגיאה. נסו שוב."}
             </p>
           )}
-          <Button type="submit" variant="primary" size="lg" className="w-full">
+          <Button type="submit" variant="primary" size="lg" className="w-full" loading={isSubmitting} disabled={isSubmitting}>
             <Send className="h-4 w-4" />
-            אישור ושליחה
+            {isSubmitting ? "שולח…" : "אישור ושליחה"}
           </Button>
+          <div className="text-center">
+            <CancelDraftDialog draftId={draftId} />
+          </div>
         </div>
       </div>
     </form>
@@ -629,6 +1019,7 @@ function SuccessStep({
 export function CollectionRequestWizard(props: {
   step: WizardStep;
   draftId?: string;
+  isFirstRequest?: boolean;
   definitionName?: string;
   requirements?: RequirementRow[];
   assignedClients?: AssignedClientRow[];
@@ -675,15 +1066,23 @@ export function CollectionRequestWizard(props: {
         <ProgressDots step={step} />
         <div className="flex flex-col gap-6 lg:flex-row">
           <div className="centro-glass-strong animate-fade-in-up flex-1 rounded-2xl border border-border p-6 shadow-card-lg sm:p-8">
-            <h1 className="mb-5 text-xl font-bold text-text-primary">
-              {step === "what" && "מה תרצו לבקש?"}
-              {step === "who" && "למי לשלוח?"}
-              {step === "when" && "מתי לשלוח את הבקשה?"}
-              {step === "connect" && "נשארו שני חיבורים כדי לשלוח"}
-              {step === "review" && "מוכנים לשלוח?"}
-            </h1>
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <h1 className="text-xl font-bold text-text-primary">
+                {step === "what" && "מה תרצו לבקש?"}
+                {step === "who" && "למי לשלוח?"}
+                {step === "when" && "מתי לשלוח את הבקשה?"}
+                {step === "connect" && "נשארו שני חיבורים כדי לשלוח"}
+                {step === "review" && "מוכנים לשלוח?"}
+              </h1>
+              {props.draftId && step !== "review" && <CancelDraftDialog draftId={props.draftId} />}
+            </div>
 
-            {step === "what" && <WhatStep suggestedRequirementNames={props.suggestedRequirementNames ?? []} />}
+            {step === "what" && (
+              <WhatStep
+                isFirstRequest={props.isFirstRequest ?? true}
+                suggestedRequirementNames={props.suggestedRequirementNames ?? []}
+              />
+            )}
 
             {step === "who" && props.draftId && (
               <WhoStep
@@ -694,7 +1093,13 @@ export function CollectionRequestWizard(props: {
               />
             )}
 
-            {step === "when" && props.draftId && <WhenStep draftId={props.draftId} />}
+            {step === "when" && props.draftId && (
+              <WhenStep
+                draftId={props.draftId}
+                initialSendMode={props.sendMode}
+                initialScheduledFor={props.scheduledFor}
+              />
+            )}
 
             {step === "connect" && props.draftId && (
               <ConnectStep
@@ -729,9 +1134,7 @@ export function CollectionRequestWizard(props: {
               requirementCount={props.requirements?.length}
               recipientLabel={
                 (props.assignedClients?.length ?? 0) > 0
-                  ? props.assignedClients!.length === 1
-                    ? props.assignedClients![0].clientName
-                    : `${props.assignedClients!.length} לקוחות`
+                  ? formatClientListLabel(props.assignedClients!.map((c) => c.clientName))
                   : undefined
               }
               whenLabel={step === "connect" || step === "review" ? (props.sendMode === "schedule" ? "מתוזמן" : "עכשיו") : undefined}

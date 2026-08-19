@@ -8,11 +8,11 @@ export interface IntegrationStatus {
 
 // Exact wording requested by the product owner — shown wherever a
 // collection is about to be started (never a generic error), with a
-// concrete action to fix it right next to it.
-export const WHATSAPP_NOT_READY_MESSAGE =
-  "לא ניתן להתחיל את האיסוף. חיבור ה-WhatsApp אינו פעיל. יש לחבר מחדש את WhatsApp כדי להתחיל.";
-export const DRIVE_NOT_READY_MESSAGE =
-  "לא ניתן להתחיל את האיסוף. חיבור ה-Google Drive אינו פעיל. יש לחבר מחדש את Google Drive כדי להתחיל.";
+// concrete action to fix it right next to it. Re-exported here (moved to
+// src/lib/integrationMessages.ts, a dependency-free module) so every
+// existing server-side caller of these two constants keeps working
+// unchanged.
+export { WHATSAPP_NOT_READY_MESSAGE, DRIVE_NOT_READY_MESSAGE } from "@/lib/integrationMessages";
 
 /**
  * Product Evolution M9 ("WhatsApp and Google Drive are mandatory") — the
