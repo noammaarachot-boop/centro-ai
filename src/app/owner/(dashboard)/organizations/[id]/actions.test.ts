@@ -32,6 +32,21 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
+// subscribeToWabaWebhooks (called for real below, not mocked) reads
+// getWhatsAppConfig() for appId/appSecret/the shared system-token fallback
+// — same fake values embeddedSignup.test.ts already uses for the identical
+// reason.
+vi.mock("@/lib/whatsapp/config", () => ({
+  getWhatsAppConfig: () => ({
+    appId: "app-1",
+    appSecret: "secret-1",
+    oauthRedirectUri: null,
+    systemUserToken: "fake-system-token",
+    webhookVerifyToken: "fake-verify-token",
+  }),
+  GRAPH_API_BASE: "https://graph.example/v1",
+}));
+
 const fetchMock = vi.fn();
 
 beforeAll(async () => {
@@ -109,6 +124,50 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
     expect(org.whatsappAccessTokenEnc).not.toBeNull();
     expect(org.whatsappAccessTokenEnc).not.toContain("EAAG_real_token");
     expect(decryptWhatsAppToken(org.whatsappAccessTokenEnc!)).toBe("EAAG_real_token");
+  });
+
+  it("on success: also subscribes the WABA to Centro's webhook using the entered token — no separate manual Meta call needed", async () => {
+    const orgId = await seedOrg();
+    mockMetaVerifySuccess("phone-1");
+
+    await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "phone-1", accessToken: "EAAG_real_token" })
+      )
+    );
+
+    const subscribeCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/waba-1/subscribed_apps"));
+    expect(subscribeCall).toBeDefined();
+    const [, init] = subscribeCall!;
+    expect(init.headers.Authorization).toBe("Bearer EAAG_real_token");
+
+    const audits = await db.select().from(schema.platformOwnerAuditLog);
+    const relevant = audits.find((a) => a.eventType === "owner.whatsapp_manually_connected");
+    expect((relevant?.metadata as Record<string, unknown> | null)?.webhooksSubscribed).toBe(true);
+  });
+
+  it("webhook subscription fails (e.g. token lacks whatsapp_business_management) — nothing is saved, and the owner sees a clear error", async () => {
+    const orgId = await seedOrg();
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{ id: "phone-1", display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
+        }),
+      })
+      .mockResolvedValue({ ok: false, status: 403, text: async () => "missing permission" });
+
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "phone-1", accessToken: "token-without-management" })
+      )
+    );
+    expect(result.params.whatsappError).toBeTruthy();
+    expect(decodeURIComponent(result.params.whatsappError)).toMatch(/Webhook/);
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappPhoneNumberId).toBeNull();
+    expect(org.whatsappAccessTokenEnc).toBeNull();
   });
 
   it("records an audit event that never contains the token itself", async () => {

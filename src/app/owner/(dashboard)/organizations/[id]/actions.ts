@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { recordOwnerAuditEvent } from "@/lib/owner/audit";
+import { subscribeToWabaWebhooks } from "@/lib/whatsapp/embeddedSignup";
 import { getPhoneNumberInWaba, WhatsAppApiError, type PhoneNumberDetails } from "@/lib/whatsapp/phoneNumbers";
 import { storeWabaConnection, WhatsAppConnectionConflictError } from "@/lib/whatsapp/wabaTokens";
 
@@ -273,6 +274,44 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     redirect(`/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(message)}`);
   }
 
+  // Manual connections skip Embedded Signup entirely, so nothing else ever
+  // calls subscribeToWabaWebhooks for this WABA — without this, a
+  // successfully-verified token would still receive zero inbound messages
+  // (see that function's own doc comment on this exact Meta behavior: the
+  // WABA-level link is a separate subscription from owning/verifying the
+  // number). Required here, not best-effort like completeSignup.ts's use of
+  // it — a failed subscription must not leave the owner believing the
+  // connection is live when messages will actually never arrive, so nothing
+  // is saved unless this also succeeds.
+  let webhooksOk: boolean;
+  try {
+    webhooksOk = await subscribeToWabaWebhooks(wabaId, accessToken);
+  } catch (error) {
+    console.error("[owner] manuallyConnectWhatsApp webhook subscription threw", {
+      organizationId,
+      wabaId,
+      phoneNumberId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    redirect(
+      `/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(
+        "המנוי ל-Webhook מול Meta נכשל (שגיאת תקשורת). החיבור לא נשמר; נסו שוב."
+      )}`
+    );
+  }
+  if (!webhooksOk) {
+    console.error("[owner] manuallyConnectWhatsApp webhook subscription failed", {
+      organizationId,
+      wabaId,
+      phoneNumberId,
+    });
+    redirect(
+      `/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(
+        'האימות מול Meta הצליח, אך המנוי ל-Webhook נכשל — ודאו שלטוקן יש הרשאת whatsapp_business_management ושה-App "Centro AI Messaging" משויך ל-WABA. החיבור לא נשמר; נסו שוב.'
+      )}`
+    );
+  }
+
   try {
     await storeWabaConnection(organizationId, {
       businessAccountId: wabaId,
@@ -298,7 +337,7 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     description: `WhatsApp חובר ידנית (${verified.displayPhoneNumber}) על ידי ${session.email}`,
     severity: "info",
     platformOwnerId: session.platformOwnerId,
-    metadata: { organizationId, wabaId, phoneNumberId },
+    metadata: { organizationId, wabaId, phoneNumberId, webhooksSubscribed: true },
   });
 
   redirect(`/owner/organizations/${organizationId}?whatsappConnected=1`);
