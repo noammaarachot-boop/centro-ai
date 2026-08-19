@@ -1,7 +1,6 @@
 import { CheckCircle2, Circle } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
-import { getOrganization } from "@/lib/data/organizations";
-import { updateBusinessHours } from "./actions";
+import { getGoogleDriveConnectionStatus, getOrganization } from "@/lib/data/organizations";
 import {
   enableDocumentCollection,
   disableDocumentCollection,
@@ -14,13 +13,11 @@ import { RunSchedulerButton } from "./RunSchedulerButton";
 import { PageHeader } from "@/components/app/PageHeader";
 import { Card } from "@/components/app/Card";
 import { buttonVariants } from "@/components/app/Button";
+import { ConfirmDialog } from "@/components/app/ConfirmDialog";
 import { OfficeInfoForm } from "@/components/app/OfficeInfoForm";
 import { HelpTip } from "@/components/app/HelpTip";
-import { CollectionDayField } from "@/components/app/CollectionDayField";
-import { fieldClass } from "@/components/app/FormField";
+import { BusinessHoursForm } from "@/components/app/BusinessHoursForm";
 import { DevToolsPanel } from "@/components/app/DevToolsPanel";
-
-const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
 
 const SETTINGS_ERROR_MESSAGES: Record<string, string> = {
   "integrations-required": "לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.",
@@ -42,9 +39,17 @@ export default async function SettingsPage({
   const organization = await getOrganization(session.organizationId);
   if (!organization) return null;
 
-  const activeDays = new Set(organization.businessDays.split(",").map(Number));
   const isDocumentCollectionActive = organization.documentCollectionEnabled;
   const whatsappConnected = !!organization.whatsappConnectedAt;
+  // WhatsApp deliberately stays existence-only (!!whatsappConnectedAt,
+  // in WhatsAppConnectionRow itself) — no reliable connection-level
+  // failure signal exists for it today (send failures are per-message,
+  // not "the connection itself is broken" the way a Google token-refresh
+  // failure unambiguously is). Google Drive gets the real signal below.
+  const googleConnectionStatus = await getGoogleDriveConnectionStatus(
+    session.organizationId,
+    organization.googleConnectedAt
+  );
 
   return (
     <div className="mx-auto max-w-lg animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
@@ -86,6 +91,7 @@ export default async function SettingsPage({
           googleDriveFolderId={organization.googleDriveFolderId}
           googleDriveFolderName={organization.googleDriveFolderName}
           connectReturnTo="/settings"
+          needsReconnect={googleConnectionStatus === "needs_reconnect"}
         />
         <WhatsAppConnectionRow
           whatsappConnectedAt={organization.whatsappConnectedAt}
@@ -125,150 +131,41 @@ export default async function SettingsPage({
               </p>
             </div>
           </div>
-          <form action={isDocumentCollectionActive ? disableDocumentCollection : enableDocumentCollection}>
-            <button
-              type="submit"
-              disabled={!whatsappConnected && !isDocumentCollectionActive}
-              className={buttonVariants({ variant: "secondary", size: "sm" })}
-            >
-              {isDocumentCollectionActive ? "השבתה" : "הפעלה"}
-            </button>
-          </form>
+          {isDocumentCollectionActive ? (
+            <ConfirmDialog
+              title="להשבית איסוף מסמכים אוטומטי?"
+              description="לא יישלחו תזכורות ומעקבים אוטומטיים ולא ייווצרו מחזורי איסוף חדשים. עדיין ניתן יהיה לבצע פעולות ידניות."
+              confirmLabel="השבתת האוטומציה"
+              cancelLabel="ביטול"
+              formAction={disableDocumentCollection}
+              triggerClassName={buttonVariants({ variant: "secondary", size: "sm" })}
+              trigger="השבתה"
+            />
+          ) : (
+            <form action={enableDocumentCollection}>
+              <button
+                type="submit"
+                disabled={!whatsappConnected}
+                className={buttonVariants({ variant: "secondary", size: "sm" })}
+              >
+                הפעלה
+              </button>
+            </form>
+          )}
         </div>
       </Card>
 
-      <form action={updateBusinessHours}>
-        <Card className="space-y-5">
-          <div>
-            <p className="mb-2 text-sm font-medium text-text-secondary">ימי עבודה</p>
-            <div className="flex flex-wrap gap-3">
-              {DAY_LABELS.map((label, day) => (
-                <label
-                  key={day}
-                  className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-muted/40 px-3 py-1.5 text-sm text-text-primary transition-colors hover:border-brand-purple/30"
-                >
-                  <input
-                    type="checkbox"
-                    name={`day-${day}`}
-                    defaultChecked={activeDays.has(day)}
-                    className="h-4 w-4 rounded border-border accent-brand-purple"
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label
-                htmlFor="businessHoursStart"
-                className="mb-1.5 block text-sm font-medium text-text-secondary"
-              >
-                שעת התחלה
-              </label>
-              <input
-                id="businessHoursStart"
-                name="businessHoursStart"
-                type="time"
-                defaultValue={organization.businessHoursStart}
-                dir="ltr"
-                className={fieldClass("md")}
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="businessHoursEnd"
-                className="mb-1.5 block text-sm font-medium text-text-secondary"
-              >
-                שעת סיום
-              </label>
-              <input
-                id="businessHoursEnd"
-                name="businessHoursEnd"
-                type="time"
-                defaultValue={organization.businessHoursEnd}
-                dir="ltr"
-                className={fieldClass("md")}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label
-              htmlFor="timezone"
-              className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
-            >
-              אזור זמן
-              <HelpTip label="">שעות הפעילות למעלה נמדדות לפי אזור הזמן הזה, לא לפי שעון השרת.</HelpTip>
-            </label>
-            <select
-              id="timezone"
-              name="timezone"
-              defaultValue={organization.timezone}
-              dir="ltr"
-              className={fieldClass("md")}
-            >
-              <option value="Asia/Jerusalem">שעון ישראל (Asia/Jerusalem)</option>
-              <option value="UTC">UTC</option>
-            </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label
-                htmlFor="reminderIntervalHours"
-                className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
-              >
-                מרווח תזכורות (שעות)
-                <HelpTip label="">
-                  אם הלקוח לא הגיב, Centro ישלח תזכורת נוספת אוטומטית כל X שעות (1-24).
-                </HelpTip>
-              </label>
-              <input
-                id="reminderIntervalHours"
-                name="reminderIntervalHours"
-                type="number"
-                min={1}
-                max={24}
-                defaultValue={organization.reminderIntervalHours}
-                className={fieldClass("md")}
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="inactivityTimeoutMinutes"
-                className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
-              >
-                זמן חוסר פעילות (דקות)
-                <HelpTip label="">
-                  אם הלקוח מפסיק לשלוח מסמכים למשך כך הרבה דקות, Centro מניח שסיים בינתיים
-                  ושואל אם יש מסמכים נוספים.
-                </HelpTip>
-              </label>
-              <input
-                id="inactivityTimeoutMinutes"
-                name="inactivityTimeoutMinutes"
-                type="number"
-                min={1}
-                defaultValue={organization.inactivityTimeoutMinutes}
-                className={fieldClass("md")}
-              />
-            </div>
-          </div>
-
-          {/* Product Evolution M9 — every organization can create a
-              Recurring Collection at any time now (not gated by the
-              initial onboarding choice), so this default anchor day is
-              always relevant, not just for orgs that started as
-              "recurring". */}
-          <CollectionDayField defaultValue={organization.collectionDayOfMonth} />
-
-          <button type="submit" className={buttonVariants({ variant: "primary", size: "lg" })}>
-            שמירת הגדרות
-          </button>
-        </Card>
-      </form>
+      <Card className="space-y-5">
+        <BusinessHoursForm
+          organization={{
+            businessDays: organization.businessDays,
+            businessHoursStart: organization.businessHoursStart,
+            businessHoursEnd: organization.businessHoursEnd,
+            timezone: organization.timezone,
+            reminderIntervalHours: organization.reminderIntervalHours,
+          }}
+        />
+      </Card>
 
       <DevToolsPanel label="משימות מתוזמנות">
         <RunSchedulerButton />

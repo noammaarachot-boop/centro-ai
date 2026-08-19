@@ -7,21 +7,53 @@ import { organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
 import { runScheduledTasks } from "@/lib/scheduler";
-import { clampCollectionDay, clampReminderHours } from "@/lib/businessHours";
+import { isSupportedTimezone } from "@/lib/businessHours";
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 
+export interface SettingsFormState {
+  error?: string;
+}
+
 // BR-18.4: configuration changes are recorded in the audit log.
-export async function updateBusinessHours(formData: FormData) {
+//
+// Validate-then-reject, never clamp-then-save: an out-of-range/malformed
+// value returns an error and writes nothing at all (no partial
+// persistence) — the office re-submits with a corrected value, rather
+// than silently having Centro "fix" what they typed. inactivityTimeoutMinutes/
+// collectionDayOfMonth are deliberately absent from both the validated
+// fields and the .set() below — this form no longer edits them (Settings
+// UI polish), but they're real fields the scheduler/recurringScheduler
+// still read; omitting them from .set() (rather than re-writing whatever
+// this form doesn't submit) leaves their current stored value untouched.
+export async function updateBusinessHours(
+  _prevState: SettingsFormState,
+  formData: FormData
+): Promise<SettingsFormState> {
   const session = await requireSession();
 
   const businessHoursStart = String(formData.get("businessHoursStart") ?? "09:00");
   const businessHoursEnd = String(formData.get("businessHoursEnd") ?? "18:00");
   const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
   const timezone = String(formData.get("timezone") ?? "Asia/Jerusalem");
-  const reminderIntervalHours = clampReminderHours(formData.get("reminderIntervalHours"));
-  const inactivityTimeoutMinutes = Number(formData.get("inactivityTimeoutMinutes") ?? 15);
-  const collectionDayOfMonth = clampCollectionDay(formData.get("collectionDayOfMonth"));
+  const reminderIntervalHoursRaw = Number(formData.get("reminderIntervalHours"));
+
+  if (!businessDays) {
+    return { error: "יש לבחור לפחות יום עבודה אחד." };
+  }
+  const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!timePattern.test(businessHoursStart) || !timePattern.test(businessHoursEnd)) {
+    return { error: "יש להזין שעת התחלה ושעת סיום תקינות." };
+  }
+  if (businessHoursStart >= businessHoursEnd) {
+    return { error: "שעת הסיום חייבת להיות מאוחרת משעת ההתחלה." };
+  }
+  if (!Number.isInteger(reminderIntervalHoursRaw) || reminderIntervalHoursRaw < 1 || reminderIntervalHoursRaw > 24) {
+    return { error: "מרווח התזכורות חייב להיות מספר שלם בין 1 ל-24 שעות." };
+  }
+  if (!isSupportedTimezone(timezone)) {
+    return { error: "אזור הזמן שנבחר אינו נתמך." };
+  }
 
   const db = await getDb();
   await db
@@ -29,11 +61,9 @@ export async function updateBusinessHours(formData: FormData) {
     .set({
       businessHoursStart,
       businessHoursEnd,
-      businessDays: businessDays || "0,1,2,3,4",
+      businessDays,
       timezone,
-      reminderIntervalHours,
-      inactivityTimeoutMinutes,
-      collectionDayOfMonth,
+      reminderIntervalHours: reminderIntervalHoursRaw,
       updatedAt: new Date(),
     })
     .where(eq(organizations.id, session.organizationId));
@@ -51,6 +81,7 @@ export async function updateBusinessHours(formData: FormData) {
   // its cached RSC payload (Next.js 16) — refresh() does, and since we're
   // not navigating anywhere, no redirect() is needed at all.
   refresh();
+  return {};
 }
 
 export interface RunSchedulerState {

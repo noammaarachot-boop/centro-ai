@@ -1,4 +1,4 @@
-import { FolderPlus } from "lucide-react";
+import { FolderPlus, AlertTriangle } from "lucide-react";
 import { buttonVariants } from "@/components/app/Button";
 import { AnimatedCheckBadge } from "@/components/app/AnimatedCheckBadge";
 import { GoogleDriveMark, WhatsAppMark } from "@/components/app/BrandMarks";
@@ -78,6 +78,7 @@ export function GoogleDriveConnectionRow({
   googleDriveFolderId,
   googleDriveFolderName,
   connectReturnTo,
+  needsReconnect = false,
 }: {
   googleConnectedAt: Date | null;
   googleDriveFolderId: string | null;
@@ -85,9 +86,22 @@ export function GoogleDriveConnectionRow({
   /** Where /api/auth/google/callback sends the user back to — see its own
    * allowlist. Defaults to onboarding's own Step 5. */
   connectReturnTo?: "/settings" | "/collections/new?step=connect";
+  /** A real signal, not existence-only: true when the most recent
+   * integration.google_token_refresh_failed audit event for this org is
+   * newer than googleConnectedAt itself — i.e. Centro already knows the
+   * stored token stopped working since the last successful (re)connect.
+   * Computed once, server-side, from data already being read for this
+   * page (see getGoogleDriveConnectionStatus) — never a client-side
+   * network/health-check call. Defaults to false so every other call site
+   * (onboarding, the Collection Requests wizard) keeps its exact prior
+   * "connected = has a folder" behavior unchanged. */
+  needsReconnect?: boolean;
 }) {
   const isConnected = !!googleConnectedAt;
   const hasFolder = isConnected && !!googleDriveFolderId;
+  const reconnectHref = connectReturnTo
+    ? `/api/auth/google/start?returnTo=${encodeURIComponent(connectReturnTo)}`
+    : "/api/auth/google/start";
 
   return (
     <div className="rounded-xl border border-border bg-surface-muted/40 p-4 transition-colors hover:border-brand-purple/20">
@@ -99,11 +113,18 @@ export function GoogleDriveConnectionRow({
           <div>
             <div className="flex items-center gap-1.5">
               <p className="text-sm font-semibold text-text-primary">Google Drive</p>
-              {hasFolder && <AnimatedCheckBadge key={googleConnectedAt!.toISOString()} size={16} />}
+              {hasFolder && !needsReconnect && <AnimatedCheckBadge key={googleConnectedAt!.toISOString()} size={16} />}
+              {hasFolder && needsReconnect && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-semibold text-warning">
+                  <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                  נדרש חיבור מחדש
+                </span>
+              )}
             </div>
             <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-              כל מסמך שמאושר עבור לקוח מאוחסן אוטומטית בתיקייה משלו בגוגל דרייב של העסק — מסודר ונגיש בלי
-              עבודה ידנית.
+              {hasFolder && needsReconnect
+                ? "החיבור לחשבון Google הפסיק לעבוד — מסמכים חדשים לא יעלו ל-Drive עד לחיבור מחדש."
+                : "כל מסמך שמאושר עבור לקוח מאוחסן אוטומטית בתיקייה משלו בגוגל דרייב של העסק — מסודר ונגיש בלי עבודה ידנית."}
             </p>
             {hasFolder && (
               <p className="mt-1 text-xs text-text-muted">תיקייה מחוברת: {googleDriveFolderName}</p>
@@ -112,17 +133,21 @@ export function GoogleDriveConnectionRow({
         </div>
         {!isConnected && (
           <a
-            href={
-              connectReturnTo
-                ? `/api/auth/google/start?returnTo=${encodeURIComponent(connectReturnTo)}`
-                : "/api/auth/google/start"
-            }
+            href={reconnectHref}
             className={buttonVariants({ variant: "secondary", size: "sm", className: "shrink-0" })}
           >
             חיבור
           </a>
         )}
-        {hasFolder && (
+        {hasFolder && needsReconnect && (
+          <a
+            href={reconnectHref}
+            className={buttonVariants({ variant: "secondary", size: "sm", className: "shrink-0" })}
+          >
+            חיבור מחדש
+          </a>
+        )}
+        {hasFolder && !needsReconnect && (
           <form action={disconnectGoogleDrive}>
             <button
               type="submit"

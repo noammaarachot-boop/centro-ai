@@ -91,6 +91,23 @@ export function clampReminderHours(value: FormDataEntryValue | null): number {
   return Math.min(Math.max(parsed, 1), 24);
 }
 
+// The one allowed set of values for organizations.timezone — every real
+// zone this codebase's IANA-based scheduling (zonedDateParts/
+// zonedWallTimeToUtc above) has actually been built and tested against.
+// A single source of truth for both the Settings <select> options (never
+// hand-duplicated) and server-side validation: rejecting an unlisted zone
+// outright, rather than trusting a raw client-submitted string, is what
+// stops a malformed value from ever reaching Intl.DateTimeFormat (which
+// throws on an invalid zone name) deep inside the scheduler later.
+export const SUPPORTED_TIMEZONES = [
+  { value: "Asia/Jerusalem", label: "שעון ישראל (Asia/Jerusalem)" },
+  { value: "UTC", label: "UTC" },
+] as const;
+
+export function isSupportedTimezone(value: string): boolean {
+  return SUPPORTED_TIMEZONES.some((tz) => tz.value === value);
+}
+
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
