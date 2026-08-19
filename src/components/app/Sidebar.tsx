@@ -20,17 +20,14 @@ import {
   LifeBuoy,
 } from "lucide-react";
 import { CentroMark } from "@/components/landing/icons/CentroMark";
-import { WHATSAPP_NUMBER } from "@/components/landing/FloatingWhatsAppButton";
-
-const SUPPORT_WHATSAPP_MESSAGE = "היי! אני צריך/ה עזרה עם Centro.";
-const SUPPORT_WHATSAPP_HREF = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(SUPPORT_WHATSAPP_MESSAGE)}`;
 
 // "עוזר AI" is hidden (not rendered) rather than removed — every route,
 // API, and component behind it is untouched, this only stops the nav
 // item itself from rendering. Restore by deleting the `hidden: true` line.
-// "תמיכה" is an external WhatsApp link, not an internal route — it's
-// rendered as a plain <a target="_blank"> instead of next/link's <Link>
-// (see the `external` branch in the nav .map() below).
+// "תמיכה" used to be a plain external WhatsApp deep-link (<a target=
+// "_blank">, the `external` branch below). It's now a real internal page
+// (/support) with an in-app support-request form — WhatsApp is still
+// offered there, just as a secondary contact option, not the only path.
 //
 // Product Evolution M9 — a single nav for every organization, regardless
 // of which collection mode it started onboarding with. "שירותים" stays its
@@ -58,7 +55,7 @@ const NAV_LINKS = [
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
   { href: "/audit", label: "היסטוריית פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },
-  { href: SUPPORT_WHATSAPP_HREF, label: "תמיכה", icon: LifeBuoy, external: true },
+  { href: "/support", label: "תמיכה", icon: LifeBuoy },
 ];
 
 export function Sidebar({

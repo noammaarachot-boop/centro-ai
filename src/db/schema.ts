@@ -7,6 +7,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  serial,
   text,
   timestamp,
   uniqueIndex,
@@ -1734,6 +1735,60 @@ export const leads = pgTable("leads", {
   whatsappStatus: leadWhatsappStatus("whatsapp_status").notNull().default("pending"),
   whatsappMessageId: text("whatsapp_message_id"),
   whatsappError: text("whatsapp_error"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// In-app Support screen — replaces the old "תמיכה" nav item's direct
+// WhatsApp deep-link with a real internal request captured here first, so
+// a transient email outage never loses a request the way a pure
+// email-only flow would (mirrors `leads` above: persist regardless of
+// delivery, record delivery outcome separately). `ticketNumber` is a
+// real Postgres-generated sequential integer (not a client-side/cosmetic
+// value) — the human-facing "#XXXX" shown in the UI is this column, never
+// the internal uuid `id`.
+export const supportRequestCategory = pgEnum("support_request_category", [
+  "not_working",
+  "google_drive",
+  "whatsapp",
+  "question",
+  "feature_request",
+  "other",
+]);
+
+export const supportRequestDeliveryStatus = pgEnum("support_request_delivery_status", [
+  "pending",
+  "sent",
+  "failed",
+]);
+
+export const supportRequests = pgTable("support_requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ticketNumber: serial("ticket_number").notNull(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  // set null (not restrict/cascade) on user delete, same reasoning as
+  // audit_logs.actorUserId — a deleted employee must never block cleanup
+  // just because they once filed a support request. userName/userEmail
+  // below are snapshotted at creation time precisely so the request stays
+  // meaningful for support triage even after that.
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  userName: text("user_name"),
+  userEmail: text("user_email").notNull(),
+  organizationName: text("organization_name").notNull(),
+  category: supportRequestCategory("category").notNull(),
+  subject: text("subject").notNull(),
+  message: text("message").notNull(),
+  // Client-reported context only (current page, browser timezone) — never
+  // used for authorization or identity, purely informational for whoever
+  // triages the request.
+  currentPage: text("current_page"),
+  timezone: text("timezone"),
+  deliveryStatus: supportRequestDeliveryStatus("delivery_status").notNull().default("pending"),
+  emailSentAt: timestamp("email_sent_at", { withTimezone: true }),
+  emailError: text("email_error"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
