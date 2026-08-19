@@ -1689,3 +1689,60 @@ describe("processInboundAttachment — displayLabel, never the raw storage filen
     expect(doc.displayLabel).toBeNull(); // never guessed from fileName — resolveDocumentDisplayLabel handles the fallback at read time
   });
 });
+
+// Completion-is-terminal invariant (root-cause fix) — this guard is placed
+// at the top of processInboundAttachment itself (not only at the webhook
+// route's own call site) so ANY caller — the live webhook, a disambiguation
+// replay, the DevTools simulator — is protected uniformly: a document
+// arriving for an already-completed request is never processed, never
+// uploaded, never matched to a requirement, and never reopens the request.
+describe("processInboundAttachment — a completed request is never processed, regardless of caller", () => {
+  it("ignores the attachment entirely: no document row is created, classification never runs, the request is not reopened", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
+    await db.update(schema.collectionRequests).set({ status: "completed", completedAt: new Date() }).where(eq(schema.collectionRequests.id, requestId));
+
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "image_wamid.late-arrival.jpg",
+      null,
+      Buffer.from("x"),
+      "image/jpeg",
+      "wamid.late-arrival"
+    );
+
+    expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled();
+    const documents = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(documents).toHaveLength(0);
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed"); // never auto-reopened to "active"
+  });
+
+  it("still processes normally for a request that is NOT completed (the guard is scoped, not a global kill switch)", async () => {
+    const { orgId, clientId, requestId, conversationId, requirements } = await seedRequest(["תעודת זהות"]);
+    classifyDocumentViaVisionAI.mockResolvedValueOnce({
+      identified: true,
+      documentType: "תעודת זהות",
+      identificationConfidence: 0.95,
+      matchedRequirementId: requirements[0].id,
+      matchConfidence: 0.95,
+    });
+
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "image_wamid.normal.jpg",
+      null,
+      Buffer.from("x"),
+      "image/jpeg",
+      "wamid.normal"
+    );
+
+    const documents = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(documents).toHaveLength(1);
+  });
+});

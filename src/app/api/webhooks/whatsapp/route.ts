@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { clients, collectionRequests, conversations, documents, messages, organizations } from "@/db/schema";
+import { clients, conversations, documents, messages, organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import {
   CONFIRM_NO_BUTTON_ID,
   CONFIRM_YES_BUTTON_ID,
-  listOpenConfirmationsForCollectionRequest,
   resolveBatchedIntakeReply,
 } from "@/lib/pendingConfirmations";
 import { applyUnsolicitedConfirmationDecision } from "@/lib/documentIntakeReview";
 import { applyIdentityAnomalyDecision } from "@/lib/documentIdentityVerification";
-import { classifyReopenIntent } from "@/lib/ai/conversationReplyIntent";
-import { createRequestReopenConfirmation, decidePostCompletionGate, POST_COMPLETION_WINDOW_MS } from "@/lib/requestReopen";
 import { understandConversationTurn } from "@/lib/conversation/conversationUnderstanding";
 import { ensureConversation, recordInboundMessage } from "@/lib/conversationOrchestration";
 import { ATTACHMENT_PLACEHOLDER_TEXT } from "@/lib/documents/displayLabel";
@@ -485,114 +482,31 @@ export async function handleInboundMessage(
     return;
   }
 
-  // Post-completion intent gate (src/lib/requestReopen.ts) — "Centro only
-  // manages the conversation from the moment a request is sent until it's
-  // finally completed." A closed conversation with nothing already pending
-  // is never silently acted on: an attachment is stashed and asked about,
-  // a text message is only acted on if it explicitly references the
-  // finished request, and anything else is fully silent — no reply, no
-  // state change, message already recorded above for an employee to see.
-  // An already-open confirmation (most commonly this exact reopen
-  // question, still awaiting an answer) is deliberately excluded here and
-  // falls through to the normal resolver chain below instead.
+  // Completion is a terminal lifecycle state — "once a collection request
+  // is completed, Centro stops engaging with that conversation entirely."
+  // conversations.status is only ever set to "closed" by applyTransition's
+  // own "completed" branch (collectionRequestStateMachine.ts), so this is
+  // a direct, reliable read of that invariant. No reply, no AI reasoning,
+  // no document intake, no status/document mutation, no reopening, no new
+  // review/attention item — the message is already recorded above (plain
+  // communication history), and that's the only thing that happens here.
+  // A brand-new collection request, explicitly created and sent by the
+  // office, is the only thing that starts new automation again.
+  //
+  // This used to run a 48-hour "post-completion intent gate"
+  // (src/lib/requestReopen.ts) that could still reply, ask to reopen the
+  // request, or stash/reopen it automatically from an inbound message —
+  // a real production case showed this reads to a client as "the bot is
+  // still an active agent" right after being told the request is done,
+  // which is exactly the invariant above forbids. requestReopen.ts's
+  // functions are kept (still directly unit-tested) as a candidate
+  // building block for a future EXPLICIT, employee-initiated reopen
+  // surface — completed → active is already a legal, human-triggered
+  // transition via transitionStatus — but nothing here calls into them
+  // automatically anymore.
   if (conversation.status === "closed") {
-    const openConfirmations = await listOpenConfirmationsForCollectionRequest(collectionRequestId);
-    // 48-hour post-completion grace window (POST_COMPLETION_WINDOW_MS,
-    // requestReopen.ts) — started once at completedAt, never reset by later
-    // activity. Past it, this whole mechanism stays silent regardless of
-    // what the message contains (see decidePostCompletionGate).
-    const db = await getDb();
-    const [request] = await db
-      .select({ completedAt: collectionRequests.completedAt })
-      .from(collectionRequests)
-      .where(eq(collectionRequests.id, collectionRequestId))
-      .limit(1);
-    const withinPostCompletionWindow = !!request?.completedAt && Date.now() - request.completedAt.getTime() <= POST_COMPLETION_WINDOW_MS;
-
-    // Unified document-conversation understanding layer (Phase 1-4,
-    // conversation-intelligence redesign) — a text-only message within the
-    // window that refers to something already resolved on the just-completed
-    // request (e.g. "שלחתי בטעות"), or any other document-related follow-up,
-    // is understood here, before the coarser classifyReopenIntent boolean
-    // gate below ever runs. No-op (handled: false) for anything it doesn't
-    // recognize (UNRELATED or REASONING_FAILED — see understandConversationTurn's
-    // own doc comment for why the latter never falls back to legacy
-    // classification either) — classifyReopenIntent/the rest of this gate
-    // then runs exactly as before.
-    if (withinPostCompletionWindow && !attachment && body && openConfirmations.length === 0) {
-      const { handled } = await understandConversationTurn({
-        organizationId: organization.id,
-        clientId: client.id,
-        collectionRequestId,
-        conversationId: conversation.id,
-        messageText: body,
-      });
-      if (handled) return;
-    }
-
-    // Only actually invokes the AI classifier in the one case where its
-    // result matters — see decidePostCompletionGate's own doc comment.
-    const wantsReopen =
-      openConfirmations.length === 0 && !attachment && body ? await classifyReopenIntent(body) : false;
-    const decision = decidePostCompletionGate({
-      conversationStatus: conversation.status,
-      hasOpenConfirmations: openConfirmations.length > 0,
-      hasAttachment: !!attachment,
-      wantsReopen,
-      withinPostCompletionWindow,
-    });
-    console.log("[wa-inbound] post-completion gate decision", { collectionRequestId, decision, withinPostCompletionWindow });
-
-    if (decision === "stash_attachment" && attachment) {
-      let media: Awaited<ReturnType<typeof downloadMedia>>;
-      try {
-        media = await downloadMedia(attachment.mediaId);
-      } catch (error) {
-        console.error("[wa-inbound] downloadMedia FAILED (post-completion reopen path)", error);
-        await recordAuditEvent({
-          organizationId: organization.id,
-          eventType: "whatsapp.inbound_media_download_failed",
-          description: "הורדת קובץ מ-WhatsApp נכשלה",
-          actorType: "system",
-          clientId: client.id,
-          collectionRequestId,
-        });
-        return;
-      }
-      const [placeholder] = await db
-        .insert(documents)
-        .values({
-          organizationId: organization.id,
-          collectionRequestId,
-          fileName: attachment.fileName,
-          status: "reopen_pending_confirmation",
-          pendingFileContent: media.bytes,
-          pendingFileMimeType: media.mimeType,
-          whatsappMessageId: message.id,
-        })
-        .returning();
-      await createRequestReopenConfirmation({
-        organizationId: organization.id,
-        clientId: client.id,
-        collectionRequestId,
-        documentId: placeholder.id,
-      });
-      return;
-    }
-    if (decision === "ask_reopen") {
-      await createRequestReopenConfirmation({
-        organizationId: organization.id,
-        clientId: client.id,
-        collectionRequestId,
-        documentId: null,
-      });
-      return;
-    }
-    if (decision === "silent") {
-      return; // no reply, no state change — message already recorded above.
-    }
-    // "fall_through" — not closed, or an existing pending confirmation is
-    // still awaiting an answer; continue into the normal resolver chain.
+    console.log("[wa-inbound] conversation is closed (request completed) — message recorded, no automated engagement", { collectionRequestId });
+    return;
   }
 
   // Mirrors simulateInboundMessage's own pending-confirmation-resolution
@@ -793,48 +707,14 @@ async function replayHeldDisambiguation(
     return;
   }
 
-  // Post-completion gate — the resolved request can genuinely close between
-  // the clarification question being asked and the client actually
-  // answering it (an employee finishes it manually, or the scheduler
-  // completes it because nothing was left missing). Blindly running
-  // processInboundAttachment/understandConversationTurn here would bypass
-  // the same "already completed" protection the live path enforces via its
-  // own closed-conversation gate (decidePostCompletionGate) — reuse the
-  // identical stash-and-ask mechanism instead of silently filing a document
-  // or acting on a request that isn't open anymore.
+  // Same completion-is-terminal invariant as the live path above — the
+  // resolved request can genuinely have completed between the
+  // clarification question being asked and the client actually answering
+  // it (an employee finished it manually, or the scheduler completed it
+  // because nothing was left missing). The message is already recorded
+  // above; nothing else runs for a closed conversation.
   if (conversation.status === "closed") {
-    const openConfirmations = await listOpenConfirmationsForCollectionRequest(collectionRequestId);
-    if (openConfirmations.length === 0) {
-      if (resolution.pendingFileContent) {
-        const db = await getDb();
-        const [placeholder] = await db
-          .insert(documents)
-          .values({
-            organizationId: organization.id,
-            collectionRequestId,
-            fileName: resolution.fileName ?? "מסמך",
-            status: "reopen_pending_confirmation",
-            pendingFileContent: resolution.pendingFileContent,
-            pendingFileMimeType: resolution.pendingFileMimeType,
-            whatsappMessageId: resolution.whatsappMessageId,
-          })
-          .returning();
-        await createRequestReopenConfirmation({
-          organizationId: organization.id,
-          clientId: client.id,
-          collectionRequestId,
-          documentId: placeholder.id,
-        });
-      } else {
-        await createRequestReopenConfirmation({
-          organizationId: organization.id,
-          clientId: client.id,
-          collectionRequestId,
-          documentId: null,
-        });
-      }
-    }
-    console.log("[wa-inbound] disambiguation resolved to a request that has since completed — routed through the reopen gate, not auto-processed", { collectionRequestId });
+    console.log("[wa-inbound] disambiguation resolved to a request that has since completed — message recorded, no automated processing", { collectionRequestId });
     return;
   }
 

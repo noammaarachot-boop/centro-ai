@@ -19,8 +19,12 @@ vi.mock("@/db", () => ({
   getDb: async () => db,
 }));
 
-const { listTemplatesWithActiveCounts, findClientIdsWithActiveRequest, listActiveRequestsForTemplate } =
-  await import("./templates");
+const {
+  listTemplatesWithActiveCounts,
+  findClientIdsWithActiveRequest,
+  listActiveRequestsForTemplate,
+  hasActiveRequestsForTemplate,
+} = await import("./templates");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -171,5 +175,78 @@ describe("listActiveRequestsForTemplate — real client/status/progress, never a
     await seedRequest(orgId, clientId, templateId, "completed");
 
     expect(await listActiveRequestsForTemplate(orgId, templateId)).toHaveLength(0);
+  });
+});
+
+// Template deletion policy (soft-delete/retire, never a hard DELETE — see
+// deleteTemplate in templates/actions.ts) — hasActiveRequestsForTemplate is
+// the one check that decides whether retiring is currently allowed, using
+// the exact same NON_TERMINAL_STATUSES this whole file's other functions
+// already share.
+describe("hasActiveRequestsForTemplate — the one check deleteTemplate uses to decide whether retiring is currently allowed", () => {
+  it("returns true when at least one non-terminal request exists for this template", async () => {
+    const orgId = await seedOrg();
+    const templateId = await seedTemplate(orgId, "תבנית");
+    const clientId = await seedClient(orgId, "לקוח");
+    await seedRequest(orgId, clientId, templateId, "waiting_for_client");
+
+    expect(await hasActiveRequestsForTemplate(orgId, templateId)).toBe(true);
+  });
+
+  it("returns false when every request for this template is completed/cancelled, however many there are", async () => {
+    const orgId = await seedOrg();
+    const templateId = await seedTemplate(orgId, "תבנית בשימוש נרחב");
+    const clientA = await seedClient(orgId, "א");
+    const clientB = await seedClient(orgId, "ב");
+    await seedRequest(orgId, clientA, templateId, "completed");
+    await seedRequest(orgId, clientB, templateId, "cancelled");
+
+    expect(await hasActiveRequestsForTemplate(orgId, templateId)).toBe(false);
+  });
+
+  it("returns false for a template with no requests at all", async () => {
+    const orgId = await seedOrg();
+    const templateId = await seedTemplate(orgId, "תבנית חדשה");
+
+    expect(await hasActiveRequestsForTemplate(orgId, templateId)).toBe(false);
+  });
+
+  it("never counts a different template's active request", async () => {
+    const orgId = await seedOrg();
+    const templateA = await seedTemplate(orgId, "תבנית א");
+    const templateB = await seedTemplate(orgId, "תבנית ב");
+    const clientId = await seedClient(orgId, "לקוח");
+    await seedRequest(orgId, clientId, templateB, "active");
+
+    expect(await hasActiveRequestsForTemplate(orgId, templateA)).toBe(false);
+  });
+});
+
+describe("listTemplatesWithActiveCounts — retired templates (soft-deleted) are excluded from the gallery", () => {
+  it("excludes a retired template even though its row (and every historical request's own live join to it) still exists", async () => {
+    const orgId = await seedOrg();
+    const templateId = await seedTemplate(orgId, "תבנית שנמחקה");
+    await db.update(schema.services).set({ retiredAt: new Date() }).where(eq(schema.services.id, templateId));
+
+    const templates = await listTemplatesWithActiveCounts(orgId);
+    expect(templates.some((t) => t.id === templateId)).toBe(false);
+
+    // The row itself is untouched — a historical request's own live join
+    // to services.name (loadRequestSummaries, oneTimeDashboardView.ts)
+    // keeps resolving exactly as before.
+    const [stillThere] = await db.select().from(schema.services).where(eq(schema.services.id, templateId));
+    expect(stillThere).toBeDefined();
+    expect(stillThere.name).toBe("תבנית שנמחקה");
+  });
+
+  it("an active (non-retired) template of the same org is unaffected", async () => {
+    const orgId = await seedOrg();
+    const retiredId = await seedTemplate(orgId, "נמחקה");
+    const activeId = await seedTemplate(orgId, "פעילה");
+    await db.update(schema.services).set({ retiredAt: new Date() }).where(eq(schema.services.id, retiredId));
+
+    const templates = await listTemplatesWithActiveCounts(orgId);
+    expect(templates.some((t) => t.id === activeId)).toBe(true);
+    expect(templates.some((t) => t.id === retiredId)).toBe(false);
   });
 });

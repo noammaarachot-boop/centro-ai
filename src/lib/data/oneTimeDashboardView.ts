@@ -1,16 +1,16 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, services } from "@/db/schema";
 import type { CollectionRequestStatus } from "@/lib/collectionRequestStateMachine";
 import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import { captureError } from "@/lib/monitoring/errorReporting";
 import {
+  ACTIVE_REQUEST_STATUSES,
   computeRequirementsProgress,
   getActiveRequestsCount,
   getCompletedThisWeekCount,
   getItemsNeedingReview,
   getLastActivityAtByRequest,
-  getWaitingForClientCount,
   type NeedsReviewItem,
   type ReviewReasonKind,
 } from "@/lib/data/dashboardReadModel";
@@ -131,7 +131,6 @@ export interface OneTimeDashboardView {
   draftId: string | null;
   kpis: {
     needsReviewCount: number;
-    waitingForClientCount: number;
     activeRequestsCount: number;
     completedThisWeekCount: number;
   };
@@ -240,73 +239,22 @@ function buildHero(items: NeedsReviewItem[]): OneTimeDashboardView["hero"] {
   };
 }
 
-export async function getOneTimeDashboardView(organizationId: string): Promise<OneTimeDashboardView> {
-  const hasSentAnyRequest = await hasSentAnyOnDemandRequest(organizationId);
-  const draftId = hasSentAnyRequest ? null : await resolveOnDemandDraft(organizationId);
-
-  if (!hasSentAnyRequest) {
-    return {
-      hasSentAnyRequest,
-      draftId,
-      kpis: { needsReviewCount: 0, waitingForClientCount: 0, activeRequestsCount: 0, completedThisWeekCount: 0 },
-      hero: { state: "calm", headline: "", subtext: "", chips: [] },
-      needsAttention: [],
-      inProgress: [],
-    };
-  }
-
-  const db = await getDb();
-
-  const [needsReviewItems, waitingForClientCount, activeRequestsCount, completedThisWeekCount, inProgressRequests] =
-    await Promise.all([
-      getItemsNeedingReview(organizationId),
-      getWaitingForClientCount(organizationId),
-      getActiveRequestsCount(organizationId),
-      getCompletedThisWeekCount(organizationId),
-      db
-        .select({ id: collectionRequests.id })
-        .from(collectionRequests)
-        .where(
-          and(eq(collectionRequests.organizationId, organizationId), inArray(collectionRequests.status, IN_PROGRESS_STATUSES))
-        )
-        .orderBy(desc(collectionRequests.updatedAt))
-        .limit(20),
-    ]);
-
-  const needsAttentionIds = needsReviewItems.map((item) => item.collectionRequestId);
-  const inProgressIds = inProgressRequests.map((row) => row.id);
-  const allIds = [...new Set([...needsAttentionIds, ...inProgressIds])];
-
+// Shared row-builder for every "list of requests" view this file
+// produces (the homepage's capped in-progress table, and the KPI
+// drill-down pages below) — one place that turns a set of
+// collectionRequestIds into fully-detailed InProgressRow objects, so a
+// drill-down list is never a second, differently-shaped rendering of the
+// same underlying data.
+async function buildRequestRows(organizationId: string, ids: string[]): Promise<InProgressRow[]> {
+  if (ids.length === 0) return [];
   const [summaries, lastActivityByRequest] = await Promise.all([
-    loadRequestSummaries(allIds),
-    getLastActivityAtByRequest(allIds),
+    loadRequestSummaries(ids),
+    getLastActivityAtByRequest(ids),
   ]);
 
-  const needsAttention: NeedsAttentionRow[] = needsReviewItems
-    .map((item) => {
-      const summary = summaries.get(item.collectionRequestId);
-      if (!summary) {
-        reportMissingRequestSummary(organizationId, item.collectionRequestId, "needsAttention");
-        return null;
-      }
-      const reason = pickPrimaryReason(item);
-      const copy = REASON_COPY[reason.kind];
-      const elapsed = formatRelativeTime(reason.occurredAt);
-      return {
-        collectionRequestId: item.collectionRequestId,
-        severity: copy.severity,
-        title: copy.title(summary.clientName),
-        meta: `${copy.meta(reason.detail)} · ${elapsed}`,
-        actionHref: `/collections/${item.collectionRequestId}`,
-        actionLabel: copy.actionLabel,
-      };
-    })
-    .filter((row): row is NeedsAttentionRow => row !== null)
-    .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "danger" ? -1 : 1));
-
-  const inProgress: InProgressRow[] = (
+  return (
     await Promise.all(
-      inProgressIds.map(async (id) => {
+      ids.map(async (id) => {
         const summary = summaries.get(id);
         if (!summary) {
           reportMissingRequestSummary(organizationId, id, "inProgress");
@@ -328,13 +276,82 @@ export async function getOneTimeDashboardView(organizationId: string): Promise<O
       })
     )
   ).filter((row): row is InProgressRow => row !== null);
+}
+
+// Shared row-builder for the "needs attention" shape — used both by the
+// homepage's own section and the KPI drill-down page below, so the two
+// never drift into differently-worded/ordered views of the same
+// getItemsNeedingReview() items.
+async function buildNeedsAttentionRows(organizationId: string, needsReviewItems: NeedsReviewItem[]): Promise<NeedsAttentionRow[]> {
+  const ids = needsReviewItems.map((item) => item.collectionRequestId);
+  const summaries = await loadRequestSummaries(ids);
+
+  return needsReviewItems
+    .map((item) => {
+      const summary = summaries.get(item.collectionRequestId);
+      if (!summary) {
+        reportMissingRequestSummary(organizationId, item.collectionRequestId, "needsAttention");
+        return null;
+      }
+      const reason = pickPrimaryReason(item);
+      const copy = REASON_COPY[reason.kind];
+      const elapsed = formatRelativeTime(reason.occurredAt);
+      return {
+        collectionRequestId: item.collectionRequestId,
+        severity: copy.severity,
+        title: copy.title(summary.clientName),
+        meta: `${copy.meta(reason.detail)} · ${elapsed}`,
+        actionHref: `/collections/${item.collectionRequestId}`,
+        actionLabel: copy.actionLabel,
+      };
+    })
+    .filter((row): row is NeedsAttentionRow => row !== null)
+    .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "danger" ? -1 : 1));
+}
+
+export async function getOneTimeDashboardView(organizationId: string): Promise<OneTimeDashboardView> {
+  const hasSentAnyRequest = await hasSentAnyOnDemandRequest(organizationId);
+  const draftId = hasSentAnyRequest ? null : await resolveOnDemandDraft(organizationId);
+
+  if (!hasSentAnyRequest) {
+    return {
+      hasSentAnyRequest,
+      draftId,
+      kpis: { needsReviewCount: 0, activeRequestsCount: 0, completedThisWeekCount: 0 },
+      hero: { state: "calm", headline: "", subtext: "", chips: [] },
+      needsAttention: [],
+      inProgress: [],
+    };
+  }
+
+  const db = await getDb();
+
+  const [needsReviewItems, activeRequestsCount, completedThisWeekCount, inProgressRequests] = await Promise.all([
+    getItemsNeedingReview(organizationId),
+    getActiveRequestsCount(organizationId),
+    getCompletedThisWeekCount(organizationId),
+    db
+      .select({ id: collectionRequests.id })
+      .from(collectionRequests)
+      .where(
+        and(eq(collectionRequests.organizationId, organizationId), inArray(collectionRequests.status, IN_PROGRESS_STATUSES))
+      )
+      .orderBy(desc(collectionRequests.updatedAt))
+      .limit(20),
+  ]);
+
+  const inProgressIds = inProgressRequests.map((row) => row.id);
+
+  const [needsAttention, inProgress] = await Promise.all([
+    buildNeedsAttentionRows(organizationId, needsReviewItems),
+    buildRequestRows(organizationId, inProgressIds),
+  ]);
 
   return {
     hasSentAnyRequest,
     draftId,
     kpis: {
       needsReviewCount: needsReviewItems.length,
-      waitingForClientCount,
       activeRequestsCount,
       completedThisWeekCount,
     },
@@ -342,4 +359,49 @@ export async function getOneTimeDashboardView(organizationId: string): Promise<O
     needsAttention,
     inProgress,
   };
+}
+
+// The three KPI tiles' own real drill-down lists (issue: KPI cards used to
+// all point at the template gallery, /collections, regardless of which
+// tile was clicked). Each returns every matching request — never capped
+// like the homepage's own inProgress table — using the exact same
+// status definitions the KPI counts themselves are built from, so a
+// number on the tile and the length of its own drill-down list can never
+// silently disagree.
+
+export async function listNeedsReviewRequests(organizationId: string): Promise<NeedsAttentionRow[]> {
+  const needsReviewItems = await getItemsNeedingReview(organizationId);
+  return buildNeedsAttentionRows(organizationId, needsReviewItems);
+}
+
+export async function listActiveRequestsFull(organizationId: string): Promise<InProgressRow[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({ id: collectionRequests.id })
+    .from(collectionRequests)
+    .where(
+      and(
+        eq(collectionRequests.organizationId, organizationId),
+        inArray(collectionRequests.status, [...ACTIVE_REQUEST_STATUSES])
+      )
+    )
+    .orderBy(desc(collectionRequests.updatedAt));
+  return buildRequestRows(organizationId, rows.map((r) => r.id));
+}
+
+export async function listCompletedThisWeekFull(organizationId: string): Promise<InProgressRow[]> {
+  const db = await getDb();
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const rows = await db
+    .select({ id: collectionRequests.id })
+    .from(collectionRequests)
+    .where(
+      and(
+        eq(collectionRequests.organizationId, organizationId),
+        eq(collectionRequests.status, "completed"),
+        gte(collectionRequests.completedAt, weekAgo)
+      )
+    )
+    .orderBy(desc(collectionRequests.completedAt));
+  return buildRequestRows(organizationId, rows.map((r) => r.id));
 }

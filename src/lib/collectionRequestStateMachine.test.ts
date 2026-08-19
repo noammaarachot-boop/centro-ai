@@ -257,3 +257,151 @@ describe("applyTransition — explicit resend from 'escalated' back to 'active' 
     expect(after.deferralCount).toBe(0); // reset by the waiting_for_client rule, not the resend rule
   });
 });
+
+// Completion lifecycle closure (root-cause fix) — centralized in
+// applyTransition itself, the one low-level function every path to
+// "completed" goes through (including a direct employee status change via
+// transitionStatus, which used to bypass caseReview.ts's own
+// conversation-closing entirely). Reaching "completed" must always close
+// the conversation and resolve any stale pending review item, regardless
+// of which of the several call sites triggered it.
+describe("applyTransition — completing a request closes its conversation and cleans up stale active state (root-cause fix)", () => {
+  it("sets the conversation to closed and clears deferredReminderAt/pendingCaseReviewAt", async () => {
+    const { orgId, requestId, requirementId, conversationId } = await seedRequestWithConversation("active");
+    await db
+      .update(schema.conversations)
+      .set({ deferredReminderAt: new Date(Date.now() + 60 * 60 * 1000), pendingCaseReviewAt: new Date(Date.now() + 60 * 1000) })
+      .where(eq(schema.conversations.id, conversationId));
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId,
+      fileName: "id.pdf",
+      status: "approved",
+    });
+
+    const result = await completeCollectionRequest(orgId, undefined, "system", requestId);
+    expect(result.ok).toBe(true);
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.status).toBe("closed");
+    expect(conversation.deferredReminderAt).toBeNull();
+    expect(conversation.pendingCaseReviewAt).toBeNull();
+  });
+
+  it("closes the conversation even when completed via a direct employee status change (transitionStatus's own call shape), not just the caseReview.ts path", async () => {
+    const { orgId, requestId, requirementId, conversationId } = await seedRequestWithConversation("active");
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId,
+      fileName: "id.pdf",
+      status: "approved",
+    });
+
+    // The exact two-step shape transitionStatus (collections/actions.ts)
+    // uses — applyTransition directly, never attemptFinishCollectionRequest
+    // — which is precisely the gap that used to leave the conversation open.
+    const toProcessing = await applyTransition(orgId, undefined, "employee", requestId, "processing");
+    expect(toProcessing.ok).toBe(true);
+    const toCompleted = await applyTransition(orgId, undefined, "employee", requestId, "completed");
+    expect(toCompleted.ok).toBe(true);
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.status).toBe("closed");
+  });
+
+  it("resolves any still-pending employeeReviewItem tied to the request, without sending a client message, and records an audit event", async () => {
+    const { orgId, clientId, requestId, requirementId, conversationId } = await seedRequestWithConversation("active");
+    const [reviewItem] = await db
+      .insert(schema.employeeReviewItems)
+      .values({
+        organizationId: orgId,
+        clientId,
+        collectionRequestId: requestId,
+        conversationId,
+        clientQuestion: "מתי אתם פותחים את התיק?",
+        category: "human_request",
+        status: "pending",
+      })
+      .returning();
+    const messagesBefore = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId,
+      fileName: "id.pdf",
+      status: "approved",
+    });
+
+    const result = await completeCollectionRequest(orgId, undefined, "system", requestId);
+    expect(result.ok).toBe(true);
+
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, reviewItem.id));
+    expect(after.status).toBe("resolved");
+    expect(after.resolvedBy).toBe("ai_context");
+    expect(after.resolvedByUserId).toBeNull();
+
+    // No message sent to the client about it — the completion message
+    // (sent separately, by caseReview.ts's finalizeCompletion) is the only
+    // outbound message this whole flow produces.
+    const messagesAfter = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    const newOutbound = messagesAfter.filter((m) => m.direction === "outbound" && !messagesBefore.some((b) => b.id === m.id));
+    expect(newOutbound.every((m) => !m.body.includes("מתי אתם פותחים"))).toBe(true);
+
+    const audit = await db
+      .select()
+      .from(schema.auditLogs)
+      .where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(audit.some((a) => a.eventType === "review_item.auto_resolved_by_completion")).toBe(true);
+  });
+
+  it("never touches a pending employeeReviewItem belonging to a DIFFERENT request", async () => {
+    const requestA = await seedRequestWithConversation("active");
+    const requestB = await seedRequestWithConversation("active");
+    const [reviewItemB] = await db
+      .insert(schema.employeeReviewItems)
+      .values({
+        organizationId: requestB.orgId,
+        clientId: requestB.clientId,
+        collectionRequestId: requestB.requestId,
+        conversationId: requestB.conversationId,
+        clientQuestion: "שאלה על בקשה אחרת",
+        category: "other",
+        status: "pending",
+      })
+      .returning();
+    await db.insert(schema.documents).values({
+      organizationId: requestA.orgId,
+      collectionRequestId: requestA.requestId,
+      requirementId: requestA.requirementId,
+      fileName: "id.pdf",
+      status: "approved",
+    });
+
+    await completeCollectionRequest(requestA.orgId, undefined, "system", requestA.requestId);
+
+    const [stillPending] = await db
+      .select()
+      .from(schema.employeeReviewItems)
+      .where(eq(schema.employeeReviewItems.id, reviewItemB.id));
+    expect(stillPending.status).toBe("pending");
+  });
+
+  it("clears extensionActive back to false on completion", async () => {
+    const { orgId, requestId, requirementId } = await seedRequestWithConversation("active");
+    await db.update(schema.collectionRequests).set({ extensionActive: true }).where(eq(schema.collectionRequests.id, requestId));
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId,
+      fileName: "id.pdf",
+      status: "approved",
+    });
+
+    await completeCollectionRequest(orgId, undefined, "system", requestId);
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.extensionActive).toBe(false);
+  });
+});

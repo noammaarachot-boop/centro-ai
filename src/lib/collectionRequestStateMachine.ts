@@ -6,6 +6,7 @@ import {
   collectionRequests,
   conversations,
   documents,
+  employeeReviewItems,
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { detectMissingRequirements, resolveEffectiveRequirementNames } from "@/lib/clientDocumentProfile";
@@ -315,8 +316,71 @@ export async function applyTransition(
       reviewDeadlineAt,
       deferralCount,
       escalationReason: nextStatus === "escalated" ? current.escalationReason : null,
+      // Post-completion extension flow (src/lib/requestExtension.ts) — a
+      // no-op for every ordinary (non-extension) completion, since it's
+      // already false there. Cleared centrally here (not just by
+      // caseReview.ts's finalizeCompletion) so it's true of every path to
+      // "completed", including a direct employee status change.
+      extensionActive: nextStatus === "completed" ? false : current.extensionActive,
     })
     .where(eq(collectionRequests.id, collectionRequestId));
+
+  // Lifecycle closure invariant — "once a collection request is completed,
+  // Centro stops engaging with that conversation entirely." Centralized
+  // here (the one low-level function every path to "completed" already
+  // goes through — a direct employee status change via transitionStatus
+  // used to bypass this, since only caseReview.ts's finalizeCompletion
+  // used to close the conversation) so it's structurally impossible to
+  // reach "completed" without also closing it. The webhook route's own
+  // `conversation.status === "closed"` gate (route.ts) is what actually
+  // stops automation from here on; this is what guarantees that gate sees
+  // the truth no matter which of the several completion call sites fired.
+  if (nextStatus === "completed") {
+    await db
+      .update(conversations)
+      .set({
+        status: "closed",
+        updatedAt: new Date(),
+        // A no-op for every completion that never had one pending; when set,
+        // the request completing means there's nothing left to defer/summarize.
+        deferredReminderAt: null,
+        pendingCaseReviewAt: null,
+      })
+      .where(eq(conversations.collectionRequestId, collectionRequestId));
+
+    // "אין להשאיר stale alerts או stale review items" — an employee
+    // question that was still open when the request happened to complete
+    // through some other path (e.g. every required document got approved
+    // independently of the open question) must not keep surfacing as
+    // "needs attention" forever. Resolved, never deleted (audit trail
+    // preserved via review_item.resolved... — actually a distinct event
+    // type below, so a reader can tell this wasn't an employee's own
+    // answer); no client-facing message is sent — the request is already
+    // closed, and issue #4's invariant forbids any further automated
+    // message on a closed conversation.
+    const staleReviewItems = await db
+      .update(employeeReviewItems)
+      .set({
+        status: "resolved",
+        resolutionText: "הבקשה הושלמה — הפריט נסגר אוטומטית ללא תשובה נפרדת.",
+        resolvedBy: "ai_context",
+        resolvedByUserId: null,
+        resolvedAt: new Date(),
+      })
+      .where(and(eq(employeeReviewItems.collectionRequestId, collectionRequestId), eq(employeeReviewItems.status, "pending")))
+      .returning({ id: employeeReviewItems.id, clientQuestion: employeeReviewItems.clientQuestion });
+
+    for (const item of staleReviewItems) {
+      await recordAuditEvent({
+        organizationId,
+        eventType: "review_item.auto_resolved_by_completion",
+        description: `הפריט "${item.clientQuestion}" נסגר אוטומטית — הבקשה הושלמה`,
+        actorType: "system",
+        collectionRequestId,
+        metadata: { reviewItemId: item.id },
+      });
+    }
+  }
 
   if (isExplicitResendFromEscalation) {
     // Same fresh start for the reminder side of the clock (conversations

@@ -561,6 +561,18 @@ export const services = pgTable("services", {
   // or duplicating a template never sets this — "sample" means system-seeded,
   // not merely library-sourced. Always false for the recurring workflow.
   isSampleTemplate: boolean("is_sample_template").notNull().default(false),
+  // "Mark, never delete" convention, same as approvedPolicies.isActive/
+  // retiredAt above — a template is a reusable definition, while every
+  // collectionRequests row it ever produced is its own independent
+  // historical instance (BR-002: requirements are snapshotted, never
+  // live-referenced). Deleting a template must never break, hide, or
+  // orphan a single historical request, so the row is retired in place
+  // rather than actually removed: listTemplatesWithActiveCounts excludes
+  // it from the gallery and sendTemplateRequest refuses to start a new
+  // request from it, but every existing collectionRequests.serviceId FK
+  // (and every live join to this row's own name/description) keeps
+  // resolving exactly as before, forever. Null = active/available.
+  retiredAt: timestamp("retired_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

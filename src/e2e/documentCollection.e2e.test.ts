@@ -1032,7 +1032,7 @@ describe("E2E Journey 3 — multi-page PDF merge, document replace, reminder def
 // saying "finished," then an explicit close).
 // ======================================================================
 describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-completion extension", () => {
-  it("asks about an identity mismatch immediately (batched, not per-file) and replies immediately to an unrecognized document too, then supports adding more after completion", async () => {
+  it("asks about an identity mismatch immediately (batched, not per-file) and replies immediately to an unrecognized document too, then stays fully silent after completion", async () => {
     const { requestId, phoneNumberId, conversationId, requirements } = await seedActiveRequest(["תעודת זהות", "אישור שכירות"]);
     const [idReq] = requirements;
 
@@ -1154,82 +1154,44 @@ describe("E2E Journey 4 — identity anomaly, unrecognized document, and post-co
     // The requirement genuinely still needs a real matching document.
     expect(await currentRequestStatus(requestId)).not.toBe("completed");
 
-    // ---- Post-completion extension -----------------------------------
-    // Manually bring the request to completed+closed to set up the
-    // extension scenario cleanly (the resolution above doesn't itself
-    // re-run completion in this synthetic flow).
+    // ---- Post-completion silence (terminal-completion invariant) ------
+    // Manually bring the request to completed+closed (the resolution above
+    // doesn't itself re-run completion in this synthetic flow).
     await db.update(schema.collectionRequests).set({ status: "completed", completedAt: new Date() }).where(eq(schema.collectionRequests.id, requestId));
     await db.update(schema.conversations).set({ status: "closed" }).where(eq(schema.conversations.id, conversationId));
 
-    // "שכחתי עוד מסמך" after completion — the post-completion gate's own
-    // unified conversation-understanding layer gets first look (within the
-    // 48h window, no open confirmations), declines (not a correction to
-    // anything already resolved), then classifyReopenIntent is the only
-    // other classification that runs here (a closed conversation
-    // short-circuits before ever reaching the normal deferral/Q&A chain) —
-    // asks before doing anything.
-    queueConversationIntent({ kind: "unrelated", confidence: 0 });
-    generateObject.mockResolvedValueOnce({ object: { isReopenIntent: true } });
+    // "שכחתי עוד מסמך" after completion — once a request is completed and
+    // its conversation closed, Centro never engages again automatically:
+    // no reply, no AI call, no reopen confirmation, no state change. The
+    // message is still recorded as plain communication history (the real
+    // webhook route's own recordInboundMessage), and that's all.
+    const messagesBefore = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    sentMessages.length = 0;
     await sendText(phoneNumberId, "שכחתי לשלוח את אישור השכירות, אשלח עכשיו");
-    const reopenConfirmation = (
-      await db.select().from(schema.pendingConfirmations).where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")))
-    )[0];
-    expect(reopenConfirmation?.kind).toBe("request_reopen");
 
-    // Client confirms "כן, לשמור" — extension begins.
-    const { resolveConfirmationFromReply } = await import("@/lib/pendingConfirmations");
-    const { applyRequestReopenDecision } = await import("@/lib/requestReopen");
-    const resolved = await resolveConfirmationFromReply(conversationId, "כן");
-    expect(resolved?.status).toBe("confirmed");
-    await applyRequestReopenDecision(resolved!, async () => {});
+    const pendingConfirmationsAfter = await db
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(and(eq(schema.pendingConfirmations.collectionRequestId, requestId), eq(schema.pendingConfirmations.status, "pending")));
+    expect(pendingConfirmationsAfter).toHaveLength(0); // no automatic reopen question
+    expect(sentMessages).toHaveLength(0); // no automated reply of any kind
 
-    const [requestDuringExtension] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(requestDuringExtension.extensionActive).toBe(true);
+    const messagesAfter = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messagesAfter.length).toBe(messagesBefore.length + 1); // only the inbound message itself was recorded
+    expect(messagesAfter.at(-1)?.direction).toBe("inbound");
 
-    // Uploads a document without ever saying "finished" — must not
-    // auto-close.
+    // A document arriving after completion is equally inert — never
+    // uploaded, never matched, never reopens the request.
     const leaseDoc = await makeTestDocument("lease_certificate");
-    const leaseReqRow = (
-      await db.select().from(schema.collectionRequestRequirements).where(eq(schema.collectionRequestRequirements.collectionRequestId, requestId))
-    ).find((r) => r.name === "אישור שכירות")!;
-    classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      identified: true,
-      documentType: "אישור שכירות",
-      identificationConfidence: 0.95,
-      matchedRequirementId: leaseReqRow.id,
-      matchConfidence: 0.93,
-    });
+    const docsBefore = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
     await sendDocument(phoneNumberId, leaseDoc);
-    expect(await currentRequestStatus(requestId)).not.toBe("completed");
+    const docsAfter = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(docsAfter).toHaveLength(docsBefore.length); // no new document row
 
-    // A real, correctly-matching ID card — the requirement the earlier
-    // mismatched document never satisfied — arrives too, still without
-    // the client saying "finished."
-    const realIdDoc = await makeTestDocument("id_card", { fileName: "real_matching_id.png" });
-    const idReqRow = (
-      await db.select().from(schema.collectionRequestRequirements).where(eq(schema.collectionRequestRequirements.collectionRequestId, requestId))
-    ).find((r) => r.name === "תעודת זהות")!;
-    classifyDocumentViaVisionAI.mockResolvedValueOnce({
-      identified: true,
-      documentType: "תעודת זהות",
-      identificationConfidence: 0.96,
-      matchedRequirementId: idReqRow.id,
-      matchConfidence: 0.94,
-      extractedPersonName: "ישראל ישראלי בדיקה",
-      identityExtractionConfidence: 0.9,
-    });
-    await sendDocument(phoneNumberId, realIdDoc);
-    // Still extension-active — even a document that happens to complete
-    // everything never auto-closes mid-extension.
-    expect(await currentRequestStatus(requestId)).not.toBe("completed");
-
-    // Explicit "סיימתי" closes it again — Case Review + completion.
-    await sendText(phoneNumberId, "סיימתי");
-    expect(await currentRequestStatus(requestId)).toBe("completed");
+    const [finalRequest] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(finalRequest.status).toBe("completed"); // never auto-reopened to "active"
     const [finalConversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
     expect(finalConversation.status).toBe("closed");
-    const [finalRequest] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(finalRequest.extensionActive).toBe(false);
   });
 });
 
@@ -1837,7 +1799,7 @@ describe("Multi-active-collection-request disambiguation", () => {
   // scheduler completing it naturally would reach the same conversation
   // state). The reply must never be silently processed against a request
   // that isn't open anymore.
-  it("if the chosen request completed while the disambiguation was still pending, the reply is routed through the reopen gate, never auto-processed", async () => {
+  it("if the chosen request completed while the disambiguation was still pending, the reply is fully silent — recorded as history, never processed, never reopened", async () => {
     const { phoneNumberId, clientId, seedRequest } = await seedClientWithTwoActiveRequests();
     const reqX = await seedRequest("שירות X", "תקופה-X", "תעודת זהות");
     const reqY = await seedRequest("שירות Y", "תקופה-Y", "אישור ניהול חשבון");
@@ -1872,13 +1834,15 @@ describe("Multi-active-collection-request disambiguation", () => {
     expect(await currentRequestStatus(reqX.requestId)).toBe("completed"); // still completed, not silently reopened
     expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled(); // never even classified
 
-    // Routed through the exact same reopen-confirmation mechanism the live
-    // path uses for a closed conversation — a real question was asked.
+    // Terminal-completion invariant: no automated reopen confirmation, no
+    // reply of any kind — the message is recorded as plain history and
+    // nothing else happens.
     const reopenConfirmations = await db
       .select()
       .from(schema.pendingConfirmations)
       .where(and(eq(schema.pendingConfirmations.collectionRequestId, reqX.requestId), eq(schema.pendingConfirmations.kind, "request_reopen")));
-    expect(reopenConfirmations).toHaveLength(1);
+    expect(reopenConfirmations).toHaveLength(0);
+    expect(sentMessages).toHaveLength(0);
 
     // reqY (never chosen, never involved) is completely unaffected.
     expect(await currentRequestStatus(reqY.requestId)).toBe("active");

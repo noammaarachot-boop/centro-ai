@@ -136,10 +136,10 @@ function buildBriefingActions(
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ queue?: string; q?: string }>;
+  searchParams: Promise<{ queue?: string; q?: string; kpi?: string }>;
 }) {
   const session = await requireSession();
-  const { queue, q } = await searchParams;
+  const { queue, q, kpi } = await searchParams;
 
   // Product Evolution M4/M9 — the one shared route branches into a
   // completely different dashboard for an organization whose primary
@@ -151,7 +151,7 @@ export default async function DashboardPage({
   // picks which dashboard renders by default.
   const organization = await getOrganization(session.organizationId);
   if (organization?.workflowType === "one_time" || organization?.workflowType === "on_demand") {
-    return <OneTimeDashboard organizationId={session.organizationId} />;
+    return <OneTimeDashboard organizationId={session.organizationId} kpi={kpi} />;
   }
 
   const searchResults = q?.trim() ? await searchClients(session.organizationId, q.trim()) : null;

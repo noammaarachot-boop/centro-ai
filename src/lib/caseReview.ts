@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, collectionRequests, conversations, documents, pendingConfirmations } from "@/db/schema";
+import { collectionRequestRequirements, conversations, documents, pendingConfirmations } from "@/db/schema";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { flushDueIntakeNotifications } from "@/lib/pendingConfirmations";
 import { createClarificationRequest, createUnsolicitedDocumentConfirmation } from "@/lib/documentIntakeReview";
@@ -369,13 +369,22 @@ export type FinishOutcome = "review_pending" | "missing_requirements" | "complet
 // runAutomaticCaseStatusReview (silence-window trigger, below) — the exact
 // same completion send + conversation-close + deferral/extension cleanup
 // either path needs the moment completeCollectionRequest actually succeeds.
+// Lifecycle closure itself (closing the conversation, clearing
+// deferredReminderAt/pendingCaseReviewAt/extensionActive, resolving any
+// still-open employeeReviewItems) is centralized in
+// collectionRequestStateMachine.ts's applyTransition — the one low-level
+// function every path to "completed" goes through, including a direct
+// employee status change that never calls this function at all. This is
+// purely the client-facing completion message, which only makes sense for
+// the two callers that got here reactively (the client's own "finished"
+// signal, or the silence-window review) — a manual employee completion via
+// transitionStatus intentionally sends no message of its own.
 async function finalizeCompletion(params: { organizationId: string; collectionRequestId: string; conversationId: string }): Promise<void> {
   // Confirmed-unsolicited documents (client said "כן, שלחתי בכוונה") never
   // block or delay completion — they just deserve a mention for
   // transparency, exactly like the silence-window summary already gives
   // them (buildCaseStatusSummaryMessage) — see computeCaseStatusLists.
   const { received, extra } = await computeCaseStatusLists(params.collectionRequestId);
-  const db = await getDb();
 
   const extraSection = extra.length > 0 ? `\n\nבנוסף התקבל גם:\n${extra.map((name) => `• ${name}`).join("\n")}` : "";
   const completionMessage = `קיבלתי את כל המסמכים שנדרשו:\n${received.map((name) => `• ${name}`).join("\n")}${extraSection}\n\nתודה רבה על שיתוף הפעולה.\nהמשך יום טוב.`;
@@ -388,34 +397,6 @@ async function finalizeCompletion(params: { organizationId: string; collectionRe
     undefined,
     true
   );
-
-  await db
-    .update(conversations)
-    .set({
-      status: "closed",
-      updatedAt: new Date(),
-      // Reminder deferral by explicit client commitment
-      // (src/lib/reminderDeferral.ts) — a no-op for every completion that
-      // never had one; when it was set, the request completing (even
-      // before the deferred date arrives — the client sent everything
-      // early) means there's nothing left to defer a reminder about.
-      deferredReminderAt: null,
-      // Silence-window case review — a no-op for every completion that
-      // never had one pending; when it was set, the request completing
-      // means there's nothing left to summarize.
-      pendingCaseReviewAt: null,
-    })
-    .where(eq(conversations.id, params.conversationId));
-  // Post-completion extension flow (src/lib/requestExtension.ts) — a no-op
-  // for every ordinary (non-extension) completion, since it's already
-  // false there. Cleared here, centrally, rather than at each of the
-  // several places that can trigger a completion (an explicit "finished"
-  // message, the extension-finished-check confirmation, the scheduler),
-  // so none of them has to remember to do it themselves.
-  await db
-    .update(collectionRequests)
-    .set({ extensionActive: false })
-    .where(eq(collectionRequests.id, params.collectionRequestId));
 }
 
 // The single entry point for "the client is done sending documents" —

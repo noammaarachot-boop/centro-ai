@@ -16,7 +16,7 @@ import { requireSession } from "@/lib/auth/session";
 import { snapshotServiceRequirements } from "@/lib/collectionRequestStateMachine";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 import { parseRequirementSemantics, requiresClarification } from "@/lib/ai/requirementSemantics";
-import { findClientIdsWithActiveRequest } from "@/lib/data/templates";
+import { findClientIdsWithActiveRequest, hasActiveRequestsForTemplate } from "@/lib/data/templates";
 
 // Product Evolution M5 — a Template is a bare `services` row for a
 // one-time-workflow organization (see ARCHITECTURE.md); these actions are
@@ -181,27 +181,43 @@ export async function updateTemplate(
   redirect(`/collections/manage/${template.id}`);
 }
 
+// "Mark, never delete" (services.retiredAt's own doc comment) — a template
+// is a reusable definition, while every collectionRequests row it ever
+// produced is its own independent historical instance (BR-002: a request
+// snapshots its requirements at creation time, never live-references the
+// template). Retiring a template must never touch a single historical
+// request, message, document, or audit event — it only removes the
+// template itself from the gallery and refuses to start new requests from
+// it. Blocked only by requests that are genuinely still open right now
+// (hasActiveRequestsForTemplate, the same NON_TERMINAL_STATUSES every
+// other "is this template in use" check in the app already uses) — having
+// been used hundreds of times historically is never itself a reason to
+// block deletion.
 export async function deleteTemplate(templateId: string) {
   const session = await requireSession();
   const db = await getDb();
 
-  try {
-    const [template] = await db
-      .delete(services)
-      .where(and(eq(services.id, templateId), eq(services.organizationId, session.organizationId)))
-      .returning();
+  await getOrgScopedTemplate(session.organizationId, templateId);
 
-    if (template) {
-      await recordAuditEvent({
-        organizationId: session.organizationId,
-        eventType: "template.deleted",
-        description: `בקשת האיסוף "${template.name}" נמחקה`,
-        actorType: "employee",
-        actorUserId: session.userId,
-      });
-    }
-  } catch {
-    redirect(`/collections/manage/${templateId}?error=has-history`);
+  const hasActiveRequests = await hasActiveRequestsForTemplate(session.organizationId, templateId);
+  if (hasActiveRequests) {
+    redirect(`/collections/manage/${templateId}?error=has-active-requests`);
+  }
+
+  const [retired] = await db
+    .update(services)
+    .set({ retiredAt: new Date() })
+    .where(and(eq(services.id, templateId), eq(services.organizationId, session.organizationId)))
+    .returning({ name: services.name });
+
+  if (retired) {
+    await recordAuditEvent({
+      organizationId: session.organizationId,
+      eventType: "template.deleted",
+      description: `התבנית "${retired.name}" נמחקה`,
+      actorType: "employee",
+      actorUserId: session.userId,
+    });
   }
 
   redirect("/collections");
@@ -712,6 +728,11 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     .where(and(eq(services.id, templateId), eq(services.organizationId, session.organizationId)))
     .limit(1);
   if (!template) redirect("/collections");
+  // A retired template (services.retiredAt set — see deleteTemplate) is
+  // already gone from the gallery; refuse to start a brand-new request
+  // from it even via a direct call, same "no new automation from a
+  // retired definition" rule deletion itself is for.
+  if (template.retiredAt) redirect(`${redirectTo}${sep}error=template-deleted`);
 
   // Never send a generic "please send the required documents" message: a
   // Collection Request must carry a concrete, user-defined requirement

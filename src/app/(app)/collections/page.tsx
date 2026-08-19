@@ -82,7 +82,7 @@ export default async function CollectionsPage() {
                   </Link>
                   <ConfirmDialog
                     title="מחיקת תבנית"
-                    description={`למחוק את "${template.name}"? פעולה זו אינה הפיכה. אם לתבנית יש היסטוריית שליחות, המחיקה תיחסם.`}
+                    description={`למחוק את "${template.name}"? מחיקת התבנית לא מוחקת בקשות שכבר נשלחו ממנה — הן יישארו זמינות לצפייה במלואן. המחיקה תיחסם רק אם יש כרגע בקשות פעילות מהתבנית הזו.`}
                     confirmLabel="מחיקה"
                     formAction={deleteTemplate.bind(null, template.id)}
                     triggerClassName="grid h-6.5 w-6.5 shrink-0 place-items-center rounded-lg border border-border bg-surface text-text-muted transition-colors hover:border-danger hover:text-danger"

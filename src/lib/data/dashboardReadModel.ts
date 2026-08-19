@@ -27,7 +27,7 @@ import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
 // getItemsNeedingReview below, so a request never needs to be added twice
 // to make the two tiles' sum sensible) and "draft" (not yet sent to the
 // client, so there's nothing "active" for the client to be doing yet).
-const ACTIVE_REQUEST_STATUSES = ["active", "waiting_for_client", "processing"] as const;
+export const ACTIVE_REQUEST_STATUSES = ["active", "waiting_for_client", "processing"] as const;
 
 export async function getActiveRequestsCount(organizationId: string): Promise<number> {
   const db = await getDb();
@@ -171,11 +171,20 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
       createdAt: employeeReviewItems.createdAt,
     })
     .from(employeeReviewItems)
+    .innerJoin(collectionRequests, eq(employeeReviewItems.collectionRequestId, collectionRequests.id))
     .where(
       and(
         eq(employeeReviewItems.organizationId, organizationId),
         eq(employeeReviewItems.status, "pending"),
-        isNotNull(employeeReviewItems.collectionRequestId)
+        isNotNull(employeeReviewItems.collectionRequestId),
+        // Defense-in-depth alongside the other two sources' own filter
+        // below — applyTransition's "completed" branch
+        // (collectionRequestStateMachine.ts) now auto-resolves any still-
+        // pending review item the moment its request completes, so this
+        // should never actually match a completed/cancelled request in
+        // practice; kept as a second guarantee, matching the sibling
+        // sources' own discipline, rather than relying on that alone.
+        notInArray(collectionRequests.status, ["completed", "cancelled"])
       )
     );
   for (const row of pendingQuestions) {

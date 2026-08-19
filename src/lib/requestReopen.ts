@@ -13,14 +13,23 @@ import {
 import type { InteractiveButton } from "@/lib/whatsapp/send";
 
 /**
- * Post-completion intent gate — "Centro only manages conversation from the
- * moment a request is sent until it's finally completed." Once completed,
- * a stray message must never silently reopen or mutate the request (a real
- * gap this closes: processInboundAttachment's own reopenIfCompleted used
- * to run unconditionally the moment any document arrived, no confirmation
- * asked at all). The one exception — the client explicitly referencing the
- * finished request or a document in it (see classifyReopenIntent) — still
- * requires an explicit yes/no before anything actually changes.
+ * Post-completion intent gate — no longer wired into the live webhook
+ * route (see route.ts's own comment on its `conversation.status ===
+ * "closed"` check). A real production case showed a client still getting
+ * automated replies/reopen questions within this gate's old 48-hour
+ * window read as "the bot is still an active agent" right after being
+ * told their request was done — exactly what the newer, stricter
+ * invariant forbids: once completed, Centro never automatically engages
+ * with that conversation again, full stop. `completed → active` remains a
+ * legal transition (state machine) reachable only by an explicit employee
+ * action (transitionStatus), never automatically from an inbound message.
+ *
+ * These functions are kept, still directly unit-tested, as a candidate
+ * building block if an EXPLICIT (never automatic) reopen surface is
+ * wanted later — e.g. an employee reviewing a message that arrived after
+ * completion and choosing to reopen. Nothing currently calls
+ * createRequestReopenConfirmation/decidePostCompletionGate/
+ * applyRequestReopenDecision in production.
  */
 
 const REOPEN_BUTTONS: InteractiveButton[] = [

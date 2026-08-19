@@ -33,7 +33,8 @@ import { fieldClass } from "@/components/app/FormField";
 // folder — see that directory's actions.ts header comment), just the
 // route and the user-facing copy.
 const ERROR_MESSAGES: Record<string, string> = {
-  "has-history": "לא ניתן למחוק בקשת איסוף שיש לה היסטוריית שליחות.",
+  "has-active-requests": "לא ניתן למחוק את התבנית כרגע — יש לה בקשות פעילות. אפשר למחוק לאחר שהן יושלמו או ייסגרו.",
+  "template-deleted": "התבנית הזו נמחקה ואי אפשר לשלוח ממנה בקשות חדשות.",
   "invalid-schedule": "יש לבחור מועד עתידי לתזמון השליחה.",
   "no-clients-selected": "יש לבחור לפחות לקוח אחד לשליחה.",
   no_active_document_requirements:

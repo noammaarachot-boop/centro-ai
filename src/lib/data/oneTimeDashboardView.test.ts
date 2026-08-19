@@ -50,7 +50,8 @@ vi.mock("@/lib/data/dashboardReadModel", async (importOriginal) => {
   };
 });
 
-const { getOneTimeDashboardView } = await import("./oneTimeDashboardView");
+const { getOneTimeDashboardView, listActiveRequestsFull, listCompletedThisWeekFull, listNeedsReviewRequests } =
+  await import("./oneTimeDashboardView");
 const { captureError } = await import("@/lib/monitoring/errorReporting");
 
 beforeAll(async () => {
@@ -111,5 +112,70 @@ describe("getOneTimeDashboardView — broken collectionRequestId reference", () 
     // meaning — see dashboardReadModel.getItemsNeedingReview) even though
     // the phantom row was dropped from the rendered list.
     expect(view.kpis.needsReviewCount).toBe(view.needsAttention.length + 1);
+  });
+});
+
+// KPI drill-down lists (issue: every KPI card used to link to /collections,
+// the template gallery, regardless of which tile was clicked) — each list
+// function must return every matching request (never capped, unlike the
+// homepage's own inProgress table) using the exact same status definitions
+// the KPI counts themselves are built from.
+async function seedRequestForDrillDown(orgId: string, clientName: string, status: string, completedAt?: Date) {
+  const [client] = await db
+    .insert(schema.clients)
+    .values({ organizationId: orgId, name: clientName, phone: `+9725${Math.floor(Math.random() * 1e8)}` })
+    .returning();
+  const [service] = await db.insert(schema.services).values({ organizationId: orgId, name: "שירות" }).returning();
+  const [request] = await db
+    .insert(schema.collectionRequests)
+    .values({ organizationId: orgId, clientId: client.id, serviceId: service.id, periodLabel: "p", status: status as never, completedAt })
+    .returning();
+  return request.id;
+}
+
+describe("listActiveRequestsFull — the 'בקשות פעילות' KPI's own real drill-down, uncapped", () => {
+  it("returns every active/waiting_for_client/processing request, excludes escalated/completed/cancelled/draft", async () => {
+    const [org] = await db.insert(schema.organizations).values({ name: "Org2" }).returning();
+    const activeId = await seedRequestForDrillDown(org.id, "פעיל", "active");
+    const waitingId = await seedRequestForDrillDown(org.id, "ממתין", "waiting_for_client");
+    const processingId = await seedRequestForDrillDown(org.id, "בעיבוד", "processing");
+    await seedRequestForDrillDown(org.id, "הוסלם", "escalated");
+    await seedRequestForDrillDown(org.id, "הושלם", "completed", new Date());
+    await seedRequestForDrillDown(org.id, "בוטל", "cancelled");
+    await seedRequestForDrillDown(org.id, "טיוטה", "draft");
+
+    const rows = await listActiveRequestsFull(org.id);
+    const ids = rows.map((r) => r.collectionRequestId);
+    expect(ids.sort()).toEqual([activeId, waitingId, processingId].sort());
+  });
+});
+
+describe("listCompletedThisWeekFull — the 'הושלמו השבוע' KPI's own real drill-down, uncapped", () => {
+  it("returns only requests completed within the last 7 days, excludes older completions and non-completed statuses", async () => {
+    const [org] = await db.insert(schema.organizations).values({ name: "Org3" }).returning();
+    const recentId = await seedRequestForDrillDown(org.id, "הושלם השבוע", "completed", new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+    await seedRequestForDrillDown(org.id, "הושלם מזמן", "completed", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+    await seedRequestForDrillDown(org.id, "פעיל", "active");
+
+    const rows = await listCompletedThisWeekFull(org.id);
+    expect(rows.map((r) => r.collectionRequestId)).toEqual([recentId]);
+  });
+});
+
+describe("listNeedsReviewRequests — the 'דורש בדיקה' KPI's own real drill-down, same union getItemsNeedingReview already computes", () => {
+  it("returns every real needs-review item, not just the homepage's own (already uncapped) list", async () => {
+    const [org] = await db.insert(schema.organizations).values({ name: "Org4" }).returning();
+    const [client] = await db
+      .insert(schema.clients)
+      .values({ organizationId: org.id, name: "לקוח", phone: "+972500000099" })
+      .returning();
+    const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות" }).returning();
+    const [request] = await db
+      .insert(schema.collectionRequests)
+      .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "p", status: "escalated", escalationReason: "לא ענה" })
+      .returning();
+
+    const rows = await listNeedsReviewRequests(org.id);
+    expect(rows.some((r) => r.collectionRequestId === request.id)).toBe(true);
   });
 });

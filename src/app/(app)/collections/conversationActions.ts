@@ -61,7 +61,6 @@ import {
   ensureConversation,
   evaluateAndPrompt,
   recordInboundMessage,
-  reopenIfCompleted,
   sendOutboundMessage,
   startConversation,
 } from "@/lib/conversationOrchestration";
@@ -276,6 +275,7 @@ export async function processInboundAttachment(
       organizationId: collectionRequests.organizationId,
       clientId: collectionRequests.clientId,
       extensionActive: collectionRequests.extensionActive,
+      status: collectionRequests.status,
     })
     .from(collectionRequests)
     .where(eq(collectionRequests.id, collectionRequestId))
@@ -285,6 +285,23 @@ export async function processInboundAttachment(
       collectionRequestId,
       organizationId,
       clientId,
+    });
+    return;
+  }
+  // Completion is a terminal lifecycle state (see applyTransition's own
+  // "completed" branch, collectionRequestStateMachine.ts) — a document
+  // arriving late on an already-completed request is never processed,
+  // never uploaded, never reopens the request. The root-level guard for
+  // this, deliberately placed here rather than only at each individual
+  // caller (the live webhook path, the disambiguation replay, the DevTools
+  // simulator): whichever of them calls this function, a completed request
+  // never has its documents/status mutated by it. This also makes
+  // reopenIfCompleted's own former call at the end of this function
+  // (removed below) unreachable-by-construction rather than merely
+  // unused — every path that could have reached it now returns here first.
+  if (collectionRequestRow.status === "completed") {
+    console.log("[processInboundAttachment] collection request is already completed — attachment ignored, not processed", {
+      collectionRequestId,
     });
     return;
   }
@@ -879,14 +896,14 @@ export async function processInboundAttachment(
   // counted — the question about each was already sent (or queued for
   // this burst's short grouping window) above, immediately, right after
   // the document row was inserted.
-
-  const reopened = await reopenIfCompleted(organizationId, collectionRequestId);
-  if (reopened) {
-    await db
-      .update(conversations)
-      .set({ status: "open", updatedAt: new Date() })
-      .where(eq(conversations.id, conversationId));
-  }
+  //
+  // No more reopenIfCompleted call here — a document reaching this far
+  // already proved (via the guard at the top of this function) that the
+  // request wasn't completed when the call started, and the one branch
+  // above that completes it mid-call returns immediately. Automatically
+  // reopening a completed request from an inbound document is exactly
+  // what the terminal-completion invariant forbids now; see the guard's
+  // own comment above and requestReopen.ts's updated doc comment.
 }
 
 // Post-completion intent gate (src/lib/requestReopen.ts) — the "process"

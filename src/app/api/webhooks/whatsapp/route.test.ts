@@ -218,3 +218,117 @@ describe("handleInboundMessage — Phase 4 cutover: the real entry point routes 
     expect(legacyEvents).toEqual([]); // the legacy classifier never ran for this turn
   });
 });
+
+// Completion-is-terminal invariant (root-cause fix) — a real production
+// case showed a client still getting automated replies (including an
+// automatic "reopen?" question) well after being told their request was
+// done. Once collectionRequests.status is "completed" (which always closes
+// its conversation — see collectionRequestStateMachine.ts's applyTransition),
+// the webhook must never engage with that conversation again: no reply, no
+// AI call, no document processing, no reopening, no new review item — the
+// inbound message is still recorded as plain history, and nothing else.
+describe("handleInboundMessage — a completed request's conversation never receives automated engagement again", () => {
+  beforeAll(async () => {
+    const client = new PGlite();
+    sharedDb = drizzle(client, { schema }) as unknown as Database;
+    await migrate(sharedDb as never, { migrationsFolder: "./drizzle" });
+  }, 60_000);
+
+  beforeEach(() => {
+    sendTextMessage.mockReset();
+    resolveLanguageModel.mockReset();
+    generateObject.mockReset();
+  });
+
+  async function seedCompletedRequest() {
+    const [org] = await sharedDb
+      .insert(schema.organizations)
+      .values({ name: "Org", googleDriveFolderId: "root-1", documentCollectionEnabled: true, whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
+      .returning();
+    const [clientRow] = await sharedDb
+      .insert(schema.clients)
+      .values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" })
+      .returning();
+    const [service] = await sharedDb.insert(schema.services).values({ organizationId: org.id, name: "Service" }).returning();
+    const [request] = await sharedDb
+      .insert(schema.collectionRequests)
+      .values({ organizationId: org.id, clientId: clientRow.id, serviceId: service.id, periodLabel: "p1", status: "completed", completedAt: new Date() })
+      .returning();
+    const [conversation] = await sharedDb
+      .insert(schema.conversations)
+      .values({ organizationId: org.id, clientId: clientRow.id, collectionRequestId: request.id, status: "closed" })
+      .returning();
+    return { org, requestId: request.id, conversationId: conversation.id };
+  }
+
+  it("an incoming text message gets no automated reply, no AI reasoning call, and no reopening", async () => {
+    const { org, requestId, conversationId } = await seedCompletedRequest();
+
+    await handleInboundMessage(org, {
+      from: "972500000000",
+      id: `wamid.post-completion-text-${crypto.randomUUID()}`,
+      type: "text",
+      text: { body: "יש לי עוד שאלה" },
+    } as never);
+
+    // Recorded as plain communication history — this is the ONE thing
+    // that's still allowed.
+    const messages = await sharedDb.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messages).toHaveLength(1);
+    expect(messages[0].direction).toBe("inbound");
+
+    // Nothing else: no outbound reply, no AI call, request still completed,
+    // conversation still closed.
+    expect(sendTextMessage).not.toHaveBeenCalled();
+    expect(generateObject).not.toHaveBeenCalled();
+    const [request] = await sharedDb.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed");
+    const [conversation] = await sharedDb.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.status).toBe("closed");
+  });
+
+  it("an incoming attachment is never processed, uploaded, or matched — no document row is created and the request is not reopened", async () => {
+    const { org, requestId, conversationId } = await seedCompletedRequest();
+
+    await handleInboundMessage(org, {
+      from: "972500000000",
+      id: `wamid.post-completion-attachment-${crypto.randomUUID()}`,
+      type: "image",
+      image: { id: "media-1", mime_type: "image/jpeg" },
+    } as never);
+
+    const documents = await sharedDb.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(documents).toHaveLength(0);
+
+    const [request] = await sharedDb.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("completed"); // never auto-reopened to "active"
+
+    const messages = await sharedDb.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messages).toHaveLength(1); // still recorded as plain history
+    expect(messages[0].direction).toBe("inbound");
+    expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it("never creates a new employeeReviewItem or pending confirmation for a completed request", async () => {
+    const { org, requestId } = await seedCompletedRequest();
+
+    await handleInboundMessage(org, {
+      from: "972500000000",
+      id: `wamid.post-completion-question-${crypto.randomUUID()}`,
+      type: "text",
+      text: { body: "אני צריך שתחזרו אליי בהקדם" },
+    } as never);
+
+    const reviewItems = await sharedDb
+      .select()
+      .from(schema.employeeReviewItems)
+      .where(eq(schema.employeeReviewItems.collectionRequestId, requestId));
+    expect(reviewItems).toHaveLength(0);
+
+    const confirmations = await sharedDb
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmations).toHaveLength(0);
+  });
+});

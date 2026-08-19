@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, serviceDocumentRequirements, services } from "@/db/schema";
 import { computeRequirementsProgress, NON_TERMINAL_STATUSES } from "@/lib/collectionRequestStateMachine";
@@ -26,7 +26,17 @@ export async function listTemplatesWithActiveCounts(organizationId: string): Pro
   const templates = await db
     .select({ id: services.id, name: services.name, description: services.description })
     .from(services)
-    .where(and(eq(services.organizationId, organizationId), eq(services.collectionMode, "on_demand")))
+    .where(
+      and(
+        eq(services.organizationId, organizationId),
+        eq(services.collectionMode, "on_demand"),
+        // "Mark, never delete" (see services.retiredAt's own doc comment) —
+        // a deleted template disappears from the gallery, but every
+        // historical request it ever produced keeps resolving its name via
+        // the exact same live join this file's other functions already use.
+        isNull(services.retiredAt)
+      )
+    )
     .orderBy(services.name);
 
   if (templates.length === 0) return [];
@@ -65,6 +75,26 @@ export async function listTemplatesWithActiveCounts(organizationId: string): Pro
     requirementCount: requirementCountByService.get(template.id) ?? 0,
     activeRequestCount: activeCountByService.get(template.id) ?? 0,
   }));
+}
+
+// The one check deleteTemplate (templates/actions.ts) uses to decide
+// whether a template may be retired right now — same NON_TERMINAL_STATUSES
+// definition as everywhere else in this file, never a second "is it still
+// in use" concept.
+export async function hasActiveRequestsForTemplate(organizationId: string, templateId: string): Promise<boolean> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ id: collectionRequests.id })
+    .from(collectionRequests)
+    .where(
+      and(
+        eq(collectionRequests.organizationId, organizationId),
+        eq(collectionRequests.serviceId, templateId),
+        inArray(collectionRequests.status, NON_TERMINAL_STATUSES)
+      )
+    )
+    .limit(1);
+  return !!row;
 }
 
 // Among the given candidate clientIds, which already have a non-terminal

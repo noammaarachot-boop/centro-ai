@@ -47,7 +47,7 @@ vi.mock("@/lib/whatsapp/send", async () => {
   };
 });
 
-const { sendTemplateRequest } = await import("./actions");
+const { sendTemplateRequest, deleteTemplate } = await import("./actions");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -124,6 +124,18 @@ async function send(templateId: string, entries: Record<string, string | string[
     const url = message.slice("NEXT_REDIRECT:".length);
     const params = Object.fromEntries(new URL(url, "http://x").searchParams);
     return params;
+  }
+}
+
+async function del(templateId: string) {
+  try {
+    await deleteTemplate(templateId);
+    throw new Error("expected a redirect");
+  } catch (err) {
+    const message = (err as Error).message;
+    if (!message.startsWith("NEXT_REDIRECT:")) throw err;
+    const url = message.slice("NEXT_REDIRECT:".length);
+    return { pathname: url.split("?")[0], params: Object.fromEntries(new URL(url, "http://x").searchParams) };
   }
 }
 
@@ -295,5 +307,80 @@ describe("sendTemplateRequest — snapshot independence from later template edit
       .from(schema.collectionRequestRequirements)
       .where(eq(schema.collectionRequestRequirements.collectionRequestId, requestB.id));
     expect(requirementsB.map((r) => r.name)).toEqual(["תלוש שכר"]);
+  });
+});
+
+// Template deletion policy — "mark, never delete" (services.retiredAt).
+// Having been used historically, however many times, is never itself a
+// reason to block deletion; only a currently-active request is. Deleting
+// must never touch a single historical collectionRequests row, and a
+// retired template must refuse new sends.
+describe("deleteTemplate — soft-delete (retire), never a hard DELETE", () => {
+  it("retires a template with no active requests: services row is soft-deleted (retiredAt set, not removed), audited, and disappears from the gallery", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+
+    const result = await del(templateId);
+    expect(result.pathname).toBe("/collections");
+
+    const [row] = await db.select().from(schema.services).where(eq(schema.services.id, templateId));
+    expect(row).toBeDefined(); // never actually deleted
+    expect(row.retiredAt).not.toBeNull();
+
+    const audits = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.organizationId, orgId));
+    expect(audits.some((a) => a.eventType === "template.deleted")).toBe(true);
+  });
+
+  it("blocks deletion when the template has at least one active request, even though it was used historically hundreds of times", async () => {
+    const { templateId } = await seedOrgWithTemplate();
+    const clientId = await seedClient((await db.select().from(schema.services).where(eq(schema.services.id, templateId)))[0].organizationId, "לקוח");
+    await send(templateId, { clientId, sendMode: "now" });
+
+    const result = await del(templateId);
+    expect(result.params.error).toBe("has-active-requests");
+
+    const [row] = await db.select().from(schema.services).where(eq(schema.services.id, templateId));
+    expect(row.retiredAt).toBeNull(); // not retired — the block actually held
+  });
+
+  it("allows deletion once the only request from this template has completed (no longer active)", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientId = await seedClient(orgId, "לקוח");
+    await send(templateId, { clientId, sendMode: "now" });
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.clientId, clientId));
+    await db.update(schema.collectionRequests).set({ status: "completed" }).where(eq(schema.collectionRequests.id, request.id));
+
+    const result = await del(templateId);
+    expect(result.pathname).toBe("/collections");
+    const [row] = await db.select().from(schema.services).where(eq(schema.services.id, templateId));
+    expect(row.retiredAt).not.toBeNull();
+  });
+
+  it("never touches the historical collectionRequests row itself — it keeps resolving its template name via the same live join", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    const clientId = await seedClient(orgId, "לקוח היסטורי");
+    await send(templateId, { clientId, sendMode: "now" });
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.clientId, clientId));
+    await db.update(schema.collectionRequests).set({ status: "completed" }).where(eq(schema.collectionRequests.id, request.id));
+
+    await del(templateId);
+
+    const [stillJoins] = await db
+      .select({ id: schema.collectionRequests.id, serviceName: schema.services.name })
+      .from(schema.collectionRequests)
+      .innerJoin(schema.services, eq(schema.collectionRequests.serviceId, schema.services.id))
+      .where(eq(schema.collectionRequests.id, request.id));
+    expect(stillJoins).toBeDefined();
+    expect(stillJoins.serviceName).toBe("מסמכים לפתיחת תיק");
+  });
+
+  it("refuses to start a NEW request from an already-retired template", async () => {
+    const { orgId, templateId } = await seedOrgWithTemplate();
+    await del(templateId);
+    const clientId = await seedClient(orgId, "לקוח חדש");
+
+    const result = await send(templateId, { clientId, sendMode: "now" });
+    expect(result.error).toBe("template-deleted");
+    const requests = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.clientId, clientId));
+    expect(requests).toHaveLength(0);
   });
 });
