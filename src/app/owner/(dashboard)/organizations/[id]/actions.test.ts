@@ -1,0 +1,223 @@
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
+import * as schema from "@/db/schema";
+import type { Database } from "@/db";
+import type { OwnerSession } from "@/lib/auth/ownerSession";
+import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
+
+// Manual per-organization WhatsApp connection — proves the owner-only
+// "check & connect" action end to end: verifies the token/WABA/phone
+// number against Meta BEFORE ever writing anything, never saves a failed
+// attempt, never leaks the token into an error/redirect/audit entry, and
+// is reachable only through the owner session gate (never a regular
+// organization session).
+
+let db: Database;
+
+vi.mock("@/db", () => ({
+  getDb: async () => db,
+}));
+
+let currentOwnerSession: OwnerSession;
+vi.mock("@/lib/auth/ownerSession", () => ({
+  requireOwnerSession: vi.fn(async () => currentOwnerSession),
+}));
+
+vi.mock("next/navigation", () => ({
+  redirect: (url: string) => {
+    throw new Error(`NEXT_REDIRECT:${url}`);
+  },
+}));
+
+const fetchMock = vi.fn();
+
+beforeAll(async () => {
+  const client = new PGlite();
+  db = drizzle(client, { schema }) as unknown as Database;
+  await migrate(db as never, { migrationsFolder: "./drizzle" });
+}, 60_000);
+
+beforeEach(async () => {
+  fetchMock.mockReset();
+  vi.stubGlobal("fetch", fetchMock);
+  process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
+  const [platformOwner] = await db
+    .insert(schema.platformOwners)
+    .values({ email: `${crypto.randomUUID()}@centro-ai.co.il`, passwordHash: "x" })
+    .returning();
+  currentOwnerSession = { sessionId: "owner-s1", platformOwnerId: platformOwner.id, email: platformOwner.email };
+});
+
+const { manuallyConnectWhatsAppAction } = await import("./actions");
+
+async function seedOrg(name = "Org") {
+  const [org] = await db.insert(schema.organizations).values({ name }).returning();
+  return org.id;
+}
+
+function formData(entries: Record<string, string>) {
+  const fd = new FormData();
+  for (const [key, value] of Object.entries(entries)) fd.append(key, value);
+  return fd;
+}
+
+async function expectRedirect(fn: () => Promise<unknown>) {
+  try {
+    await fn();
+    throw new Error("expected a redirect");
+  } catch (err) {
+    const message = (err as Error).message;
+    if (!message.startsWith("NEXT_REDIRECT:")) throw err;
+    const url = message.slice("NEXT_REDIRECT:".length);
+    return { pathname: url.split("?")[0], params: Object.fromEntries(new URL(url, "http://x").searchParams) };
+  }
+}
+
+function mockMetaVerifySuccess(phoneNumberId: string) {
+  fetchMock.mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      data: [{ id: phoneNumberId, display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
+    }),
+  });
+}
+
+describe("manuallyConnectWhatsAppAction — verifies against Meta before ever saving", () => {
+  it("on success: stores the connection, encrypts the token, and redirects with whatsappConnected=1", async () => {
+    const orgId = await seedOrg();
+    mockMetaVerifySuccess("phone-1");
+
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "phone-1", accessToken: "EAAG_real_token" })
+      )
+    );
+    expect(result.pathname).toBe(`/owner/organizations/${orgId}`);
+    expect(result.params.whatsappConnected).toBe("1");
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappBusinessAccountId).toBe("waba-1");
+    expect(org.whatsappPhoneNumberId).toBe("phone-1");
+    expect(org.whatsappDisplayPhoneNumber).toBe("+972500009999");
+    expect(org.whatsappVerifiedName).toBe("לקוח בדיקה");
+    expect(org.whatsappConnectedAt).not.toBeNull();
+    expect(org.documentCollectionEnabled).toBe(true);
+    // Encrypted, never plaintext.
+    expect(org.whatsappAccessTokenEnc).not.toBeNull();
+    expect(org.whatsappAccessTokenEnc).not.toContain("EAAG_real_token");
+    expect(decryptWhatsAppToken(org.whatsappAccessTokenEnc!)).toBe("EAAG_real_token");
+  });
+
+  it("records an audit event that never contains the token itself", async () => {
+    const orgId = await seedOrg();
+    mockMetaVerifySuccess("phone-1");
+    await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "phone-1", accessToken: "super-secret-token-value" })
+      )
+    );
+
+    const audits = await db.select().from(schema.platformOwnerAuditLog);
+    const relevant = audits.find((a) => a.eventType === "owner.whatsapp_manually_connected");
+    expect(relevant).toBeDefined();
+    expect(JSON.stringify(relevant)).not.toContain("super-secret-token-value");
+  });
+
+  it("rejects with a clear error when a required field is missing, and writes nothing", async () => {
+    const orgId = await seedOrg();
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "", accessToken: "x" }))
+    );
+    expect(result.params.whatsappError).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappPhoneNumberId).toBeNull();
+  });
+
+  it("rejects when the token is invalid/unauthorized (401), and never saves anything", async () => {
+    const orgId = await seedOrg();
+    fetchMock.mockResolvedValue({ ok: false, status: 401, text: async () => "" });
+
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "phone-1", accessToken: "bad-token" })
+      )
+    );
+    expect(result.params.whatsappError).toBeTruthy();
+    expect(decodeURIComponent(result.params.whatsappError)).toMatch(/אינו תקף|הרשאה/);
+    expect(decodeURIComponent(result.params.whatsappError)).not.toContain("bad-token");
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappPhoneNumberId).toBeNull();
+    expect(org.whatsappAccessTokenEnc).toBeNull();
+  });
+
+  it("rejects when the phone number doesn't belong to the given WABA, and never saves anything", async () => {
+    const orgId = await seedOrg();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: "some-other-phone", display_phone_number: "+972500000000", verified_name: "Other" }] }),
+    });
+
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "phone-1", accessToken: "token" })
+      )
+    );
+    expect(result.params.whatsappError).toBeTruthy();
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappPhoneNumberId).toBeNull();
+  });
+
+  it("refuses a phone/WABA already connected to a different organization (existing DB-level uniqueness, unchanged)", async () => {
+    const orgA = await seedOrg("Org A");
+    const orgB = await seedOrg("Org B");
+    mockMetaVerifySuccess("phone-shared");
+    await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgA, wabaId: "waba-shared", phoneNumberId: "phone-shared", accessToken: "token-a" })
+      )
+    );
+
+    mockMetaVerifySuccess("phone-shared");
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgB, wabaId: "waba-shared", phoneNumberId: "phone-shared", accessToken: "token-b" })
+      )
+    );
+    expect(result.params.whatsappError).toBeTruthy();
+
+    const [orgBRow] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgB));
+    expect(orgBRow.whatsappPhoneNumberId).toBeNull();
+  });
+
+  it("never touches an organization's EXISTING (e.g. Embedded Signup) WhatsApp connection when verification fails", async () => {
+    const orgId = await seedOrg();
+    // Simulate an org already connected the Embedded Signup way.
+    await db
+      .update(schema.organizations)
+      .set({
+        whatsappBusinessAccountId: "old-waba",
+        whatsappPhoneNumberId: "old-phone",
+        whatsappDisplayPhoneNumber: "+972500001111",
+        whatsappConnectedAt: new Date(),
+      })
+      .where(eq(schema.organizations.id, orgId));
+
+    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "" });
+    await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "new-waba", phoneNumberId: "new-phone", accessToken: "bad-token" })
+      )
+    );
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappPhoneNumberId).toBe("old-phone"); // untouched
+    expect(org.whatsappBusinessAccountId).toBe("old-waba");
+  });
+});

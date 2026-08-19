@@ -2,12 +2,19 @@ import { eq } from "drizzle-orm";
 import { getDb, type Database } from "@/db";
 import { organizations } from "@/db/schema";
 import { isUniqueViolation } from "@/lib/db/errors";
+import { encryptWhatsAppToken } from "./tokenCipher";
 
 export interface WabaConnection {
   businessAccountId: string;
   phoneNumberId: string;
   displayPhoneNumber: string;
   verifiedName: string;
+  // Manual per-organization connection only (owner-only, /owner/
+  // organizations/[id]) — never set by the Embedded Signup flow, which
+  // keeps relying on the shared WHATSAPP_SYSTEM_USER_TOKEN exactly as
+  // before. Encrypted before it ever reaches the database — see
+  // tokenCipher.ts.
+  accessToken?: string;
 }
 
 // Thrown by storeWabaConnection when this WABA/phone number is already
@@ -20,11 +27,13 @@ export interface WabaConnection {
 // a message worth showing.
 export class WhatsAppConnectionConflictError extends Error {}
 
-// No token stored here, unlike driveTokens.ts's encrypted per-org
-// access/refresh tokens — the Tech Provider model (see the WhatsApp plan)
-// sends/receives for every organization through one shared
-// WHATSAPP_SYSTEM_USER_TOKEN, scoped per-call by phoneNumberId. Only
-// identifiers live on the organization row.
+// Embedded-Signup connections never pass `connection.accessToken` (no
+// token stored — see the WhatsApp plan: one shared
+// WHATSAPP_SYSTEM_USER_TOKEN sends/receives for every such organization,
+// scoped per-call by phoneNumberId) — this stays exactly as before for
+// them, only identifiers on the organization row. Manual per-organization
+// connections (owner-only) additionally pass `accessToken`, encrypted here
+// before the write.
 export async function storeWabaConnection(
   organizationId: string,
   connection: WabaConnection,
@@ -41,6 +50,7 @@ export async function storeWabaConnection(
         whatsappDisplayPhoneNumber: connection.displayPhoneNumber,
         whatsappVerifiedName: connection.verifiedName,
         whatsappConnectedAt: new Date(),
+        ...(connection.accessToken ? { whatsappAccessTokenEnc: encryptWhatsAppToken(connection.accessToken) } : {}),
         // Automated document collection is on by default the moment WhatsApp
         // finishes connecting (product decision) — no separate activation
         // step, and the user can still turn it off from Settings.
@@ -63,8 +73,11 @@ export async function storeWabaConnection(
 
 // Disconnect: clear every stored identifier — mirrors clearTokens'
 // (googleAuth/driveTokens.ts) "nothing left to act on after this"
-// guarantee. No token to revoke with Meta (nothing per-org was ever
-// issued), so this is a pure local clear.
+// guarantee. No token to revoke with Meta for an Embedded-Signup
+// connection (nothing per-org was ever issued); a manual connection's own
+// encrypted token is simply cleared locally the same way — Meta itself
+// doesn't require or offer a "revoke" call for this kind of System User
+// token from Centro's side.
 export async function clearWabaConnection(organizationId: string): Promise<void> {
   const db = await getDb();
   await db
@@ -75,6 +88,7 @@ export async function clearWabaConnection(organizationId: string): Promise<void>
       whatsappDisplayPhoneNumber: null,
       whatsappVerifiedName: null,
       whatsappConnectedAt: null,
+      whatsappAccessTokenEnc: null,
       // No connected WhatsApp ⇒ automated document collection cannot run;
       // clear the gate so a later reconnect re-enables it deliberately.
       documentCollectionEnabled: false,

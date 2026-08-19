@@ -12,9 +12,14 @@ import { Badge } from "@/components/app/Badge";
 import { Button } from "@/components/app/Button";
 import { ConfirmDialog } from "@/components/app/ConfirmDialog";
 import { EmptyState } from "@/components/app/EmptyState";
+import { TextField } from "@/components/app/FormField";
 import { formatOwnerDate, formatOwnerDateTime } from "@/lib/owner/formatDate";
 import { t } from "@/lib/owner/i18n/t";
-import { reactivateOrganizationAction, suspendOrganizationAction } from "./actions";
+import {
+  manuallyConnectWhatsAppAction,
+  reactivateOrganizationAction,
+  suspendOrganizationAction,
+} from "./actions";
 
 export const metadata: Metadata = { title: "פרטי ארגון — מסוף בעלים" };
 
@@ -29,11 +34,14 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
 
 export default async function OwnerOrganizationDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ whatsappConnected?: string; whatsappError?: string }>;
 }) {
   await requireOwnerSession();
   const { id } = await params;
+  const { whatsappConnected, whatsappError } = await searchParams;
 
   const overview = await getOrganizationOverview(id);
   if (!overview) notFound();
@@ -142,16 +150,25 @@ export default async function OwnerOrganizationDetailPage({
           <h2 className="mb-2 text-sm font-bold text-text-primary">
             {t("owner.orgDetail.integrationsTitle")}
           </h2>
-          <div className="flex items-center justify-between gap-4 border-b border-border py-2.5 text-sm">
-            <span className="text-text-muted">{t("owner.orgDetail.integration.whatsapp")}</span>
-            {overview.whatsappConnectedAt ? (
-              <Badge tone="success" dot>
-                {t("owner.orgDetail.integration.connectedAt", {
-                  date: formatOwnerDate(overview.whatsappConnectedAt),
-                })}
-              </Badge>
-            ) : (
-              <Badge tone="neutral">{t("owner.orgDetail.integration.notConnected")}</Badge>
+          <div className="border-b border-border py-2.5 text-sm">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-text-muted">{t("owner.orgDetail.integration.whatsapp")}</span>
+              {overview.whatsappConnectedAt ? (
+                <Badge tone="success" dot>
+                  {t("owner.orgDetail.integration.connectedAt", {
+                    date: formatOwnerDate(overview.whatsappConnectedAt),
+                  })}
+                </Badge>
+              ) : (
+                <Badge tone="neutral">{t("owner.orgDetail.integration.notConnected")}</Badge>
+              )}
+            </div>
+            {overview.whatsappConnectedAt && (
+              <p className="mt-1.5 text-xs text-text-muted">
+                {overview.whatsappManuallyConnected ? "חיבור ידני" : "Embedded Signup"}
+                {overview.whatsappDisplayPhoneNumber && ` · ${overview.whatsappDisplayPhoneNumber}`}
+                {overview.whatsappVerifiedName && ` · ${overview.whatsappVerifiedName}`}
+              </p>
             )}
           </div>
           <div className="flex items-center justify-between gap-4 py-2.5 text-sm">
@@ -168,6 +185,72 @@ export default async function OwnerOrganizationDetailPage({
           </div>
         </Card>
       </div>
+
+      {/* Manual per-organization WhatsApp connection — owner-only. An
+          office that set up its own WhatsApp Cloud API access outside
+          Embedded Signup and gave Centro's owner its own Access Token,
+          WABA ID, and Phone Number ID. "בדוק וחבר" verifies the token
+          against Meta itself before ever saving anything (see
+          manuallyConnectWhatsAppAction) — a failed attempt never touches
+          this organization's existing WhatsApp connection, if any. */}
+      <Card className="mt-6">
+        <h2 className="mb-1.5 text-sm font-bold text-text-primary">חיבור WhatsApp ידני</h2>
+        <p className="mb-4 text-xs text-text-secondary">
+          לחיבור עצמאי, ללא Embedded Signup — הזינו את הפרטים שהתקבלו מ-Meta עבור ה-WhatsApp Business
+          Account של המשרד. הבדיקה מתבצעת מול Meta לפני השמירה; הטוקן נשמר מוצפן ולא יוצג שוב.
+        </p>
+
+        {whatsappConnected && (
+          <p
+            role="status"
+            className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm font-medium text-success"
+          >
+            החיבור בוצע בהצלחה.
+          </p>
+        )}
+        {whatsappError && (
+          <p
+            role="alert"
+            className="mb-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
+          >
+            {decodeURIComponent(whatsappError)}
+          </p>
+        )}
+
+        <form action={manuallyConnectWhatsAppAction} className="space-y-4">
+          <input type="hidden" name="organizationId" value={overview.id} />
+          <TextField
+            id="wabaId"
+            name="wabaId"
+            label="WABA ID"
+            required
+            dir="ltr"
+            defaultValue={overview.whatsappBusinessAccountId ?? ""}
+            placeholder="1234567890123456"
+          />
+          <TextField
+            id="phoneNumberId"
+            name="phoneNumberId"
+            label="Phone Number ID"
+            required
+            dir="ltr"
+            defaultValue={overview.whatsappPhoneNumberId ?? ""}
+            placeholder="1234567890123456"
+          />
+          <TextField
+            id="accessToken"
+            name="accessToken"
+            label="Access Token"
+            type="password"
+            required
+            dir="ltr"
+            placeholder="EAAG..."
+          />
+          <Button type="submit" variant="primary" size="sm">
+            בדוק וחבר
+          </Button>
+        </form>
+      </Card>
 
       <div className="mt-6">
         <h2 className="mb-3 text-sm font-bold text-text-primary">

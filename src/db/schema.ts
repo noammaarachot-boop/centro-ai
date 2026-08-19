@@ -101,6 +101,20 @@ export const organizations = pgTable("organizations", {
   // confirm which number is connected.
   whatsappDisplayPhoneNumber: text("whatsapp_display_phone_number"),
   whatsappVerifiedName: text("whatsapp_verified_name"),
+  // Manual per-organization WhatsApp connection (owner-only, /owner/organizations/[id])
+  // — an office that set up its own Cloud API access outside Embedded
+  // Signup and gave Centro's owner its own Access Token, rather than
+  // relying on the shared WHATSAPP_SYSTEM_USER_TOKEN. Encrypted at rest
+  // (AES-256-GCM, src/lib/whatsapp/tokenCipher.ts — same scheme as
+  // googleAccessTokenEnc, but its own dedicated key,
+  // WHATSAPP_TOKEN_ENCRYPTION_KEY, so the two integrations' key material
+  // never overlaps). Null for every organization connected the existing
+  // way (Embedded Signup) — sendViaWhatsApp (conversationOrchestration.ts)
+  // and downloadMedia callers (the webhook route) use this when present
+  // and fall back to WHATSAPP_SYSTEM_USER_TOKEN when it's null, so an
+  // Embedded-Signup-connected organization's behavior is completely
+  // unchanged.
+  whatsappAccessTokenEnc: text("whatsapp_access_token_enc"),
   // Per-organization Meta template-approval tracking (Phase 2.1 remediation).
   // Message-template review/approval happens per-WABA on Meta's side, not
   // globally — a template approved on one office's WhatsApp Business

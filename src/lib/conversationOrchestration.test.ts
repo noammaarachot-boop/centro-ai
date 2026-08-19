@@ -34,6 +34,7 @@ const { startConversation, sendOutboundMessage, ensureConversation, recordInboun
   "./conversationOrchestration"
 );
 const { WhatsAppSendError } = await import("./whatsapp/send");
+const { encryptWhatsAppToken } = await import("./whatsapp/tokenCipher");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -45,6 +46,7 @@ beforeEach(() => {
   sendTextMessage.mockReset();
   sendTemplateMessage.mockReset();
   sendInteractiveButtonsMessage.mockReset();
+  process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
 });
 
 async function seedRequest(initialRequestV2Approved: boolean) {
@@ -127,6 +129,39 @@ describe("startConversation — Phase 2.1: template v2 usage is gated per-organi
 
     expect(result.sent).toBe(true); // sendOutboundMessage's own contract: recorded, not gated — even though delivery failed
     expect(sendTemplateMessage).toHaveBeenCalledTimes(2); // v2 attempt + exactly one v1 fallback, never more
+  });
+});
+
+// Manual per-organization WhatsApp connection — sendViaWhatsApp must decrypt
+// organization.whatsappAccessTokenEnc (when the owner connected the office
+// manually) and pass it through to the Graph API call as the trailing
+// accessToken argument, instead of always relying on the shared
+// WHATSAPP_SYSTEM_USER_TOKEN. An organization connected the existing
+// Embedded Signup way (whatsappAccessTokenEnc is null) must keep passing
+// undefined, i.e. behave exactly as before this feature existed.
+describe("startConversation — manual per-organization Access Token", () => {
+  it("an organization with a manually-connected Access Token: it is decrypted and passed to sendTemplateMessage", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    await db
+      .update(schema.organizations)
+      .set({ whatsappAccessTokenEnc: encryptWhatsAppToken("EAAG_org_own_token") })
+      .where(eq(schema.organizations.id, orgId));
+    sendTemplateMessage.mockResolvedValue({ messageId: "wamid.1" });
+
+    await startConversation(orgId, requestId, clientId);
+
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+    expect(sendTemplateMessage.mock.calls[0][5]).toBe("EAAG_org_own_token");
+  });
+
+  it("an organization with no manual connection (Embedded Signup / whatsappAccessTokenEnc null): passes undefined, unchanged behavior", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(false);
+    sendTemplateMessage.mockResolvedValue({ messageId: "wamid.1" });
+
+    await startConversation(orgId, requestId, clientId);
+
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
+    expect(sendTemplateMessage.mock.calls[0][5]).toBeUndefined();
   });
 });
 

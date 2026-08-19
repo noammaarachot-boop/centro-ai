@@ -452,7 +452,7 @@ describe("runConversationUnderstanding — resolves_review_item", () => {
     const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, item.id));
     expect(after.status).toBe("resolved");
     expect(after.resolvedBy).toBe("ai_context");
-    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "מעולה, אפשר לשלוח אותה כאן.");
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "מעולה, אפשר לשלוח אותה כאן.", undefined);
   });
 
   it("close_resolved below the (deliberately high) confidence bar: item stays open, client gets a clarification instead — never a guessed closure", async () => {
@@ -512,7 +512,7 @@ describe("runConversationUnderstanding — resolves_review_item", () => {
     expect(after.status).toBe("pending");
     const updates = after.contextUpdates as Array<{ note: string }> | null;
     expect(updates).toHaveLength(1);
-    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "תודה, רשמתי את זה.");
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "תודה, רשמתי את זה.", undefined);
   });
 
   it("close_resolved on an item already resolved by an employee in the meantime is not a legal action — stays as the employee left it", async () => {

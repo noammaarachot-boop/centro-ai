@@ -6,6 +6,8 @@ import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { recordOwnerAuditEvent } from "@/lib/owner/audit";
+import { getPhoneNumberInWaba, WhatsAppApiError, type PhoneNumberDetails } from "@/lib/whatsapp/phoneNumbers";
+import { storeWabaConnection, WhatsAppConnectionConflictError } from "@/lib/whatsapp/wabaTokens";
 
 // A layout only protects the pages it wraps, not the Server Actions
 // those pages invoke — each action here independently calls
@@ -227,4 +229,77 @@ export async function disableReminderV2Action(formData: FormData) {
   }
 
   redirect("/owner/organizations");
+}
+
+// Manual per-organization WhatsApp connection ("חיבור WhatsApp ידני",
+// owner-only) — an office that set up its own WhatsApp Cloud API access
+// outside Embedded Signup and gave Centro's owner its own Access Token,
+// WABA ID, and Phone Number ID. "בדוק וחבר": verifies, with a real Meta
+// call (getPhoneNumberInWaba), that the token genuinely has access to the
+// given WABA AND that the given phone number actually belongs to it —
+// BEFORE anything is written. A failed verification never reaches
+// storeWabaConnection, so this organization's existing WhatsApp state (if
+// any — including an Embedded-Signup connection) is left completely
+// untouched. The token itself is never included in an error message, a
+// redirect URL, or an audit log entry — only organizationId/wabaId/
+// phoneNumberId/the real display name Meta returned.
+export async function manuallyConnectWhatsAppAction(formData: FormData) {
+  const session = await requireOwnerSession();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  if (!organizationId) redirect("/owner/organizations");
+
+  const wabaId = String(formData.get("wabaId") ?? "").trim();
+  const phoneNumberId = String(formData.get("phoneNumberId") ?? "").trim();
+  const accessToken = String(formData.get("accessToken") ?? "").trim();
+
+  if (!wabaId || !phoneNumberId || !accessToken) {
+    redirect(
+      `/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent("יש למלא WABA ID, Phone Number ID וטוקן.")}`
+    );
+  }
+
+  let verified: PhoneNumberDetails;
+  try {
+    verified = await getPhoneNumberInWaba(wabaId, phoneNumberId, accessToken);
+  } catch (error) {
+    const message =
+      error instanceof WhatsAppApiError ? error.message : "בדיקת החיבור מול Meta נכשלה. נסו שוב.";
+    console.error("[owner] manuallyConnectWhatsApp verification failed", {
+      organizationId,
+      wabaId,
+      phoneNumberId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    redirect(`/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(message)}`);
+  }
+
+  try {
+    await storeWabaConnection(organizationId, {
+      businessAccountId: wabaId,
+      phoneNumberId,
+      displayPhoneNumber: verified.displayPhoneNumber,
+      verifiedName: verified.verifiedName,
+      accessToken,
+    });
+  } catch (error) {
+    const message =
+      error instanceof WhatsAppConnectionConflictError ? error.message : "שמירת החיבור נכשלה. נסו שוב.";
+    console.error("[owner] manuallyConnectWhatsApp store failed", {
+      organizationId,
+      wabaId,
+      phoneNumberId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    redirect(`/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(message)}`);
+  }
+
+  await recordOwnerAuditEvent({
+    eventType: "owner.whatsapp_manually_connected",
+    description: `WhatsApp חובר ידנית (${verified.displayPhoneNumber}) על ידי ${session.email}`,
+    severity: "info",
+    platformOwnerId: session.platformOwnerId,
+    metadata: { organizationId, wabaId, phoneNumberId },
+  });
+
+  redirect(`/owner/organizations/${organizationId}?whatsappConnected=1`);
 }

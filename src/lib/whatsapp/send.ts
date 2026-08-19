@@ -38,22 +38,34 @@ interface SendMessagesResponse {
   messages?: Array<{ id: string }>;
 }
 
-async function postMessage(phoneNumberId: string, payload: Record<string, unknown>): Promise<SendResult> {
+// Manual per-organization WhatsApp connection — accessToken, when an
+// organization has its own (organizations.whatsappAccessTokenEnc,
+// decrypted by the caller), takes priority over the shared
+// WHATSAPP_SYSTEM_USER_TOKEN. Every existing caller that doesn't pass one
+// (an organization still connected the Embedded Signup way) keeps sending
+// through the shared token exactly as before — this parameter is
+// additive, never a required one.
+async function postMessage(
+  phoneNumberId: string,
+  payload: Record<string, unknown>,
+  accessToken?: string
+): Promise<SendResult> {
   const { systemUserToken } = getWhatsAppConfig();
+  const token = accessToken || systemUserToken;
   // [wa-diag] TEMPORARY — logs endpoint/version/type/status/body only.
   // The access token is NEVER logged. Remove after diagnosis.
   console.log("[wa-diag] postMessage → issuing HTTP request to Meta", {
     endpoint: `${GRAPH_API_BASE}/${encodeURIComponent(phoneNumberId)}/messages`,
     graphVersion: GRAPH_API_VERSION,
     type: payload.type,
-    tokenSource: "WHATSAPP_SYSTEM_USER_TOKEN (env / hardcode-off → env)",
+    tokenSource: accessToken ? "organization's own WhatsApp Access Token" : "WHATSAPP_SYSTEM_USER_TOKEN (env / hardcode-off → env)",
   });
   const response = await withRetry(
     async () => {
       const res = await fetch(`${GRAPH_API_BASE}/${encodeURIComponent(phoneNumberId)}/messages`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${systemUserToken}`,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
@@ -116,13 +128,22 @@ async function postMessage(phoneNumberId: string, payload: Record<string, unknow
 // customer service window (the recipient messaged first, recently).
 // Used only for human ("employee") sends in sendOutboundMessage, which
 // only ever happen inside an already-open conversation with the client.
-export async function sendTextMessage(phoneNumberId: string, to: string, body: string): Promise<SendResult> {
-  return postMessage(phoneNumberId, {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body },
-  });
+export async function sendTextMessage(
+  phoneNumberId: string,
+  to: string,
+  body: string,
+  accessToken?: string
+): Promise<SendResult> {
+  return postMessage(
+    phoneNumberId,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body },
+    },
+    accessToken
+  );
 }
 
 export interface InteractiveButton {
@@ -148,23 +169,28 @@ export async function sendInteractiveButtonsMessage(
   phoneNumberId: string,
   to: string,
   bodyText: string,
-  buttons: InteractiveButton[]
+  buttons: InteractiveButton[],
+  accessToken?: string
 ): Promise<SendResult> {
-  return postMessage(phoneNumberId, {
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: bodyText },
-      action: {
-        buttons: buttons.map((button) => ({
-          type: "reply",
-          reply: { id: button.id, title: button.title },
-        })),
+  return postMessage(
+    phoneNumberId,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map((button) => ({
+            type: "reply",
+            reply: { id: button.id, title: button.title },
+          })),
+        },
       },
     },
-  });
+    accessToken
+  );
 }
 
 // A body parameter is either positional (fills the template's {{1}},
@@ -186,29 +212,34 @@ export async function sendTemplateMessage(
   to: string,
   templateName: string,
   languageCode: string,
-  bodyParams: TemplateBodyParam[] = []
+  bodyParams: TemplateBodyParam[] = [],
+  accessToken?: string
 ): Promise<SendResult> {
-  return postMessage(phoneNumberId, {
-    messaging_product: "whatsapp",
-    to,
-    type: "template",
-    template: {
-      name: templateName,
-      language: { code: languageCode },
-      ...(bodyParams.length > 0
-        ? {
-            components: [
-              {
-                type: "body",
-                parameters: bodyParams.map((param) =>
-                  typeof param === "string"
-                    ? { type: "text", text: param }
-                    : { type: "text", parameter_name: param.name, text: param.value }
-                ),
-              },
-            ],
-          }
-        : {}),
+  return postMessage(
+    phoneNumberId,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        ...(bodyParams.length > 0
+          ? {
+              components: [
+                {
+                  type: "body",
+                  parameters: bodyParams.map((param) =>
+                    typeof param === "string"
+                      ? { type: "text", text: param }
+                      : { type: "text", parameter_name: param.name, text: param.value }
+                  ),
+                },
+              ],
+            }
+          : {}),
+      },
     },
-  });
+    accessToken
+  );
 }

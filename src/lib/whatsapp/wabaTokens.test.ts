@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -14,7 +14,12 @@ beforeAll(async () => {
   await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
+beforeEach(() => {
+  process.env.WHATSAPP_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
+});
+
 const { storeWabaConnection, WhatsAppConnectionConflictError } = await import("./wabaTokens");
+const { decryptWhatsAppToken } = await import("./tokenCipher");
 
 async function seedOrg(name: string) {
   const [org] = await db.insert(schema.organizations).values({ name }).returning();
@@ -100,5 +105,45 @@ describe("storeWabaConnection", () => {
         db
       )
     ).resolves.toBeUndefined();
+  });
+});
+
+// Manual per-organization WhatsApp connection — the Access Token, when
+// provided, is stored encrypted (never plaintext), and an Embedded-Signup
+// connection (no accessToken passed) never gets a value in that column at
+// all — both proven directly against the real row, not just the function's
+// return value.
+describe("storeWabaConnection — manual connection's Access Token", () => {
+  it("encrypts the access token before writing it — never stored in plaintext", async () => {
+    const orgId = await seedOrg("Org H");
+    await storeWabaConnection(
+      orgId,
+      {
+        businessAccountId: "waba-h",
+        phoneNumberId: "phone-h",
+        displayPhoneNumber: "+972500000006",
+        verifiedName: "Org H",
+        accessToken: "EAAG_real_looking_token",
+      },
+      db
+    );
+
+    const [after] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(after.whatsappAccessTokenEnc).not.toBeNull();
+    expect(after.whatsappAccessTokenEnc).not.toBe("EAAG_real_looking_token");
+    expect(after.whatsappAccessTokenEnc).not.toContain("EAAG_real_looking_token");
+    expect(decryptWhatsAppToken(after.whatsappAccessTokenEnc!)).toBe("EAAG_real_looking_token");
+  });
+
+  it("leaves whatsappAccessTokenEnc null for a connection with no accessToken (the existing Embedded Signup flow)", async () => {
+    const orgId = await seedOrg("Org I");
+    await storeWabaConnection(
+      orgId,
+      { businessAccountId: "waba-i", phoneNumberId: "phone-i", displayPhoneNumber: "+972500000007", verifiedName: "Org I" },
+      db
+    );
+
+    const [after] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(after.whatsappAccessTokenEnc).toBeNull();
   });
 });

@@ -24,12 +24,25 @@ export interface DownloadedMedia {
 // call: resolve a short-lived download URL, then fetch it, with the
 // same bearer token required on both requests (the URL alone isn't
 // enough to authorize the download).
-export async function downloadMedia(mediaId: string): Promise<DownloadedMedia> {
+//
+// Manual per-organization WhatsApp connection — accessToken, when the
+// organization that owns this inbound message has its own (decrypted by
+// the webhook route from organizations.whatsappAccessTokenEnc), takes
+// priority over the shared WHATSAPP_SYSTEM_USER_TOKEN. This matters here
+// specifically: a media id from a manually-connected organization's own
+// WABA is only downloadable with THAT organization's token — the shared
+// system token has no permission on it at all, so omitting this would
+// silently fail to retrieve the client's attachment. Every existing
+// caller that doesn't pass one (an organization still connected the
+// Embedded Signup way) keeps downloading through the shared token exactly
+// as before.
+export async function downloadMedia(mediaId: string, accessToken?: string): Promise<DownloadedMedia> {
   const { systemUserToken } = getWhatsAppConfig();
+  const token = accessToken || systemUserToken;
 
   const metaResponse = await withRetry(() =>
     fetch(`${GRAPH_API_BASE}/${encodeURIComponent(mediaId)}`, {
-      headers: { Authorization: `Bearer ${systemUserToken}` },
+      headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(WHATSAPP_MEDIA_METADATA_TIMEOUT_MS),
     })
   );
@@ -43,7 +56,7 @@ export async function downloadMedia(mediaId: string): Promise<DownloadedMedia> {
 
   const fileResponse = await withRetry(() =>
     fetch(meta.url!, {
-      headers: { Authorization: `Bearer ${systemUserToken}` },
+      headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS),
     })
   );

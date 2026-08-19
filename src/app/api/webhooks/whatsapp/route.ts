@@ -26,6 +26,7 @@ import {
 } from "@/lib/requestDisambiguation";
 import { downloadMedia } from "@/lib/whatsapp/media";
 import { toE164 } from "@/lib/whatsapp/phone";
+import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
 import { verifyWebhookSignature } from "@/lib/whatsapp/webhookSignature";
 import { claimWebhookMessage, markWebhookMessageCompleted, markWebhookMessageFailed } from "@/lib/webhookIdempotency";
 import { isUniqueViolation } from "@/lib/db/errors";
@@ -247,6 +248,18 @@ export async function handleInboundMessage(
     type: message.type,
   });
 
+  // Manual per-organization WhatsApp connection — an inbound attachment's
+  // media id only exists in the WABA it arrived on, so a manually-
+  // connected organization's own token (never the shared
+  // WHATSAPP_SYSTEM_USER_TOKEN) is required to actually download it. Same
+  // resolution as sendViaWhatsApp (conversationOrchestration.ts):
+  // undefined for every organization still connected the Embedded Signup
+  // way, which downloadMedia's own fallback then treats exactly as before
+  // this feature existed.
+  const whatsappAccessToken = organization.whatsappAccessTokenEnc
+    ? decryptWhatsAppToken(organization.whatsappAccessTokenEnc)
+    : undefined;
+
   const client = await matchClientByPhone(organization.id, message.from);
   if (!client) {
     console.log("[wa-inbound] STOPPED: no matching client for this org — see phone match log above");
@@ -348,7 +361,7 @@ export async function handleInboundMessage(
         let attachmentContent: { fileName: string; mimeType: string; content: Buffer } | null = null;
         if (attachment) {
           try {
-            const media = await downloadMedia(attachment.mediaId);
+            const media = await downloadMedia(attachment.mediaId, whatsappAccessToken);
             attachmentContent = { fileName: attachment.fileName, mimeType: media.mimeType, content: media.bytes };
           } catch (error) {
             console.error("[wa-inbound] downloadMedia FAILED (disambiguation hold path)", error);
@@ -446,7 +459,7 @@ export async function handleInboundMessage(
     if (attachment) {
       let media: Awaited<ReturnType<typeof downloadMedia>>;
       try {
-        media = await downloadMedia(attachment.mediaId);
+        media = await downloadMedia(attachment.mediaId, whatsappAccessToken);
       } catch (error) {
         console.error("[wa-inbound] downloadMedia FAILED (human_control stash path)", error);
         await recordAuditEvent({
@@ -584,7 +597,7 @@ export async function handleInboundMessage(
   let media: Awaited<ReturnType<typeof downloadMedia>>;
   try {
     console.log("[wa-inbound] downloadMedia START", { mediaId: attachment.mediaId });
-    media = await downloadMedia(attachment.mediaId);
+    media = await downloadMedia(attachment.mediaId, whatsappAccessToken);
     console.log("[wa-inbound] downloadMedia OK", {
       byteLength: media.bytes.length,
       mimeType: media.mimeType,

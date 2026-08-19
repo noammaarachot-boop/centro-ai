@@ -19,6 +19,7 @@ import {
 import { OperationFailedError } from "@/lib/resilience";
 import { getRequestRequirementNames } from "@/lib/documentRequestList";
 import { toE164 } from "@/lib/whatsapp/phone";
+import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
 import { buildInitialRequestSend } from "@/lib/whatsapp/initialRequestMessage";
 import {
   type InteractiveButton,
@@ -185,6 +186,18 @@ async function sendViaWhatsApp(
     return { whatsappMessageId: null, deliveryStatus: "not_connected" };
   }
 
+  // Manual per-organization WhatsApp connection — an organization with its
+  // own Access Token (organizations.whatsappAccessTokenEnc, set only via
+  // the owner-only manual connect flow, /owner/organizations/[id]) sends
+  // through that instead of the shared WHATSAPP_SYSTEM_USER_TOKEN. Every
+  // organization connected the existing Embedded Signup way has this
+  // column null and is completely unaffected — undefined here means
+  // send.ts's own postMessage falls back to the shared token exactly as
+  // before this feature existed.
+  const accessToken = organization.whatsappAccessTokenEnc
+    ? decryptWhatsAppToken(organization.whatsappAccessTokenEnc)
+    : undefined;
+
   const rawPhone = await getClientPhoneForConversation(conversationId);
   const to = rawPhone ? toE164(rawPhone) : null;
   if (!to) {
@@ -221,7 +234,7 @@ async function sendViaWhatsApp(
         language,
         paramCount: params.length,
       });
-      const result = await sendTemplateMessage(organization.whatsappPhoneNumberId, to, templateName, language, params);
+      const result = await sendTemplateMessage(organization.whatsappPhoneNumberId, to, templateName, language, params, accessToken);
       console.log("[wa-diag] template send returned OK", { messageId: result.messageId });
       return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
     }
@@ -236,12 +249,12 @@ async function sendViaWhatsApp(
         phoneNumberId: organization.whatsappPhoneNumberId,
         buttonCount: interactiveButtons.length,
       });
-      const result = await sendInteractiveButtonsMessage(organization.whatsappPhoneNumberId, to, body, interactiveButtons);
+      const result = await sendInteractiveButtonsMessage(organization.whatsappPhoneNumberId, to, body, interactiveButtons, accessToken);
       console.log("[wa-diag] interactive buttons send returned OK", { messageId: result.messageId });
       return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
     }
     console.log("[wa-diag] REACHED Meta call (text)", { phoneNumberId: organization.whatsappPhoneNumberId });
-    const result = await sendTextMessage(organization.whatsappPhoneNumberId, to, body);
+    const result = await sendTextMessage(organization.whatsappPhoneNumberId, to, body, accessToken);
     console.log("[wa-diag] text send returned OK", { messageId: result.messageId });
     return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
   } catch (error) {

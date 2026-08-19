@@ -104,6 +104,57 @@ async function listFirstPhoneNumber(wabaId: string, accessToken: string): Promis
   };
 }
 
+// Manual per-organization WhatsApp connection ("בדוק וחבר", owner-only) —
+// verifies, against Meta itself, that the Access Token the owner just
+// typed in genuinely has access to the given WABA AND that the given
+// phone_number_id actually belongs to it, in one call. Deliberately never
+// falls back to WHATSAPP_SYSTEM_USER_TOKEN the way getFirstPhoneNumberForWaba
+// above does — this function's whole purpose is to validate THIS SPECIFIC
+// token, not to succeed via a different one. Returns the real
+// display_phone_number/verified_name straight from Meta so the owner never
+// has to type (or risk mistyping) them.
+export async function getPhoneNumberInWaba(
+  wabaId: string,
+  phoneNumberId: string,
+  accessToken: string
+): Promise<PhoneNumberDetails> {
+  const response = await withRetry(() =>
+    fetch(
+      `${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/phone_numbers?fields=display_phone_number,verified_name`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(WHATSAPP_PHONE_NUMBER_REQUEST_TIMEOUT_MS),
+      }
+    )
+  );
+  if (!response.ok) {
+    // Never echo the token itself into the error — only Meta's own
+    // structured response, same discipline as every other Graph API error
+    // path in this module.
+    const body = await response.text();
+    if (response.status === 401 || response.status === 403) {
+      throw new WhatsAppApiError(
+        `הטוקן שהוזן אינו תקף, או שאין לו הרשאה על ה-WhatsApp Business Account הזה (${response.status}).`
+      );
+    }
+    throw new WhatsAppApiError(`בדיקת החיבור מול Meta נכשלה (${response.status}): ${body}`);
+  }
+  const data = (await response.json()) as {
+    data?: Array<{ id: string; display_phone_number: string; verified_name: string }>;
+  };
+  const match = (data.data ?? []).find((n) => n.id === phoneNumberId);
+  if (!match) {
+    throw new WhatsAppApiError(
+      "מספר הטלפון (Phone Number ID) שהוזן לא נמצא תחת ה-WhatsApp Business Account הזה — בדקו שהמזהים תואמים."
+    );
+  }
+  return {
+    id: match.id,
+    displayPhoneNumber: match.display_phone_number,
+    verifiedName: match.verified_name,
+  };
+}
+
 function uniqueTokens(tokens: Array<string | undefined>): string[] {
   const seen = new Set<string>();
   const result: string[] = [];

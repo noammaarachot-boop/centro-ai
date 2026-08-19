@@ -177,3 +177,24 @@ describe("sendTemplateMessage — Phase 3.3: every Meta call carries a request t
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+// Manual per-organization WhatsApp connection — proves the org-specific
+// token, when passed, is what actually authorizes the Graph API call
+// instead of the shared system token, and that every existing caller
+// (which never passes a fifth argument) keeps using the shared token
+// exactly as before this feature existed.
+describe("sendTemplateMessage — per-organization Access Token", () => {
+  it("uses the organization's own access token when one is provided, not WHATSAPP_SYSTEM_USER_TOKEN", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: "wamid.test" }] }) });
+    await sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he", [], "org-own-token");
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Authorization).toBe("Bearer org-own-token");
+  });
+
+  it("falls back to WHATSAPP_SYSTEM_USER_TOKEN when no organization token is passed (existing Embedded Signup connections, unchanged)", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: "wamid.test" }] }) });
+    await sendTemplateMessage("phone-1", "972500000000", "centro_initial_request", "he");
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Authorization).toBe("Bearer fake-token");
+  });
+});

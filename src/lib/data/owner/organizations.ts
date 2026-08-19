@@ -76,6 +76,14 @@ export interface OwnerOrganizationOverview {
   createdAt: Date;
   whatsappConnectedAt: Date | null;
   whatsappDisplayPhoneNumber: string | null;
+  whatsappBusinessAccountId: string | null;
+  whatsappPhoneNumberId: string | null;
+  whatsappVerifiedName: string | null;
+  // Never the encrypted value itself — a manual connection's own token
+  // never leaves storeWabaConnection/decryptWhatsAppToken's own call
+  // sites, not even encrypted, so the UI layer only ever gets to know
+  // whether one exists.
+  whatsappManuallyConnected: boolean;
   googleConnectedAt: Date | null;
   googleDriveFolderName: string | null;
   suspendedAt: Date | null;
@@ -141,6 +149,10 @@ export async function getOrganizationOverview(
     createdAt: org.createdAt,
     whatsappConnectedAt: org.whatsappConnectedAt,
     whatsappDisplayPhoneNumber: org.whatsappDisplayPhoneNumber,
+    whatsappBusinessAccountId: org.whatsappBusinessAccountId,
+    whatsappPhoneNumberId: org.whatsappPhoneNumberId,
+    whatsappVerifiedName: org.whatsappVerifiedName,
+    whatsappManuallyConnected: !!org.whatsappAccessTokenEnc,
     googleConnectedAt: org.googleConnectedAt,
     googleDriveFolderName: org.googleDriveFolderName,
     suspendedAt: org.suspendedAt,

@@ -127,7 +127,7 @@ describe("resolveEmployeeReviewItem", () => {
     expect(after.policyId).toBeNull();
     const policies = await db.select().from(schema.approvedPolicies).where(eq(schema.approvedPolicies.organizationId, orgId));
     expect(policies).toHaveLength(0);
-    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "כן, זה בסדר במקרה הזה.");
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "כן, זה בסדר במקרה הזה.", undefined);
   });
 
   it("explicit opt-in creates a real, immediately-matchable policy", async () => {
@@ -187,7 +187,7 @@ describe("closeReviewItemFromClientContext", () => {
     expect(after.resolvedBy).toBe("ai_context");
     expect(after.resolvedByUserId).toBeNull();
     expect(after.resolutionText).toContain("ספח");
-    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "מעולה, אפשר לשלוח אותה כאן.");
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "מעולה, אפשר לשלוח אותה כאן.", undefined);
   });
 
   it("an already-resolved item cannot be closed again", async () => {
@@ -231,7 +231,7 @@ describe("addContextNoteToReviewItem", () => {
     const updates = after.contextUpdates as Array<{ note: string; clientMessage: string; at: string }>;
     expect(updates).toHaveLength(1);
     expect(updates[0].note).toContain("פג תוקפה");
-    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "תודה, רשמתי את זה.");
+    expect(sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), "תודה, רשמתי את זה.", undefined);
   });
 
   it("can add a note to an already-resolved item too, purely for the record", async () => {
