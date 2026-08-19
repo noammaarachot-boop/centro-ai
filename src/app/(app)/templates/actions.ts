@@ -76,6 +76,7 @@ export async function createTemplate(
     description: `בקשת האיסוף "${template.name}" נוצרה`,
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId: template.id },
   });
 
   // First-Send Journey — continues the Collection Requests wizard rather
@@ -145,6 +146,7 @@ export async function createCollectionRequestDraft(
     description: `בקשת האיסוף "${draft.name}" נוצרה`,
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId: draft.id },
   });
 
   redirect(`/collections/new?draft=${draft.id}&step=who`);
@@ -176,6 +178,7 @@ export async function updateTemplate(
     description: `פרטי בקשת האיסוף "${template.name}" עודכנו`,
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId: template.id },
   });
 
   redirect(`/collections/manage/${template.id}`);
@@ -217,6 +220,7 @@ export async function deleteTemplate(templateId: string) {
       description: `התבנית "${retired.name}" נמחקה`,
       actorType: "employee",
       actorUserId: session.userId,
+      metadata: { templateId },
     });
   }
 
@@ -272,6 +276,7 @@ export async function duplicateTemplate(templateId: string) {
     description: `בקשת האיסוף "${original.name}" שוכפלה ל"${copy.name}"`,
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId: copy.id, sourceTemplateId: templateId },
   });
 
   redirect(`/collections/manage/${copy.id}`);
@@ -313,7 +318,7 @@ export async function addTemplateRequirement(templateId: string, formData: FormD
     description: `מסמך "${name}" נוסף לבקשת האיסוף`,
     actorType: "employee",
     actorUserId: session.userId,
-    metadata: { requiredCount: spec.requiredCount, periodType: spec.periodType },
+    metadata: { templateId, requiredCount: spec.requiredCount, periodType: spec.periodType },
   });
 
   refresh();
@@ -353,7 +358,7 @@ export async function addTemplateRequirementWithClarification(templateId: string
     description: `מסמך "${name}" נוסף לבקשת האיסוף`,
     actorType: "employee",
     actorUserId: session.userId,
-    metadata: { requiredCount: resolvedSpec.requiredCount, periodType: resolvedSpec.periodType },
+    metadata: { templateId, requiredCount: resolvedSpec.requiredCount, periodType: resolvedSpec.periodType },
   });
 
   refresh();
@@ -379,6 +384,7 @@ export async function removeTemplateRequirement(templateId: string, requirementI
     description: "מסמך הוסר מהתבנית",
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId },
   });
 
   refresh();
@@ -415,6 +421,7 @@ export async function renameTemplateRequirement(
     description: `שם מסמך בתבנית שונה ל-"${name}"`,
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId },
   });
 
   refresh();
@@ -521,6 +528,7 @@ export async function assignClientsToTemplate(templateId: string, formData: Form
     description: `${clientIds.length} לקוחות שויכו לבקשת האיסוף`,
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId },
   });
 
   refresh();
@@ -585,6 +593,7 @@ export async function createAndAssignClientToTemplate(templateId: string, formDa
     actorType: "employee",
     actorUserId: session.userId,
     clientId,
+    metadata: { templateId },
   });
 
   refresh();
@@ -624,6 +633,7 @@ export async function removeClientFromTemplate(templateId: string, assignmentId:
     description: "לקוח הוסר מבקשת האיסוף",
     actorType: "employee",
     actorUserId: session.userId,
+    metadata: { templateId },
   });
 
   refresh();

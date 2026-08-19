@@ -56,7 +56,7 @@ const NAV_LINKS = [
   { href: "/clients", label: "לקוחות", icon: Users },
   { href: "/services", label: "איסוף מחזורי", icon: Layers, hidden: true },
   { href: "/collections", label: "בקשות איסוף", icon: FolderKanban },
-  { href: "/audit", label: "פעילות", icon: ScrollText },
+  { href: "/audit", label: "היסטוריית פעילות", icon: ScrollText },
   { href: "/settings", label: "הגדרות", icon: Settings },
   { href: SUPPORT_WHATSAPP_HREF, label: "תמיכה", icon: LifeBuoy, external: true },
 ];
