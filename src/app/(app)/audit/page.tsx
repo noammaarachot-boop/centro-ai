@@ -142,30 +142,30 @@ function ActivityContext({ item }: { item: ActivityItem }) {
   );
 }
 
+// Title is always the row's dominant element — even "routine" stays
+// full-strength text-primary (not muted), so it's never competing for
+// attention with its own meta line. Only weight/color step up from there:
+// significant gets bolder, critical gets bold + the danger color — the
+// row around it (background, border, badge) never changes, per "a
+// critical title + icon is enough, keep the rest of the row neutral."
 const EMPHASIS_TITLE_CLASS: Record<ActivityEmphasis, string> = {
-  routine: "text-text-secondary",
+  routine: "text-text-primary",
   significant: "font-semibold text-text-primary",
   critical: "font-semibold text-danger",
 };
 
-// One compact row per event — title + a single muted meta line (context ·
-// actor · time), a small category badge at the end. No per-item card
-// chrome, no multi-line whitespace: a routine event and a significant one
-// take the same minimal height, differing only in the title's own weight/
-// color (EMPHASIS_TITLE_CLASS) and, for a genuine failure, a left accent +
-// icon — never a full card competing for attention with what actually
-// matters.
+// One compact row per event, read in a fixed order: title (what happened)
+// → meta line (who/what it's about, then who did it, then when) → an
+// optional one-line detail. Everything under the title is deliberately
+// smaller and lighter (text-xs, text-muted) than the title itself
+// (text-sm) — the row never asks a reader to parse two things of equal
+// weight at once.
 function ActivityRow({ item }: { item: ActivityItem }) {
   return (
-    <li
-      className={clsx(
-        "flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-surface-muted",
-        item.emphasis === "critical" && "border-s-2 border-s-danger bg-danger/5"
-      )}
-    >
+    <li className="flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-surface-muted">
       <div className="min-w-0 flex-1">
         <p className={clsx("flex items-center gap-1.5 truncate text-sm", EMPHASIS_TITLE_CLASS[item.emphasis])}>
-          {item.emphasis === "critical" && <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+          {item.emphasis === "critical" && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-danger" aria-hidden="true" />}
           <span className="truncate">{item.title}</span>
         </p>
         <p className="mt-0.5 truncate text-xs text-text-muted">
@@ -175,7 +175,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
           {" · "}
           {timeLabel(item.occurredAt)}
         </p>
-        {item.detail && <p className="mt-0.5 truncate text-xs text-text-secondary">{item.detail}</p>}
+        {item.detail && <p className="mt-0.5 truncate text-xs text-text-muted/80">{item.detail}</p>}
         {item.technicalDetail && (
           <details className="mt-1">
             <summary className="cursor-pointer text-xs font-medium text-brand-purple">הצג פרטים</summary>
@@ -194,30 +194,37 @@ function ActivityRow({ item }: { item: ActivityItem }) {
 
 // A burst of identical events (same title, same category, within a few
 // minutes of each other — see groupActivityItems' own doc comment)
-// collapses to one row: the newest occurrence's own title/context, a
-// count badge, and a native <details> that reveals every real underlying
-// item on demand. Never a dedup — every item in `group.items` is still a
-// real, distinct row from listActivityHistory, unedited and undeleted.
+// collapses to one row. Deliberately styled to read as its own distinct
+// affordance, not "an event with an odd badge": a filled chevron, a
+// faint container background the whole summary sits in, and a solid
+// count pill (never merged into the category badge, which stays a plain
+// small label in the meta line here) — unambiguously "click to expand."
+// Never a dedup — every item in `group.items` is still a real, distinct
+// row from listActivityHistory, unedited and undeleted, revealed exactly
+// as-is on expand.
 function ActivityGroupRow({ group }: { group: ActivityGroup }) {
   if (group.items.length === 1) return <ActivityRow item={group.item} />;
+  const oldest = group.items[group.items.length - 1];
   return (
     <li>
       <details className="group/activity">
-        <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-surface-muted [&::-webkit-details-marker]:hidden">
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted transition-transform group-open/activity:rotate-180" aria-hidden="true" />
+        <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg bg-surface-muted/60 px-3 py-2 transition-colors hover:bg-surface-muted [&::-webkit-details-marker]:hidden">
+          <ChevronDown
+            className="h-4 w-4 shrink-0 text-brand-purple transition-transform group-open/activity:rotate-180"
+            aria-hidden="true"
+          />
           <div className="min-w-0 flex-1">
-            <p className={clsx("flex items-center gap-1.5 truncate text-sm", EMPHASIS_TITLE_CLASS[group.item.emphasis])}>
-              <span className="truncate">{group.item.title}</span>
-              <span className="shrink-0 text-xs font-normal text-text-muted">— הצג {group.items.length} פעולות</span>
-            </p>
+            <p className={clsx("truncate text-sm", EMPHASIS_TITLE_CLASS[group.item.emphasis])}>{group.item.title}</p>
             <p className="mt-0.5 truncate text-xs text-text-muted">
               <ActivityContext item={group.item} />
-              {timeLabel(group.items[group.items.length - 1].occurredAt)} – {timeLabel(group.item.occurredAt)}
+              {CATEGORY_LABELS[group.item.category]}
+              {" · "}
+              {timeLabel(oldest.occurredAt)}–{timeLabel(group.item.occurredAt)}
             </p>
           </div>
-          <Badge tone={CATEGORY_BADGE_TONE[group.item.category]} className="shrink-0">
-            {CATEGORY_LABELS[group.item.category]} · {group.items.length}
-          </Badge>
+          <span className="shrink-0 rounded-full bg-brand-purple/10 px-2.5 py-1 text-xs font-semibold text-brand-purple">
+            {group.items.length} פעולות
+          </span>
         </summary>
         <ul className="mt-1 me-3 space-y-0.5 border-e-2 border-border pe-3">
           {group.items.map((item) => (
