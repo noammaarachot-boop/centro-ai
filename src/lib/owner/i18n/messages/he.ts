@@ -86,6 +86,7 @@ export const he = {
   "owner.organizations.onboarding.incomplete": "לא הושלמה",
   "owner.organizations.unnamed": "ארגון ללא שם",
   "owner.organizations.suspended": "מושהה",
+  "owner.organizations.whatsapp.manualConnect": "הגדר WhatsApp",
   "owner.organizations.qaMode.badge": "משתמש בדיקה",
   "owner.organizations.qaMode.enable": "סימון כמשתמש בדיקה",
   "owner.organizations.templateApproval.initialLabel": "תבנית פנייה",

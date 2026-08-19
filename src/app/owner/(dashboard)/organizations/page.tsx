@@ -184,6 +184,12 @@ export default async function OwnerOrganizationsPage({
                         />
                       </>
                     )}
+                    <Link
+                      href={`/owner/organizations/${org.id}#whatsapp-manual-connect`}
+                      className="mt-0.5 inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-text-muted transition-colors hover:border-brand-purple/40 hover:text-brand-purple"
+                    >
+                      {t("owner.organizations.whatsapp.manualConnect")}
+                    </Link>
                   </div>
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-text-muted">

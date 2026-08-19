@@ -193,7 +193,7 @@ export default async function OwnerOrganizationDetailPage({
           against Meta itself before ever saving anything (see
           manuallyConnectWhatsAppAction) — a failed attempt never touches
           this organization's existing WhatsApp connection, if any. */}
-      <Card className="mt-6">
+      <Card id="whatsapp-manual-connect" className="mt-6 scroll-mt-6">
         <h2 className="mb-1.5 text-sm font-bold text-text-primary">חיבור WhatsApp ידני</h2>
         <p className="mb-4 text-xs text-text-secondary">
           לחיבור עצמאי, ללא Embedded Signup — הזינו את הפרטים שהתקבלו מ-Meta עבור ה-WhatsApp Business
