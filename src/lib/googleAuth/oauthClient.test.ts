@@ -15,7 +15,26 @@ vi.mock("./config", () => ({
   GOOGLE_DRIVE_SCOPE: "https://www.googleapis.com/auth/drive.file",
 }));
 
-const { exchangeCodeForTokens, refreshAccessToken, revokeToken } = await import("./oauthClient");
+const { buildAuthorizationUrl, exchangeCodeForTokens, refreshAccessToken, revokeToken } = await import("./oauthClient");
+
+// hl=he — an officially documented Google OAuth 2.0 authorization
+// parameter, added so Google's own consent screen displays in Hebrew.
+// Must never affect client_id/redirect_uri/scope/response_type, the
+// actual identity of the request.
+describe("buildAuthorizationUrl — Hebrew consent-screen language", () => {
+  it("sets hl=he without changing any other parameter", () => {
+    const url = new URL(buildAuthorizationUrl("state-1"));
+    expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(url.searchParams.get("hl")).toBe("he");
+    expect(url.searchParams.get("client_id")).toBe("client-1");
+    expect(url.searchParams.get("redirect_uri")).toBe("https://example.com/callback");
+    expect(url.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/drive.file");
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("access_type")).toBe("offline");
+    expect(url.searchParams.get("prompt")).toBe("consent");
+    expect(url.searchParams.get("state")).toBe("state-1");
+  });
+});
 
 /**
  * Phase 3.3 remediation — the Google token endpoint calls (exchange,

@@ -28,6 +28,14 @@ interface GoogleTokenResponse {
 // access_type=offline + prompt=consent guarantees a refresh_token even if
 // this organization authorized before (Google otherwise only issues one
 // on the very first-ever consent for a given user+client pair).
+//
+// hl=he — an officially documented Google OAuth 2.0 authorization
+// parameter (host language) that only controls the display language of
+// Google's own consent screen. Every other Centro user is Hebrew-speaking
+// (see this whole codebase's RTL/Hebrew-only UI), so this removes the one
+// remaining English-language surface in an otherwise fully-Hebrew flow —
+// it never touches the client id/secret, redirect URI, scopes, or the
+// token exchange itself.
 export function buildAuthorizationUrl(state: string): string {
   const { clientId, redirectUri } = getGoogleOAuthConfig();
   const params = new URLSearchParams({
@@ -38,6 +46,7 @@ export function buildAuthorizationUrl(state: string): string {
     access_type: "offline",
     prompt: "consent",
     state,
+    hl: "he",
   });
   return `${AUTH_ENDPOINT}?${params.toString()}`;
 }
