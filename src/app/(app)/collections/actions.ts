@@ -175,6 +175,18 @@ const DOCUMENT_STATUS_LABELS: Record<string, string> = {
 // remains valid, e.g. logging something received outside the app), but
 // when one is attached this is the one path in the product today with
 // genuinely real bytes to upload — see driveAdapter.ts's module comment.
+//
+// Collections UX simplification — the "מסמכים נדרשים" upload form no
+// longer sends a typed `fileName` or a pre-decided `status`: fileName
+// always derives from the attached file's own name (used only for Drive
+// storage bookkeeping, per documents.fileName's own schema comment —
+// never a UI label), and status falls back to the same "needs_review"
+// this function already defaulted to when the field was absent, so a
+// manually-added document goes through the exact same employee approve/
+// reject review every automatically-received document already does,
+// rather than an upfront picker that let one get silently marked
+// "approved" (and uploaded to Drive) sight-unseen. Both fallbacks were
+// already here — only the form fields that fed them were removed.
 export async function addManualDocument(
   collectionRequestId: string,
   requirementId: string,
@@ -200,6 +212,16 @@ export async function addManualDocument(
   const mimeType = attachedFile?.type || undefined;
 
   const db = await getDb();
+  const [requirement] = await db
+    .select({ name: collectionRequestRequirements.name })
+    .from(collectionRequestRequirements)
+    .where(
+      and(
+        eq(collectionRequestRequirements.id, requirementId),
+        eq(collectionRequestRequirements.collectionRequestId, collectionRequestId)
+      )
+    )
+    .limit(1);
   const [document] = await db
     .insert(documents)
     .values({
@@ -208,12 +230,16 @@ export async function addManualDocument(
       requirementId,
       fileName,
       status: status as "approved" | "rejected" | "needs_review",
-      // Product Evolution M9 ("Never Lose a Document") — held here even for
-      // an immediately-approved document now, so a Drive failure right
-      // after this insert still has real bytes to retry from
-      // (uploadDocumentResiliently is the only place that ever clears
-      // this, and only once the upload actually succeeds).
-      ...(status === "approved" && fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
+      // Product Evolution M9 ("Never Lose a Document") — held whenever real
+      // bytes exist, regardless of status, same as processInboundAttachment's
+      // own insert: a "needs_review" document has no other way to get its
+      // bytes back later for an approval that comes after this request
+      // (reviewDocument reads pendingFileContent, not this form's own
+      // upload) — previously this only fired for an immediately-"approved"
+      // document, which silently lost the file for the (now far more
+      // common, since approval is no longer decided upfront here)
+      // needs_review/received path.
+      ...(fileBytes ? { pendingFileContent: fileBytes, pendingFileMimeType: mimeType } : {}),
     })
     .returning();
 
@@ -229,10 +255,15 @@ export async function addManualDocument(
     );
   }
 
+  // Canonical name only, never the raw fileName typed/attached above — same
+  // resolveDocumentDisplayLabel discipline every other document-related
+  // audit description in the app already follows (see
+  // src/lib/documents/displayLabel.ts's own module comment).
+  const canonicalLabel = resolveDocumentDisplayLabel(null, requirement?.name);
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "document.added_manually",
-    description: `מסמך "${fileName}" נוסף ידנית (${DOCUMENT_STATUS_LABELS[status] ?? status})`,
+    description: `מסמך "${canonicalLabel}" נוסף ידנית (${DOCUMENT_STATUS_LABELS[status] ?? status})`,
     actorType: "employee",
     actorUserId: session.userId,
     clientId: current.clientId,

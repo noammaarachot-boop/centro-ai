@@ -41,8 +41,8 @@ import {
   WHATSAPP_NOT_READY_MESSAGE,
 } from "@/lib/integrationRequirements";
 import { StatusBadge } from "../StatusBadge";
+import { RequirementDocumentUpload } from "../RequirementDocumentUpload";
 import {
-  addManualDocument,
   assignDocumentRequirement,
   resolveRequirementExceptionAction,
   resolveReviewItemFromRequest,
@@ -169,6 +169,29 @@ export default async function CollectionRequestDetailPage({
   const unmatchedDocuments = await listUnmatchedDocuments(id);
   const options = nextStatusOptions(collectionRequest.status);
   const boundTransition = transitionStatus.bind(null, id);
+  // UX simplification — the state machine itself (nextStatusOptions/
+  // canTransition/applyTransition, collectionRequestStateMachine.ts) is
+  // completely unchanged; only which of its already-legal transitions get
+  // a button on this screen. HIDDEN_WORKFLOW_TARGETS are system-driven
+  // states an employee rarely needs to force manually and that read as
+  // unclear buttons; "cancelled" isn't hidden, just moved out of this
+  // primary row into its own secondary/destructive control below.
+  const HIDDEN_WORKFLOW_TARGETS: CollectionRequestStatus[] = ["waiting_for_client", "processing", "escalated"];
+  const visibleTransitionOptions = options.filter(
+    (status) => status !== "cancelled" && !HIDDEN_WORKFLOW_TARGETS.includes(status)
+  );
+  const canCancel = options.includes("cancelled");
+  // UX simplification — "הדמיית מחיקה מ-Drive" is explicitly a testing-only
+  // simulation (its own ConfirmDialog copy already says so), not a real
+  // per-document action an office employee needs inline on every approved
+  // row. Moved into the same DevToolsPanel pattern this page already uses
+  // for the WhatsApp simulator, rather than removed — still fully
+  // available, just no longer part of the main document list's clutter.
+  const driveDocumentsForSimulation = requirements.flatMap((requirement) =>
+    requirement.documents
+      .filter((doc) => doc.status === "approved" && doc.googleDriveFileId)
+      .map((doc) => ({ id: doc.id, label: resolveDocumentDisplayLabel(doc.displayLabel, requirement.name) }))
+  );
 
   const conversation = await getConversationByCollectionRequest(id);
   const messages = conversation ? await listMessages(conversation.id) : [];
@@ -299,31 +322,52 @@ export default async function CollectionRequestDetailPage({
           </p>
         )}
 
-        <div className="mt-5 grid grid-cols-3 gap-2.5">
-          <div className="rounded-2xl border border-border bg-surface px-3.5 py-3">
+        {/* Counters UX simplification — "התקבלו" is the one number that
+            always matters and always shows. "לטיפולך"/"מחכה ללקוח" are
+            secondary counts that are only ever meaningful once they're
+            non-zero (a "0" tile has nothing for the employee to act on and
+            just adds visual noise) — flex-wrap rather than a fixed 3-column
+            grid so the row still reads as intentional whether it's showing
+            one tile or three, not a grid with empty-looking gaps. */}
+        <div className="mt-5 flex flex-wrap gap-2.5">
+          <div className="w-[150px] rounded-2xl border border-border bg-surface px-3.5 py-3">
             <p className="text-[11px] font-semibold text-text-muted">התקבלו</p>
             <p className="mt-1 text-xl font-bold tabular-nums text-text-primary">
               {progress.satisfiedCount}/{progress.totalCount}
             </p>
             <p className="text-[10.5px] text-text-muted">מסמכים</p>
           </div>
-          <div className="rounded-2xl border border-border bg-surface px-3.5 py-3">
-            <p className="text-[11px] font-semibold text-text-muted">לטיפולך</p>
-            <p className={`mt-1 text-xl font-bold tabular-nums ${attentionCount > 0 ? "text-danger" : "text-text-primary"}`}>
-              {attentionCount}
-            </p>
-            <p className="text-[10.5px] text-text-muted">פריטים</p>
-          </div>
-          <div className="rounded-2xl border border-border bg-surface px-3.5 py-3">
-            <p className="text-[11px] font-semibold text-text-muted">מחכה ללקוח</p>
-            <p className="mt-1 text-xl font-bold tabular-nums text-text-primary">{openConfirmations.length}</p>
-            <p className="text-[10.5px] text-text-muted">שאלות פתוחות</p>
-          </div>
+          {attentionCount > 0 && (
+            <div className="w-[150px] rounded-2xl border border-border bg-surface px-3.5 py-3">
+              <p className="text-[11px] font-semibold text-text-muted">לטיפולך</p>
+              <p className="mt-1 text-xl font-bold tabular-nums text-danger">{attentionCount}</p>
+              <p className="text-[10.5px] text-text-muted">פריטים</p>
+            </div>
+          )}
+          {openConfirmations.length > 0 && (
+            <div className="w-[150px] rounded-2xl border border-border bg-surface px-3.5 py-3">
+              <p className="text-[11px] font-semibold text-text-muted">מחכה ללקוח</p>
+              <p className="mt-1 text-xl font-bold tabular-nums text-text-primary">{openConfirmations.length}</p>
+              <p className="text-[10.5px] text-text-muted">שאלות פתוחות</p>
+            </div>
+          )}
         </div>
 
-        {options.length > 0 && (
+        {/* Workflow-actions UX simplification — "המתנה ללקוח"/"העברה
+            לעיבוד"/"הסלמה" are system-driven transitions the office rarely
+            needs to force by hand and that weren't clear as buttons; hidden
+            from this row (nextStatusOptions/applyTransition/the statuses
+            themselves are completely untouched — an already
+            waiting_for_client/processing/escalated request still works
+            exactly as before, this only removes the manual "push it into
+            that state yourself" buttons). "cancelled" moves to its own
+            secondary/destructive control near the bottom of the page
+            instead of sitting in this primary row — see "פעולות נוספות".
+            Every OTHER real transition (e.g. reopening from completed, or
+            marking complete once processing) still shows here unchanged. */}
+        {visibleTransitionOptions.length > 0 && (
           <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-4">
-            {options.map((status) => (
+            {visibleTransitionOptions.map((status) => (
               <form key={status} action={boundTransition.bind(null, status)}>
                 <button type="submit" className={pillButtonClass}>
                   {collectionRequest.status === "completed" && status === "active"
@@ -458,7 +502,7 @@ export default async function CollectionRequestDetailPage({
                   <p className="text-sm font-medium text-text-primary">{requirement.name}</p>
                   <div className="flex items-center gap-2">
                     {requirement.documents.length === 0 && !requirement.exceptionStatus && (
-                      <Badge tone="neutral">חסר</Badge>
+                      <Badge tone="neutral">טרם התקבל</Badge>
                     )}
                     {requirement.documents.length === 0 && (
                       <form action={waiveRequirement.bind(null, id, requirement.id)}>
@@ -571,29 +615,16 @@ export default async function CollectionRequestDetailPage({
                             </div>
                           </div>
                           {doc.status === "approved" && doc.googleDriveFileId && (
-                            <div className="mt-1.5 flex items-center justify-between text-[11px] text-text-muted">
+                            <div className="mt-1.5">
                               <a
                                 href={driveFileLink(doc.googleDriveFileId)}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-brand-blue transition-colors hover:underline"
+                                className="inline-flex items-center gap-1 text-[11px] text-brand-blue transition-colors hover:underline"
                               >
                                 <ExternalLink className="h-3 w-3" />
                                 פתיחה ב-Google Drive
                               </a>
-                              <ConfirmDialog
-                                title="הדמיית מחיקה מ-Drive"
-                                description={`לדמות מחיקה ידנית של "${label}" מ-Google Drive? זו סימולציה לבדיקות בלבד.`}
-                                confirmLabel="הדמיית מחיקה"
-                                formAction={simulateDriveDeletion.bind(null, id, doc.id)}
-                                triggerClassName="inline-flex items-center gap-1 text-text-muted transition-colors hover:text-danger hover:underline"
-                                trigger={
-                                  <>
-                                    <Trash2 className="h-3 w-3" />
-                                    הדמיית מחיקה מ-Drive
-                                  </>
-                                }
-                              />
                             </div>
                           )}
                           {doc.status === "deleted_from_drive" && doc.driveDeletedAt && (
@@ -612,37 +643,44 @@ export default async function CollectionRequestDetailPage({
                   </ul>
                 )}
 
-                <form
-                  action={addManualDocument.bind(null, id, requirement.id)}
-                  className="mt-3 flex flex-wrap items-center gap-2"
-                >
-                  <input
-                    name="fileName"
-                    type="text"
-                    placeholder="שם קובץ (או השאירו ריק לשימוש בשם הקובץ המצורף)"
-                    className={fieldClass("sm", "min-w-[220px] flex-1")}
+                <div className="mt-3">
+                  <RequirementDocumentUpload
+                    collectionRequestId={id}
+                    requirementId={requirement.id}
+                    hasExistingDocuments={requirement.documents.length > 0}
+                    acceptExtensions={SUPPORTED_DOCUMENT_ACCEPT}
                   />
-                  <input
-                    name="file"
-                    type="file"
-                    accept={SUPPORTED_DOCUMENT_ACCEPT}
-                    className="max-w-[200px] text-xs text-text-secondary file:me-2 file:rounded-full file:border file:border-border file:bg-white file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-text-secondary"
-                  />
-                  <select name="status" className={fieldClass("sm")}>
-                    <option value="approved">אישור</option>
-                    <option value="needs_review">דורש בדיקה</option>
-                    <option value="rejected">דחייה</option>
-                  </select>
-                  <button type="submit" className={compactButtonClass}>
-                    הוספה
-                  </button>
-                </form>
-                <p className="mt-1 text-[11px] text-text-muted">
-                  צירוף קובץ אמיתי והעברתו לאישור מעלה אותו בפועל ל-Google Drive של העסק.
-                </p>
+                </div>
               </li>
             ))}
           </ul>
+        )}
+
+        {driveDocumentsForSimulation.length > 0 && (
+          <div className="mt-4">
+            <DevToolsPanel label="הדמיית מחיקה מ-Drive">
+              <ul className="space-y-2">
+                {driveDocumentsForSimulation.map((doc) => (
+                  <li key={doc.id} className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-text-secondary">{doc.label}</span>
+                    <ConfirmDialog
+                      title="הדמיית מחיקה מ-Drive"
+                      description={`לדמות מחיקה ידנית של "${doc.label}" מ-Google Drive? זו סימולציה לבדיקות בלבד.`}
+                      confirmLabel="הדמיית מחיקה"
+                      formAction={simulateDriveDeletion.bind(null, id, doc.id)}
+                      triggerClassName="inline-flex items-center gap-1 text-xs text-text-muted transition-colors hover:text-danger hover:underline"
+                      trigger={
+                        <>
+                          <Trash2 className="h-3 w-3" />
+                          הדמיית מחיקה
+                        </>
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            </DevToolsPanel>
+          </div>
         )}
       </Card>
 
@@ -858,6 +896,21 @@ export default async function CollectionRequestDetailPage({
           </>
         )}
       </Card>
+
+      {/* ===== פעולות נוספות ===== */}
+      {canCancel && (
+        <div className="flex justify-center">
+          <ConfirmDialog
+            title="ביטול הבקשה?"
+            description="הבקשה תבוטל. הפעולה לא מוחקת מסמכים או היסטוריה שכבר נשמרו — ניתן עדיין לצפות בכל מה שהתקבל עד כה."
+            confirmLabel="ביטול הבקשה"
+            cancelLabel="חזרה"
+            formAction={boundTransition.bind(null, "cancelled")}
+            triggerClassName="text-xs font-medium text-text-muted transition-colors hover:text-danger"
+            trigger="ביטול בקשה"
+          />
+        </div>
+      )}
 
       {/* ===== היסטוריה טכנית — מקופלת כברירת מחדל ===== */}
       <details className="group rounded-2xl border border-border bg-surface-muted/40">
