@@ -1,24 +1,35 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ScrollText, Search } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronDown, ScrollText, Search } from "lucide-react";
+import { clsx } from "clsx";
 import { requireSession } from "@/lib/auth/session";
 import {
   ACTIVITY_CATEGORIES,
   CATEGORY_LABELS,
+  groupActivityItems,
   listActivityHistory,
   type ActivityCategory,
+  type ActivityEmphasis,
+  type ActivityGroup,
   type ActivityItem,
 } from "@/lib/data/activityHistory";
 import { PageHeader } from "@/components/app/PageHeader";
-import { Card } from "@/components/app/Card";
 import { EmptyState } from "@/components/app/EmptyState";
-import { Badge } from "@/components/app/Badge";
+import { Badge, type BadgeTone } from "@/components/app/Badge";
 
 const ACTOR_LABELS: Record<string, string> = {
   employee: "עובד",
   ai: "Centro",
   client: "לקוח",
   system: "מערכת",
+};
+
+const CATEGORY_BADGE_TONE: Record<Exclude<ActivityCategory, "all">, BadgeTone> = {
+  request: "purple",
+  document: "blue",
+  whatsapp: "info",
+  template: "neutral",
+  failure: "danger",
 };
 
 type Range = "today" | "7d" | "30d" | "custom";
@@ -82,19 +93,22 @@ function dayLabel(date: Date): string {
   return day.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" });
 }
 
-// The context line under an item's title — client and/or template/request,
-// each linking to its own real page when the id is known. A deleted/
-// retired entity (a template that's since been removed) still shows its
-// historical name — never a broken link, per the "history must stay
-// readable forever" requirement (services.retiredAt is a soft-delete, so
-// this resolves correctly even then; only a genuinely missing id skips the
-// link).
+function timeLabel(date: Date): string {
+  return new Date(date).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+}
+
+// The client/template/request an item is about — each a real link when the
+// id is known. A deleted/retired entity (a template that's since been
+// removed) still shows its historical name — never a broken link, per
+// "history must stay readable forever" (services.retiredAt is a soft-
+// delete, so this resolves correctly even then; only a genuinely missing
+// id skips the link).
 function ActivityContext({ item }: { item: ActivityItem }) {
   const parts: ReactNode[] = [];
   if (item.clientName) {
     parts.push(
       item.clientId ? (
-        <Link key="client" href={`/clients/${item.clientId}`} className="hover:text-brand-purple hover:underline">
+        <Link key="client" href={`/clients/${item.clientId}`} className="font-medium text-text-secondary hover:text-brand-purple hover:underline">
           {item.clientName}
         </Link>
       ) : (
@@ -121,40 +135,97 @@ function ActivityContext({ item }: { item: ActivityItem }) {
   }
   if (parts.length === 0) return null;
   return (
-    <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-text-secondary">
-      {parts.flatMap((part, i) => (i === 0 ? [part] : [<span key={`sep-${i}`} className="text-text-muted">·</span>, part]))}
-    </p>
+    <>
+      {parts.flatMap((part, i) => (i === 0 ? [part] : [<span key={`sep-${i}`}> · </span>, part]))}
+      {" · "}
+    </>
   );
 }
 
-function ActivityItemCard({ item }: { item: ActivityItem }) {
+const EMPHASIS_TITLE_CLASS: Record<ActivityEmphasis, string> = {
+  routine: "text-text-secondary",
+  significant: "font-semibold text-text-primary",
+  critical: "font-semibold text-danger",
+};
+
+// One compact row per event — title + a single muted meta line (context ·
+// actor · time), a small category badge at the end. No per-item card
+// chrome, no multi-line whitespace: a routine event and a significant one
+// take the same minimal height, differing only in the title's own weight/
+// color (EMPHASIS_TITLE_CLASS) and, for a genuine failure, a left accent +
+// icon — never a full card competing for attention with what actually
+// matters.
+function ActivityRow({ item }: { item: ActivityItem }) {
   return (
-    <Card padding="sm">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-sm font-medium text-text-primary">
-            {item.category === "failure" && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-danger" aria-hidden="true" />}
-            {item.title}
-          </p>
-          <ActivityContext item={item} />
-        </div>
-        <span className="shrink-0 text-xs text-text-muted">
-          {new Date(item.occurredAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
-        </span>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-muted">
-        <Badge tone="neutral">{ACTOR_LABELS[item.actorType] ?? item.actorType}{item.actorName ? ` · ${item.actorName}` : ""}</Badge>
-        {item.detail && <span className="text-text-secondary">{item.detail}</span>}
-      </div>
-      {item.technicalDetail && (
-        <details className="mt-2">
-          <summary className="cursor-pointer text-xs font-medium text-brand-purple">הצג פרטים</summary>
-          <p className="mt-1.5 rounded-lg bg-surface-muted p-2.5 text-xs text-text-muted" dir="auto">
-            {item.technicalDetail}
-          </p>
-        </details>
+    <li
+      className={clsx(
+        "flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-surface-muted",
+        item.emphasis === "critical" && "border-s-2 border-s-danger bg-danger/5"
       )}
-    </Card>
+    >
+      <div className="min-w-0 flex-1">
+        <p className={clsx("flex items-center gap-1.5 truncate text-sm", EMPHASIS_TITLE_CLASS[item.emphasis])}>
+          {item.emphasis === "critical" && <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+          <span className="truncate">{item.title}</span>
+        </p>
+        <p className="mt-0.5 truncate text-xs text-text-muted">
+          <ActivityContext item={item} />
+          {ACTOR_LABELS[item.actorType] ?? item.actorType}
+          {item.actorName ? ` (${item.actorName})` : ""}
+          {" · "}
+          {timeLabel(item.occurredAt)}
+        </p>
+        {item.detail && <p className="mt-0.5 truncate text-xs text-text-secondary">{item.detail}</p>}
+        {item.technicalDetail && (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-xs font-medium text-brand-purple">הצג פרטים</summary>
+            <p className="mt-1 rounded-lg bg-surface-muted p-2 text-xs text-text-muted" dir="auto">
+              {item.technicalDetail}
+            </p>
+          </details>
+        )}
+      </div>
+      <Badge tone={CATEGORY_BADGE_TONE[item.category]} className="shrink-0">
+        {CATEGORY_LABELS[item.category]}
+      </Badge>
+    </li>
+  );
+}
+
+// A burst of identical events (same title, same category, within a few
+// minutes of each other — see groupActivityItems' own doc comment)
+// collapses to one row: the newest occurrence's own title/context, a
+// count badge, and a native <details> that reveals every real underlying
+// item on demand. Never a dedup — every item in `group.items` is still a
+// real, distinct row from listActivityHistory, unedited and undeleted.
+function ActivityGroupRow({ group }: { group: ActivityGroup }) {
+  if (group.items.length === 1) return <ActivityRow item={group.item} />;
+  return (
+    <li>
+      <details className="group/activity">
+        <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-surface-muted [&::-webkit-details-marker]:hidden">
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted transition-transform group-open/activity:rotate-180" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className={clsx("flex items-center gap-1.5 truncate text-sm", EMPHASIS_TITLE_CLASS[group.item.emphasis])}>
+              <span className="truncate">{group.item.title}</span>
+              <span className="shrink-0 text-xs font-normal text-text-muted">— הצג {group.items.length} פעולות</span>
+            </p>
+            <p className="mt-0.5 truncate text-xs text-text-muted">
+              <ActivityContext item={group.item} />
+              {timeLabel(group.items[group.items.length - 1].occurredAt)} – {timeLabel(group.item.occurredAt)}
+            </p>
+          </div>
+          <Badge tone={CATEGORY_BADGE_TONE[group.item.category]} className="shrink-0">
+            {CATEGORY_LABELS[group.item.category]} · {group.items.length}
+          </Badge>
+        </summary>
+        <ul className="mt-1 me-3 space-y-0.5 border-e-2 border-border pe-3">
+          {group.items.map((item) => (
+            <ActivityRow key={item.id} item={item} />
+          ))}
+        </ul>
+      </details>
+    </li>
   );
 }
 
@@ -175,18 +246,20 @@ export default async function AuditLogPage({
 
   const items = await listActivityHistory(session.organizationId, { from, to, category, search });
 
-  // Items already arrive newest-first (see listActivityHistory's ordering) -
-  // a single reduce over them preserves that order while grouping by
-  // calendar day, no extra query needed.
-  const groups: { key: string; label: string; items: ActivityItem[] }[] = [];
-  for (const item of items) {
-    const occurredAt = new Date(item.occurredAt);
+  // Group first (a burst can span the last minute of one day into the
+  // first of the next — negligible in practice, but grouping before
+  // splitting by day keeps the logic simple and correct either way), then
+  // bucket the resulting groups by the representative item's own day.
+  const activityGroups = groupActivityItems(items);
+  const dayGroups: { key: string; label: string; groups: ActivityGroup[] }[] = [];
+  for (const activityGroup of activityGroups) {
+    const occurredAt = new Date(activityGroup.item.occurredAt);
     const key = startOfDay(occurredAt).toISOString();
-    const lastGroup = groups[groups.length - 1];
-    if (lastGroup && lastGroup.key === key) {
-      lastGroup.items.push(item);
+    const lastDayGroup = dayGroups[dayGroups.length - 1];
+    if (lastDayGroup && lastDayGroup.key === key) {
+      lastDayGroup.groups.push(activityGroup);
     } else {
-      groups.push({ key, label: dayLabel(occurredAt), items: [item] });
+      dayGroups.push({ key, label: dayLabel(occurredAt), groups: [activityGroup] });
     }
   }
 
@@ -298,7 +371,7 @@ export default async function AuditLogPage({
             name="q"
             type="text"
             defaultValue={search ?? ""}
-            placeholder="חיפוש לפי שם לקוח, תבנית או בקשה..."
+            placeholder="חיפוש לפי שם לקוח, תבנית, בקשה או מזהה..."
             className="centro-glass w-full rounded-xl border border-border ps-10 pe-4 py-2.5 text-sm text-text-primary shadow-card outline-none transition-all duration-200 focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
           />
         </div>
@@ -311,15 +384,13 @@ export default async function AuditLogPage({
           description="נסו טווח תאריכים, קטגוריה או חיפוש אחר, או חזרו לכאן אחרי שתתבצע פעולה כלשהי במערכת."
         />
       ) : (
-        <div className="space-y-6">
-          {groups.map((group) => (
-            <div key={group.key}>
-              <h2 className="mb-2.5 text-xs font-semibold text-text-muted">{group.label}</h2>
-              <ul className="space-y-2.5">
-                {group.items.map((item) => (
-                  <li key={item.id}>
-                    <ActivityItemCard item={item} />
-                  </li>
+        <div className="space-y-5">
+          {dayGroups.map((dayGroup) => (
+            <div key={dayGroup.key}>
+              <h2 className="mb-1.5 text-xs font-semibold text-text-muted">{dayGroup.label}</h2>
+              <ul className="divide-y divide-border/60 rounded-xl border border-border bg-surface">
+                {dayGroup.groups.map((activityGroup) => (
+                  <ActivityGroupRow key={activityGroup.item.id} group={activityGroup} />
                 ))}
               </ul>
             </div>

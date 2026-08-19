@@ -17,7 +17,7 @@ vi.mock("@/db", () => ({
   getDb: async () => db,
 }));
 
-const { listActivityHistory } = await import("./activityHistory");
+const { listActivityHistory, groupActivityItems, ACTIVITY_CATEGORIES, CATEGORY_LABELS } = await import("./activityHistory");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -245,5 +245,198 @@ describe("listActivityHistory — date range and Hebrew-adjacent ordering", () =
     const items = await listActivityHistory(orgId, { from: new Date(Date.now() - 24 * 60 * 60 * 1000), to: new Date() });
     expect(items).toHaveLength(1);
     expect(items[0].title).toBe("חדש");
+  });
+});
+
+describe("emphasis tiers — visual weight only, never affects which events are shown", () => {
+  it("a completed request is significant", async () => {
+    const orgId = await seedOrg();
+    await recordEvent({
+      organizationId: orgId,
+      eventType: "collection_request.status_changed",
+      description: "סטטוס בקשת האיסוף עודכן מ-processing ל-completed",
+      actorType: "system",
+      metadata: { from: "processing", to: "completed" },
+    });
+    const [item] = await listActivityHistory(orgId);
+    expect(item.emphasis).toBe("significant");
+  });
+
+  it("a routine internal transition (processing) stays routine", async () => {
+    const orgId = await seedOrg();
+    await recordEvent({
+      organizationId: orgId,
+      eventType: "collection_request.status_changed",
+      description: "סטטוס בקשת האיסוף עודכן מ-active ל-processing",
+      actorType: "system",
+      metadata: { from: "active", to: "processing" },
+    });
+    const [item] = await listActivityHistory(orgId);
+    expect(item.emphasis).toBe("routine");
+  });
+
+  it("every failure-category event is critical or significant, never routine", async () => {
+    const orgId = await seedOrg();
+    await recordEvent({ organizationId: orgId, eventType: "whatsapp.send_failed", description: "נכשל", actorType: "system" });
+    const [item] = await listActivityHistory(orgId);
+    expect(item.category).toBe("failure");
+    expect(item.emphasis).toBe("critical");
+  });
+
+  it("a rejected document is significant; an approved one is routine", async () => {
+    const orgId = await seedOrg();
+    await recordEvent({ organizationId: orgId, eventType: "document.reviewed", description: 'מסמך "תעודת זהות" סומן כנדחה על ידי עובד', actorType: "employee" });
+    await recordEvent({ organizationId: orgId, eventType: "document.reviewed", description: 'מסמך "תעודת זהות" סומן כאושר על ידי עובד', actorType: "employee" });
+    const items = await listActivityHistory(orgId);
+    const rejected = items.find((i) => i.title.includes("נדחה"))!;
+    const approved = items.find((i) => i.title.includes("אושר"))!;
+    expect(rejected.emphasis).toBe("significant");
+    expect(approved.emphasis).toBe("routine");
+  });
+
+  it("routine housekeeping (template created) stays routine", async () => {
+    const orgId = await seedOrg();
+    await recordEvent({ organizationId: orgId, eventType: "template.created", description: 'בקשת האיסוף "X" נוצרה', actorType: "employee" });
+    const [item] = await listActivityHistory(orgId);
+    expect(item.emphasis).toBe("routine");
+  });
+});
+
+describe("no 'team' category — Centro is single-user today, but the real actor is still shown per event", () => {
+  it("ACTIVITY_CATEGORIES has no 'team' entry", () => {
+    expect(ACTIVITY_CATEGORIES).not.toContain("team");
+    expect(Object.keys(CATEGORY_LABELS)).not.toContain("team");
+  });
+
+  it("employee.registered (a purely team/onboarding event) is excluded from this view entirely", async () => {
+    const orgId = await seedOrg();
+    await recordEvent({ organizationId: orgId, eventType: "employee.registered", description: "עובד נרשם", actorType: "employee" });
+    expect(await listActivityHistory(orgId)).toHaveLength(0);
+  });
+
+  it("conversation.human_takeover is reassigned to 'request' (not dropped) and still shows the real actor", async () => {
+    const orgId = await seedOrg();
+    const [client] = await db.insert(schema.clients).values({ organizationId: orgId, name: "לקוח", phone: "+972500000010" }).returning();
+    const [user] = await db.insert(schema.users).values({ organizationId: orgId, email: "e@test.com", passwordHash: "x", fullName: "עובד בדיקה" }).returning();
+    await recordEvent({
+      organizationId: orgId,
+      eventType: "conversation.human_takeover",
+      description: "עובד השתלט על השיחה",
+      actorType: "employee",
+      actorUserId: user.id,
+      clientId: client.id,
+    });
+    const [item] = await listActivityHistory(orgId);
+    expect(item.category).toBe("request");
+    expect(item.actorName).toBe("עובד בדיקה"); // real actor preserved — audit-trail correctness, future-proof
+  });
+
+  it("review_item.opened is reassigned to 'whatsapp'", async () => {
+    const orgId = await seedOrg();
+    await recordEvent({ organizationId: orgId, eventType: "review_item.opened", description: 'נפתח פריט לבדיקת עובד: "שאלה"', actorType: "ai" });
+    const [item] = await listActivityHistory(orgId);
+    expect(item.category).toBe("whatsapp");
+  });
+});
+
+describe("search matches raw ids too, not just names", () => {
+  it("finds an event by its collectionRequestId", async () => {
+    const orgId = await seedOrg();
+    const [client] = await db.insert(schema.clients).values({ organizationId: orgId, name: "לקוח", phone: "+972500000011" }).returning();
+    const [service] = await db.insert(schema.services).values({ organizationId: orgId, name: "שירות" }).returning();
+    const [request] = await db.insert(schema.collectionRequests).values({ organizationId: orgId, clientId: client.id, serviceId: service.id, periodLabel: "p" }).returning();
+    await recordEvent({ organizationId: orgId, eventType: "document.received", description: "מסמך התקבל", actorType: "client", collectionRequestId: request.id });
+
+    const results = await listActivityHistory(orgId, { search: request.id });
+    expect(results).toHaveLength(1);
+  });
+
+  it("finds a template event by its templateId (from metadata)", async () => {
+    const orgId = await seedOrg();
+    const [template] = await db.insert(schema.services).values({ organizationId: orgId, name: "תבנית", collectionMode: "on_demand" }).returning();
+    await recordEvent({ organizationId: orgId, eventType: "template.deleted", description: 'התבנית "תבנית" נמחקה', actorType: "employee", metadata: { templateId: template.id } });
+
+    const results = await listActivityHistory(orgId, { search: template.id });
+    expect(results).toHaveLength(1);
+  });
+});
+
+describe("groupActivityItems — visual grouping only, never a server-side dedup", () => {
+  function makeItem(overrides: Partial<Awaited<ReturnType<typeof listActivityHistory>>[number]>): Awaited<ReturnType<typeof listActivityHistory>>[number] {
+    return {
+      id: crypto.randomUUID(),
+      category: "template",
+      emphasis: "routine",
+      title: 'התבנית "מסמכים לפתיחת תיק" נמחקה',
+      occurredAt: new Date(),
+      actorType: "employee",
+      actorName: null,
+      clientId: null,
+      clientName: null,
+      collectionRequestId: null,
+      requestLabel: null,
+      templateId: null,
+      templateName: null,
+      technicalDetail: null,
+      ...overrides,
+    };
+  }
+
+  it("collapses consecutive identical-title events within the grouping window into one group, keeping every real item", () => {
+    const now = Date.now();
+    const items = [
+      makeItem({ id: "1", occurredAt: new Date(now) }),
+      makeItem({ id: "2", occurredAt: new Date(now - 3_000) }),
+      makeItem({ id: "3", occurredAt: new Date(now - 7_000) }),
+    ];
+    const groups = groupActivityItems(items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items.map((i) => i.id)).toEqual(["1", "2", "3"]); // every real item preserved, in order
+    expect(groups[0].item.id).toBe("1"); // representative = newest
+  });
+
+  it("never groups events with different titles, even if adjacent in time", () => {
+    const now = Date.now();
+    const items = [
+      makeItem({ id: "1", title: "A", occurredAt: new Date(now) }),
+      makeItem({ id: "2", title: "B", occurredAt: new Date(now - 1_000) }),
+    ];
+    const groups = groupActivityItems(items);
+    expect(groups).toHaveLength(2);
+  });
+
+  it("never groups events with the same title but different categories", () => {
+    const now = Date.now();
+    const items = [
+      makeItem({ id: "1", title: "same", category: "template", occurredAt: new Date(now) }),
+      makeItem({ id: "2", title: "same", category: "document", occurredAt: new Date(now - 1_000) }),
+    ];
+    const groups = groupActivityItems(items);
+    expect(groups).toHaveLength(2);
+  });
+
+  it("does not group identical titles far apart in time (outside the grouping window)", () => {
+    const now = Date.now();
+    const items = [
+      makeItem({ id: "1", occurredAt: new Date(now) }),
+      makeItem({ id: "2", occurredAt: new Date(now - 60 * 60 * 1000) }), // 1 hour earlier
+    ];
+    const groups = groupActivityItems(items);
+    expect(groups).toHaveLength(2);
+  });
+
+  it("a single, non-repeated event is its own group of one", () => {
+    const groups = groupActivityItems([makeItem({ id: "1" })]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items).toHaveLength(1);
+  });
+
+  it("real production shape: 10 identically-named template.deleted events all group together, none lost", () => {
+    const now = Date.now();
+    const items = Array.from({ length: 10 }, (_, i) => makeItem({ id: String(i), occurredAt: new Date(now - i * 4_000) }));
+    const groups = groupActivityItems(items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items).toHaveLength(10);
+    expect(new Set(groups[0].items.map((i) => i.id)).size).toBe(10); // all distinct, nothing collapsed away
   });
 });

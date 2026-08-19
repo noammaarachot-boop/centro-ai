@@ -19,15 +19,13 @@ import { auditLogs, clients, collectionRequests, services, users } from "@/db/sc
 // for a specific row to skip it conditionally (e.g. a generic status-change
 // event whose target status isn't business-meaningful on its own).
 
-export const ACTIVITY_CATEGORIES = [
-  "all",
-  "request",
-  "document",
-  "whatsapp",
-  "template",
-  "team",
-  "failure",
-] as const;
+// "team"/multi-user is deliberately not a category — Centro is single-user
+// per account today (no team/multi-user concept exists anywhere else in
+// the product), so a filter for it would be UI for a feature that isn't
+// real yet. Every event still carries and displays its real actor
+// (actorName/actorType below) for audit-trail correctness and to stay
+// future-proof — only the "team" grouping/filter itself is absent.
+export const ACTIVITY_CATEGORIES = ["all", "request", "document", "whatsapp", "template", "failure"] as const;
 export type ActivityCategory = (typeof ACTIVITY_CATEGORIES)[number];
 
 export const CATEGORY_LABELS: Record<ActivityCategory, string> = {
@@ -36,9 +34,16 @@ export const CATEGORY_LABELS: Record<ActivityCategory, string> = {
   document: "מסמכים",
   whatsapp: "WhatsApp",
   template: "תבניות",
-  team: "צוות",
   failure: "תקלות",
 };
+
+// Visual weight only — never affects which events are shown or how
+// they're filtered/searched. "critical" (failures) and "significant"
+// (a request completing/escalating, a document rejected/flagged as an
+// exception) earn more visual attention; "routine" everyday housekeeping
+// (a document received, a template edited) stays visually quiet so it
+// doesn't compete for attention with what actually needs it.
+export type ActivityEmphasis = "routine" | "significant" | "critical";
 
 interface ActivityRow {
   eventType: string;
@@ -50,10 +55,15 @@ interface ActivityRow {
 interface ActivityLabel {
   title: string;
   detail?: string;
+  emphasis?: ActivityEmphasis;
 }
 
 interface EventDefinition {
   category: Exclude<ActivityCategory, "all">;
+  // Default emphasis for this event type when label() doesn't override it
+  // per-row (most events have one fixed emphasis; collection_request.status_changed
+  // is the one case where it genuinely depends on which status was reached).
+  emphasis: ActivityEmphasis;
   // Returns null to skip this specific occurrence (not the whole event
   // type) — used only where the same eventType covers both business-
   // meaningful and purely-internal transitions (collection_request.status_changed).
@@ -83,16 +93,20 @@ function reuseDescription(row: ActivityRow): ActivityLabel {
 // returns null and is skipped.
 function collectionRequestStatusLabel(row: ActivityRow): ActivityLabel | null {
   const { from, to } = statusChangeMetadata(row);
-  if (to === "completed") return { title: "בקשת האיסוף הושלמה" };
-  if (to === "cancelled") return { title: "בקשת האיסוף בוטלה" };
-  if (to === "processing") return { title: "הבקשה עברה לבדיקה" };
-  if (to === "active" && from === "escalated") return { title: "בקשת האיסוף נשלחה מחדש ללקוח" };
+  if (to === "completed") return { title: "בקשת האיסוף הושלמה", emphasis: "significant" };
+  if (to === "cancelled") return { title: "בקשת האיסוף בוטלה", emphasis: "significant" };
+  if (to === "processing") return { title: "הבקשה עברה לבדיקה", emphasis: "routine" };
+  if (to === "active" && from === "escalated") return { title: "בקשת האיסוף נשלחה מחדש ללקוח", emphasis: "routine" };
   return null;
 }
 
+// reviewDocument's own description already reads "מסמך ... סומן כאושר/נדחה/דורש
+// בדיקה על ידי עובד" — reused verbatim, but a rejection earns the stronger
+// "significant" tier (needs the client to act again) while an approval
+// stays routine.
 function documentReviewLabel(row: ActivityRow): ActivityLabel {
-  // reviewDocument's own description already reads "מסמך ... סומן כאושר/נדחה/דורש בדיקה על ידי עובד"
-  return reuseDescription(row);
+  const emphasis: ActivityEmphasis = row.description.includes("נדחה") ? "significant" : "routine";
+  return { title: row.description, emphasis };
 }
 
 // template.created/template.updated's own stored description text says
@@ -119,95 +133,108 @@ function templateDuplicatedLabel(row: ActivityRow): ActivityLabel {
 // The one allowlist — every key is a real eventType found in use across
 // the codebase (see the audit skill this task's own report documents).
 // Never invented. Anything not listed here never appears on this screen.
+// No "team" category (see ACTIVITY_CATEGORIES' own comment) — employee.registered
+// is the one event that was purely about team/multi-user and is dropped
+// from this view entirely (still written to audit_logs, just not shown
+// here); conversation.human_takeover/human_control_released and
+// review_item.opened are real request/client activity regardless of who's
+// single-user today, so they're reassigned to "request"/"whatsapp" rather
+// than removed — every one of them already carries a real actor, still
+// shown per-item below.
 const BUSINESS_EVENT_DEFINITIONS: Record<string, EventDefinition> = {
   // --- בקשות ---
-  "collection_request.created": { category: "request", label: reuseDescription },
-  "collection_request.scheduled_send_delivered": { category: "request", label: reuseDescription },
-  "collection_request.status_changed": { category: "request", label: collectionRequestStatusLabel },
+  "collection_request.created": { category: "request", emphasis: "routine", label: reuseDescription },
+  "collection_request.scheduled_send_delivered": { category: "request", emphasis: "routine", label: reuseDescription },
+  "collection_request.status_changed": { category: "request", emphasis: "routine", label: collectionRequestStatusLabel },
   "collection_request.escalated": {
     category: "request",
-    label: (row) => ({ title: "הבקשה הועברה לטיפול ידני", detail: row.description || undefined }),
+    emphasis: "significant",
+    label: (row) => ({ title: "הבקשה הועברה לטיפול ידני", detail: row.description || undefined, emphasis: "significant" }),
   },
-  "collection_request.reopened": { category: "request", label: reuseDescription },
-  "collection_request.reopened_via_correction": { category: "request", label: reuseDescription },
-  "collection_request.requirement_waived": { category: "request", label: reuseDescription },
-  "collection_request.extension_finished_confirmed": { category: "request", label: reuseDescription },
-  "collection_request.auto_created": { category: "request", label: reuseDescription },
-  "requirement.exception_reported": { category: "request", label: reuseDescription },
-  "requirement.exception_waived": { category: "request", label: reuseDescription },
-  "requirement.exception_alternative_requested": { category: "request", label: reuseDescription },
-  "requirement.exception_contact_client": { category: "request", label: reuseDescription },
+  "collection_request.reopened": { category: "request", emphasis: "significant", label: reuseDescription },
+  "collection_request.reopened_via_correction": { category: "request", emphasis: "significant", label: reuseDescription },
+  "collection_request.requirement_waived": { category: "request", emphasis: "routine", label: reuseDescription },
+  "collection_request.extension_finished_confirmed": { category: "request", emphasis: "routine", label: reuseDescription },
+  "collection_request.auto_created": { category: "request", emphasis: "routine", label: reuseDescription },
+  "requirement.exception_reported": { category: "request", emphasis: "significant", label: reuseDescription },
+  "requirement.exception_waived": { category: "request", emphasis: "routine", label: reuseDescription },
+  "requirement.exception_alternative_requested": { category: "request", emphasis: "routine", label: reuseDescription },
+  "requirement.exception_contact_client": { category: "request", emphasis: "significant", label: reuseDescription },
+  "conversation.human_takeover": { category: "request", emphasis: "significant", label: reuseDescription },
+  "conversation.human_control_released": { category: "request", emphasis: "routine", label: reuseDescription },
 
   // --- מסמכים ---
-  "document.received": { category: "document", label: reuseDescription },
-  "document.added_manually": { category: "document", label: reuseDescription },
-  "document.reviewed": { category: "document", label: documentReviewLabel },
-  "document.rejected_unsupported_type": { category: "document", label: reuseDescription },
-  "document.unreadable": { category: "document", label: reuseDescription },
-  "document.duplicate_detected": { category: "document", label: reuseDescription },
-  "document.identity_anomaly_confirmed": { category: "document", label: reuseDescription },
-  "document.identity_anomaly_rejected": { category: "document", label: reuseDescription },
-  "document.unsolicited_approved": { category: "document", label: reuseDescription },
-  "document.unsolicited_rejected": { category: "document", label: reuseDescription },
-  "document.requirement_assigned": { category: "document", label: reuseDescription },
-  "document.superseded": { category: "document", label: reuseDescription },
+  "document.received": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.added_manually": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.reviewed": { category: "document", emphasis: "routine", label: documentReviewLabel },
+  "document.rejected_unsupported_type": { category: "document", emphasis: "significant", label: reuseDescription },
+  "document.unreadable": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.duplicate_detected": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.identity_anomaly_confirmed": { category: "document", emphasis: "significant", label: reuseDescription },
+  "document.identity_anomaly_rejected": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.unsolicited_approved": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.unsolicited_rejected": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.requirement_assigned": { category: "document", emphasis: "routine", label: reuseDescription },
+  "document.superseded": { category: "document", emphasis: "routine", label: reuseDescription },
 
   // --- WhatsApp (business-meaningful sends only — never the full transcript) ---
-  "conversation.initiated": { category: "whatsapp", label: reuseDescription },
+  "conversation.initiated": { category: "whatsapp", emphasis: "routine", label: reuseDescription },
   "scheduler.reminder_sent": {
     category: "whatsapp",
+    emphasis: "routine",
     label: () => ({ title: "נשלחה תזכורת ללקוח" }),
   },
   "review_item.resolved": {
     category: "whatsapp",
+    emphasis: "routine",
     label: (row) => ({ title: "העובד השיב ללקוח", detail: row.description }),
+  },
+  "review_item.opened": {
+    category: "whatsapp",
+    emphasis: "significant",
+    label: (row) => ({ title: "התקבלה שאלה מהלקוח הממתינה לתשובת עובד", detail: row.description, emphasis: "significant" }),
   },
 
   // --- תבניות ---
-  "template.created": { category: "template", label: templateCreatedLabel },
-  "template.updated": { category: "template", label: templateUpdatedLabel },
-  "template.deleted": { category: "template", label: reuseDescription },
-  "template.duplicated": { category: "template", label: templateDuplicatedLabel },
-  "template.requirement_added": { category: "template", label: reuseDescription },
-  "template.requirement_removed": { category: "template", label: reuseDescription },
-  "template.requirement_renamed": { category: "template", label: reuseDescription },
-  "template.clients_assigned": { category: "template", label: reuseDescription },
-  "template.client_removed": { category: "template", label: reuseDescription },
-
-  // --- צוות ---
-  "employee.registered": { category: "team", label: reuseDescription },
-  "conversation.human_takeover": { category: "team", label: reuseDescription },
-  "conversation.human_control_released": { category: "team", label: reuseDescription },
-  "review_item.opened": {
-    category: "team",
-    label: (row) => ({ title: "התקבלה שאלה מהלקוח הממתינה לתשובת עובד", detail: row.description }),
-  },
+  "template.created": { category: "template", emphasis: "routine", label: templateCreatedLabel },
+  "template.updated": { category: "template", emphasis: "routine", label: templateUpdatedLabel },
+  "template.deleted": { category: "template", emphasis: "routine", label: reuseDescription },
+  "template.duplicated": { category: "template", emphasis: "routine", label: templateDuplicatedLabel },
+  "template.requirement_added": { category: "template", emphasis: "routine", label: reuseDescription },
+  "template.requirement_removed": { category: "template", emphasis: "routine", label: reuseDescription },
+  "template.requirement_renamed": { category: "template", emphasis: "routine", label: reuseDescription },
+  "template.clients_assigned": { category: "template", emphasis: "routine", label: reuseDescription },
+  "template.client_removed": { category: "template", emphasis: "routine", label: reuseDescription },
 
   // --- תקלות ---
-  "whatsapp.send_failed": { category: "failure", label: () => ({ title: "שליחת הודעת WhatsApp נכשלה" }) },
-  "whatsapp.outbound_send_failed": { category: "failure", label: reuseDescription },
-  "whatsapp.send_blocked": { category: "failure", label: reuseDescription },
+  "whatsapp.send_failed": { category: "failure", emphasis: "critical", label: () => ({ title: "שליחת הודעת WhatsApp נכשלה" }) },
+  "whatsapp.outbound_send_failed": { category: "failure", emphasis: "critical", label: reuseDescription },
+  "whatsapp.send_blocked": { category: "failure", emphasis: "significant", label: reuseDescription },
   "whatsapp.inbound_media_download_failed": {
     category: "failure",
+    emphasis: "critical",
     label: () => ({ title: "הורדת קובץ שנשלח בוואטסאפ נכשלה" }),
   },
   "whatsapp.inbound_processing_failed": {
     category: "failure",
+    emphasis: "critical",
     label: () => ({ title: "עיבוד מסמך שהתקבל בוואטסאפ נכשל" }),
   },
-  "document.drive_upload_exhausted": { category: "failure", label: reuseDescription },
-  "document.drive_upload_skipped": { category: "failure", label: reuseDescription },
-  "document.merge_failed": { category: "failure", label: () => ({ title: "מיזוג עמודי מסמך נכשל" }) },
+  "document.drive_upload_exhausted": { category: "failure", emphasis: "critical", label: reuseDescription },
+  "document.drive_upload_skipped": { category: "failure", emphasis: "significant", label: reuseDescription },
+  "document.merge_failed": { category: "failure", emphasis: "critical", label: () => ({ title: "מיזוג עמודי מסמך נכשל" }) },
   "integration.google_token_refresh_failed": {
     category: "failure",
+    emphasis: "critical",
     label: () => ({ title: "חידוש החיבור ל-Google Drive נכשל" }),
   },
-  "pending_confirmation.escalated_no_reply": { category: "failure", label: reuseDescription },
+  "pending_confirmation.escalated_no_reply": { category: "failure", emphasis: "significant", label: reuseDescription },
 };
 
 export interface ActivityItem {
   id: string;
   category: Exclude<ActivityCategory, "all">;
+  emphasis: ActivityEmphasis;
   title: string;
   detail?: string;
   occurredAt: Date;
@@ -308,6 +335,7 @@ export async function listActivityHistory(
     items.push({
       id: row.id,
       category: definition.category,
+      emphasis: label.emphasis ?? definition.emphasis,
       title: label.title,
       detail: label.detail,
       occurredAt: row.occurredAt,
@@ -329,8 +357,58 @@ export async function listActivityHistory(
   if (!filters.search?.trim()) return categoryFiltered;
   const needle = filters.search.trim().toLowerCase();
   return categoryFiltered.filter((item) =>
-    [item.clientName, item.templateName, item.requestLabel, item.title]
+    // Names first (what a person actually types), but also the raw ids —
+    // pasting a collectionRequestId/clientId/templateId (e.g. from a URL
+    // or another screen) must find its own events too.
+    [
+      item.clientName,
+      item.templateName,
+      item.requestLabel,
+      item.title,
+      item.clientId,
+      item.collectionRequestId,
+      item.templateId,
+    ]
       .filter((v): v is string => !!v)
       .some((v) => v.toLowerCase().includes(needle))
   );
+}
+
+// --- Visual grouping (display-layer only — never touches audit_logs) ---
+
+export interface ActivityGroup {
+  // The representative item shown collapsed — always the newest of the
+  // group (items arrive newest-first).
+  item: ActivityItem;
+  // Every real item in the group, oldest-last (same order as the input),
+  // including `item` itself — "הצג N פעולות" reveals exactly these, never
+  // a re-fetch or a re-derived summary.
+  items: ActivityItem[];
+}
+
+// Two events with the exact same title, in the exact same category,
+// occurring within this window of each other are treated as "the same
+// kind of thing happening in a burst" (e.g. the real production case this
+// screen was built against: 10 identically-named templates deleted one
+// after another in under a minute) — collapsed to one visual row with a
+// count and an expandable list of the real underlying items. Never a
+// server-side dedup: every item is still returned by listActivityHistory
+// and still fully present in `items` below; this only decides how the
+// already-fetched list is grouped for display.
+const GROUPING_WINDOW_MS = 5 * 60 * 1000;
+
+export function groupActivityItems(items: ActivityItem[]): ActivityGroup[] {
+  const groups: ActivityGroup[] = [];
+  for (const item of items) {
+    const lastGroup = groups[groups.length - 1];
+    const lastItem = lastGroup?.items[lastGroup.items.length - 1];
+    const withinWindow =
+      lastItem && Math.abs(lastItem.occurredAt.getTime() - item.occurredAt.getTime()) <= GROUPING_WINDOW_MS;
+    if (lastGroup && lastItem && withinWindow && lastItem.title === item.title && lastItem.category === item.category) {
+      lastGroup.items.push(item);
+    } else {
+      groups.push({ item, items: [item] });
+    }
+  }
+  return groups;
 }
