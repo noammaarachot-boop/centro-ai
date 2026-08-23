@@ -1,0 +1,33 @@
+-- H2: multi-tenant read indexes — DELIBERATELY EMPTY.
+--
+-- This migration creates nothing. The seven indexes it would otherwise
+-- contain are in schema.ts and in this migration's snapshot, but they are
+-- created OUT OF BAND by `npm run db:create-indexes`
+-- (scripts/createIndexesConcurrently.ts), never by the migrator.
+--
+-- Why the migrator cannot do it:
+--   drizzle-orm 0.45.2 runs every pending migration inside one transaction
+--   (pg-core/dialect.js: `await session.transaction(...)`), and there is no
+--   per-migration opt-out — "no-transaction" does not exist anywhere in the
+--   package. CREATE INDEX CONCURRENTLY inside a transaction block is
+--   rejected by Postgres with SQLSTATE 25001, so it would fail the whole
+--   deploy. The only alternative available to the migrator is a plain
+--   CREATE INDEX, which takes a lock that blocks writes for as long as the
+--   build takes — acceptable while `messages` has a few hundred rows,
+--   actively dangerous once it does not.
+--
+-- The consequence, stated plainly so it is never a silent surprise:
+--   A DATABASE MIGRATED FROM SCRATCH WILL NOT HAVE THESE SEVEN INDEXES.
+--   Migrations alone leave the schema functionally complete but
+--   unoptimised. `npm run db:create-indexes` is a required step when
+--   provisioning any new environment, and it is idempotent, so running it
+--   when the indexes already exist is a no-op.
+--
+-- Verify at any time with:
+--   select indexrelid::regclass, indisvalid from pg_index
+--   where indexrelid::regclass::text like '%organization_id%';
+--
+-- The index definitions live in schema.ts. This file is kept (rather than
+-- deleted) on purpose: its snapshot is what stops `drizzle-kit generate`
+-- from re-proposing these same indexes as a new, transactional migration.
+SELECT 1;

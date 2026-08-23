@@ -9,6 +9,7 @@
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
+    "db:create-indexes": "tsx scripts/createIndexesConcurrently.ts",
     "fix:drive-folders": "tsx scripts/fixClientDriveFolders.ts",
     "org:create": "tsx scripts/create-organization.ts",
     "owner:create": "tsx scripts/create-owner.ts",

@@ -3,6 +3,7 @@ import {
   type AnyPgColumn,
   boolean,
   customType,
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -472,7 +473,17 @@ export const auditLogs = pgTable("audit_logs", {
   ),
   description: text("description").notNull(),
   metadata: jsonb("metadata"),
-});
+}, (table) => [
+  // Every activity view reads "this organization's events, newest first".
+  // occurredAt descending matches the ORDER BY, so one index serves both
+  // the tenant filter and the sort. This is also the fastest-growing table
+  // in the system — one row per event, per tenant — which is why it is
+  // worth indexing before the volume arrives rather than after.
+  index("audit_logs_organization_id_occurred_at_idx").on(
+    table.organizationId,
+    table.occurredAt.desc()
+  ),
+]);
 
 // Business record only — a Client never authenticates into Centro (EPS
 // Ch.2, Ch.4 BR-002). `phone` is the WhatsApp address used from M6 onward,
@@ -929,7 +940,15 @@ export const collectionRequests = pgTable("collection_requests", {
   // never has to dig through audit_logs to understand why automation
   // stopped on this request.
   escalationReason: text("escalation_reason"),
-});
+}, (table) => [
+  // The scheduler filters (organizationId, status) on every tick — the
+  // draft/scheduled sweep and the extension sweep both — and the
+  // collections list does the same on every page load.
+  index("collection_requests_organization_id_status_idx").on(
+    table.organizationId,
+    table.status
+  ),
+]);
 
 // The per-cycle snapshot described in BR-002 above — copied from
 // serviceDocumentRequirements when the Collection Request is created,
@@ -1227,6 +1246,10 @@ export const documents = pgTable("documents", {
   uniqueIndex("documents_whatsapp_message_id_idx")
     .on(table.whatsappMessageId)
     .where(sql`${table.whatsappMessageId} is not null`),
+  // computeRequirementsProgress reads this request's documents on every
+  // render of the request page and on every completion-gate evaluation —
+  // i.e. after every inbound document.
+  index("documents_collection_request_id_idx").on(table.collectionRequestId),
 ]);
 
 // EPS Ch.6: Open → Waiting for Client → Human Control → Closed.
@@ -1302,7 +1325,19 @@ export const conversations = pgTable("conversations", {
   // the separate post-completion extension flow. Cleared (null) the
   // moment it's acted on or the request completes.
   pendingCaseReviewAt: timestamp("pending_case_review_at", { withTimezone: true }),
-});
+}, (table) => [
+  // Three of the scheduler's six per-tick passes filter on exactly this
+  // pair (open conversations, waiting-for-client conversations, pending
+  // case reviews).
+  index("conversations_organization_id_status_idx").on(
+    table.organizationId,
+    table.status
+  ),
+  // The join target for nearly every read that starts from a collection
+  // request — the request detail page, the completion gate, the scheduler
+  // passes that join conversations onto requests.
+  index("conversations_collection_request_id_idx").on(table.collectionRequestId),
+]);
 
 export const messageDirection = pgEnum("message_direction", [
   "inbound",
@@ -1327,7 +1362,22 @@ export const messages = pgTable("messages", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  // The stuck-outbound sweep runs on every tick for every organization,
+  // and getSendFailureSignal reads the same three columns for one tenant.
+  index("messages_organization_id_direction_delivery_status_idx").on(
+    table.organizationId,
+    table.direction,
+    table.deliveryStatus
+  ),
+  // Rendering a conversation: this conversation's messages in order.
+  // createdAt as the trailing column lets the index satisfy the ORDER BY
+  // as well as the filter.
+  index("messages_conversation_id_created_at_idx").on(
+    table.conversationId,
+    table.createdAt
+  ),
+]);
 
 // Webhook idempotency/claim tracking — a real production incident showed
 // Meta redelivering the same inbound webhook up to 4 times when a single

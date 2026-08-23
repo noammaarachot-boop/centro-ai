@@ -62,9 +62,64 @@ export async function getSendFailureSignals(): Promise<Map<string, OrganizationS
   return map;
 }
 
+/**
+ * The same signal as above, for a single organization.
+ *
+ * Scoped in SQL rather than by computing every tenant's signal and picking
+ * one out of the result: this runs on every load of an organization's page,
+ * and the all-tenants form made that page's cost grow with the size of the
+ * whole platform. Filtering here also means no other tenant's messages are
+ * read to answer a question about this one.
+ *
+ * Both the CTE and the count filter on
+ * (organization_id, direction, delivery_status) — the column order of
+ * messages_organization_id_direction_delivery_status_idx.
+ */
 export async function getSendFailureSignal(
   organizationId: string
 ): Promise<OrganizationSendFailureSignal> {
-  const all = await getSendFailureSignals();
-  return all.get(organizationId) ?? { consecutiveSendFailures: 0, lastSuccessfulSendAt: null };
+  const db = await getDb();
+
+  const rows = await db.execute<{
+    consecutive_failures: number;
+    last_success_at: Date | null;
+  }>(sql`
+    with last_success as (
+      select max(created_at) as at
+      from messages
+      where organization_id = ${organizationId}
+        and direction = 'outbound'
+        and delivery_status = 'sent'
+    )
+    select
+      ls.at as last_success_at,
+      (
+        select count(*)
+        from messages m
+        where m.organization_id = ${organizationId}
+          and m.direction = 'outbound'
+          and m.delivery_status = 'failed'
+          and (ls.at is null or m.created_at > ls.at)
+      )::int as consecutive_failures
+    from last_success ls
+  `);
+
+  const list = Array.isArray(rows)
+    ? rows
+    : ((rows as unknown as { rows: Array<Record<string, unknown>> }).rows ?? []);
+
+  const row = (list as Array<{
+    consecutive_failures: number;
+    last_success_at: Date | string | null;
+  }>)[0];
+
+  // last_success is a bare aggregate, so it yields exactly one row even for
+  // an organization with no messages at all — but an absent row still falls
+  // back to the same "nothing has failed" answer the map lookup gave.
+  if (!row) return { consecutiveSendFailures: 0, lastSuccessfulSendAt: null };
+
+  return {
+    consecutiveSendFailures: Number(row.consecutive_failures ?? 0),
+    lastSuccessfulSendAt: row.last_success_at ? new Date(row.last_success_at) : null,
+  };
 }
