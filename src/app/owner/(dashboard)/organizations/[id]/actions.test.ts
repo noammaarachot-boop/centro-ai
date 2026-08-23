@@ -267,7 +267,7 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
     expect(tokenVisibleToHandshake).toBeTruthy();
   });
 
-  it("a failed override does NOT fail the connection — it stays saved (Meta falls back to the shared URL), and the token is cleared so no dead URL is advertised", async () => {
+  it("a failed override does NOT fail the connection, and the URL/token pair is still KEPT so the owner can see it and register it in Meta by hand", async () => {
     const orgId = await seedOrg();
     mockMetaByUrl({ overrideOk: false, phoneNumberId: "phone-override-fail" });
 
@@ -282,12 +282,35 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
       )
     );
     expect(result.params.whatsappConnected).toBe("1"); // still a successful connection
-    expect(result.params.webhookOverrideFailed).toBe("1"); // but the owner is told
 
     const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
     expect(org.whatsappPhoneNumberId).toBe("phone-override-fail"); // connection intact
     expect(org.whatsappAccessTokenEnc).not.toBeNull();
-    expect(org.whatsappWebhookVerifyToken).toBeNull(); // cleared — nothing to advertise
+    // The pair survives a rejected registration — this is the whole point:
+    // the owner can still SEE it, copy it, and register it in Meta by hand.
+    expect(org.whatsappWebhookVerifyToken).toBeTruthy();
+    // ...but we never pretend Meta is routing there.
+    expect(org.whatsappWebhookOverrideAt).toBeNull();
+  });
+
+  it("records whatsappWebhookOverrideAt only when Meta genuinely accepted the registration", async () => {
+    const orgId = await seedOrg();
+    mockMetaByUrl({ overrideOk: true, phoneNumberId: "phone-override-at" });
+
+    await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({
+          organizationId: orgId,
+          wabaId: "waba-override-at",
+          phoneNumberId: "phone-override-at",
+          accessToken: "EAAG_token",
+        })
+      )
+    );
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappWebhookOverrideAt).toBeInstanceOf(Date);
+    expect(org.whatsappWebhookVerifyToken).toBeTruthy();
   });
 
   it("records an audit event that never contains the token itself", async () => {

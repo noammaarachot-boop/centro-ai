@@ -85,16 +85,18 @@ export interface OwnerOrganizationOverview {
   // sites, not even encrypted, so the UI layer only ever gets to know
   // whether one exists.
   whatsappManuallyConnected: boolean;
-  // Per-phone-number webhook override (Meta "Webhook overrides"). Both are
-  // null unless an override is genuinely registered with Meta right now —
-  // the owner action clears the token again if Meta rejected the
-  // registration — so the owner screen can never advertise a dedicated URL
-  // that isn't actually receiving traffic. Unlike the Access Token, the
-  // verify token IS surfaced deliberately: it only proves the one-time
-  // hub.challenge handshake, grants no API access, and the owner needs it
-  // to re-enter or verify the override in Meta by hand.
+  // Per-phone-number webhook override (Meta "Webhook overrides"). The
+  // URL/token pair is surfaced whenever one exists, whether or not Meta
+  // accepted the automatic registration — the dynamic route honours the
+  // pair either way, so showing it is what lets the owner register the
+  // override by hand in Meta when the automatic attempt didn't go through.
+  // Unlike the Access Token, the verify token is surfaced deliberately: it
+  // only proves the one-time hub.challenge handshake and grants no API
+  // access. whatsappWebhookOverrideActive is the honest, separate answer
+  // to "is Meta actually routing there yet".
   whatsappWebhookUrl: string | null;
   whatsappWebhookVerifyToken: string | null;
+  whatsappWebhookOverrideActive: boolean;
   googleConnectedAt: Date | null;
   googleDriveFolderName: string | null;
   suspendedAt: Date | null;
@@ -169,6 +171,7 @@ export async function getOrganizationOverview(
         ? buildPhoneNumberWebhookUrl(org.whatsappPhoneNumberId)
         : null,
     whatsappWebhookVerifyToken: org.whatsappWebhookVerifyToken,
+    whatsappWebhookOverrideActive: !!org.whatsappWebhookOverrideAt,
     googleConnectedAt: org.googleConnectedAt,
     googleDriveFolderName: org.googleDriveFolderName,
     suspendedAt: org.suspendedAt,

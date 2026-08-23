@@ -37,15 +37,11 @@ export default async function OwnerOrganizationDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{
-    whatsappConnected?: string;
-    whatsappError?: string;
-    webhookOverrideFailed?: string;
-  }>;
+  searchParams: Promise<{ whatsappConnected?: string; whatsappError?: string }>;
 }) {
   await requireOwnerSession();
   const { id } = await params;
-  const { whatsappConnected, whatsappError, webhookOverrideFailed } = await searchParams;
+  const { whatsappConnected, whatsappError } = await searchParams;
 
   const overview = await getOrganizationOverview(id);
   if (!overview) notFound();
@@ -220,27 +216,34 @@ export default async function OwnerOrganizationDetailPage({
             {decodeURIComponent(whatsappError)}
           </p>
         )}
-        {webhookOverrideFailed && (
-          <p
-            role="alert"
-            className="mb-4 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm font-medium text-warning"
-          >
-            החיבור נשמר והודעות ימשיכו להגיע דרך כתובת ה-Webhook המשותפת, אך לא הצלחנו לרשום כתובת
-            ייעודית למספר הזה מול Meta. ניתן ללחוץ &quot;בדוק וחבר&quot; שוב כדי לנסות שנית.
-          </p>
-        )}
-
-        {/* Per-number webhook override (Meta "Webhook overrides") — shown
-            only when an override is genuinely registered right now, so this
-            can never advertise a URL Meta isn't actually delivering to. */}
+        {/* Per-number webhook override (Meta "Webhook overrides"). Always
+            shown once a pair exists — Centro's own dynamic route honours it
+            whether or not Meta accepted the automatic registration, so
+            showing it is exactly what lets the owner register it by hand
+            when the automatic attempt didn't go through. The status line is
+            the honest part: it says whether Meta is actually routing here
+            yet, rather than the presence of the box implying it. */}
         {overview.whatsappWebhookUrl && overview.whatsappWebhookVerifyToken && (
-          <div className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3">
-            <p className="mb-2 text-sm font-semibold text-success">
-              כתובת Webhook ייעודית למספר הזה — פעילה
+          <div
+            className={`mb-4 rounded-xl border px-4 py-3 ${
+              overview.whatsappWebhookOverrideActive
+                ? "border-success/30 bg-success/5"
+                : "border-warning/30 bg-warning/5"
+            }`}
+          >
+            <p
+              className={`mb-2 text-sm font-semibold ${
+                overview.whatsappWebhookOverrideActive ? "text-success" : "text-warning"
+              }`}
+            >
+              {overview.whatsappWebhookOverrideActive
+                ? "כתובת Webhook ייעודית למספר הזה — רשומה ופעילה ב-Meta"
+                : "כתובת Webhook ייעודית למספר הזה — טרם נרשמה ב-Meta"}
             </p>
             <p className="mb-3 text-xs text-text-secondary">
-              רשומה אוטומטית מול Meta עבור המספר הזה בלבד. הודעות נכנסות של המשרד הזה מגיעות לכתובת
-              הזו במקום לכתובת המשותפת. אין צורך להזין אותה ידנית — היא מוצגת לאימות ולמעקב.
+              {overview.whatsappWebhookOverrideActive
+                ? "הודעות נכנסות של המשרד הזה מגיעות לכתובת הזו במקום לכתובת המשותפת. אין צורך לעשות דבר — הפרטים מוצגים לאימות ולמעקב."
+                : "הכתובת והאסימון נוצרו ומוכנים לשימוש, אך Meta עדיין לא הופנתה אליהם — ההודעות ממשיכות להגיע כרגיל דרך הכתובת המשותפת, והחיבור עובד במלואו. אפשר לרשום אותם ידנית ב-Meta (WhatsApp → Configuration של המספר), או ללחוץ “בדוק וחבר” שוב כדי שננסה אוטומטית."}
             </p>
             <dl className="space-y-2 text-xs">
               <div>

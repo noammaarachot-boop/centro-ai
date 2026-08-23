@@ -131,6 +131,17 @@ export const organizations = pgTable("organizations", {
   // X-Hub-Signature-256 HMAC against WHATSAPP_APP_SECRET — which the
   // override does not change, since events still come from the same App.
   whatsappWebhookVerifyToken: text("whatsapp_webhook_verify_token"),
+  // When Meta actually accepted the override registration
+  // (setPhoneNumberWebhookOverride). Null means Centro generated the URL
+  // and token — and the dynamic route will honour them — but Meta has not
+  // been told to use them, so events still arrive on the shared app-level
+  // endpoint until someone registers the override (automatically on a
+  // retry, or by hand in the Meta dashboard using the exact URL/token the
+  // owner screen shows). Deliberately separate from the token itself: the
+  // token stays put either way, so the owner can always SEE and copy the
+  // pair, and this column is the honest answer to "is Meta actually
+  // routing here yet".
+  whatsappWebhookOverrideAt: timestamp("whatsapp_webhook_override_at", { withTimezone: true }),
   // Per-organization Meta template-approval tracking (Phase 2.1 remediation).
   // Message-template review/approval happens per-WABA on Meta's side, not
   // globally — a template approved on one office's WhatsApp Business

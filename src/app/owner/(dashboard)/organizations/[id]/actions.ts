@@ -349,22 +349,25 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
   // Deliberately NOT fatal, unlike the WABA subscription above: without an
   // override this number's messages still arrive on the shared app-level
   // endpoint (Meta falls back to it), so the connection is fully working
-  // either way. On failure the token is cleared again so the owner screen
-  // never advertises a dedicated URL that Meta isn't actually delivering
-  // to.
+  // either way.
+  //
+  // The generated URL/token pair is kept regardless of the outcome — the
+  // dynamic route honours it either way, so the owner can always see and
+  // copy it, and register the override by hand in Meta if this automatic
+  // attempt didn't go through. Only whatsappWebhookOverrideAt records
+  // whether Meta itself is actually routing there yet, so the screen can
+  // say so honestly instead of showing nothing at all.
   const overrideOk = await setPhoneNumberWebhookOverride(
     phoneNumberId,
     buildPhoneNumberWebhookUrl(phoneNumberId),
     webhookVerifyToken,
     accessToken
   );
-  if (!overrideOk) {
-    const db = await getDb();
-    await db
-      .update(organizations)
-      .set({ whatsappWebhookVerifyToken: null, updatedAt: new Date() })
-      .where(eq(organizations.id, organizationId));
-  }
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({ whatsappWebhookOverrideAt: overrideOk ? new Date() : null, updatedAt: new Date() })
+    .where(eq(organizations.id, organizationId));
 
   await recordOwnerAuditEvent({
     eventType: "owner.whatsapp_manually_connected",
@@ -374,7 +377,8 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     metadata: { organizationId, wabaId, phoneNumberId, webhooksSubscribed: true, webhookOverride: overrideOk },
   });
 
-  redirect(
-    `/owner/organizations/${organizationId}?whatsappConnected=1${overrideOk ? "" : "&webhookOverrideFailed=1"}`
-  );
+  // The override's own outcome is persisted (whatsappWebhookOverrideAt) and
+  // rendered from there, so it survives a refresh instead of living in a
+  // one-shot query param.
+  redirect(`/owner/organizations/${organizationId}?whatsappConnected=1`);
 }
