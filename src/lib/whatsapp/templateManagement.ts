@@ -105,14 +105,75 @@ export function validateExampleValue(example: string): string | null {
   return null;
 }
 
+// Meta's own error, kept WHOLE. The previous version returned only
+// error_user_msg and discarded the HTTP status, code, error_subcode, type
+// and fbtrace_id — which are exactly the fields needed to tell a missing
+// app-level permission apart from a missing asset-level one, and left
+// every failure looking identical in the logs. None of these fields ever
+// contain the access token, so surfacing them is safe.
+export interface MetaErrorDetails {
+  status: number;
+  code: number | null;
+  subcode: number | null;
+  type: string | null;
+  message: string;
+  userMessage: string | null;
+  fbtraceId: string | null;
+}
+
+export function formatMetaError(details: MetaErrorDetails): string {
+  const parts = [
+    details.userMessage ?? details.message,
+    `HTTP ${details.status}`,
+    details.code !== null ? `code ${details.code}` : null,
+    details.subcode !== null ? `subcode ${details.subcode}` : null,
+    details.type,
+    details.fbtraceId ? `fbtrace_id ${details.fbtraceId}` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 async function readError(response: Response): Promise<string> {
   const body = await response.text();
+  let details: MetaErrorDetails = {
+    status: response.status,
+    code: null,
+    subcode: null,
+    type: null,
+    message: body,
+    userMessage: null,
+    fbtraceId: null,
+  };
+
   try {
-    const parsed = JSON.parse(body) as { error?: { message?: string; error_user_msg?: string } };
-    return parsed.error?.error_user_msg ?? parsed.error?.message ?? body;
+    const parsed = JSON.parse(body) as {
+      error?: {
+        message?: string;
+        error_user_msg?: string;
+        code?: number;
+        error_subcode?: number;
+        type?: string;
+        fbtrace_id?: string;
+      };
+    };
+    if (parsed.error) {
+      details = {
+        status: response.status,
+        code: parsed.error.code ?? null,
+        subcode: parsed.error.error_subcode ?? null,
+        type: parsed.error.type ?? null,
+        message: parsed.error.message ?? body,
+        userMessage: parsed.error.error_user_msg ?? null,
+        fbtraceId: parsed.error.fbtrace_id ?? null,
+      };
+    }
   } catch {
-    return body;
+    // Not JSON — keep the raw body as the message.
   }
+
+  // Full detail in the server log, where it can be read after the fact.
+  console.error("[whatsapp-template] Meta rejected the request", details);
+  return formatMetaError(details);
 }
 
 export interface SubmittedTemplate {

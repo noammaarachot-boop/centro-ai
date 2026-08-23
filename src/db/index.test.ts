@@ -22,6 +22,14 @@ let db: Database;
 beforeAll(async () => {
   const client = new PGlite();
   db = drizzle(client, { schema }) as unknown as Database;
+  // PGlite initializes its WASM engine lazily, on the first query — not in
+  // the constructor above. Without this warm-up that one-time cost is
+  // billed to whichever test happens to query first, inside its own
+  // default 5s budget rather than this hook's 60s one, and under full-suite
+  // parallel load that alone can time the first test out. Paying it here
+  // puts it where it belongs and keeps the tests measuring the lock, not
+  // engine startup.
+  await db.execute(sql`select 1`);
 }, 60_000);
 
 async function heldAdvisoryLockCount(): Promise<number> {

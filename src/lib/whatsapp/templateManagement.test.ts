@@ -154,6 +154,52 @@ describe("submitTemplateToMeta", () => {
     ).rejects.toThrow(/Template name already exists/);
   });
 
+  // Without these fields every permission failure looks identical, and an
+  // app-level permission problem is indistinguishable from an asset-level
+  // one — which is exactly what blocked diagnosing the live rejection.
+  it("keeps Meta's full diagnostic detail: status, code, error_subcode, type and fbtrace_id", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: async () =>
+        JSON.stringify({
+          error: {
+            message: "(#200) Permissions error",
+            error_user_msg: "אין הרשאה ליצור תבניות",
+            code: 200,
+            error_subcode: 2388093,
+            type: "OAuthException",
+            fbtrace_id: "AbCdEf123",
+          },
+        }),
+    });
+
+    let caught: unknown;
+    try {
+      await submitTemplateToMeta({
+        wabaId: "waba-1",
+        accessToken: "super-secret-token",
+        name: "n",
+        language: "he",
+        category: "UTILITY",
+        bodyText: "{{1}}",
+        exampleValues: ["x"],
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    const message = (caught as Error).message;
+    expect(message).toContain("אין הרשאה ליצור תבניות");
+    expect(message).toContain("HTTP 403");
+    expect(message).toContain("code 200");
+    expect(message).toContain("subcode 2388093");
+    expect(message).toContain("OAuthException");
+    expect(message).toContain("AbCdEf123");
+    // The token is never part of Meta's error, and must never be added to it.
+    expect(message).not.toContain("super-secret-token");
+  });
+
   it("throws rather than silently succeeding when Meta returns no template id", async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ status: "PENDING" }) });
 
