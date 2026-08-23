@@ -40,6 +40,8 @@ export interface ManagedTemplateDefinition {
   name: string;
   /** Hebrew label for the owner screen. */
   label: string;
+  /** What this template is FOR, in one line — shown instead of the code name. */
+  purpose: string;
   language: string;
   category: "UTILITY" | "MARKETING" | "AUTHENTICATION";
   bodyText: string;
@@ -61,24 +63,87 @@ export interface ManagedTemplateDefinition {
 // surrounded by static text. Both bodies below therefore close with a
 // fixed sentence after {{1}}. isPlaceholderPositionValid() below encodes
 // the rule so this can never silently regress.
+// {{1}} stays a POSITIONAL placeholder carrying ONLY the document list.
+// The list itself is still produced by the existing logic — nothing here
+// touches how missing documents are calculated; this is wording alone.
 export const MANAGED_TEMPLATES: ManagedTemplateDefinition[] = [
   {
     name: "centro_document_request_v3",
     label: "בקשת מסמכים",
+    purpose: "נשלחת בפנייה הראשונה ללקוח",
     language: "he",
     category: "UTILITY",
     bodyText:
-      "שלום, לצורך המשך הטיפול נשמח לקבל את המסמכים הבאים:\n{{1}}\nתודה, לאחר קבלת המסמכים נוכל להמשיך בטיפול.",
+      "היי! 👋\n\n" +
+      "אני העוזר הדיגיטלי של המשרד.\n\n" +
+      "נא לשלוח את המסמכים הבאים:\n\n" +
+      "{{1}}\n\n" +
+      "נעדכן אותך באופן אוטומטי אילו מסמכים התקבלו ואילו עדיין חסרים.\n\n" +
+      "תודה!",
   },
   {
     name: "centro_document_reminder_v3",
     label: "תזכורת",
+    purpose: "נשלחת כשעדיין חסרים מסמכים",
     language: "he",
     category: "UTILITY",
     bodyText:
-      "שלום, זוהי תזכורת בנוגע למסמכים שעדיין חסרים להמשך הטיפול:\n{{1}}\nנשמח לקבל את המסמכים בהקדם כדי שנוכל להמשיך בטיפול.",
+      "שלום,\n\n" +
+      "רצינו להזכיר שעדיין חסרים המסמכים הבאים:\n\n" +
+      "{{1}}\n\n" +
+      "לאחר קבלת כל המסמכים הנדרשים, הבקשה תושלם באופן אוטומטי.\n\n" +
+      "תודה.",
   },
 ];
+
+// Meta's own rules for editing an existing template, encoded once so the
+// screen can disable an action with a real explanation instead of letting
+// the owner discover the limit as an opaque API error.
+//
+//   • Editable only in APPROVED / REJECTED / PAUSED — never while PENDING.
+//   • An approved template may be edited once per 24 hours (and 10 times
+//     per 30 days, which Meta enforces; we surface its error rather than
+//     duplicating that accounting imperfectly here).
+//   • Name and language are the template's identity and cannot change —
+//     the edit endpoint has no field for them.
+export const EDITABLE_STATUSES = ["APPROVED", "REJECTED", "PAUSED"];
+const EDIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+export interface EditEligibility {
+  canEdit: boolean;
+  /** Why not — shown to the owner verbatim. Null when editing is allowed. */
+  blockedReason: string | null;
+}
+
+export function resolveEditEligibility(params: {
+  status: string;
+  metaTemplateId: string | null;
+  lastEditedAt: Date | null;
+  now?: Date;
+}): EditEligibility {
+  if (!params.metaTemplateId) {
+    return { canEdit: false, blockedReason: "התבנית עדיין לא הוגשה ל-Meta." };
+  }
+  if (params.status === "PENDING") {
+    return {
+      canEdit: false,
+      blockedReason: "התבנית בבדיקה ב-Meta — ניתן לערוך רק לאחר שהבדיקה תסתיים.",
+    };
+  }
+  if (!EDITABLE_STATUSES.includes(params.status)) {
+    return { canEdit: false, blockedReason: `Meta אינה מאפשרת עריכה בסטטוס ${params.status}.` };
+  }
+  if (params.lastEditedAt) {
+    const elapsed = (params.now ?? new Date()).getTime() - params.lastEditedAt.getTime();
+    if (elapsed < EDIT_COOLDOWN_MS) {
+      return {
+        canEdit: false,
+        blockedReason: "Meta מאפשרת עריכה אחת ב-24 שעות — ניתן לערוך שוב מחר.",
+      };
+    }
+  }
+  return { canEdit: true, blockedReason: null };
+}
 
 // Meta rejects a body whose placeholder is the first or last thing in it.
 // Checked against the trimmed body, since leading/trailing whitespace is

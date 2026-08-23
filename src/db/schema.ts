@@ -142,6 +142,24 @@ export const organizations = pgTable("organizations", {
   // pair, and this column is the honest answer to "is Meta actually
   // routing here yet".
   whatsappWebhookOverrideAt: timestamp("whatsapp_webhook_override_at", { withTimezone: true }),
+  // Result of the last EXPLICIT connection check the owner ran ("בדוק
+  // וחבר" / "בדוק חיבור"), per integration. These exist so the owner
+  // screens can show a truthful "דורש טיפול" without making a live Meta /
+  // Google API call for every organization on every list render.
+  //
+  // Deliberately a point-in-time result, not a sticky flag: a failing
+  // check is only treated as a current problem while it is still the most
+  // recent evidence. A later successful check overwrites it, and for
+  // WhatsApp a successful send after checkedAt also clears it — see
+  // resolveConnectionHealth (src/lib/owner/connectionHealth.ts). That is
+  // what stops a resolved historical failure from pinning an organization
+  // red forever.
+  whatsappHealthOk: boolean("whatsapp_health_ok"),
+  whatsappHealthReason: text("whatsapp_health_reason"),
+  whatsappHealthCheckedAt: timestamp("whatsapp_health_checked_at", { withTimezone: true }),
+  googleHealthOk: boolean("google_health_ok"),
+  googleHealthReason: text("google_health_reason"),
+  googleHealthCheckedAt: timestamp("google_health_checked_at", { withTimezone: true }),
   // Per-organization Meta template-approval tracking (Phase 2.1 remediation).
   // Message-template review/approval happens per-WABA on Meta's side, not
   // globally — a template approved on one office's WhatsApp Business
@@ -2022,6 +2040,12 @@ export const whatsappTemplates = pgTable(
     // When Meta was last actually asked about this template's status —
     // distinct from updatedAt, which also moves on local edits.
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    // When this template was last successfully EDITED in Meta (distinct
+    // from lastSyncedAt, which also moves on a read-only status refresh).
+    // Meta allows an approved template one edit per 24 hours; this is what
+    // lets the screen say "ניתן לערוך שוב מחר" instead of letting the
+    // owner discover the limit as an API error.
+    lastEditedAt: timestamp("last_edited_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

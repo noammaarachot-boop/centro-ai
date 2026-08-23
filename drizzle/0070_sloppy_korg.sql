@@ -1,0 +1,1 @@
+ALTER TABLE "whatsapp_templates" ADD COLUMN "last_edited_at" timestamp with time zone;

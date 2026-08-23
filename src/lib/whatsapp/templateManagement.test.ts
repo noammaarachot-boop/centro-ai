@@ -20,6 +20,7 @@ const {
   fetchTemplateStatuses,
   findManagedTemplate,
   isPlaceholderPositionValid,
+  resolveEditEligibility,
   submitTemplateToMeta,
   validateExampleValue,
   WhatsAppTemplateSubmissionError,
@@ -48,18 +49,21 @@ describe("MANAGED_TEMPLATES — the two owner-managed templates", () => {
     }
   });
 
-  it("carries the exact requested wording, and is UTILITY/Hebrew", () => {
+  it("carries the requested wording, and is UTILITY/Hebrew", () => {
     const request = findManagedTemplate("centro_document_request_v3")!;
-    expect(request.bodyText).toBe(
-      "שלום, לצורך המשך הטיפול נשמח לקבל את המסמכים הבאים:\n{{1}}\nתודה, לאחר קבלת המסמכים נוכל להמשיך בטיפול."
-    );
+    expect(request.bodyText).toContain("היי! 👋");
+    expect(request.bodyText).toContain("אני העוזר הדיגיטלי של המשרד.");
+    expect(request.bodyText).toContain("נא לשלוח את המסמכים הבאים:");
+    expect(request.bodyText).toContain("נעדכן אותך באופן אוטומטי אילו מסמכים התקבלו ואילו עדיין חסרים.");
+
     const reminder = findManagedTemplate("centro_document_reminder_v3")!;
-    expect(reminder.bodyText).toBe(
-      "שלום, זוהי תזכורת בנוגע למסמכים שעדיין חסרים להמשך הטיפול:\n{{1}}\nנשמח לקבל את המסמכים בהקדם כדי שנוכל להמשיך בטיפול."
-    );
+    expect(reminder.bodyText).toContain("רצינו להזכיר שעדיין חסרים המסמכים הבאים:");
+    expect(reminder.bodyText).toContain("לאחר קבלת כל המסמכים הנדרשים, הבקשה תושלם באופן אוטומטי.");
+
     for (const template of MANAGED_TEMPLATES) {
       expect(template.category).toBe("UTILITY");
       expect(template.language).toBe("he");
+      expect(template.purpose.length).toBeGreaterThan(0);
     }
   });
 
@@ -74,6 +78,55 @@ describe("MANAGED_TEMPLATES — the two owner-managed templates", () => {
       // There is real static text after the placeholder, not just whitespace.
       expect(template.bodyText.split("{{1}}")[1].trim().length).toBeGreaterThan(0);
     }
+  });
+});
+
+// Meta's real constraints, encoded so the screen can disable an action
+// with an explanation instead of surfacing an API error after the fact.
+describe("resolveEditEligibility", () => {
+  const metaTemplateId = "meta-tpl-1";
+  const now = new Date("2026-08-23T12:00:00Z");
+
+  it("refuses to edit a template that was never submitted", () => {
+    const result = resolveEditEligibility({ status: "LOCAL_DRAFT", metaTemplateId: null, lastEditedAt: null });
+    expect(result.canEdit).toBe(false);
+    expect(result.blockedReason).toMatch(/לא הוגשה/);
+  });
+
+  it("refuses while PENDING — Meta does not allow editing a template under review", () => {
+    const result = resolveEditEligibility({ status: "PENDING", metaTemplateId, lastEditedAt: null });
+    expect(result.canEdit).toBe(false);
+    expect(result.blockedReason).toMatch(/בבדיקה/);
+  });
+
+  it("allows editing in each status Meta permits", () => {
+    for (const status of ["APPROVED", "REJECTED", "PAUSED"]) {
+      expect(resolveEditEligibility({ status, metaTemplateId, lastEditedAt: null }).canEdit).toBe(true);
+    }
+  });
+
+  it("refuses a status Meta does not permit editing in", () => {
+    const result = resolveEditEligibility({ status: "PENDING_DELETION", metaTemplateId, lastEditedAt: null });
+    expect(result.canEdit).toBe(false);
+  });
+
+  it("enforces Meta's one-edit-per-24-hours limit, and explains when it lifts", () => {
+    const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+    const result = resolveEditEligibility({
+      status: "APPROVED",
+      metaTemplateId,
+      lastEditedAt: twoHoursAgo,
+      now,
+    });
+    expect(result.canEdit).toBe(false);
+    expect(result.blockedReason).toMatch(/24 שעות/);
+  });
+
+  it("allows editing again once the 24-hour window has passed", () => {
+    const yesterday = new Date(now.getTime() - 25 * 60 * 60 * 1000);
+    expect(
+      resolveEditEligibility({ status: "APPROVED", metaTemplateId, lastEditedAt: yesterday, now }).canEdit
+    ).toBe(true);
   });
 });
 

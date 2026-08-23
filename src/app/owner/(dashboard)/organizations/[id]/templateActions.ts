@@ -15,6 +15,7 @@ import {
   editTemplateInMeta,
   fetchTemplateStatuses,
   findManagedTemplate,
+  resolveEditEligibility,
   submitTemplateToMeta,
   validateExampleValue,
   WhatsAppTemplateSubmissionError,
@@ -247,4 +248,104 @@ export async function refreshWhatsAppTemplateStatusesAction(formData: FormData) 
   }
 
   templateRedirect(organizationId, { templateRefreshed: String(synced) });
+}
+
+// Edits an already-submitted template in Meta.
+//
+// The contract the whole feature rests on: Meta is the source of truth.
+// The local row is written ONLY after Meta accepts the edit, so the screen
+// can never claim "נשמר" for a change Meta rejected. On failure nothing is
+// written and Meta's own error is shown.
+//
+// Scope is deliberately narrow — the example value and the category, the
+// two fields Meta's edit endpoint accepts that cannot break the send path.
+// The body text is NOT editable here: {{1}} must stay a single positional
+// placeholder in a legal position (Meta rejects it at the very start or
+// end), and a free-text editor would let that be broken in one click.
+export async function editWhatsAppTemplateAction(formData: FormData) {
+  const session = await requireOwnerSession();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  if (!organizationId) redirect("/owner/organizations");
+
+  const name = String(formData.get("templateName") ?? "").trim();
+  const exampleValue = String(formData.get("exampleValue") ?? "").trim();
+
+  const definition = findManagedTemplate(name);
+  if (!definition) templateRedirect(organizationId, { templateError: "תבנית לא מוכרת." });
+
+  const exampleError = validateExampleValue(exampleValue);
+  if (exampleError) templateRedirect(organizationId, { templateError: exampleError });
+
+  const existing = await findOrganizationTemplate(organizationId, definition.name, definition.language);
+  if (!existing) {
+    templateRedirect(organizationId, { templateError: "התבנית עדיין לא הוגשה ל-Meta." });
+  }
+
+  // Re-checked server-side, never trusted from the disabled state of a button.
+  const eligibility = resolveEditEligibility({
+    status: existing.status,
+    metaTemplateId: existing.metaTemplateId,
+    lastEditedAt: existing.lastEditedAt,
+  });
+  if (!eligibility.canEdit) {
+    templateRedirect(organizationId, { templateError: eligibility.blockedReason ?? "לא ניתן לערוך." });
+  }
+
+  const context = await resolveWhatsAppContext(organizationId);
+  if (!context) {
+    templateRedirect(organizationId, {
+      templateError: "לארגון הזה אין חיבור WhatsApp ידני עם טוקן שמור.",
+    });
+  }
+
+  try {
+    await editTemplateInMeta({
+      metaTemplateId: existing.metaTemplateId!,
+      accessToken: context.accessToken,
+      category: definition.category,
+      bodyText: definition.bodyText,
+      exampleValues: [exampleValue],
+    });
+  } catch (error) {
+    const message =
+      error instanceof WhatsAppTemplateSubmissionError
+        ? `Meta דחתה את העריכה: ${error.message}`
+        : "העריכה מול Meta נכשלה. נסו שוב.";
+    console.error("[owner] editWhatsAppTemplate failed", {
+      organizationId,
+      templateName: definition.name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Nothing is written locally — the stored row still reflects what Meta
+    // actually holds.
+    templateRedirect(organizationId, { templateError: message });
+  }
+
+  // Only now, after Meta accepted it.
+  const db = await getDb();
+  await db
+    .update(whatsappTemplates)
+    .set({
+      exampleValues: [exampleValue],
+      bodyText: definition.bodyText,
+      // An accepted edit re-enters review; the previously approved version
+      // keeps sending in the meantime (Meta's own behavior), so this is a
+      // truthful "in review", not a service interruption.
+      status: "PENDING",
+      rejectedReason: null,
+      lastEditedAt: new Date(),
+      lastSyncedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(whatsappTemplates.id, existing.id));
+
+  await recordOwnerAuditEvent({
+    eventType: "owner.whatsapp_template_edited",
+    description: `תבנית WhatsApp "${definition.label}" עודכנה מול Meta על ידי ${session.email}`,
+    severity: "info",
+    platformOwnerId: session.platformOwnerId,
+    metadata: { organizationId, templateName: definition.name },
+  });
+
+  templateRedirect(organizationId, { templateEdited: definition.label });
 }

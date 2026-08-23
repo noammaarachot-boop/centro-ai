@@ -54,7 +54,11 @@ beforeEach(async () => {
   };
 });
 
-const { submitWhatsAppTemplateAction, refreshWhatsAppTemplateStatusesAction } = await import(
+const {
+  submitWhatsAppTemplateAction,
+  refreshWhatsAppTemplateStatusesAction,
+  editWhatsAppTemplateAction,
+} = await import(
   "./templateActions"
 );
 const { encryptWhatsAppToken } = await import("@/lib/whatsapp/tokenCipher");
@@ -162,7 +166,7 @@ describe("submitWhatsAppTemplateAction", () => {
     // start or end of the body.
     expect(sentBody.trim().endsWith("{{1}}")).toBe(false);
     expect(sentBody.trim().startsWith("{{1}}")).toBe(false);
-    expect(sentBody).toContain("תודה, לאחר קבלת המסמכים נוכל להמשיך בטיפול.");
+    expect(sentBody).toContain("נעדכן אותך באופן אוטומטי אילו מסמכים התקבלו ואילו עדיין חסרים.");
 
     // ...and what we stored matches what we actually sent.
     expect((await storedTemplate(org.id))!.bodyText).toBe(sentBody);
@@ -341,6 +345,117 @@ describe("end-to-end: submit and send both use the SAME organization's own token
     const stored = await storedTemplate(org.id);
     expect(stored!.wabaId).toBe(org.whatsappBusinessAccountId);
     expect(String(fetchMock.mock.calls[0][0])).toContain(org.whatsappBusinessAccountId!);
+  });
+});
+
+// The contract the whole edit feature rests on: Meta decides, and the
+// local row only ever follows. A rejected edit must leave no trace of
+// "saved" anywhere.
+describe("editWhatsAppTemplateAction — Meta is the source of truth", () => {
+  async function seedApprovedTemplate(organizationId: string, wabaId: string, overrides = {}) {
+    const [row] = await db
+      .insert(schema.whatsappTemplates)
+      .values({
+        organizationId,
+        wabaId,
+        name: REQUEST_TEMPLATE,
+        language: "he",
+        category: "UTILITY",
+        bodyText: "old body",
+        variables: ["{{1}}"],
+        exampleValues: ["ערך ישן"],
+        metaTemplateId: "meta-tpl-1",
+        status: "APPROVED",
+        ...overrides,
+      })
+      .returning();
+    return row;
+  }
+
+  it("on success: edits in Meta first, then stores — and the template re-enters review", async () => {
+    const org = await seedConnectedOrg();
+    await seedApprovedTemplate(org.id, org.whatsappBusinessAccountId!);
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+
+    await expectRedirect(() =>
+      editWhatsAppTemplateAction(
+        formData({ organizationId: org.id, templateName: REQUEST_TEMPLATE, exampleValue: "ערך חדש" })
+      )
+    );
+
+    // Edit endpoint, not a second create.
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://graph.example/v1/meta-tpl-1");
+
+    const row = await storedTemplate(org.id);
+    expect(row!.exampleValues).toEqual(["ערך חדש"]);
+    expect(row!.status).toBe("PENDING"); // back in review, as Meta does
+    expect(row!.lastEditedAt).toBeInstanceOf(Date);
+  });
+
+  it("when Meta REJECTS the edit: nothing is stored, and the row still reflects what Meta holds", async () => {
+    const org = await seedConnectedOrg();
+    await seedApprovedTemplate(org.id, org.whatsappBusinessAccountId!);
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: { message: "Edit not allowed" } }),
+    });
+
+    const result = await expectRedirect(() =>
+      editWhatsAppTemplateAction(
+        formData({ organizationId: org.id, templateName: REQUEST_TEMPLATE, exampleValue: "ערך חדש" })
+      )
+    );
+
+    expect(decodeURIComponent(result.params.templateError)).toMatch(/Edit not allowed/);
+    // Crucially: no optimistic write.
+    const row = await storedTemplate(org.id);
+    expect(row!.exampleValues).toEqual(["ערך ישן"]);
+    expect(row!.status).toBe("APPROVED");
+    expect(row!.lastEditedAt).toBeNull();
+  });
+
+  it("refuses server-side while PENDING, without calling Meta — never trusts a disabled button", async () => {
+    const org = await seedConnectedOrg();
+    await seedApprovedTemplate(org.id, org.whatsappBusinessAccountId!, { status: "PENDING" });
+
+    const result = await expectRedirect(() =>
+      editWhatsAppTemplateAction(
+        formData({ organizationId: org.id, templateName: REQUEST_TEMPLATE, exampleValue: "ערך חדש" })
+      )
+    );
+
+    expect(decodeURIComponent(result.params.templateError)).toMatch(/בבדיקה/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses server-side inside Meta's 24-hour edit window, without calling Meta", async () => {
+    const org = await seedConnectedOrg();
+    await seedApprovedTemplate(org.id, org.whatsappBusinessAccountId!, {
+      lastEditedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const result = await expectRedirect(() =>
+      editWhatsAppTemplateAction(
+        formData({ organizationId: org.id, templateName: REQUEST_TEMPLATE, exampleValue: "ערך חדש" })
+      )
+    );
+
+    expect(decodeURIComponent(result.params.templateError)).toMatch(/24 שעות/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid example before contacting Meta at all", async () => {
+    const org = await seedConnectedOrg();
+    await seedApprovedTemplate(org.id, org.whatsappBusinessAccountId!);
+
+    await expectRedirect(() =>
+      editWhatsAppTemplateAction(
+        formData({ organizationId: org.id, templateName: REQUEST_TEMPLATE, exampleValue: "" })
+      )
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

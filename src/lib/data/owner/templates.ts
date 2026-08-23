@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import { whatsappTemplates } from "@/db/schema";
 import {
   DEFAULT_DOCUMENT_LIST_EXAMPLE,
+  resolveEditEligibility,
   MANAGED_TEMPLATES,
   describeRejectionReason,
 } from "@/lib/whatsapp/templateManagement";
@@ -16,9 +17,15 @@ export interface OwnerTemplateRow {
   /** Meta template name — also the stable form key for the submit action. */
   name: string;
   label: string;
+  /** What the template is for, in one line — shown instead of the code name. */
+  purpose: string;
   language: string;
   category: string;
   bodyText: string;
+  /** Whether Meta currently permits an edit, and why not when it doesn't. */
+  canEdit: boolean;
+  editBlockedReason: string | null;
+  lastEditedAt: Date | null;
   /** The example value that will be (or was) sent to Meta for {{1}}. */
   exampleValue: string;
   /**
@@ -51,10 +58,20 @@ export async function listOwnerTemplates(organizationId: string): Promise<OwnerT
       (candidate) => candidate.name === definition.name && candidate.language === definition.language
     );
     const exampleValues = (row?.exampleValues as string[] | undefined) ?? [];
+    const status = row?.status ?? "LOCAL_DRAFT";
+    const eligibility = resolveEditEligibility({
+      status,
+      metaTemplateId: row?.metaTemplateId ?? null,
+      lastEditedAt: row?.lastEditedAt ?? null,
+    });
 
     return {
       name: definition.name,
       label: definition.label,
+      purpose: definition.purpose,
+      canEdit: eligibility.canEdit,
+      editBlockedReason: eligibility.blockedReason,
+      lastEditedAt: row?.lastEditedAt ?? null,
       language: definition.language,
       // A submitted row's own values win — Meta can reclassify a
       // template's category on review, and the screen must show what Meta
@@ -62,7 +79,7 @@ export async function listOwnerTemplates(organizationId: string): Promise<OwnerT
       category: row?.category ?? definition.category,
       bodyText: row?.bodyText ?? definition.bodyText,
       exampleValue: exampleValues[0] ?? DEFAULT_DOCUMENT_LIST_EXAMPLE,
-      status: row?.status ?? "LOCAL_DRAFT",
+      status,
       rejectedReason: row?.rejectedReason ?? null,
       rejectedReasonText: describeRejectionReason(row?.rejectedReason ?? null),
       metaTemplateId: row?.metaTemplateId ?? null,

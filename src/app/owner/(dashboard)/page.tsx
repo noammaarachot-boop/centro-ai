@@ -1,16 +1,7 @@
 import {
   Building2,
   Activity,
-  CalendarPlus,
-  CalendarDays,
   ClipboardList,
-  CheckCircle2,
-  AlertTriangle,
-  FileText,
-  Sparkles,
-  MessageCircle,
-  HardDrive,
-  History,
   DollarSign,
 } from "lucide-react";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
@@ -23,13 +14,12 @@ import { computeHealthStatus } from "@/lib/owner/health";
 import { PageHeader } from "@/components/app/PageHeader";
 import { KpiCard } from "@/components/app/KpiCard";
 import { Card } from "@/components/app/Card";
-import { Badge } from "@/components/app/Badge";
-import { EmptyState } from "@/components/app/EmptyState";
 import { OwnerFunnelChart } from "@/components/owner/OwnerFunnelChart";
 import { OwnerAutoRefresh } from "@/components/owner/OwnerAutoRefresh";
-import { OwnerHealthBadge } from "@/components/owner/OwnerHealthBadge";
 import { OwnerCurrencyKpiCard } from "@/components/owner/OwnerCurrencyKpiCard";
-import { formatOwnerDateTime } from "@/lib/owner/formatDate";
+import { OwnerSystemBanner } from "@/components/owner/OwnerSystemBanner";
+import { CollapsibleSection } from "@/components/owner/CollapsibleSection";
+import { ActivityFeed } from "@/components/owner/ActivityFeed";
 import { t } from "@/lib/owner/i18n/t";
 
 const AI_COST_FORMATTER = new Intl.NumberFormat("en-US", {
@@ -38,6 +28,25 @@ const AI_COST_FORMATTER = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 4,
 });
+
+// Secondary daily counters. Kept in full — none of these were removed,
+// they simply stopped competing with the four numbers that answer "what is
+// the state of the system right now". A metric sitting at 0 is rendered as
+// a quiet row rather than a full card, so an empty day reads as calm
+// instead of as twelve zeroes.
+function DailyMetric({ label, value }: { label: string; value: string | number }) {
+  const isZero = value === 0 || value === "0";
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-border py-2 text-sm last:border-b-0">
+      <span className={isZero ? "text-text-muted" : "text-text-secondary"}>{label}</span>
+      <span
+        className={`font-semibold tabular-nums ${isZero ? "text-text-muted" : "text-text-primary"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
 
 export default async function OwnerHomePage() {
   await requireOwnerSession();
@@ -60,6 +69,18 @@ export default async function OwnerHomePage() {
     { label: t("owner.home.funnel.completedFirstRequest"), value: funnel.completedFirstRequest },
   ];
 
+  const dailyMetrics = [
+    { label: t("owner.home.kpi.newToday"), value: metrics.newOrganizationsToday },
+    { label: t("owner.home.kpi.newThisMonth"), value: metrics.newOrganizationsThisMonth },
+    { label: t("owner.home.kpi.completedRequests"), value: metrics.completedCollectionRequests },
+    { label: t("owner.home.kpi.failedRequests"), value: metrics.failedCollectionRequests },
+    { label: t("owner.home.kpi.documentsToday"), value: metrics.documentsProcessedToday },
+    { label: t("owner.home.kpi.aiMessagesToday"), value: metrics.aiMessagesToday },
+    { label: t("owner.home.kpi.whatsappMessagesToday"), value: metrics.whatsappMessagesToday },
+    { label: t("owner.home.kpi.driveUploadsToday"), value: metrics.driveUploadsToday },
+  ];
+  const allDailyZero = dailyMetrics.every((metric) => metric.value === 0);
+
   return (
     <div>
       <OwnerAutoRefresh />
@@ -67,10 +88,12 @@ export default async function OwnerHomePage() {
         eyebrow={t("owner.home.eyebrow")}
         title={t("owner.home.pageTitle")}
         description={t("owner.home.pageDescription")}
-        actions={<OwnerHealthBadge status={health} />}
       />
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+      <OwnerSystemBanner status={health} />
+
+      {/* The four that answer "what is the state of the system". */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
           href="/owner/organizations"
           label={t("owner.home.kpi.totalOrganizations")}
@@ -85,46 +108,10 @@ export default async function OwnerHomePage() {
           accent="emerald"
         />
         <KpiCard
-          label={t("owner.home.kpi.newToday")}
-          value={metrics.newOrganizationsToday}
-          icon={<CalendarPlus className="h-4 w-4" aria-hidden="true" />}
-          accent="blue"
-        />
-        <KpiCard
-          label={t("owner.home.kpi.newThisMonth")}
-          value={metrics.newOrganizationsThisMonth}
-          icon={<CalendarDays className="h-4 w-4" aria-hidden="true" />}
-          accent="cyan"
-        />
-        <KpiCard
           label={t("owner.home.kpi.openRequests")}
           value={metrics.openCollectionRequests}
           icon={<ClipboardList className="h-4 w-4" aria-hidden="true" />}
           accent="blue"
-        />
-        <KpiCard
-          label={t("owner.home.kpi.completedRequests")}
-          value={metrics.completedCollectionRequests}
-          icon={<CheckCircle2 className="h-4 w-4" aria-hidden="true" />}
-          accent="emerald"
-        />
-        <KpiCard
-          label={t("owner.home.kpi.failedRequests")}
-          value={metrics.failedCollectionRequests}
-          icon={<AlertTriangle className="h-4 w-4" aria-hidden="true" />}
-          accent="warning"
-        />
-        <KpiCard
-          label={t("owner.home.kpi.documentsToday")}
-          value={metrics.documentsProcessedToday}
-          icon={<FileText className="h-4 w-4" aria-hidden="true" />}
-          accent="purple"
-        />
-        <KpiCard
-          label={t("owner.home.kpi.aiMessagesToday")}
-          value={metrics.aiMessagesToday}
-          icon={<Sparkles className="h-4 w-4" aria-hidden="true" />}
-          accent="purple"
         />
         <OwnerCurrencyKpiCard
           label={t("owner.home.kpi.aiCostToday")}
@@ -133,54 +120,36 @@ export default async function OwnerHomePage() {
           icon={<DollarSign className="h-4 w-4" aria-hidden="true" />}
           accent="warning"
         />
-        <KpiCard
-          label={t("owner.home.kpi.whatsappMessagesToday")}
-          value={metrics.whatsappMessagesToday}
-          icon={<MessageCircle className="h-4 w-4" aria-hidden="true" />}
-          accent="emerald"
-        />
-        <KpiCard
-          label={t("owner.home.kpi.driveUploadsToday")}
-          value={metrics.driveUploadsToday}
-          icon={<HardDrive className="h-4 w-4" aria-hidden="true" />}
-          accent="blue"
-        />
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <h2 className="mb-2 text-sm font-bold text-text-primary">{t("owner.home.funnelTitle")}</h2>
-          <OwnerFunnelChart stages={funnelStages} />
-        </Card>
-
-        <div>
-          <h2 className="mb-3 text-sm font-bold text-text-primary">{t("owner.home.activityTitle")}</h2>
-          {activity.length === 0 ? (
-            <EmptyState icon={History} title={t("owner.home.activityEmpty")} />
+      <div className="mt-4 space-y-3">
+        <CollapsibleSection
+          title="נתוני היום"
+          subtitle={allDailyZero ? "אין פעילות היום עדיין" : undefined}
+        >
+          {allDailyZero ? (
+            <p className="text-sm text-text-muted">אין פעילות היום עדיין.</p>
           ) : (
-            <Card padding="none" className="max-h-[420px] divide-y divide-border overflow-y-auto">
-              {activity.map((event) => (
-                <div key={event.id} className="flex items-start justify-between gap-4 px-5 py-3.5 text-sm">
-                  <div>
-                    <p className="font-medium text-text-primary">{event.description}</p>
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                      <span className="text-xs text-text-muted">{event.eventType}</span>
-                      {event.organizationName && (
-                        <Badge tone="neutral">{event.organizationName}</Badge>
-                      )}
-                      {event.source === "owner" && (
-                        <Badge tone="purple">{t("owner.home.activityOwnerBadge")}</Badge>
-                      )}
-                    </div>
-                  </div>
-                  <span className="shrink-0 whitespace-nowrap text-xs text-text-muted">
-                    {formatOwnerDateTime(event.occurredAt)}
-                  </span>
-                </div>
+            <div>
+              {dailyMetrics.map((metric) => (
+                <DailyMetric key={metric.label} label={metric.label} value={metric.value} />
               ))}
-            </Card>
+            </div>
           )}
-        </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title={t("owner.home.funnelTitle")}>
+          <OwnerFunnelChart stages={funnelStages} />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title={t("owner.home.activityTitle")}
+          subtitle={activity.length === 0 ? "אין פעילות אחרונה" : `${activity.length} אירועים אחרונים`}
+        >
+          <Card padding="none" className="max-h-[460px] overflow-y-auto px-5 py-3">
+            <ActivityFeed events={activity} emptyTitle={t("owner.home.activityEmpty")} />
+          </Card>
+        </CollapsibleSection>
       </div>
     </div>
   );
