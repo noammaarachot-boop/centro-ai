@@ -71,6 +71,7 @@ import { EmptyState } from "@/components/app/EmptyState";
 import { fieldClass } from "@/components/app/FormField";
 import { ConfirmDialog } from "@/components/app/ConfirmDialog";
 import { DevToolsPanel } from "@/components/app/DevToolsPanel";
+import { devToolsEnabled } from "@/lib/devTools";
 
 const TRANSITION_LABELS: Record<CollectionRequestStatus, string> = {
   draft: "חזרה לטיוטה",
@@ -680,7 +681,7 @@ export default async function CollectionRequestDetailPage({
           </ul>
         )}
 
-        {driveDocumentsForSimulation.length > 0 && (
+        {devToolsEnabled() && driveDocumentsForSimulation.length > 0 && (
           <div className="mt-4">
             <DevToolsPanel label="הדמיית מחיקה מ-Drive">
               <ul className="space-y-2">
@@ -894,7 +895,7 @@ export default async function CollectionRequestDetailPage({
               </>
             )}
 
-            {collectionRequest.status !== "cancelled" && (
+            {devToolsEnabled() && collectionRequest.status !== "cancelled" && (
               <DevToolsPanel label="סימולציית הודעה נכנסת מהלקוח">
                 <form action={simulateInboundMessage.bind(null, id)} className="space-y-2">
                   <p className="text-[11px] text-text-muted">

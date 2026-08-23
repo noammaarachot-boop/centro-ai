@@ -6,6 +6,7 @@ import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import { assertDevToolsEnabled } from "@/lib/devTools";
 import { runScheduledTasks } from "@/lib/scheduler";
 import { isSupportedTimezone } from "@/lib/businessHours";
 
@@ -96,6 +97,11 @@ export async function runSchedulerNow(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _prevState: RunSchedulerState
 ): Promise<RunSchedulerState> {
+  // Development-only. This runs the real scheduler for the caller's
+  // organization, which really does send WhatsApp messages to real
+  // clients — it must never be reachable from a production tenant, and a
+  // Server Action stays callable even when its UI is not rendered.
+  assertDevToolsEnabled();
   const session = await requireSession();
   const result = await runScheduledTasks(session.organizationId);
   return { result };

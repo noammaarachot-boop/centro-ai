@@ -52,6 +52,7 @@ import { applyExtensionFinishedDecision, withdrawStaleFinishedCheck } from "@/li
 import { applyRequestReopenDecision } from "@/lib/requestReopen";
 import { runConversationUnderstanding } from "@/lib/conversation/conversationDispatch";
 import { requireSession } from "@/lib/auth/session";
+import { assertDevToolsEnabled } from "@/lib/devTools";
 import {
   checkIntegrationStatus,
   DRIVE_NOT_READY_MESSAGE,
@@ -140,6 +141,14 @@ export async function simulateInboundMessage(
   collectionRequestId: string,
   formData: FormData
 ) {
+  // Development-only. Fabricates a client message/document and runs the
+  // full real intake path (classification, Drive upload, requirement
+  // matching), so it must never be reachable from a production tenant.
+  //
+  // Deliberately gates ONLY this simulator, never processInboundAttachment
+  // itself — that is the genuine production intake path the WhatsApp
+  // webhook depends on.
+  assertDevToolsEnabled();
   const session = await requireSession();
   const current = await getCollectionRequestOrRedirect(
     session.organizationId,

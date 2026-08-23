@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/session";
+import { assertDevToolsEnabled } from "@/lib/devTools";
 import { getWhatsAppConfig, GRAPH_API_BASE, GRAPH_API_VERSION } from "@/lib/whatsapp/config";
 import {
   WHATSAPP_HARDCODE_ENABLED,
@@ -23,6 +24,12 @@ const GRAPH_DEBUG_REQUEST_TIMEOUT_MS = 15_000;
  * exchange still returns 191/36008.
  */
 export async function GET() {
+  // Development-only diagnostic. It returns no secret values, but it does
+  // expose app ids, redirect URIs and which credentials are configured —
+  // internal configuration detail a production tenant has no reason to
+  // see. 404 in production rather than 403, so its existence isn't
+  // advertised.
+  assertDevToolsEnabled();
   await requireSession();
 
   let appId = "";

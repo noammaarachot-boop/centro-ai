@@ -18,6 +18,7 @@ import { OfficeInfoForm } from "@/components/app/OfficeInfoForm";
 import { HelpTip } from "@/components/app/HelpTip";
 import { BusinessHoursForm } from "@/components/app/BusinessHoursForm";
 import { DevToolsPanel } from "@/components/app/DevToolsPanel";
+import { devToolsEnabled } from "@/lib/devTools";
 
 const SETTINGS_ERROR_MESSAGES: Record<string, string> = {
   "integrations-required": "לא ניתן להפעיל אוטומציה לפני חיבור Google ו-WhatsApp Business.",
@@ -167,9 +168,14 @@ export default async function SettingsPage({
         />
       </Card>
 
-      <DevToolsPanel label="משימות מתוזמנות">
-        <RunSchedulerButton />
-      </DevToolsPanel>
+      {/* Development-only. The action behind it is independently gated
+          server-side (settings/actions.ts), so not rendering here is a
+          convenience — not the security boundary. */}
+      {devToolsEnabled() && (
+        <DevToolsPanel label="משימות מתוזמנות">
+          <RunSchedulerButton />
+        </DevToolsPanel>
+      )}
     </div>
   );
 }

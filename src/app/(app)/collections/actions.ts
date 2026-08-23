@@ -13,6 +13,7 @@ import {
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import { assertDevToolsEnabled } from "@/lib/devTools";
 import {
   applyTransition,
   snapshotServiceRequirements,
@@ -520,6 +521,9 @@ export async function simulateDriveDeletion(
   collectionRequestId: string,
   documentId: string
 ) {
+  // Development-only simulation — it really does mutate a document's
+  // stored state. Gated before any input is read or any row is touched.
+  assertDevToolsEnabled();
   const session = await requireSession();
   await getOrgScopedCollectionRequest(session.organizationId, collectionRequestId);
   await getScopedDocument(session.organizationId, collectionRequestId, documentId);
