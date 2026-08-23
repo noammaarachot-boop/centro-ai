@@ -20,6 +20,8 @@ import type { XlsxStructureMeta } from "@/lib/import/xlsxParser";
 import { buildClientRowsFromMapping } from "@/lib/csv";
 import { recordAuditEvent } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/session";
+import { isSupportedTimezone } from "@/lib/businessHours";
+import type { SettingsFormState } from "@/app/(app)/settings/actions";
 import { markOnboardingComplete } from "@/lib/onboarding";
 import { clampCollectionDay, clampReminderHours } from "@/lib/businessHours";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
@@ -1345,6 +1347,72 @@ export async function importClientsSimple(
 // (organizations.reminderIntervalHours etc.), so the shared scheduler
 // engine works unchanged for a one-time org even though its onboarding
 // never asks about them.
+// Onboarding's Step 4. Writes the SAME organizations columns Settings
+// writes, with the SAME validation rules, so the values a user picks here
+// are literally the values /settings then shows and edits — there is no
+// parallel state and no second set of defaults.
+//
+// Deliberately does NOT touch reminderIntervalDays (the legacy column the
+// engine no longer reads) and does not introduce any default of its own:
+// every default comes from the schema (businessDays "0,1,2,3,4",
+// 09:00–18:00, Asia/Jerusalem, reminderIntervalHours 5), which the form is
+// rendered from.
+export async function updateOnboardingWorkingHours(
+  _prevState: SettingsFormState,
+  formData: FormData
+): Promise<SettingsFormState> {
+  const session = await requireSession();
+
+  const businessHoursStart = String(formData.get("businessHoursStart") ?? "09:00");
+  const businessHoursEnd = String(formData.get("businessHoursEnd") ?? "18:00");
+  const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
+  const timezone = String(formData.get("timezone") ?? "Asia/Jerusalem");
+  const reminderIntervalHoursRaw = Number(formData.get("reminderIntervalHours"));
+
+  // Mirrors updateBusinessHours (settings/actions.ts) exactly — same four
+  // conditions, same messages.
+  if (!businessDays) {
+    return { error: "יש לבחור לפחות יום עבודה אחד." };
+  }
+  const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!timePattern.test(businessHoursStart) || !timePattern.test(businessHoursEnd)) {
+    return { error: "יש להזין שעת התחלה ושעת סיום תקינות." };
+  }
+  if (businessHoursStart >= businessHoursEnd) {
+    return { error: "שעת הסיום חייבת להיות מאוחרת משעת ההתחלה." };
+  }
+  if (!Number.isInteger(reminderIntervalHoursRaw) || reminderIntervalHoursRaw < 1 || reminderIntervalHoursRaw > 24) {
+    return { error: "מרווח התזכורות חייב להיות מספר שלם בין 1 ל-24 שעות." };
+  }
+  if (!isSupportedTimezone(timezone)) {
+    return { error: "אזור הזמן שנבחר אינו נתמך." };
+  }
+
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({
+      businessHoursStart,
+      businessHoursEnd,
+      businessDays,
+      timezone,
+      reminderIntervalHours: reminderIntervalHoursRaw,
+      onboardingStep: 5,
+      updatedAt: new Date(),
+    })
+    .where(eq(organizations.id, session.organizationId));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "configuration.updated",
+    description: "שעות הפעילות ומרווח התזכורות הוגדרו באשף ההקמה",
+    actorType: "employee",
+    actorUserId: session.userId,
+  });
+
+  redirect("/onboarding?step=5");
+}
+
 export async function updateWorkingHours(formData: FormData) {
   const session = await requireSession();
   const businessHoursStart = String(formData.get("businessHoursStart") ?? "09:00");

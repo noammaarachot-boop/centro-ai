@@ -9,6 +9,7 @@ import { WizardShell } from "./WizardShell";
 import { Step1Welcome } from "./steps/Step1Welcome";
 import { Step2OfficeInfo } from "./steps/Step2OfficeInfo";
 import { Step3BusinessType } from "./steps/Step3BusinessType";
+import { Step4WorkingHours } from "./steps/Step4WorkingHours";
 import { Step6OneTimeImport } from "./steps/Step6OneTimeImport";
 
 export const metadata: Metadata = {
@@ -49,13 +50,18 @@ const STEP_META: Record<number, StepMeta> = {
     help: "זה תחום הפעילות של המשרד שלכם עצמו (למשל רואה חשבון, יועץ משכנתאות) — לא סוג הלקוחות שלכם, שאותו נגדיר בהמשך. גם אם מעולם לא נתקלנו בתחום שלכם, Centro תמיד יציע נקודת התחלה שימושית שאפשר לערוך באופן מלא.",
   },
   4: {
+    title: "שעות הפעילות",
+    description: "מתי המשרד פעיל? Centro ישלח הודעות ותזכורות ללקוחות רק בשעות האלה.",
+    help: "אפשר לשנות את כל ההגדרות האלה בכל רגע מתוך ההגדרות. מרווח התזכורות קובע כמה זמן Centro ממתין לפני שהוא מזכיר ללקוח שוב על מסמכים חסרים.",
+  },
+  5: {
     title: "ייבוא לקוחות (אופציונלי)",
     description: "אפשר לייבא כבר עכשיו רשימת לקוחות, או לדלג ולהוסיף מאוחר יותר.",
     help: "רק שם וטלפון נשמרים בשלב הזה. ייבוא הוא תמיד אופציונלי — אפשר גם להוסיף את הלקוח הראשון ישירות מתוך יצירת בקשת האיסוף הראשונה.",
   },
 };
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = 5;
 
 function clampStep(value: number): number {
   if (Number.isNaN(value)) return 1;
@@ -79,7 +85,7 @@ export default async function OnboardingPage({
 
   const step = clampStep(Number(stepParam ?? organization.onboardingStep ?? 1) || 1);
   const meta = STEP_META[step];
-  const stepTitles = [1, 2, 3, 4].map((s) => STEP_META[s].title);
+  const stepTitles = [1, 2, 3, 4, 5].map((s) => STEP_META[s].title);
 
   let body: React.ReactNode;
   switch (step) {
@@ -101,6 +107,10 @@ export default async function OnboardingPage({
       break;
     }
     case 4: {
+      body = <Step4WorkingHours organization={organization} />;
+      break;
+    }
+    case 5: {
       const clientList = await listClients(session.organizationId);
       body = <Step6OneTimeImport totalClients={clientList.length} />;
       break;
@@ -111,10 +121,10 @@ export default async function OnboardingPage({
   // import experience benefits from the reminder of which profession is
   // being set up).
   const businessCategoryLabel =
-    step >= 4
+    step >= 5
       ? getBusinessCategoryLabel(organization.businessCategory, organization.businessCategoryCustomLabel)
       : undefined;
-  const businessCategoryIcon = step >= 4 ? getBusinessCategoryIcon(organization.businessCategory) : undefined;
+  const businessCategoryIcon = step >= 5 ? getBusinessCategoryIcon(organization.businessCategory) : undefined;
 
   return (
     <WizardShell

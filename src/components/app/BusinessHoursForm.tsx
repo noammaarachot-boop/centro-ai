@@ -62,6 +62,11 @@ function computeErrors(values: FormValues): { days?: string; hours?: string; rem
 // `values`, never reset to `defaultValue`).
 export function BusinessHoursForm({
   organization,
+  action = updateBusinessHours,
+  submitLabel = "שמירת הגדרות",
+  pendingLabel = "שומר…",
+  requireDirty = true,
+  showSuccessMessage = true,
 }: {
   organization: {
     businessDays: string;
@@ -70,8 +75,25 @@ export function BusinessHoursForm({
     timezone: string;
     reminderIntervalHours: number;
   };
+  /**
+   * Which server action saves the values. Defaults to Settings' own — the
+   * onboarding wizard passes its own, which saves the SAME columns and
+   * then advances the step. Same fields, same validation rules, one
+   * source of truth; only the follow-on behavior differs.
+   */
+  action?: (state: SettingsFormState, formData: FormData) => Promise<SettingsFormState>;
+  submitLabel?: string;
+  pendingLabel?: string;
+  /**
+   * Settings only enables Save once something changed. A wizard step must
+   * stay submittable when the user simply accepts the defaults, so
+   * onboarding passes false.
+   */
+  requireDirty?: boolean;
+  /** Onboarding navigates away on success, so it has nothing to confirm in place. */
+  showSuccessMessage?: boolean;
 }) {
-  const [state, formAction, isPending] = useActionState(updateBusinessHours, initialState);
+  const [state, formAction, isPending] = useActionState(action, initialState);
 
   const persisted = useMemo<FormValues>(
     () => ({
@@ -226,15 +248,22 @@ export function BusinessHoursForm({
           {state.error}
         </p>
       )}
-      {showSuccess && (
+      {showSuccessMessage && showSuccess && (
         <p className="flex items-center gap-1.5 rounded-xl border border-brand-emerald/30 bg-brand-emerald/5 px-4 py-3 text-sm font-medium text-brand-emerald">
           <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
           ההגדרות נשמרו
         </p>
       )}
 
-      <Button type="submit" variant="primary" size="lg" loading={isPending} disabled={!isDirty || hasClientErrors}>
-        {isPending ? "שומר…" : "שמירת הגדרות"}
+      <Button
+        type="submit"
+        variant="primary"
+        size="lg"
+        loading={isPending}
+        disabled={(requireDirty && !isDirty) || hasClientErrors}
+        className={requireDirty ? undefined : "w-full"}
+      >
+        {isPending ? pendingLabel : submitLabel}
       </Button>
     </form>
   );
