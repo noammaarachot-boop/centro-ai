@@ -5,7 +5,7 @@ import { getDb } from "@/db";
 import { organizations, users } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
-import { isRateLimited, clearAttempts, recordFailedAttempt } from "@/lib/auth/rateLimiter";
+import { isRateLimited, clearAttempts, recordFailedAttempt, AUTH_POLICY } from "@/lib/auth/rateLimiter";
 import { createSession } from "@/lib/auth/session";
 import { redirectAfterAuth } from "@/lib/onboarding";
 import { validateRegistrationFields } from "./registrationValidation";
@@ -34,7 +34,7 @@ export async function login(
   // Keyed by the submitted email, not IP: this is a single shared account
   // per organization (BR-13.1), so a brute-force attempt is inherently
   // targeted at one specific email regardless of source IP.
-  if (isRateLimited(email)) {
+  if (await isRateLimited(`login:${email}`, AUTH_POLICY)) {
     return { error: RATE_LIMITED_MESSAGE };
   }
 
@@ -50,13 +50,13 @@ export async function login(
   // still counts against the rate limit, though, so enumerating emails
   // can't be used to dodge it.
   if (!user) {
-    recordFailedAttempt(email);
+    await recordFailedAttempt(`login:${email}`, AUTH_POLICY);
     return { error: INVALID_CREDENTIALS_MESSAGE };
   }
 
   const passwordIsValid = await verifyPassword(password, user.passwordHash);
   if (!passwordIsValid) {
-    recordFailedAttempt(email);
+    await recordFailedAttempt(`login:${email}`, AUTH_POLICY);
     await recordAuditEvent({
       organizationId: user.organizationId,
       eventType: "employee.login_failed",
@@ -67,7 +67,7 @@ export async function login(
     return { error: INVALID_CREDENTIALS_MESSAGE };
   }
 
-  clearAttempts(email);
+  await clearAttempts(`login:${email}`);
 
   await createSession(user.id, user.organizationId, rememberMe);
   await recordAuditEvent({

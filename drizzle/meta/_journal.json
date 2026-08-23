@@ -512,6 +512,13 @@
       "when": 1787503614675,
       "tag": "0072_dizzy_ser_duncan",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787509585838,
+      "tag": "0073_right_skaar",
+      "breakpoints": true
     }
   ]
 }

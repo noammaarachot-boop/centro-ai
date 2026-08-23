@@ -27,6 +27,27 @@ export interface SendEmailInput {
   html: string;
   /** Plain-text alternative — required for deliverability, never optional. */
   text: string;
+  /**
+   * Display name only. Gmail always sends as the authenticated account, so
+   * this cannot change who the mail is actually from — "Centro Support" and
+   * "Centro Website" are labels on the same mailbox.
+   */
+  fromName?: string;
+  /** Where a human reply should go, when that is not the Centro mailbox. */
+  replyTo?: string;
+}
+
+/**
+ * Whether outbound email can be sent at all.
+ *
+ * Exists so a caller can check BEFORE doing user-specific work. The
+ * forgot-password flow needs exactly this: if email is unconfigured it must
+ * fail the same way for every address, because failing only for addresses
+ * that belong to a real account would turn an outage into a user-enumeration
+ * oracle.
+ */
+export function isEmailConfigured(): boolean {
+  return Boolean(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD);
 }
 
 // Throws on failure (including when unconfigured) so a caller can tell a
@@ -45,8 +66,9 @@ export async function sendTransactionalEmail(input: SendEmailInput): Promise<voi
       auth: { user: gmailUser, pass: gmailAppPassword },
     });
     return transporter.sendMail({
-      from: `"Centro" <${gmailUser}>`,
+      from: `"${input.fromName ?? "Centro"}" <${gmailUser}>`,
       to: input.to,
+      replyTo: input.replyTo,
       subject: input.subject,
       html: input.html,
       text: input.text,

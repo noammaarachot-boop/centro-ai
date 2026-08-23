@@ -2147,3 +2147,33 @@ export const jobRuns = pgTable("job_runs", {
   // message. Observability only, same spirit as aiMessages.metadata.
   resultSummary: jsonb("result_summary"),
 });
+
+// H3 — shared rate-limit counters.
+//
+// These used to live in a process-local Map, on the stated assumption that
+// "a pilot runs as a single server instance". That assumption does not hold
+// on Vercel: the app runs as serverless functions, so there are many
+// concurrent instances and each cold start begins with an empty Map. Failed
+// login attempts therefore scattered across instances, no counter ever
+// reached its threshold, and brute-force protection was effectively absent
+// in production rather than merely weak.
+//
+// Postgres is the shared store because the app already depends on it for
+// every request that is being protected — no Redis, no new infrastructure,
+// no new failure mode.
+//
+// `key` is caller-namespaced ("login:a@b.com", "reset:a@b.com",
+// "contact:1.2.3.4"), so one surface's limit can never consume another's.
+export const rateLimitAttempts = pgTable("rate_limit_attempts", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull().default(1),
+  // Start of the current window. The window slides only when it expires —
+  // it is not extended by activity — so a caller cannot be locked out
+  // indefinitely by continuing to try.
+  firstAttemptAt: timestamp("first_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  // Only for bulk cleanup of keys never seen again; expiry itself is
+  // decided from firstAttemptAt against the caller's own window.
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [
+  index("rate_limit_attempts_expires_at_idx").on(table.expiresAt),
+]);

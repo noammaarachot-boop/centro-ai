@@ -5,7 +5,7 @@ import { getDb } from "@/db";
 import { platformOwners } from "@/db/schema";
 import { recordOwnerAuditEvent } from "@/lib/owner/audit";
 import { verifyPassword } from "@/lib/auth/password";
-import { isRateLimited, clearAttempts, recordFailedAttempt } from "@/lib/auth/rateLimiter";
+import { isRateLimited, clearAttempts, recordFailedAttempt, AUTH_POLICY } from "@/lib/auth/rateLimiter";
 import { createOwnerSession } from "@/lib/auth/ownerSession";
 import { redirect } from "next/navigation";
 import { t } from "@/lib/owner/i18n/t";
@@ -34,7 +34,7 @@ export async function ownerLogin(
   }
 
   const rateLimitKey = `owner:${email}`;
-  if (isRateLimited(rateLimitKey)) {
+  if (await isRateLimited(rateLimitKey, AUTH_POLICY)) {
     return { error: t("owner.login.rateLimited") };
   }
 
@@ -46,13 +46,13 @@ export async function ownerLogin(
     .limit(1);
 
   if (!owner) {
-    recordFailedAttempt(rateLimitKey);
+    await recordFailedAttempt(rateLimitKey, AUTH_POLICY);
     return { error: t("owner.login.invalidCredentials") };
   }
 
   const passwordIsValid = await verifyPassword(password, owner.passwordHash);
   if (!passwordIsValid) {
-    recordFailedAttempt(rateLimitKey);
+    await recordFailedAttempt(rateLimitKey, AUTH_POLICY);
     await recordOwnerAuditEvent({
       eventType: "owner.login_failed",
       description: `ניסיון התחברות כושל עבור ${owner.email}`,
@@ -62,7 +62,7 @@ export async function ownerLogin(
     return { error: t("owner.login.invalidCredentials") };
   }
 
-  clearAttempts(rateLimitKey);
+  await clearAttempts(rateLimitKey);
 
   await createOwnerSession(owner.id);
   await recordOwnerAuditEvent({

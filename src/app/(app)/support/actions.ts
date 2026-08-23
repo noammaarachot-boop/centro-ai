@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { supportRequests } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { recordAuditEvent } from "@/lib/audit";
+import { consumeRateLimit, SUBMISSION_POLICY } from "@/lib/auth/rateLimiter";
 import { requireSession } from "@/lib/auth/session";
 import { sendSupportRequestEmail } from "@/lib/email/supportRequest";
 
@@ -29,22 +30,7 @@ export interface SupportRequestState {
 // Authenticated employees only, per requireSession() below — a support
 // request can never be filed anonymously. Rate-limited per user (not IP,
 // unlike the public marketing contact form) since every caller here is
-// already a known, logged-in identity — process-local in-memory map,
-// same "single pilot instance" scope as src/lib/auth/rateLimiter.ts and
-// src/app/api/contact/route.ts's own dedicated limiter.
-const RATE_WINDOW_MS = 10 * 60 * 1000;
-const RATE_MAX_SUBMISSIONS = 5;
-const submissionsByUser = new Map<string, { count: number; firstAt: number }>();
-
-function isRateLimited(userId: string): boolean {
-  const entry = submissionsByUser.get(userId);
-  if (!entry || Date.now() - entry.firstAt > RATE_WINDOW_MS) {
-    submissionsByUser.set(userId, { count: 1, firstAt: Date.now() });
-    return false;
-  }
-  entry.count += 1;
-  return entry.count > RATE_MAX_SUBMISSIONS;
-}
+// already a known, logged-in identity.
 
 // BR-18.4-style discipline (same as Settings' updateBusinessHours):
 // validate-then-reject, never partial persistence. user id/name/email and
@@ -57,7 +43,7 @@ export async function submitSupportRequest(
 ): Promise<SupportRequestState> {
   const session = await requireSession();
 
-  if (isRateLimited(session.userId)) {
+  if (await consumeRateLimit(`support:${session.userId}`, SUBMISSION_POLICY)) {
     return { error: "יותר מדי פניות בזמן קצר. נסו שוב בעוד כמה דקות." };
   }
 

@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import nodemailer from "nodemailer";
 import { getDb } from "@/db";
 import { leads } from "@/db/schema";
-import { withRetry } from "@/lib/resilience";
+import {
+  EmailNotConfiguredError,
+  isEmailConfigured,
+  sendTransactionalEmail,
+} from "@/lib/email/mailer";
+import { consumeRateLimit, SUBMISSION_POLICY } from "@/lib/auth/rateLimiter";
 import { toE164 } from "@/lib/whatsapp/phone";
 import { sendTemplateMessage } from "@/lib/whatsapp/send";
 import { LEAD_WELCOME_TEMPLATE } from "@/lib/whatsapp/templates";
@@ -20,25 +24,6 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // certainly a bot filling every field programmatically, not a person
 // reading and typing.
 const MIN_SUBMIT_MS = 1500;
-
-// Process-local, in-memory rate limiting — this route has exactly one
-// call site, so a small dedicated Map here (rather than a shared/
-// parameterized module) matches this codebase's "no abstraction beyond
-// what's needed" convention. Same "single pilot instance" caveat as
-// src/lib/auth/rateLimiter.ts.
-const RATE_WINDOW_MS = 10 * 60 * 1000;
-const RATE_MAX_SUBMISSIONS = 5;
-const submissionsByIp = new Map<string, { count: number; firstAt: number }>();
-
-function isRateLimited(ip: string): boolean {
-  const entry = submissionsByIp.get(ip);
-  if (!entry || Date.now() - entry.firstAt > RATE_WINDOW_MS) {
-    submissionsByIp.set(ip, { count: 1, firstAt: Date.now() });
-    return false;
-  }
-  entry.count += 1;
-  return entry.count > RATE_MAX_SUBMISSIONS;
-}
 
 interface ContactPayload {
   name: string;
@@ -194,7 +179,7 @@ export async function POST(request: NextRequest) {
   }
   const { name, phone, email, businessName, message, source } = parsed.value;
 
-  if (isRateLimited(ip)) {
+  if (await consumeRateLimit(`contact:${ip}`, SUBMISSION_POLICY)) {
     console.log(`[contact] rate-limited (ip=${ip})`);
     return NextResponse.json(
       { error: "יותר מדי פניות בזמן קצר. נסו שוב בעוד כמה דקות." },
@@ -204,9 +189,7 @@ export async function POST(request: NextRequest) {
 
   console.log(`[contact] submission received (ip=${ip}, source="${source}", name="${name}")`);
 
-  const gmailUser = process.env.GMAIL_USER;
-  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
-  if (!gmailUser || !gmailAppPassword) {
+  if (!isEmailConfigured()) {
     console.error("[contact] GMAIL_USER / GMAIL_APP_PASSWORD is not configured");
     return NextResponse.json(
       { error: "שירות השליחה אינו זמין כרגע. נסו שוב מאוחר יותר." },
@@ -266,21 +249,26 @@ export async function POST(request: NextRequest) {
   // this is exactly the same trust boundary as sending from a real Gmail
   // account through any mail client.
   try {
-    await withRetry(() => {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: { user: gmailUser, pass: gmailAppPassword },
-      });
-      return transporter.sendMail({
-        from: `"Centro Website" <${gmailUser}>`,
-        to,
-        replyTo: email || undefined,
-        subject: `פנייה חדשה מהאתר — ${name}`,
-        html,
-        text,
-      });
+    await sendTransactionalEmail({
+      to,
+      replyTo: email || undefined,
+      fromName: "Centro Website",
+      subject: `פנייה חדשה מהאתר — ${name}`,
+      html,
+      text,
     });
   } catch (err) {
+    // Configuration is re-checked inside the mailer, so it can still surface
+    // here if the environment changed between the check above and the send.
+    // Kept distinct from a delivery failure: 503 says "the service is not
+    // available", 502 says "we tried and the upstream refused".
+    if (err instanceof EmailNotConfiguredError) {
+      console.error(`[contact] email not configured at send time (ip=${ip})`);
+      return NextResponse.json(
+        { error: "שירות השליחה אינו זמין כרגע. נסו שוב מאוחר יותר." },
+        { status: 503 }
+      );
+    }
     console.error(`[contact] Gmail send failed (ip=${ip})`, err);
     return NextResponse.json(
       { error: "שליחת ההודעה נכשלה. נסו שוב מאוחר יותר." },

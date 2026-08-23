@@ -1,5 +1,4 @@
-import nodemailer from "nodemailer";
-import { withRetry } from "@/lib/resilience";
+import { sendTransactionalEmail } from "./mailer";
 
 const CATEGORY_LABELS: Record<string, string> = {
   not_working: "משהו לא עובד",
@@ -52,11 +51,8 @@ function escapeHtml(value: string): string {
  * it only withholds a premature "success".
  */
 export async function sendSupportRequestEmail(input: SupportRequestEmailInput): Promise<void> {
-  const gmailUser = process.env.GMAIL_USER;
-  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
-  if (!gmailUser || !gmailAppPassword) {
-    throw new Error("GMAIL_USER / GMAIL_APP_PASSWORD is not configured");
-  }
+  // Configuration is enforced by sendTransactionalEmail, which throws
+  // EmailNotConfiguredError — the caller must not record "sent" either way.
   const to = process.env.CONTACT_EMAIL_TO || "Centro.ai.team@gmail.com";
 
   const categoryLabel = CATEGORY_LABELS[input.category] ?? input.category;
@@ -107,18 +103,12 @@ export async function sendSupportRequestEmail(input: SupportRequestEmailInput): 
 
   const text = [...rows.map(([label, value]) => `${label}: ${value}`), "", "תיאור:", input.message].join("\n");
 
-  await withRetry(() => {
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: gmailUser, pass: gmailAppPassword },
-    });
-    return transporter.sendMail({
-      from: `"Centro Support" <${gmailUser}>`,
-      to,
-      replyTo: input.userEmail,
-      subject: `[Support #${input.ticketNumber}] ${categoryLabel} — ${input.subject}`,
-      html,
-      text,
-    });
+  await sendTransactionalEmail({
+    to,
+    replyTo: input.userEmail,
+    fromName: "Centro Support",
+    subject: `[Support #${input.ticketNumber}] ${categoryLabel} — ${input.subject}`,
+    html,
+    text,
   });
 }

@@ -1,29 +1,28 @@
-import nodemailer from "nodemailer";
-import { withRetry } from "@/lib/resilience";
+import { sendTransactionalEmail } from "./mailer";
 
 /**
- * Password reset email — real delivery via the same Gmail SMTP mechanism
- * already used and already configured in production for the marketing
- * site's contact form (src/app/api/contact/route.ts's GMAIL_USER/
- * GMAIL_APP_PASSWORD), reused here rather than introducing a second email
- * provider/credential for the same job.
+ * Password reset email, sent through the shared transactional mailer.
  *
- * Never throws — a transient send failure must never turn into an error
- * response that reveals (via a different response shape than the generic
- * "if that email exists" state) whether the account existed. Logs loudly
- * on failure instead, since a silently-lost reset email is otherwise
- * invisible.
+ * THROWS on failure, and that is the point.
+ *
+ * This used to swallow every failure — both "email is not configured" and
+ * "the send itself failed" — logging and returning normally. The intent was
+ * anti-enumeration: never let a failure produce a different response than
+ * the generic "if that address exists, we sent a link" state.
+ *
+ * The intent was right; the layer was wrong. Swallowing here meant a user
+ * locked out of their account saw "check your inbox", received nothing, and
+ * had no other route back in — the reset flow reported success while being
+ * completely non-functional. Enumeration is a property of what the ACTION
+ * tells the user, so the action now owns it (see
+ * src/app/forgot-password/actions.ts, which checks configuration up front,
+ * before it knows whether the account exists, and answers identically for
+ * every address). This function's only job is to report the truth.
  *
  * The link is deliberately never returned to the caller or exposed in any
  * HTTP response — only ever placed in the email body itself.
  */
 export async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<void> {
-  const gmailUser = process.env.GMAIL_USER;
-  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
-  if (!gmailUser || !gmailAppPassword) {
-    console.error("[password-reset] GMAIL_USER / GMAIL_APP_PASSWORD is not configured — reset email NOT sent", { email });
-    return;
-  }
 
   const html = `
     <div dir="rtl" style="font-family: Arial, Helvetica, sans-serif; background: #f5f4fb; padding: 32px 16px;">
@@ -47,21 +46,10 @@ export async function sendPasswordResetEmail(email: string, resetUrl: string): P
   `.trim();
   const text = `התקבלה בקשה לאיפוס הסיסמה שלך ל-Centro. הקישור בתוקף לשעה אחת:\n${resetUrl}\n\nאם לא ביקשת לאפס את הסיסמה, אפשר להתעלם מהמייל הזה.`;
 
-  try {
-    await withRetry(() => {
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: { user: gmailUser, pass: gmailAppPassword },
-      });
-      return transporter.sendMail({
-        from: `"Centro" <${gmailUser}>`,
-        to: email,
-        subject: "איפוס סיסמה ל-Centro",
-        html,
-        text,
-      });
-    });
-  } catch (error) {
-    console.error("[password-reset] Gmail send failed", error);
-  }
+  await sendTransactionalEmail({
+    to: email,
+    subject: "איפוס סיסמה ל-Centro",
+    html,
+    text,
+  });
 }

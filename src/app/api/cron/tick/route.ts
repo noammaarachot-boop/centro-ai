@@ -4,6 +4,7 @@ import { runScheduledTasks } from "@/lib/scheduler";
 import { getDb } from "@/db";
 import { jobRuns } from "@/db/schema";
 import { captureError } from "@/lib/monitoring/errorReporting";
+import { cleanupExpiredRateLimits } from "@/lib/auth/rateLimiter";
 
 export const dynamic = "force-dynamic";
 // Phase 4.1 remediation — matches the webhook route's own proven ceiling on
@@ -88,14 +89,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: "skipped", reason: "already_running" });
     }
 
+    // Housekeeping for the shared rate-limit table: only keys never seen
+    // again accumulate (an active key resets itself in place), so this is
+    // cheap. Deliberately outside the advisory-lock transaction and after
+    // the real work — it must never be able to fail the tick.
+    let rateLimitRowsPruned = 0;
+    try {
+      rateLimitRowsPruned = await cleanupExpiredRateLimits();
+    } catch (error) {
+      console.error("[cron] rate-limit cleanup failed (tick itself succeeded)", error);
+    }
+
     await db.insert(jobRuns).values({
       jobName: JOB_NAME,
       startedAt,
       finishedAt: new Date(),
       status: "success",
-      resultSummary: result,
+      resultSummary: { ...result, rateLimitRowsPruned },
     });
-    return NextResponse.json({ status: "ok", ...result });
+    return NextResponse.json({ status: "ok", ...result, rateLimitRowsPruned });
   } catch (error) {
     captureError(error, { jobName: JOB_NAME });
     await db.insert(jobRuns).values({

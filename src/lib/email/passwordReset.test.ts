@@ -34,18 +34,29 @@ describe("sendPasswordResetEmail", () => {
     expect(call.text).toContain("https://www.centro-ai.co.il/reset-password?token=abc123");
   });
 
-  it("never throws when GMAIL_USER/GMAIL_APP_PASSWORD are not configured — logs and returns", async () => {
+  // These two previously asserted the opposite — that failures are swallowed
+  // and the function resolves normally. That was the bug: the forgot-password
+  // action then told a locked-out user "check your inbox" while nothing had
+  // been sent, and they had no other way back into the account. Reporting the
+  // truth here is what lets the action decide what the user is told; the
+  // anti-enumeration property it was protecting now lives there instead
+  // (see forgotPassword.test.ts).
+  it("THROWS when GMAIL_USER/GMAIL_APP_PASSWORD are not configured", async () => {
     delete process.env.GMAIL_USER;
     delete process.env.GMAIL_APP_PASSWORD;
 
-    await expect(sendPasswordResetEmail("employee@example.com", "https://example.com/reset")).resolves.toBeUndefined();
+    await expect(
+      sendPasswordResetEmail("employee@example.com", "https://example.com/reset")
+    ).rejects.toThrow(/not configured/i);
     expect(sendMail).not.toHaveBeenCalled();
   });
 
-  it("never throws when the Gmail send itself fails, even after retries are exhausted", async () => {
+  it("THROWS when the Gmail send itself fails, even after retries are exhausted", async () => {
     sendMail.mockRejectedValue(new Error("SMTP timeout"));
 
-    await expect(sendPasswordResetEmail("employee@example.com", "https://example.com/reset")).resolves.toBeUndefined();
+    await expect(
+      sendPasswordResetEmail("employee@example.com", "https://example.com/reset")
+    ).rejects.toThrow();
   }, 10_000);
 
   it("never includes the reset URL in the function's own return value", async () => {
