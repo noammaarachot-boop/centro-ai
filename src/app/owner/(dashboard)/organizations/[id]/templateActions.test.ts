@@ -140,6 +140,34 @@ describe("submitWhatsAppTemplateAction", () => {
     expect(row!.rejectedReason).toBeNull();
   });
 
+  it("the body sent to Meta is byte-for-byte the managed definition, with static text on BOTH sides of {{1}}", async () => {
+    const org = await seedConnectedOrg();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "meta-tpl-1", status: "PENDING", category: "UTILITY" }),
+    });
+
+    await expectRedirect(() =>
+      submitWhatsAppTemplateAction(
+        formData({ organizationId: org.id, templateName: REQUEST_TEMPLATE, exampleValue: "תעודת זהות" })
+      )
+    );
+
+    const { findManagedTemplate } = await import("@/lib/whatsapp/templateManagement");
+    const definition = findManagedTemplate(REQUEST_TEMPLATE)!;
+    const sentBody = JSON.parse(fetchMock.mock.calls[0][1].body).components[0].text;
+
+    expect(sentBody).toBe(definition.bodyText);
+    // The live rejection this guards against: a placeholder at the very
+    // start or end of the body.
+    expect(sentBody.trim().endsWith("{{1}}")).toBe(false);
+    expect(sentBody.trim().startsWith("{{1}}")).toBe(false);
+    expect(sentBody).toContain("תודה, לאחר קבלת המסמכים נוכל להמשיך בטיפול.");
+
+    // ...and what we stored matches what we actually sent.
+    expect((await storedTemplate(org.id))!.bodyText).toBe(sentBody);
+  });
+
   it("never writes anything and never calls Meta when the example is invalid", async () => {
     const org = await seedConnectedOrg();
 

@@ -19,6 +19,7 @@ const {
   editTemplateInMeta,
   fetchTemplateStatuses,
   findManagedTemplate,
+  isPlaceholderPositionValid,
   submitTemplateToMeta,
   validateExampleValue,
   WhatsAppTemplateSubmissionError,
@@ -49,15 +50,43 @@ describe("MANAGED_TEMPLATES — the two owner-managed templates", () => {
 
   it("carries the exact requested wording, and is UTILITY/Hebrew", () => {
     const request = findManagedTemplate("centro_document_request_v3")!;
-    expect(request.bodyText).toBe("שלום, לצורך המשך הטיפול נשמח לקבל את המסמכים הבאים:\n{{1}}");
+    expect(request.bodyText).toBe(
+      "שלום, לצורך המשך הטיפול נשמח לקבל את המסמכים הבאים:\n{{1}}\nתודה, לאחר קבלת המסמכים נוכל להמשיך בטיפול."
+    );
     const reminder = findManagedTemplate("centro_document_reminder_v3")!;
     expect(reminder.bodyText).toBe(
-      "שלום, זוהי תזכורת בנוגע למסמכים שעדיין חסרים להמשך הטיפול:\n{{1}}"
+      "שלום, זוהי תזכורת בנוגע למסמכים שעדיין חסרים להמשך הטיפול:\n{{1}}\nנשמח לקבל את המסמכים בהקדם כדי שנוכל להמשיך בטיפול."
     );
     for (const template of MANAGED_TEMPLATES) {
       expect(template.category).toBe("UTILITY");
       expect(template.language).toBe("he");
     }
+  });
+
+  // Regression guard for the live rejection: "אי אפשר למקם את המשתנים
+  // בהתחלה או בסוף של התבנית" — Meta requires static text on BOTH sides of
+  // a placeholder.
+  it("neither template starts or ends with the placeholder — Meta rejects that outright", () => {
+    for (const template of MANAGED_TEMPLATES) {
+      expect(isPlaceholderPositionValid(template.bodyText)).toBe(true);
+      expect(template.bodyText.trim().startsWith("{{1}}")).toBe(false);
+      expect(template.bodyText.trim().endsWith("{{1}}")).toBe(false);
+      // There is real static text after the placeholder, not just whitespace.
+      expect(template.bodyText.split("{{1}}")[1].trim().length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("isPlaceholderPositionValid", () => {
+  it("rejects a body that starts or ends with the placeholder", () => {
+    expect(isPlaceholderPositionValid("{{1}} ואז טקסט")).toBe(false);
+    expect(isPlaceholderPositionValid("טקסט ואז {{1}}")).toBe(false);
+    // Trailing whitespace/newline is not "static text" to Meta.
+    expect(isPlaceholderPositionValid("טקסט ואז {{1}}\n")).toBe(false);
+  });
+
+  it("accepts a body with real static text on both sides", () => {
+    expect(isPlaceholderPositionValid("לפני\n{{1}}\nאחרי")).toBe(true);
   });
 });
 

@@ -56,22 +56,37 @@ export interface ManagedTemplateDefinition {
 //
 // Real newlines in the BODY text are fine and intentional; Meta only
 // forbids newlines inside a substituted PARAMETER value at send time.
+// Meta rule, confirmed live on the first real submission: a placeholder
+// may not sit at the very start OR the very end of the body — it must be
+// surrounded by static text. Both bodies below therefore close with a
+// fixed sentence after {{1}}. isPlaceholderPositionValid() below encodes
+// the rule so this can never silently regress.
 export const MANAGED_TEMPLATES: ManagedTemplateDefinition[] = [
   {
     name: "centro_document_request_v3",
     label: "בקשת מסמכים",
     language: "he",
     category: "UTILITY",
-    bodyText: "שלום, לצורך המשך הטיפול נשמח לקבל את המסמכים הבאים:\n{{1}}",
+    bodyText:
+      "שלום, לצורך המשך הטיפול נשמח לקבל את המסמכים הבאים:\n{{1}}\nתודה, לאחר קבלת המסמכים נוכל להמשיך בטיפול.",
   },
   {
     name: "centro_document_reminder_v3",
     label: "תזכורת",
     language: "he",
     category: "UTILITY",
-    bodyText: "שלום, זוהי תזכורת בנוגע למסמכים שעדיין חסרים להמשך הטיפול:\n{{1}}",
+    bodyText:
+      "שלום, זוהי תזכורת בנוגע למסמכים שעדיין חסרים להמשך הטיפול:\n{{1}}\nנשמח לקבל את המסמכים בהקדם כדי שנוכל להמשיך בטיפול.",
   },
 ];
+
+// Meta rejects a body whose placeholder is the first or last thing in it.
+// Checked against the trimmed body, since leading/trailing whitespace is
+// not "static text" as far as Meta is concerned.
+export function isPlaceholderPositionValid(bodyText: string): boolean {
+  const trimmed = bodyText.trim();
+  return !trimmed.startsWith("{{") && !trimmed.endsWith("}}");
+}
 
 export function findManagedTemplate(name: string): ManagedTemplateDefinition | undefined {
   return MANAGED_TEMPLATES.find((template) => template.name === name);
