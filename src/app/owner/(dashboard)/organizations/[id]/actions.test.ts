@@ -100,6 +100,32 @@ function mockMetaVerifySuccess(phoneNumberId: string) {
   });
 }
 
+// Routes each Meta call by URL so a single step (e.g. the per-number
+// webhook override) can be failed independently of the others.
+function mockMetaByUrl(options: { overrideOk: boolean; phoneNumberId: string }) {
+  fetchMock.mockImplementation(async (url: string) => {
+    const target = String(url);
+    if (target.includes("/phone_numbers")) {
+      return {
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: options.phoneNumberId, display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" },
+          ],
+        }),
+      };
+    }
+    // The per-number override POSTs to the phone number's own node — no
+    // "/phone_numbers" and no "/subscribed_apps" in the path.
+    if (target.endsWith(`/${options.phoneNumberId}`)) {
+      return options.overrideOk
+        ? { ok: true, json: async () => ({ success: true }) }
+        : { ok: false, status: 400, text: async () => "override rejected" };
+    }
+    return { ok: true, json: async () => ({ success: true }), text: async () => "" };
+  });
+}
+
 describe("manuallyConnectWhatsAppAction — verifies against Meta before ever saving", () => {
   it("on success: stores the connection, encrypts the token, and redirects with whatsappConnected=1", async () => {
     const orgId = await seedOrg();
@@ -168,6 +194,100 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
     const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
     expect(org.whatsappPhoneNumberId).toBeNull();
     expect(org.whatsappAccessTokenEnc).toBeNull();
+  });
+
+  it("registers a per-number webhook override and stores its verify token, so the owner screen can show a dedicated URL", async () => {
+    const orgId = await seedOrg();
+    // Distinct ids per test — organizations_whatsapp_phone_number_id_idx /
+    // _business_account_id_idx are global unique indexes, so reusing an id
+    // an earlier test already connected would fail as a conflict.
+    mockMetaByUrl({ overrideOk: true, phoneNumberId: "phone-override-ok" });
+
+    await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({
+          organizationId: orgId,
+          wabaId: "waba-override-ok",
+          phoneNumberId: "phone-override-ok",
+          accessToken: "EAAG_token",
+        })
+      )
+    );
+
+    const overrideCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/phone-override-ok"));
+    expect(overrideCall).toBeDefined();
+    const body = JSON.parse(overrideCall![1].body);
+    expect(body.webhook_configuration.override_callback_uri).toBe(
+      "https://www.centro-ai.co.il/api/webhooks/whatsapp/phone-override-ok"
+    );
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappWebhookVerifyToken).toBeTruthy();
+    // The token Meta was handed is exactly the one persisted — otherwise
+    // the handshake against our own route could never succeed.
+    expect(body.webhook_configuration.verify_token).toBe(org.whatsappWebhookVerifyToken);
+  });
+
+  it("ORDERING: the verify token is already in the database BEFORE Meta is asked to register the override (Meta handshakes the URL during that call)", async () => {
+    const orgId = await seedOrg();
+    let tokenVisibleToHandshake: string | null = null;
+
+    fetchMock.mockImplementation(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/phone_numbers")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [{ id: "phone-order", display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
+          }),
+        };
+      }
+      if (target.endsWith("/phone-order")) {
+        // Stand-in for Meta's GET hub.challenge against our own route,
+        // which resolves the token by phoneNumberId — if the row isn't
+        // written yet, the real handshake would fail.
+        const [row] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+        tokenVisibleToHandshake = row.whatsappWebhookVerifyToken;
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      return { ok: true, json: async () => ({ success: true }), text: async () => "" };
+    });
+
+    await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({
+          organizationId: orgId,
+          wabaId: "waba-order",
+          phoneNumberId: "phone-order",
+          accessToken: "EAAG_token",
+        })
+      )
+    );
+
+    expect(tokenVisibleToHandshake).toBeTruthy();
+  });
+
+  it("a failed override does NOT fail the connection — it stays saved (Meta falls back to the shared URL), and the token is cleared so no dead URL is advertised", async () => {
+    const orgId = await seedOrg();
+    mockMetaByUrl({ overrideOk: false, phoneNumberId: "phone-override-fail" });
+
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({
+          organizationId: orgId,
+          wabaId: "waba-override-fail",
+          phoneNumberId: "phone-override-fail",
+          accessToken: "EAAG_token",
+        })
+      )
+    );
+    expect(result.params.whatsappConnected).toBe("1"); // still a successful connection
+    expect(result.params.webhookOverrideFailed).toBe("1"); // but the owner is told
+
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappPhoneNumberId).toBe("phone-override-fail"); // connection intact
+    expect(org.whatsappAccessTokenEnc).not.toBeNull();
+    expect(org.whatsappWebhookVerifyToken).toBeNull(); // cleared — nothing to advertise
   });
 
   it("records an audit event that never contains the token itself", async () => {

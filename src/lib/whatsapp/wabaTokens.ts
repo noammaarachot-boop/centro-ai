@@ -15,6 +15,13 @@ export interface WabaConnection {
   // before. Encrypted before it ever reaches the database — see
   // tokenCipher.ts.
   accessToken?: string;
+  // Manual connections only — the per-phone-number webhook override's
+  // handshake token (webhookUrls.ts). Written BEFORE the override is
+  // registered with Meta, since Meta GET-handshakes the override URL
+  // during that call and the dynamic route answers it from this column.
+  // Null for every Embedded Signup organization, which has no override and
+  // keeps receiving events on the shared app-level endpoint.
+  webhookVerifyToken?: string;
 }
 
 // Thrown by storeWabaConnection when this WABA/phone number is already
@@ -51,6 +58,7 @@ export async function storeWabaConnection(
         whatsappVerifiedName: connection.verifiedName,
         whatsappConnectedAt: new Date(),
         ...(connection.accessToken ? { whatsappAccessTokenEnc: encryptWhatsAppToken(connection.accessToken) } : {}),
+        ...(connection.webhookVerifyToken ? { whatsappWebhookVerifyToken: connection.webhookVerifyToken } : {}),
         // Automated document collection is on by default the moment WhatsApp
         // finishes connecting (product decision) — no separate activation
         // step, and the user can still turn it off from Settings.
@@ -89,6 +97,7 @@ export async function clearWabaConnection(organizationId: string): Promise<void>
       whatsappVerifiedName: null,
       whatsappConnectedAt: null,
       whatsappAccessTokenEnc: null,
+      whatsappWebhookVerifyToken: null,
       // No connected WhatsApp ⇒ automated document collection cannot run;
       // clear the gate so a later reconnect re-enables it deliberately.
       documentCollectionEnabled: false,

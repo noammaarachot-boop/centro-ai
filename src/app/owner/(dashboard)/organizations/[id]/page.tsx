@@ -37,11 +37,15 @@ export default async function OwnerOrganizationDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ whatsappConnected?: string; whatsappError?: string }>;
+  searchParams: Promise<{
+    whatsappConnected?: string;
+    whatsappError?: string;
+    webhookOverrideFailed?: string;
+  }>;
 }) {
   await requireOwnerSession();
   const { id } = await params;
-  const { whatsappConnected, whatsappError } = await searchParams;
+  const { whatsappConnected, whatsappError, webhookOverrideFailed } = await searchParams;
 
   const overview = await getOrganizationOverview(id);
   if (!overview) notFound();
@@ -215,6 +219,50 @@ export default async function OwnerOrganizationDetailPage({
           >
             {decodeURIComponent(whatsappError)}
           </p>
+        )}
+        {webhookOverrideFailed && (
+          <p
+            role="alert"
+            className="mb-4 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm font-medium text-warning"
+          >
+            החיבור נשמר והודעות ימשיכו להגיע דרך כתובת ה-Webhook המשותפת, אך לא הצלחנו לרשום כתובת
+            ייעודית למספר הזה מול Meta. ניתן ללחוץ &quot;בדוק וחבר&quot; שוב כדי לנסות שנית.
+          </p>
+        )}
+
+        {/* Per-number webhook override (Meta "Webhook overrides") — shown
+            only when an override is genuinely registered right now, so this
+            can never advertise a URL Meta isn't actually delivering to. */}
+        {overview.whatsappWebhookUrl && overview.whatsappWebhookVerifyToken && (
+          <div className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3">
+            <p className="mb-2 text-sm font-semibold text-success">
+              כתובת Webhook ייעודית למספר הזה — פעילה
+            </p>
+            <p className="mb-3 text-xs text-text-secondary">
+              רשומה אוטומטית מול Meta עבור המספר הזה בלבד. הודעות נכנסות של המשרד הזה מגיעות לכתובת
+              הזו במקום לכתובת המשותפת. אין צורך להזין אותה ידנית — היא מוצגת לאימות ולמעקב.
+            </p>
+            <dl className="space-y-2 text-xs">
+              <div>
+                <dt className="mb-0.5 font-medium text-text-muted">Callback URL</dt>
+                <dd
+                  dir="ltr"
+                  className="overflow-x-auto whitespace-nowrap rounded-lg border border-border bg-surface px-3 py-2 font-mono text-text-primary"
+                >
+                  {overview.whatsappWebhookUrl}
+                </dd>
+              </div>
+              <div>
+                <dt className="mb-0.5 font-medium text-text-muted">Verify Token</dt>
+                <dd
+                  dir="ltr"
+                  className="overflow-x-auto whitespace-nowrap rounded-lg border border-border bg-surface px-3 py-2 font-mono text-text-primary"
+                >
+                  {overview.whatsappWebhookVerifyToken}
+                </dd>
+              </div>
+            </dl>
+          </div>
         )}
 
         <form action={manuallyConnectWhatsAppAction} className="space-y-4">

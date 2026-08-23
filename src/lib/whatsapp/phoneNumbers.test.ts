@@ -12,7 +12,8 @@ vi.mock("./config", () => ({
   GRAPH_API_BASE: "https://graph.example/v1",
 }));
 
-const { getFirstPhoneNumberForWaba, getPhoneNumberInWaba, WhatsAppApiError } = await import("./phoneNumbers");
+const { getFirstPhoneNumberForWaba, getPhoneNumberInWaba, setPhoneNumberWebhookOverride, WhatsAppApiError } =
+  await import("./phoneNumbers");
 
 describe("getFirstPhoneNumberForWaba — single phone number (the common case)", () => {
   it("resolves the one phone number found on the WABA", async () => {
@@ -108,5 +109,62 @@ describe("getPhoneNumberInWaba — verifies a specific token/WABA/phone number c
     fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => "internal error" });
     await expect(getPhoneNumberInWaba("waba-1", "phone-1", "token")).rejects.toBeInstanceOf(WhatsAppApiError);
     expect(fetchMock).toHaveBeenCalledTimes(1); // no retry-with-system-token fallback attempt
+  });
+});
+
+// Per-phone-number webhook override (Meta "Webhook overrides") — points
+// ONE number at its own callback URL. Deliberately non-throwing: without
+// an override, Meta falls back to the shared app-level endpoint, so a
+// failure here must never fail an otherwise-working connection.
+describe("setPhoneNumberWebhookOverride — registers a dedicated callback URL for one phone number", () => {
+  it("POSTs the webhook_configuration payload Meta documents, to the phone number's own node", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+
+    const ok = await setPhoneNumberWebhookOverride(
+      "phone-1",
+      "https://www.centro-ai.co.il/api/webhooks/whatsapp/phone-1",
+      "verify-token-abc",
+      "org-own-token"
+    );
+    expect(ok).toBe(true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("https://graph.example/v1/phone-1");
+    expect(init.method).toBe("POST");
+    expect(init.headers.Authorization).toBe("Bearer org-own-token"); // this org's own token, never a shared one
+    expect(JSON.parse(init.body)).toEqual({
+      webhook_configuration: {
+        override_callback_uri: "https://www.centro-ai.co.il/api/webhooks/whatsapp/phone-1",
+        verify_token: "verify-token-abc",
+      },
+    });
+  });
+
+  it("returns false (never throws) when Meta rejects it — the connection itself must survive a failed override", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 400, text: async () => "bad override url" });
+
+    await expect(
+      setPhoneNumberWebhookOverride("phone-1", "https://example.com/hook", "t", "token")
+    ).resolves.toBe(false);
+  });
+
+  it("returns false (never throws) when the request itself fails outright — e.g. a network/timeout error", async () => {
+    fetchMock.mockRejectedValue(new Error("network down"));
+
+    await expect(
+      setPhoneNumberWebhookOverride("phone-1", "https://example.com/hook", "t", "token")
+    ).resolves.toBe(false);
+  });
+
+  it("never echoes either token into an error or return value", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "forbidden" });
+
+    const result = await setPhoneNumberWebhookOverride(
+      "phone-1",
+      "https://example.com/hook",
+      "super-secret-verify-token",
+      "super-secret-access-token"
+    );
+    expect(JSON.stringify(result)).not.toContain("super-secret");
   });
 });

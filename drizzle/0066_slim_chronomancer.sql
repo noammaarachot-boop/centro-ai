@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "whatsapp_webhook_verify_token" text;

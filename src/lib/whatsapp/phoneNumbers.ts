@@ -155,6 +155,65 @@ export async function getPhoneNumberInWaba(
   };
 }
 
+// Meta "Webhook overrides" — points ONE business phone number at its own
+// callback URL, so this organization's inbound events stop arriving on the
+// shared app-level endpoint and arrive on a per-number one instead. Meta
+// resolves an event's destination phone-number override first, then the
+// WABA's, then the app default, so setting this affects only this number
+// and never any other tenant on the same App.
+//
+// Meta performs the usual GET hub.challenge handshake against
+// `callbackUrl` DURING this call, which is why the caller must have
+// already persisted `verifyToken` (the dynamic route looks it up by
+// phoneNumberId to answer that handshake) before calling this.
+//
+// Returns false rather than throwing on a Meta-side rejection: the
+// override is an enhancement, not a requirement — without it the shared
+// app-level URL keeps delivering this number's messages exactly as it
+// always has, so a failure here must never fail an otherwise-good
+// connection. Never echoes either token into an error or a log.
+export async function setPhoneNumberWebhookOverride(
+  phoneNumberId: string,
+  callbackUrl: string,
+  verifyToken: string,
+  accessToken: string
+): Promise<boolean> {
+  try {
+    const response = await withRetry(() =>
+      fetch(`${GRAPH_API_BASE}/${encodeURIComponent(phoneNumberId)}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          webhook_configuration: {
+            override_callback_uri: callbackUrl,
+            verify_token: verifyToken,
+          },
+        }),
+        signal: AbortSignal.timeout(WHATSAPP_PHONE_NUMBER_REQUEST_TIMEOUT_MS),
+      })
+    );
+    if (!response.ok) {
+      const body = await response.text();
+      console.error("[whatsapp] per-number webhook override rejected by Meta", {
+        phoneNumberId,
+        status: response.status,
+        body,
+      });
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("[whatsapp] per-number webhook override request failed", {
+      phoneNumberId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
 function uniqueTokens(tokens: Array<string | undefined>): string[] {
   const seen = new Set<string>();
   const result: string[] = [];

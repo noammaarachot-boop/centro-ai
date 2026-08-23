@@ -1,6 +1,7 @@
 import { withRetry } from "@/lib/resilience";
 import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
 import { WHATSAPP_HARDCODE_ENABLED, WHATSAPP_HARDCODED } from "./hardcodedConfig";
+import { WEBHOOK_CALLBACK_URL } from "./webhookUrls";
 
 // Phase 7 remediation — matches the timeout already applied to every other
 // outbound Meta Graph API call in src/lib/whatsapp/send.ts (15s). This is
@@ -400,12 +401,12 @@ export async function resolveWabaIdFromToken(userAccessToken: string): Promise<s
   return targetIds[0];
 }
 
-// Centro's fixed production domain — this deployment has exactly one,
-// so it's a stable constant rather than an env var. Must exactly match
-// the Callback URL already verified in the Meta App Dashboard's
-// WhatsApp Configuration; Meta rejects a mismatched callback_url on the
-// app-level subscription call below.
-const WEBHOOK_CALLBACK_URL = "https://www.centro-ai.co.il/api/webhooks/whatsapp";
+// Centro's fixed production callback URL now lives in webhookUrls.ts, so
+// the per-number override (buildPhoneNumberWebhookUrl) derives from the
+// exact same origin instead of repeating the domain. Must still match the
+// Callback URL verified in the Meta App Dashboard's WhatsApp
+// Configuration; Meta rejects a mismatched callback_url on the app-level
+// subscription call below.
 
 // Required for Centro's app to actually receive this WABA's webhook
 // events (messages, statuses) — Embedded Signup connects the number but

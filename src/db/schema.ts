@@ -115,6 +115,22 @@ export const organizations = pgTable("organizations", {
   // Embedded-Signup-connected organization's behavior is completely
   // unchanged.
   whatsappAccessTokenEnc: text("whatsapp_access_token_enc"),
+  // Per-phone-number webhook override (Meta "Webhook overrides":
+  // POST /<PHONE_NUMBER_ID> with webhook_configuration). Meta resolves an
+  // inbound event's destination phone-number override first, then the
+  // WABA's, then the app's default callback URL — so when this is set,
+  // this organization's messages arrive at
+  // /api/webhooks/whatsapp/<phoneNumberId> instead of the shared
+  // /api/webhooks/whatsapp. Null means no override is active and the
+  // shared app-level URL handles it, exactly as before (every Embedded
+  // Signup organization). Stored in plaintext, unlike
+  // whatsappAccessTokenEnc: this value only ever proves the one-time
+  // hub.challenge handshake (it grants no API access at all), the owner is
+  // shown it deliberately so a connection can be verified/re-entered in
+  // Meta by hand, and message authenticity is enforced separately by the
+  // X-Hub-Signature-256 HMAC against WHATSAPP_APP_SECRET — which the
+  // override does not change, since events still come from the same App.
+  whatsappWebhookVerifyToken: text("whatsapp_webhook_verify_token"),
   // Per-organization Meta template-approval tracking (Phase 2.1 remediation).
   // Message-template review/approval happens per-WABA on Meta's side, not
   // globally — a template approved on one office's WhatsApp Business

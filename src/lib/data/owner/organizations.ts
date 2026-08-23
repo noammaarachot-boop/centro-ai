@@ -1,6 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, organizations, users } from "@/db/schema";
+import { buildPhoneNumberWebhookUrl } from "@/lib/whatsapp/webhookUrls";
 
 // Every function here is intentionally cross-organization — the one place
 // in the data layer that drops the organizationId scoping every other
@@ -84,6 +85,16 @@ export interface OwnerOrganizationOverview {
   // sites, not even encrypted, so the UI layer only ever gets to know
   // whether one exists.
   whatsappManuallyConnected: boolean;
+  // Per-phone-number webhook override (Meta "Webhook overrides"). Both are
+  // null unless an override is genuinely registered with Meta right now —
+  // the owner action clears the token again if Meta rejected the
+  // registration — so the owner screen can never advertise a dedicated URL
+  // that isn't actually receiving traffic. Unlike the Access Token, the
+  // verify token IS surfaced deliberately: it only proves the one-time
+  // hub.challenge handshake, grants no API access, and the owner needs it
+  // to re-enter or verify the override in Meta by hand.
+  whatsappWebhookUrl: string | null;
+  whatsappWebhookVerifyToken: string | null;
   googleConnectedAt: Date | null;
   googleDriveFolderName: string | null;
   suspendedAt: Date | null;
@@ -153,6 +164,11 @@ export async function getOrganizationOverview(
     whatsappPhoneNumberId: org.whatsappPhoneNumberId,
     whatsappVerifiedName: org.whatsappVerifiedName,
     whatsappManuallyConnected: !!org.whatsappAccessTokenEnc,
+    whatsappWebhookUrl:
+      org.whatsappWebhookVerifyToken && org.whatsappPhoneNumberId
+        ? buildPhoneNumberWebhookUrl(org.whatsappPhoneNumberId)
+        : null,
+    whatsappWebhookVerifyToken: org.whatsappWebhookVerifyToken,
     googleConnectedAt: org.googleConnectedAt,
     googleDriveFolderName: org.googleDriveFolderName,
     suspendedAt: org.suspendedAt,

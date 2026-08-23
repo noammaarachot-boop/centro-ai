@@ -7,7 +7,13 @@ import { organizations } from "@/db/schema";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { recordOwnerAuditEvent } from "@/lib/owner/audit";
 import { subscribeToWabaWebhooks } from "@/lib/whatsapp/embeddedSignup";
-import { getPhoneNumberInWaba, WhatsAppApiError, type PhoneNumberDetails } from "@/lib/whatsapp/phoneNumbers";
+import {
+  getPhoneNumberInWaba,
+  setPhoneNumberWebhookOverride,
+  WhatsAppApiError,
+  type PhoneNumberDetails,
+} from "@/lib/whatsapp/phoneNumbers";
+import { buildPhoneNumberWebhookUrl, generateWebhookVerifyToken } from "@/lib/whatsapp/webhookUrls";
 import { storeWabaConnection, WhatsAppConnectionConflictError } from "@/lib/whatsapp/wabaTokens";
 
 // A layout only protects the pages it wraps, not the Server Actions
@@ -312,6 +318,13 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     );
   }
 
+  // Generated (and persisted, just below) BEFORE the override is
+  // registered with Meta: Meta GET-handshakes the override URL during that
+  // call, and the dynamic route answers that handshake by looking this
+  // token up by phoneNumberId. Registering first would guarantee a failed
+  // handshake.
+  const webhookVerifyToken = generateWebhookVerifyToken();
+
   try {
     await storeWabaConnection(organizationId, {
       businessAccountId: wabaId,
@@ -319,6 +332,7 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
       displayPhoneNumber: verified.displayPhoneNumber,
       verifiedName: verified.verifiedName,
       accessToken,
+      webhookVerifyToken,
     });
   } catch (error) {
     const message =
@@ -332,13 +346,35 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     redirect(`/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(message)}`);
   }
 
+  // Deliberately NOT fatal, unlike the WABA subscription above: without an
+  // override this number's messages still arrive on the shared app-level
+  // endpoint (Meta falls back to it), so the connection is fully working
+  // either way. On failure the token is cleared again so the owner screen
+  // never advertises a dedicated URL that Meta isn't actually delivering
+  // to.
+  const overrideOk = await setPhoneNumberWebhookOverride(
+    phoneNumberId,
+    buildPhoneNumberWebhookUrl(phoneNumberId),
+    webhookVerifyToken,
+    accessToken
+  );
+  if (!overrideOk) {
+    const db = await getDb();
+    await db
+      .update(organizations)
+      .set({ whatsappWebhookVerifyToken: null, updatedAt: new Date() })
+      .where(eq(organizations.id, organizationId));
+  }
+
   await recordOwnerAuditEvent({
     eventType: "owner.whatsapp_manually_connected",
     description: `WhatsApp חובר ידנית (${verified.displayPhoneNumber}) על ידי ${session.email}`,
     severity: "info",
     platformOwnerId: session.platformOwnerId,
-    metadata: { organizationId, wabaId, phoneNumberId, webhooksSubscribed: true },
+    metadata: { organizationId, wabaId, phoneNumberId, webhooksSubscribed: true, webhookOverride: overrideOk },
   });
 
-  redirect(`/owner/organizations/${organizationId}?whatsappConnected=1`);
+  redirect(
+    `/owner/organizations/${organizationId}?whatsappConnected=1${overrideOk ? "" : "&webhookOverrideFailed=1"}`
+  );
 }
