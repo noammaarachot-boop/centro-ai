@@ -431,12 +431,27 @@ export async function resolveWabaIdFromToken(userAccessToken: string): Promise<s
 // cannot be established — callers store the connection so a flaky
 // subscribe does not undo a completed signup. Inbound messages may stay
 // broken until a later reconnect/retry succeeds.
+//
+// `allowSharedTokenFallback` — the WA-01 fallback above is correct ONLY
+// for Embedded Signup, where the organization has no token of its own and
+// the shared system-user token genuinely covers its WABA. A manually
+// connected organization has its own credentials, and falling back there
+// is actively harmful: it would either fail anyway (the shared token has
+// no access to that office's WABA) or, worse, appear to succeed while
+// hiding that the office's own token lacks the permission it needs —
+// exactly the "submission worked but sending later fails" split this must
+// prevent. Such callers pass false and get a truthful failure instead.
 export async function subscribeToWabaWebhooks(
   wabaId: string,
-  preferredAccessToken?: string
+  preferredAccessToken?: string,
+  options?: { allowSharedTokenFallback?: boolean }
 ): Promise<boolean> {
   const { appId, appSecret, systemUserToken, webhookVerifyToken } = getWhatsAppConfig();
-  const tokens = uniqueTokens([preferredAccessToken, systemUserToken]);
+  const allowFallback = options?.allowSharedTokenFallback ?? true;
+  const tokens = uniqueTokens([
+    preferredAccessToken,
+    ...(allowFallback ? [systemUserToken] : []),
+  ]);
 
   let subscribed = false;
   let lastFailure: string | null = null;

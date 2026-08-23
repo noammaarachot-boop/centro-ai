@@ -13,6 +13,7 @@ import {
   WhatsAppApiError,
   type PhoneNumberDetails,
 } from "@/lib/whatsapp/phoneNumbers";
+import { ensureTemplatesProvisioned } from "@/lib/whatsapp/templates";
 import { buildPhoneNumberWebhookUrl, generateWebhookVerifyToken } from "@/lib/whatsapp/webhookUrls";
 import { storeWabaConnection, WhatsAppConnectionConflictError } from "@/lib/whatsapp/wabaTokens";
 
@@ -291,7 +292,13 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
   // is saved unless this also succeeds.
   let webhooksOk: boolean;
   try {
-    webhooksOk = await subscribeToWabaWebhooks(wabaId, accessToken);
+    // No shared-token fallback here: this organization has its own
+    // credentials, so a failure must surface as a real permissions problem
+    // now, rather than being masked by the shared token and resurfacing
+    // later as an unexplained send failure.
+    webhooksOk = await subscribeToWabaWebhooks(wabaId, accessToken, {
+      allowSharedTokenFallback: false,
+    });
   } catch (error) {
     console.error("[owner] manuallyConnectWhatsApp webhook subscription threw", {
       organizationId,
@@ -368,6 +375,28 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     .update(organizations)
     .set({ whatsappWebhookOverrideAt: overrideOk ? new Date() : null, updatedAt: new Date() })
     .where(eq(organizations.id, organizationId));
+
+  // The live send path sends templates BY NAME (centro_initial_request and
+  // friends — see conversationOrchestration.ts / scheduler.ts), and Meta
+  // approves a template per-WABA. Without this, a manually-connected
+  // office's WABA simply wouldn't have those templates, and the first real
+  // send would fail with no obvious cause. Embedded Signup already does
+  // this at the equivalent point (completeSignup.ts); the difference is
+  // the token — this organization's own, since the shared one has no
+  // access to its WABA at all.
+  //
+  // Best-effort and idempotent (it lists first and only submits what's
+  // missing), exactly as in completeSignup: a template that can't be
+  // provisioned right now must never undo an otherwise-good connection.
+  try {
+    await ensureTemplatesProvisioned(wabaId, undefined, accessToken);
+  } catch (error) {
+    console.error("[owner] manuallyConnectWhatsApp template provisioning failed (non-fatal)", {
+      organizationId,
+      wabaId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   await recordOwnerAuditEvent({
     eventType: "owner.whatsapp_manually_connected",

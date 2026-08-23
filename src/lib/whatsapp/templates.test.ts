@@ -99,3 +99,42 @@ describe("ensureTemplatesProvisioned — Phase 7: request timeout", () => {
     }
   });
 });
+
+// Per-organization credentials — the shared WHATSAPP_SYSTEM_USER_TOKEN has
+// no access at all to a manually-connected office's WABA, so provisioning
+// that office's templates with it would fail on every single template.
+// Same prefer-the-organization's-own rule send.ts and media.ts follow.
+describe("ensureTemplatesProvisioned — uses the organization's OWN token when it has one", () => {
+  function mockListThenCreate() {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes("message_templates?")) {
+        return { ok: true, json: async () => ({ data: [] }) };
+      }
+      return { ok: true, json: async () => ({ id: "template-1" }) };
+    });
+  }
+
+  it("uses the passed organization token for BOTH the list and the create call — never the shared one", async () => {
+    mockListThenCreate();
+
+    await ensureTemplatesProvisioned("waba-1", [REQUIRED_TEMPLATES[0]], "org-own-token");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of fetchMock.mock.calls) {
+      const [, init] = call;
+      expect(init.headers.Authorization).toBe("Bearer org-own-token");
+      expect(init.headers.Authorization).not.toContain("fake-token");
+    }
+  });
+
+  it("falls back to the shared system token only when no organization token exists (the Embedded Signup path, unchanged)", async () => {
+    mockListThenCreate();
+
+    await ensureTemplatesProvisioned("waba-1", [REQUIRED_TEMPLATES[0]]);
+
+    for (const call of fetchMock.mock.calls) {
+      const [, init] = call;
+      expect(init.headers.Authorization).toBe("Bearer fake-token");
+    }
+  });
+});

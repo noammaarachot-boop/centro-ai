@@ -1971,6 +1971,72 @@ export const platformOwnerAuditLog = pgTable("platform_owner_audit_log", {
   metadata: jsonb("metadata"),
 });
 
+// Per-organization WhatsApp message templates managed from the owner
+// screen: composed here, submitted to that organization's OWN WABA with
+// that organization's OWN access token, and tracked through Meta's review.
+//
+// Deliberately separate from src/lib/whatsapp/templates.ts's
+// REQUIRED_TEMPLATES (the pre-existing, code-defined templates the send
+// path actually uses today, gated by organizations.initialRequestV2Approved
+// / reminderV2Approved). Nothing here feeds the live send path yet — this
+// table is the tracking/management layer, so introducing it cannot change
+// which template an organization actually sends.
+export const whatsappTemplates = pgTable(
+  "whatsapp_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    // Denormalized from organizations.whatsappBusinessAccountId at
+    // submission time, on purpose: a template lives on ONE specific WABA,
+    // and if the organization ever reconnects to a different WABA, rows
+    // recorded against the old one must stay attributable to it rather
+    // than silently appearing to belong to the new one.
+    wabaId: text("waba_id").notNull(),
+    name: text("name").notNull(),
+    language: text("language").notNull(),
+    category: text("category").notNull(),
+    bodyText: text("body_text").notNull(),
+    // The positional placeholders this body declares, in order (["{{1}}"]),
+    // and one example value per placeholder — Meta rejects a parameterized
+    // template outright (INVALID_FORMAT) without examples.
+    variables: jsonb("variables").notNull(),
+    exampleValues: jsonb("example_values").notNull(),
+    // Meta's own id for the submitted template, returned on a successful
+    // create. Null until a submission actually succeeds; it's what the
+    // "resubmit a rejected template" path edits (POST /{template-id}),
+    // since Meta refuses a second create under the same name.
+    metaTemplateId: text("meta_template_id"),
+    // Meta's own review vocabulary (PENDING / APPROVED / REJECTED, plus
+    // PAUSED / DISABLED / IN_APPEAL / PENDING_DELETION), stored verbatim
+    // as text rather than a pgEnum: this is an external system's
+    // vocabulary that Meta can extend at will, and an unrecognized value
+    // must be recorded honestly, never dropped or crash an insert.
+    // "LOCAL_DRAFT" is Centro's own value for a row composed here but not
+    // yet submitted.
+    status: text("status").notNull().default("LOCAL_DRAFT"),
+    // Meta's rejected_reason verbatim (e.g. INVALID_FORMAT), null unless
+    // the current status is REJECTED.
+    rejectedReason: text("rejected_reason"),
+    // When Meta was last actually asked about this template's status —
+    // distinct from updatedAt, which also moves on local edits.
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Tenant isolation at the database, not just in queries: one
+    // organization can hold exactly one row per template name+language, and
+    // two organizations' rows can never collide with each other.
+    uniqueIndex("whatsapp_templates_org_name_language_idx").on(
+      table.organizationId,
+      table.name,
+      table.language
+    ),
+  ]
+);
+
 export const jobRunStatus = pgEnum("job_run_status", ["success", "failed"]);
 
 // System Health foundation — previously the cron tick (POST /api/cron/tick)

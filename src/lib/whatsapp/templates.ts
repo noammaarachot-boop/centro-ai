@@ -169,17 +169,28 @@ export const LEAD_WELCOME_TEMPLATE: TemplateDefinition = {
 // must never block the others or the connection itself from completing.
 // `templates` defaults to the four per-org ones; the one-time lead-welcome
 // setup for Centro's own WABA passes [LEAD_WELCOME_TEMPLATE] instead.
+// `accessToken` — the connected organization's OWN token, when it has one
+// (a manual connection, organizations.whatsappAccessTokenEnc). It MUST be
+// used in that case: the shared WHATSAPP_SYSTEM_USER_TOKEN has no access
+// to a manually-connected office's WABA at all, so provisioning with it
+// fails on every template. Omitted only by the Embedded Signup path, whose
+// organizations genuinely have no token of their own and whose WABA the
+// shared system-user token does cover — the exact same
+// prefer-the-organization's-own, fall-back-only-when-there-isn't-one rule
+// send.ts and media.ts already follow.
 export async function ensureTemplatesProvisioned(
   wabaId: string,
-  templates: TemplateDefinition[] = REQUIRED_TEMPLATES
+  templates: TemplateDefinition[] = REQUIRED_TEMPLATES,
+  accessToken?: string
 ): Promise<void> {
   const { systemUserToken } = getWhatsAppConfig();
+  const token = accessToken || systemUserToken;
 
   const existingResponse = await withRetry(() =>
     fetch(
       `${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/message_templates?fields=name,language&limit=100`,
       {
-        headers: { Authorization: `Bearer ${systemUserToken}` },
+        headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(WHATSAPP_TEMPLATE_REQUEST_TIMEOUT_MS),
       }
     )
@@ -200,7 +211,7 @@ export async function ensureTemplatesProvisioned(
       fetch(`${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/message_templates`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${systemUserToken}`,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         signal: AbortSignal.timeout(WHATSAPP_TEMPLATE_REQUEST_TIMEOUT_MS),

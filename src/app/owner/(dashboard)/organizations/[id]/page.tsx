@@ -20,8 +20,37 @@ import {
   reactivateOrganizationAction,
   suspendOrganizationAction,
 } from "./actions";
+import {
+  refreshWhatsAppTemplateStatusesAction,
+  submitWhatsAppTemplateAction,
+} from "./templateActions";
+import { listOwnerTemplates } from "@/lib/data/owner/templates";
 
 export const metadata: Metadata = { title: "פרטי ארגון — מסוף בעלים" };
+
+// Meta's own review vocabulary. Anything Meta adds later falls through to
+// the raw status string with a neutral tone, rather than being hidden.
+const TEMPLATE_STATUS_LABEL: Record<string, string> = {
+  LOCAL_DRAFT: "טרם הוגשה",
+  PENDING: "ממתינה לאישור",
+  APPROVED: "אושרה",
+  REJECTED: "נדחתה",
+  PAUSED: "מושהית",
+  DISABLED: "מושבתת",
+  IN_APPEAL: "בערעור",
+  PENDING_DELETION: "ממתינה למחיקה",
+};
+
+const TEMPLATE_STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = {
+  LOCAL_DRAFT: "neutral",
+  PENDING: "warning",
+  APPROVED: "success",
+  REJECTED: "danger",
+  PAUSED: "warning",
+  DISABLED: "danger",
+  IN_APPEAL: "warning",
+  PENDING_DELETION: "warning",
+};
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -37,16 +66,24 @@ export default async function OwnerOrganizationDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ whatsappConnected?: string; whatsappError?: string }>;
+  searchParams: Promise<{
+    whatsappConnected?: string;
+    whatsappError?: string;
+    templateError?: string;
+    templateSubmitted?: string;
+    templateRefreshed?: string;
+  }>;
 }) {
   await requireOwnerSession();
   const { id } = await params;
-  const { whatsappConnected, whatsappError } = await searchParams;
+  const { whatsappConnected, whatsappError, templateError, templateSubmitted, templateRefreshed } =
+    await searchParams;
 
   const overview = await getOrganizationOverview(id);
   if (!overview) notFound();
 
   const activity = await listAuditLog(id, {}, 50);
+  const templates = await listOwnerTemplates(id);
 
   return (
     <div>
@@ -302,6 +339,115 @@ export default async function OwnerOrganizationDetailPage({
           </Button>
         </form>
       </Card>
+
+      {/* Owner-managed WhatsApp templates, submitted to THIS organization's
+          own WABA with its own token (see templateActions.ts). Offered only
+          for a manually-connected organization, since an Embedded Signup
+          one has no per-org token to submit with — its templates keep being
+          provisioned the existing way, untouched. */}
+      {overview.whatsappManuallyConnected && (
+        <Card id="whatsapp-templates" className="mt-6 scroll-mt-6">
+          <div className="mb-1.5 flex items-center justify-between gap-4">
+            <h2 className="text-sm font-bold text-text-primary">תבניות WhatsApp</h2>
+            <form action={refreshWhatsAppTemplateStatusesAction}>
+              <input type="hidden" name="organizationId" value={overview.id} />
+              <Button type="submit" variant="secondary" size="sm">
+                רענן סטטוס מול Meta
+              </Button>
+            </form>
+          </div>
+          <p className="mb-4 text-xs text-text-secondary">
+            תבניות שמוגשות לאישור Meta עבור ה-WhatsApp Business Account של המשרד הזה בלבד. המשתנה{" "}
+            <span dir="ltr" className="font-mono">
+              {"{{1}}"}
+            </span>{" "}
+            מייצג תמיד את רשימת המסמכים הדינמית — לא שם לקוח.
+          </p>
+
+          {templateError && (
+            <p
+              role="alert"
+              className="mb-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
+            >
+              {decodeURIComponent(templateError)}
+            </p>
+          )}
+          {templateSubmitted && (
+            <p
+              role="status"
+              className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm font-medium text-success"
+            >
+              התבנית „{decodeURIComponent(templateSubmitted)}” הוגשה לאישור Meta.
+            </p>
+          )}
+          {templateRefreshed && (
+            <p
+              role="status"
+              className="mb-4 rounded-xl border border-border bg-surface-muted px-4 py-3 text-sm font-medium text-text-secondary"
+            >
+              {templateRefreshed === "0"
+                ? "לא נמצאו תבניות מנוהלות על ה-WABA הזה עדיין."
+                : `סטטוס עודכן מול Meta עבור ${decodeURIComponent(templateRefreshed)} תבניות.`}
+            </p>
+          )}
+
+          <div className="space-y-4">
+            {templates.map((template) => (
+              <div key={template.name} className="rounded-xl border border-border p-4">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-text-primary">{template.label}</h3>
+                    <Badge tone={TEMPLATE_STATUS_TONE[template.status] ?? "neutral"} dot>
+                      {TEMPLATE_STATUS_LABEL[template.status] ?? template.status}
+                    </Badge>
+                  </div>
+                  <span dir="ltr" className="font-mono text-[11px] text-text-muted">
+                    {template.name} · {template.language} · {template.category}
+                  </span>
+                </div>
+
+                {/* Preview — the exact body Meta reviews, with {{1}} shown
+                    filled in by the example so the owner sees the real
+                    message rather than a placeholder. */}
+                <div className="mb-3 whitespace-pre-wrap rounded-lg border border-border bg-surface-muted/60 px-3 py-2 text-xs text-text-primary">
+                  {template.bodyText.replace("{{1}}", template.exampleValue)}
+                </div>
+
+                {template.status === "REJECTED" && template.rejectedReasonText && (
+                  <p className="mb-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
+                    <span className="font-semibold">נדחתה על ידי Meta</span>
+                    {template.rejectedReason ? ` (${template.rejectedReason})` : ""}:{" "}
+                    {template.rejectedReasonText}
+                  </p>
+                )}
+
+                <form action={submitWhatsAppTemplateAction} className="space-y-3">
+                  <input type="hidden" name="organizationId" value={overview.id} />
+                  <input type="hidden" name="templateName" value={template.name} />
+                  <TextField
+                    id={`example-${template.name}`}
+                    name="exampleValue"
+                    label="ערך לדוגמה עבור {{1}} (נשלח ל-Meta)"
+                    required
+                    defaultValue={template.exampleValue}
+                    placeholder="תעודת זהות, 3 תלושי שכר ואישור ניהול חשבון"
+                  />
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button type="submit" variant="primary" size="sm">
+                      {template.metaTemplateId ? "הגש מחדש לאישור Meta" : "שלח לאישור Meta"}
+                    </Button>
+                    {template.lastSyncedAt && (
+                      <span className="text-[11px] text-text-muted">
+                        סונכרן לאחרונה: {formatOwnerDateTime(template.lastSyncedAt)}
+                      </span>
+                    )}
+                  </div>
+                </form>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <div className="mt-6">
         <h2 className="mb-3 text-sm font-bold text-text-primary">

@@ -86,3 +86,43 @@ describe("Phase 7: request timeouts on every outbound Meta call in this module",
     }
   });
 });
+
+// Per-organization credentials — a manually-connected organization has its
+// own token, and silently retrying with the shared one would either fail
+// anyway (it has no access to that WABA) or mask a real permissions
+// problem that would resurface later as an unexplained send failure.
+describe("subscribeToWabaWebhooks — shared-token fallback is opt-out for organizations with their own credentials", () => {
+  it("does NOT retry with the shared system token when the fallback is disabled — one attempt, the org's own token only", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "no permission" });
+
+    const result = await subscribeToWabaWebhooks("waba-1", "org-own-token", {
+      allowSharedTokenFallback: false,
+    });
+
+    expect(result).toBe(false); // a truthful failure, not a masked success
+    expect(fetchMock).toHaveBeenCalledTimes(1); // never a second attempt with the shared token
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer org-own-token");
+  });
+
+  it("still falls back to the shared token by default — the Embedded Signup path is unchanged", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "no permission" });
+
+    await subscribeToWabaWebhooks("waba-1", "signup-user-token");
+
+    // Both tokens attempted, in order: the signup token first, then shared.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer signup-user-token");
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer fake-system-token");
+  });
+
+  it("uses the org's own token for the WABA-level subscribe when it succeeds on the first try", async () => {
+    fetchMock.mockResolvedValue({ ok: true, text: async () => "" });
+
+    const result = await subscribeToWabaWebhooks("waba-1", "org-own-token", {
+      allowSharedTokenFallback: false,
+    });
+
+    expect(result).toBe(true);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer org-own-token");
+  });
+});
