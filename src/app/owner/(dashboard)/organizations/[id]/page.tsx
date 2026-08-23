@@ -277,6 +277,7 @@ export default async function OwnerOrganizationDetailPage({
           <CollapsibleSection
             title="חיבורים"
             subtitle="בדיקה חיה מול Meta ו-Google"
+            storageKey={`owner:org:${overview.id}:connections`}
             defaultOpen={anyNeedsAttention}
             badge={
               bothConnected ? (
@@ -340,168 +341,12 @@ export default async function OwnerOrganizationDetailPage({
           </CollapsibleSection>
         </div>
 
-        {/* ===== ב. תבניות WhatsApp ===== */}
-        {overview.whatsappManuallyConnected && (
-          <div id="whatsapp-templates" className="scroll-mt-6">
-            <CollapsibleSection
-              title="תבניות WhatsApp"
-              subtitle="מוגשות ל-Meta עבור ה-WABA של המשרד הזה"
-              defaultOpen={templates.some((template) => template.status === "REJECTED")}
-              badge={
-                <Badge tone={approvedTemplates === templates.length ? "success" : "neutral"}>
-                  {approvedTemplates}/{templates.length} מאושרות
-                </Badge>
-              }
-            >
-              {templateError && (
-                <p
-                  role="alert"
-                  className="mb-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
-                >
-                  {decodeURIComponent(templateError)}
-                </p>
-              )}
-              {templateSubmitted && (
-                <p
-                  role="status"
-                  className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm font-medium text-success"
-                >
-                  התבנית „{decodeURIComponent(templateSubmitted)}” הוגשה לאישור Meta.
-                </p>
-              )}
-              {templateEdited && (
-                <p
-                  role="status"
-                  className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm font-medium text-success"
-                >
-                  התבנית „{decodeURIComponent(templateEdited)}” עודכנה ונשלחה לבדיקה מחודשת ב-Meta.
-                </p>
-              )}
-              {templateRefreshed && (
-                <p
-                  role="status"
-                  className="mb-4 rounded-xl border border-border bg-surface-muted px-4 py-3 text-sm text-text-secondary"
-                >
-                  {templateRefreshed === "0"
-                    ? "לא נמצאו תבניות מנוהלות על ה-WABA הזה עדיין."
-                    : `סטטוס עודכן מול Meta עבור ${decodeURIComponent(templateRefreshed)} תבניות.`}
-                </p>
-              )}
-
-              <form action={refreshWhatsAppTemplateStatusesAction} className="mb-4">
-                <input type="hidden" name="organizationId" value={overview.id} />
-                <AsyncActionButton
-                  idleLabel="רענן סטטוס מול Meta"
-                  pendingLabel="מסנכרן…"
-                  variant="secondary"
-                  icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
-                />
-              </form>
-
-              <div className="space-y-3">
-                {templates.map((template) => (
-                  <div key={template.name} className="rounded-xl border border-border p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-semibold text-text-primary">{template.label}</h3>
-                        <p className="mt-0.5 text-xs text-text-muted">{template.purpose}</p>
-                      </div>
-                      <Badge tone={TEMPLATE_STATUS_TONE[template.status] ?? "neutral"} dot>
-                        {TEMPLATE_STATUS_LABEL[template.status] ?? template.status}
-                      </Badge>
-                    </div>
-
-                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-muted">
-                      <span>קטגוריה: {template.category}</span>
-                      <span>שפה: {template.language}</span>
-                      {template.lastSyncedAt && (
-                        <span>עודכן: {formatOwnerDateTime(template.lastSyncedAt)}</span>
-                      )}
-                    </div>
-
-                    {template.status === "REJECTED" && template.rejectedReasonText && (
-                      <p className="mt-2.5 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
-                        <span className="font-semibold">Meta דחתה</span>
-                        {template.rejectedReason ? ` (${template.rejectedReason})` : ""}:{" "}
-                        {template.rejectedReasonText}
-                      </p>
-                    )}
-
-                    {/* Full preview is one click away rather than always open. */}
-                    <details className="mt-2.5">
-                      <summary className="cursor-pointer list-none text-xs font-medium text-brand-purple">
-                        תצוגה מקדימה
-                      </summary>
-                      <div className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-surface-muted/60 px-3 py-2.5 text-xs text-text-primary">
-                        {template.bodyText.replace("{{1}}", template.exampleValue)}
-                      </div>
-                      <p className="mt-1.5 text-[11px] text-text-muted">
-                        שם התבנית ב-Meta:{" "}
-                        <code dir="ltr" className="font-mono">
-                          {template.name}
-                        </code>
-                        {" · "}שם ושפה אינם ניתנים לשינוי
-                      </p>
-                    </details>
-
-                    {/* Submit (first time / after rejection) or edit. */}
-                    <form
-                      action={
-                        template.metaTemplateId && template.canEdit
-                          ? editWhatsAppTemplateAction
-                          : submitWhatsAppTemplateAction
-                      }
-                      className="mt-3 space-y-2.5 border-t border-border pt-3"
-                    >
-                      <input type="hidden" name="organizationId" value={overview.id} />
-                      <input type="hidden" name="templateName" value={template.name} />
-                      <TextField
-                        id={`example-${template.name}`}
-                        name="exampleValue"
-                        label="ערך לדוגמה עבור {{1}} — רשימת המסמכים"
-                        required
-                        defaultValue={template.exampleValue}
-                        placeholder="תעודת זהות, 3 תלושי שכר ואישור ניהול חשבון"
-                      />
-                      {template.metaTemplateId && !template.canEdit ? (
-                        <p className="text-xs text-text-muted">{template.editBlockedReason}</p>
-                      ) : (
-                        <AsyncActionButton
-                          idleLabel={
-                            template.metaTemplateId ? "שמור ושלח לאישור Meta" : "שלח לאישור Meta"
-                          }
-                          pendingLabel="שולח ל-Meta…"
-                        />
-                      )}
-                    </form>
-                  </div>
-                ))}
-              </div>
-            </CollapsibleSection>
-          </div>
-        )}
-
-        {/* ===== ג. פעילות אחרונה ===== */}
+        {/* ===== ב. פרטים מתקדמים ===== */}
         <CollapsibleSection
-          title={t("owner.orgDetail.activityTitle")}
-          subtitle={activity.length === 0 ? "אין פעילות" : `${activity.length} אירועים אחרונים`}
+          title="פרטים מתקדמים"
+          subtitle="מזהים טכניים, Webhook וחיבור ידני"
+          storageKey={`owner:org:${overview.id}:advanced`}
         >
-          <ActivityFeed
-            events={activity.map((event) => ({
-              id: event.id,
-              occurredAt: event.occurredAt,
-              eventType: event.eventType,
-              description: event.description,
-              source: "organization" as const,
-              organizationName: null,
-            }))}
-            showOrganization={false}
-            emptyTitle={t("owner.orgDetail.activityEmpty")}
-          />
-        </CollapsibleSection>
-
-        {/* ===== ד. פרטים מתקדמים ===== */}
-        <CollapsibleSection title="פרטים מתקדמים" subtitle="מזהים טכניים, Webhook וחיבור ידני">
           <div className="space-y-6">
             <div>
               <h3 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-text-muted">
@@ -681,6 +526,168 @@ export default async function OwnerOrganizationDetailPage({
               </form>
             </div>
           </div>
+        </CollapsibleSection>
+
+        {/* ===== ג. תבניות WhatsApp ===== */}
+        {overview.whatsappManuallyConnected && (
+          <div id="whatsapp-templates" className="scroll-mt-6">
+            <CollapsibleSection
+              title="תבניות WhatsApp"
+              subtitle="מוגשות ל-Meta עבור ה-WABA של המשרד הזה"
+              storageKey={`owner:org:${overview.id}:templates`}
+              defaultOpen={templates.some((template) => template.status === "REJECTED")}
+              badge={
+                <Badge tone={approvedTemplates === templates.length ? "success" : "neutral"}>
+                  {approvedTemplates}/{templates.length} מאושרות
+                </Badge>
+              }
+            >
+              {templateError && (
+                <p
+                  role="alert"
+                  className="mb-4 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm font-medium text-danger"
+                >
+                  {decodeURIComponent(templateError)}
+                </p>
+              )}
+              {templateSubmitted && (
+                <p
+                  role="status"
+                  className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm font-medium text-success"
+                >
+                  התבנית „{decodeURIComponent(templateSubmitted)}” הוגשה לאישור Meta.
+                </p>
+              )}
+              {templateEdited && (
+                <p
+                  role="status"
+                  className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm font-medium text-success"
+                >
+                  התבנית „{decodeURIComponent(templateEdited)}” עודכנה ונשלחה לבדיקה מחודשת ב-Meta.
+                </p>
+              )}
+              {templateRefreshed && (
+                <p
+                  role="status"
+                  className="mb-4 rounded-xl border border-border bg-surface-muted px-4 py-3 text-sm text-text-secondary"
+                >
+                  {templateRefreshed === "0"
+                    ? "לא נמצאו תבניות מנוהלות על ה-WABA הזה עדיין."
+                    : `סטטוס עודכן מול Meta עבור ${decodeURIComponent(templateRefreshed)} תבניות.`}
+                </p>
+              )}
+
+              <form action={refreshWhatsAppTemplateStatusesAction} className="mb-4">
+                <input type="hidden" name="organizationId" value={overview.id} />
+                <AsyncActionButton
+                  idleLabel="רענן סטטוס מול Meta"
+                  pendingLabel="מסנכרן…"
+                  variant="secondary"
+                  icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
+                />
+              </form>
+
+              <div className="space-y-3">
+                {templates.map((template) => (
+                  <div key={template.name} className="rounded-xl border border-border p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-semibold text-text-primary">{template.label}</h3>
+                        <p className="mt-0.5 text-xs text-text-muted">{template.purpose}</p>
+                      </div>
+                      <Badge tone={TEMPLATE_STATUS_TONE[template.status] ?? "neutral"} dot>
+                        {TEMPLATE_STATUS_LABEL[template.status] ?? template.status}
+                      </Badge>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-muted">
+                      <span>קטגוריה: {template.category}</span>
+                      <span>שפה: {template.language}</span>
+                      {template.lastSyncedAt && (
+                        <span>עודכן: {formatOwnerDateTime(template.lastSyncedAt)}</span>
+                      )}
+                    </div>
+
+                    {template.status === "REJECTED" && template.rejectedReasonText && (
+                      <p className="mt-2.5 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
+                        <span className="font-semibold">Meta דחתה</span>
+                        {template.rejectedReason ? ` (${template.rejectedReason})` : ""}:{" "}
+                        {template.rejectedReasonText}
+                      </p>
+                    )}
+
+                    {/* Full preview is one click away rather than always open. */}
+                    <details className="mt-2.5">
+                      <summary className="cursor-pointer list-none text-xs font-medium text-brand-purple">
+                        תצוגה מקדימה
+                      </summary>
+                      <div className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-surface-muted/60 px-3 py-2.5 text-xs text-text-primary">
+                        {template.bodyText.replace("{{1}}", template.exampleValue)}
+                      </div>
+                      <p className="mt-1.5 text-[11px] text-text-muted">
+                        שם התבנית ב-Meta:{" "}
+                        <code dir="ltr" className="font-mono">
+                          {template.name}
+                        </code>
+                        {" · "}שם ושפה אינם ניתנים לשינוי
+                      </p>
+                    </details>
+
+                    {/* Submit (first time / after rejection) or edit. */}
+                    <form
+                      action={
+                        template.metaTemplateId && template.canEdit
+                          ? editWhatsAppTemplateAction
+                          : submitWhatsAppTemplateAction
+                      }
+                      className="mt-3 space-y-2.5 border-t border-border pt-3"
+                    >
+                      <input type="hidden" name="organizationId" value={overview.id} />
+                      <input type="hidden" name="templateName" value={template.name} />
+                      <TextField
+                        id={`example-${template.name}`}
+                        name="exampleValue"
+                        label="ערך לדוגמה עבור {{1}} — רשימת המסמכים"
+                        required
+                        defaultValue={template.exampleValue}
+                        placeholder="תעודת זהות, 3 תלושי שכר ואישור ניהול חשבון"
+                      />
+                      {template.metaTemplateId && !template.canEdit ? (
+                        <p className="text-xs text-text-muted">{template.editBlockedReason}</p>
+                      ) : (
+                        <AsyncActionButton
+                          idleLabel={
+                            template.metaTemplateId ? "שמור ושלח לאישור Meta" : "שלח לאישור Meta"
+                          }
+                          pendingLabel="שולח ל-Meta…"
+                        />
+                      )}
+                    </form>
+                  </div>
+                ))}
+              </div>
+            </CollapsibleSection>
+          </div>
+        )}
+
+        {/* ===== ד. פעילות אחרונה ===== */}
+        <CollapsibleSection
+          title={t("owner.orgDetail.activityTitle")}
+          subtitle={activity.length === 0 ? "אין פעילות" : `${activity.length} אירועים אחרונים`}
+          storageKey={`owner:org:${overview.id}:activity`}
+        >
+          <ActivityFeed
+            events={activity.map((event) => ({
+              id: event.id,
+              occurredAt: event.occurredAt,
+              eventType: event.eventType,
+              description: event.description,
+              source: "organization" as const,
+              organizationName: null,
+            }))}
+            showOrganization={false}
+            emptyTitle={t("owner.orgDetail.activityEmpty")}
+          />
         </CollapsibleSection>
       </div>
     </div>
