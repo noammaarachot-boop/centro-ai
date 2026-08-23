@@ -19,7 +19,7 @@ vi.mock("@/db", () => ({
   getDb: async () => db,
 }));
 
-const { snapshotServiceRequirements, applyTransition, completeCollectionRequest } = await import(
+const { snapshotServiceRequirements, applyTransition, completeCollectionRequest, canTransition, nextStatusOptions } = await import(
   "./collectionRequestStateMachine"
 );
 
@@ -128,6 +128,14 @@ describe("snapshotServiceRequirements — semantic requirement engine propagatio
     expect(row.semanticSpec).toBeNull();
   });
 });
+
+async function seedUser(orgId: string) {
+  const [user] = await db
+    .insert(schema.users)
+    .values({ organizationId: orgId, email: `${crypto.randomUUID()}@test.com`, passwordHash: "x", fullName: "עובד" })
+    .returning();
+  return user.id;
+}
 
 async function seedRequestWithConversation(status: "active" | "waiting_for_client" | "processing" | "escalated" = "active") {
   const [org] = await db.insert(schema.organizations).values({ name: "Org" }).returning();
@@ -403,5 +411,266 @@ describe("applyTransition — completing a request closes its conversation and c
 
     const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(after.extensionActive).toBe(false);
+  });
+});
+
+// Cancellation as a real, absolute terminal state — client-level (a single
+// collectionRequests row, per the schema's own single mandatory clientId
+// FK), never touching any other request or the shared service/template it
+// was created from. Mirrors the "completed is terminal" describe block
+// above by design (same underlying applyTransition branch), plus the
+// cancel-specific guarantees (no document deletion, CAS-based race safety,
+// absolute terminal-ness) completion doesn't need.
+describe("applyTransition — cancelling a request makes it a real terminal state (client-scoped)", () => {
+  it("before any document arrived: closes the conversation, records a dedicated audit event with who/when, creates no document/placeholder", async () => {
+    const { orgId, requestId, conversationId } = await seedRequestWithConversation("active");
+    const userId = await seedUser(orgId);
+
+    const result = await applyTransition(orgId, userId, "employee", requestId, "cancelled");
+    expect(result.ok).toBe(true);
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).toBe("cancelled");
+
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.status).toBe("closed");
+    expect(conversation.deferredReminderAt).toBeNull();
+    expect(conversation.pendingCaseReviewAt).toBeNull();
+
+    const documents = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(documents).toHaveLength(0); // cancelling never fabricates a document/placeholder row
+
+    const audit = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(audit.some((a) => a.eventType === "collection_request.cancelled")).toBe(true);
+    expect(audit.some((a) => a.eventType === "collection_request.status_changed" && (a.metadata as { to?: string } | null)?.to === "cancelled")).toBe(true);
+    // "מי ומתי" — captured by the existing audit architecture itself
+    // (actorUserId/actorType/occurredAt), no new column invented for this.
+    const cancelEvent = audit.find((a) => a.eventType === "collection_request.cancelled")!;
+    expect(cancelEvent.actorUserId).toBe(userId);
+    expect(cancelEvent.actorType).toBe("employee");
+    expect(cancelEvent.occurredAt).toBeInstanceOf(Date);
+  });
+
+  it("after one document already received: the document survives untouched — status, requirementId, and googleDriveFileId all unchanged", async () => {
+    const { orgId, requestId, requirementId } = await seedRequestWithConversation("active");
+    const [doc] = await db
+      .insert(schema.documents)
+      .values({
+        organizationId: orgId,
+        collectionRequestId: requestId,
+        requirementId,
+        fileName: "id.pdf",
+        status: "approved",
+        googleDriveFileId: "drive-file-abc123",
+      })
+      .returning();
+
+    const result = await applyTransition(orgId, undefined, "employee", requestId, "cancelled");
+    expect(result.ok).toBe(true);
+
+    const [docAfter] = await db.select().from(schema.documents).where(eq(schema.documents.id, doc.id));
+    expect(docAfter).toBeDefined(); // not deleted
+    expect(docAfter.status).toBe("approved");
+    expect(docAfter.requirementId).toBe(requirementId);
+    expect(docAfter.googleDriveFileId).toBe("drive-file-abc123"); // Drive reference untouched — nothing trashes/clears it on cancel
+  });
+
+  it("after several documents received (mixed statuses): every one of them survives exactly as it was", async () => {
+    const { orgId, requestId, requirementId } = await seedRequestWithConversation("active");
+    const seeded = await db
+      .insert(schema.documents)
+      .values([
+        { organizationId: orgId, collectionRequestId: requestId, requirementId, fileName: "a.pdf", status: "approved", googleDriveFileId: "d-a" },
+        { organizationId: orgId, collectionRequestId: requestId, requirementId, fileName: "b.pdf", status: "processing", googleDriveFileId: "d-b" },
+        { organizationId: orgId, collectionRequestId: requestId, requirementId: null, fileName: "c.pdf", status: "needs_review", googleDriveFileId: "d-c" },
+      ])
+      .returning();
+
+    await applyTransition(orgId, undefined, "employee", requestId, "cancelled");
+
+    const after = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(after).toHaveLength(3);
+    for (const original of seeded) {
+      const match = after.find((d) => d.id === original.id)!;
+      expect(match.status).toBe(original.status);
+      expect(match.googleDriveFileId).toBe(original.googleDriveFileId);
+    }
+  });
+
+  it("resolves a still-pending employeeReviewItem with cancel-specific wording, distinct from the completion event type", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequestWithConversation("active");
+    const [reviewItem] = await db
+      .insert(schema.employeeReviewItems)
+      .values({
+        organizationId: orgId,
+        clientId,
+        collectionRequestId: requestId,
+        conversationId,
+        clientQuestion: "אפשר להגיש בשבוע הבא?",
+        category: "human_request",
+        status: "pending",
+      })
+      .returning();
+
+    await applyTransition(orgId, undefined, "employee", requestId, "cancelled");
+
+    const [after] = await db.select().from(schema.employeeReviewItems).where(eq(schema.employeeReviewItems.id, reviewItem.id));
+    expect(after.status).toBe("resolved");
+    expect(after.resolutionText).toContain("בוטלה");
+
+    const audit = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(audit.some((a) => a.eventType === "review_item.auto_resolved_by_cancellation")).toBe(true);
+    expect(audit.some((a) => a.eventType === "review_item.auto_resolved_by_completion")).toBe(false);
+  });
+
+  it("cancelled cannot transition to anything else — canTransition/nextStatusOptions agree, and a second attempt is rejected", async () => {
+    for (const target of ["draft", "active", "waiting_for_client", "processing", "completed", "escalated"] as const) {
+      expect(canTransition("cancelled", target)).toBe(false);
+    }
+    expect(nextStatusOptions("cancelled")).toEqual([]);
+
+    const { orgId, requestId } = await seedRequestWithConversation("active");
+    await applyTransition(orgId, undefined, "employee", requestId, "cancelled");
+
+    const second = await applyTransition(orgId, undefined, "employee", requestId, "active");
+    expect(second.ok).toBe(false);
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).toBe("cancelled"); // never moved
+  });
+
+  it("double cancel (idempotent) — the second call is a clean no-op, no duplicate audit event, no extra side effects", async () => {
+    const { orgId, requestId } = await seedRequestWithConversation("active");
+
+    const first = await applyTransition(orgId, undefined, "employee", requestId, "cancelled");
+    expect(first.ok).toBe(true);
+    const second = await applyTransition(orgId, undefined, "employee", requestId, "cancelled");
+    expect(second.ok).toBe(false); // "cancelled" has no legal transition to itself either
+
+    const audit = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, requestId));
+    expect(audit.filter((a) => a.eventType === "collection_request.cancelled")).toHaveLength(1); // not 2
+  });
+
+  it("race protection: a request completed by another process a moment before cancel arrives is never silently overwritten", async () => {
+    const { orgId, requestId, requirementId } = await seedRequestWithConversation("active");
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: requestId,
+      requirementId,
+      fileName: "id.pdf",
+      status: "approved",
+    });
+    // Simulates "a scheduler tick/job already completed this request" —
+    // the exact scenario an employee's stale-page cancel click could race
+    // against.
+    const completion = await completeCollectionRequest(orgId, undefined, "system", requestId);
+    expect(completion.ok).toBe(true);
+
+    const cancelAttempt = await applyTransition(orgId, undefined, "employee", requestId, "cancelled");
+    expect(cancelAttempt.ok).toBe(false); // "completed" has no legal transition to "cancelled"
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).toBe("completed"); // untouched — cancel never clobbers a completion that already happened
+  });
+
+  it("tenant isolation: cancelling with a different organizationId than the request's own fails and leaves the request untouched", async () => {
+    const { requestId } = await seedRequestWithConversation("active");
+    const [otherOrg] = await db.insert(schema.organizations).values({ name: "Other Org" }).returning();
+
+    const result = await applyTransition(otherOrg.id, undefined, "employee", requestId, "cancelled");
+    expect(result.ok).toBe(false);
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).toBe("active"); // untouched
+  });
+});
+
+// Client-level isolation — the core architectural guarantee requested: a
+// "shared" service/template creates one independent collectionRequests row
+// PER CLIENT (see recurringScheduler.ts's createAndSendRecurringCycle,
+// which inserts exactly one row per clientServices row, with no
+// group/batch id linking them). Cancelling one client's row must never
+// touch a sibling client's row from the very same service, even when all
+// three were created back-to-back for the same periodLabel.
+describe("applyTransition — cancelling one client's request never affects sibling clients on the same service", () => {
+  async function seedThreeClientsOnSameService() {
+    const [org] = await db.insert(schema.organizations).values({ name: "Org" }).returning();
+    const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות חודשי" }).returning();
+    const clients: { clientId: string; requestId: string; conversationId: string }[] = [];
+    for (const name of ["לקוח A", "לקוח B", "לקוח C"]) {
+      const [client] = await db
+        .insert(schema.clients)
+        .values({ organizationId: org.id, name, phone: `+9725${Math.floor(Math.random() * 1e8)}` })
+        .returning();
+      const [request] = await db
+        .insert(schema.collectionRequests)
+        .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "2026-08", status: "active" })
+        .returning();
+      const [conversation] = await db
+        .insert(schema.conversations)
+        .values({ organizationId: org.id, clientId: client.id, collectionRequestId: request.id, status: "open" })
+        .returning();
+      clients.push({ clientId: client.id, requestId: request.id, conversationId: conversation.id });
+    }
+    return { orgId: org.id, serviceId: service.id, clients };
+  }
+
+  it("cancelling client A's request only changes A — B and C stay exactly 'active' with open conversations", async () => {
+    const { orgId, clients } = await seedThreeClientsOnSameService();
+    const [a, b, c] = clients;
+
+    const result = await applyTransition(orgId, undefined, "employee", a.requestId, "cancelled");
+    expect(result.ok).toBe(true);
+
+    const [afterA] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, a.requestId));
+    expect(afterA.status).toBe("cancelled");
+
+    const [afterB] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, b.requestId));
+    const [afterC] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, c.requestId));
+    expect(afterB.status).toBe("active");
+    expect(afterC.status).toBe("active");
+
+    const [convB] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, b.conversationId));
+    const [convC] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, c.conversationId));
+    expect(convB.status).toBe("open"); // NOT closed — only A's conversation is closed by the cancel
+    expect(convC.status).toBe("open");
+  });
+
+  it("B and C remain fully automatable after A's cancellation — completing B works normally, untouched by A's terminal state", async () => {
+    const { orgId, clients } = await seedThreeClientsOnSameService();
+    const [a, b] = clients;
+    const [requirement] = await db
+      .insert(schema.collectionRequestRequirements)
+      .values({ collectionRequestId: b.requestId, name: "תעודת זהות" })
+      .returning();
+
+    await applyTransition(orgId, undefined, "employee", a.requestId, "cancelled");
+
+    await db.insert(schema.documents).values({
+      organizationId: orgId,
+      collectionRequestId: b.requestId,
+      requirementId: requirement.id,
+      fileName: "id.pdf",
+      status: "approved",
+    });
+    const completion = await completeCollectionRequest(orgId, undefined, "system", b.requestId);
+    expect(completion.ok).toBe(true); // B still works exactly as if A never existed
+
+    const [afterB] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, b.requestId));
+    expect(afterB.status).toBe("completed");
+  });
+
+  it("the cancel audit event is linked to both the collectionRequestId and the clientId of the cancelled request only", async () => {
+    const { orgId, clients } = await seedThreeClientsOnSameService();
+    const [a, b] = clients;
+
+    await applyTransition(orgId, undefined, "employee", a.requestId, "cancelled");
+
+    const auditA = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, a.requestId));
+    const cancelEvent = auditA.find((row) => row.eventType === "collection_request.cancelled")!;
+    expect(cancelEvent.clientId).toBe(a.clientId);
+    expect(cancelEvent.collectionRequestId).toBe(a.requestId);
+
+    const auditB = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.collectionRequestId, b.requestId));
+    expect(auditB.some((row) => row.eventType === "collection_request.cancelled")).toBe(false); // never leaks onto B
   });
 });

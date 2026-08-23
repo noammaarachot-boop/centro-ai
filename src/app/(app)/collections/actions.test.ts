@@ -41,7 +41,7 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
-const { addManualDocument, reviewDocument } = await import("./actions");
+const { addManualDocument, reviewDocument, transitionStatus } = await import("./actions");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -223,5 +223,43 @@ describe("addManualDocument — existing behavior preserved", () => {
 
     const rows = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
     expect(rows).toHaveLength(0);
+  });
+});
+
+// The real entry point the UI's "ביטול בקשה" ConfirmDialog calls
+// (page.tsx's boundTransition.bind(null, "cancelled")) — auth/redirect
+// behavior on top of applyTransition's own already-tested core logic
+// (collectionRequestStateMachine.test.ts).
+describe("transitionStatus — cancel, the real action the UI's ביטול בקשה button calls", () => {
+  it("cancels the request and redirects back to it, with no error param", async () => {
+    const { requestId } = await seedRequest();
+
+    const redirectedTo = await expectRedirect(() => transitionStatus(requestId, "cancelled"));
+    expect(redirectedTo).toBe(`/collections/${requestId}`);
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).toBe("cancelled");
+  });
+
+  it("a second cancel attempt redirects with a clear error and does not change anything further", async () => {
+    const { requestId } = await seedRequest();
+    await expectRedirect(() => transitionStatus(requestId, "cancelled"));
+
+    const redirectedTo = await expectRedirect(() => transitionStatus(requestId, "cancelled"));
+    expect(redirectedTo).toContain(`/collections/${requestId}?error=`);
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).toBe("cancelled"); // still cancelled, no crash, no double side effect
+  });
+
+  it("tenant isolation: cancelling another organization's request fails and leaves it untouched", async () => {
+    const { requestId } = await seedRequest();
+    await seedRequest(); // switches currentSession to a second organization
+
+    const redirectedTo = await expectRedirect(() => transitionStatus(requestId, "cancelled"));
+    expect(redirectedTo).toContain("error=");
+
+    const [after] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(after.status).not.toBe("cancelled"); // untouched — still whatever it started as
   });
 });

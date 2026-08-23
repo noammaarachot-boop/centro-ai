@@ -31,6 +31,7 @@ vi.mock("@/lib/whatsapp/send", async () => {
 });
 
 const { runScheduledTasks } = await import("./scheduler");
+const { applyTransition } = await import("./collectionRequestStateMachine");
 
 beforeAll(async () => {
   const client = new PGlite();
@@ -1315,5 +1316,88 @@ describe("runScheduledTasks — root-cause fix: reminderAnchorAt's first-ever cl
     sendTemplateMessage.mockClear();
     await runScheduledTasks(orgId);
     expect(sendTemplateMessage).not.toHaveBeenCalled();
+  });
+});
+
+// Cancellation as a terminal state — the scheduler must skip a cancelled
+// request exactly like a completed one; sibling clients on the SAME
+// service (each their own independent collectionRequests row — see
+// collectionRequestStateMachine.test.ts's identical "client-scoped"
+// describe block) must keep receiving reminders completely normally.
+describe("runScheduledTasks — a cancelled request is skipped entirely, sibling clients on the same service are unaffected", () => {
+  async function seedThreeClientsDueForReminder() {
+    const [org] = await db
+      .insert(schema.organizations)
+      .values({
+        name: "Org",
+        googleDriveFolderId: "root-1",
+        whatsappPhoneNumberId: `phone-${crypto.randomUUID()}`,
+        documentCollectionEnabled: true,
+        businessHoursStart: "00:00",
+        businessHoursEnd: "23:59",
+        businessDays: "0,1,2,3,4,5,6",
+        reminderIntervalDays: 2,
+      })
+      .returning();
+    const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות חודשי" }).returning();
+    const staleUpdatedAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+    const clients: { clientId: string; requestId: string; conversationId: string; phone: string }[] = [];
+    for (const label of ["A", "B", "C"]) {
+      const phone = `+9725${Math.floor(Math.random() * 1e8)}`;
+      const [client] = await db.insert(schema.clients).values({ organizationId: org.id, name: `לקוח ${label}`, phone }).returning();
+      const [request] = await db
+        .insert(schema.collectionRequests)
+        .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "2026-08", status: "waiting_for_client" })
+        .returning();
+      await db.insert(schema.collectionRequestRequirements).values({ collectionRequestId: request.id, name: "תעודת זהות" });
+      const [conversation] = await db
+        .insert(schema.conversations)
+        .values({
+          organizationId: org.id,
+          clientId: client.id,
+          collectionRequestId: request.id,
+          status: "waiting_for_client",
+          updatedAt: staleUpdatedAt,
+          reminderAnchorAt: staleUpdatedAt,
+        })
+        .returning();
+      clients.push({ clientId: client.id, requestId: request.id, conversationId: conversation.id, phone });
+    }
+    return { orgId: org.id, clients };
+  }
+
+  it("A (cancelled) gets no reminder; B and C (untouched, same service) each get their normal reminder", async () => {
+    const { orgId, clients } = await seedThreeClientsDueForReminder();
+    const [a, b, c] = clients;
+
+    const cancelResult = await applyTransition(orgId, undefined, "employee", a.requestId, "cancelled");
+    expect(cancelResult.ok).toBe(true);
+
+    await runScheduledTasks(orgId);
+
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(2); // exactly B and C, never A
+    const remindedPhones = sendTemplateMessage.mock.calls.map((call) => call[1]);
+    expect(remindedPhones).toContain(b.phone);
+    expect(remindedPhones).toContain(c.phone);
+    expect(remindedPhones).not.toContain(a.phone);
+
+    const [afterA] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, a.requestId));
+    expect(afterA.status).toBe("cancelled");
+    const [afterB] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, b.requestId));
+    const [afterC] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, c.requestId));
+    expect(afterB.status).toBe("waiting_for_client"); // untouched
+    expect(afterC.status).toBe("waiting_for_client"); // untouched
+  });
+
+  it("a second tick after cancellation still never reminds A, while B/C's own claim/no-double-send behavior is unaffected", async () => {
+    const { orgId, clients } = await seedThreeClientsDueForReminder();
+    const [a] = clients;
+    await applyTransition(orgId, undefined, "employee", a.requestId, "cancelled");
+
+    await runScheduledTasks(orgId);
+    sendTemplateMessage.mockClear();
+    await runScheduledTasks(orgId);
+
+    expect(sendTemplateMessage).not.toHaveBeenCalled(); // B and C already reminded on tick 1, A was never eligible on either tick
   });
 });

@@ -288,20 +288,22 @@ export async function processInboundAttachment(
     });
     return;
   }
-  // Completion is a terminal lifecycle state (see applyTransition's own
-  // "completed" branch, collectionRequestStateMachine.ts) — a document
-  // arriving late on an already-completed request is never processed,
-  // never uploaded, never reopens the request. The root-level guard for
-  // this, deliberately placed here rather than only at each individual
-  // caller (the live webhook path, the disambiguation replay, the DevTools
-  // simulator): whichever of them calls this function, a completed request
-  // never has its documents/status mutated by it. This also makes
-  // reopenIfCompleted's own former call at the end of this function
-  // (removed below) unreachable-by-construction rather than merely
-  // unused — every path that could have reached it now returns here first.
-  if (collectionRequestRow.status === "completed") {
-    console.log("[processInboundAttachment] collection request is already completed — attachment ignored, not processed", {
+  // Completed and cancelled are both terminal lifecycle states (see
+  // applyTransition's own shared "entersTerminalClosedState" branch,
+  // collectionRequestStateMachine.ts) — a document arriving late on either
+  // is never processed, never uploaded, never revives the request. The
+  // root-level guard for this, deliberately placed here rather than only
+  // at each individual caller (the live webhook path, the disambiguation
+  // replay, the DevTools simulator): whichever of them calls this
+  // function, a completed or cancelled request never has its
+  // documents/status mutated by it. This also makes reopenIfCompleted's
+  // own former call at the end of this function (removed below)
+  // unreachable-by-construction rather than merely unused — every path
+  // that could have reached it now returns here first.
+  if (collectionRequestRow.status === "completed" || collectionRequestRow.status === "cancelled") {
+    console.log("[processInboundAttachment] collection request is completed/cancelled — attachment ignored, not processed", {
       collectionRequestId,
+      status: collectionRequestRow.status,
     });
     return;
   }

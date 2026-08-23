@@ -1,6 +1,6 @@
-import { and, eq, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, notInArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { collectionRequestRequirements, conversations, documents, organizations, pendingConfirmations } from "@/db/schema";
+import { collectionRequestRequirements, collectionRequests, conversations, documents, organizations, pendingConfirmations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import {
   AUTO_APPROVE_CONFIDENCE,
@@ -641,7 +641,23 @@ export async function sendConfirmationRemindersAndEscalate(
         eq(pendingConfirmations.status, "pending"),
         isNull(pendingConfirmations.escalatedAt),
         isNotNull(pendingConfirmations.nextReminderAt),
-        lte(pendingConfirmations.nextReminderAt, new Date())
+        lte(pendingConfirmations.nextReminderAt, new Date()),
+        // A cancelled request is terminal — its own open confirmations
+        // must never keep getting WhatsApp reminders. Excluded here (a
+        // subquery, not a join) so every row this function ever touches
+        // keeps its existing flat pendingConfirmations shape unchanged.
+        notInArray(
+          pendingConfirmations.collectionRequestId,
+          db
+            .select({ id: collectionRequests.id })
+            .from(collectionRequests)
+            .where(
+              and(
+                eq(collectionRequests.organizationId, organizationId),
+                eq(collectionRequests.status, "cancelled")
+              )
+            )
+        )
       )
     );
 

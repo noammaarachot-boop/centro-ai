@@ -332,3 +332,111 @@ describe("handleInboundMessage — a completed request's conversation never rece
     expect(confirmations).toHaveLength(0);
   });
 });
+
+// Cancellation-is-terminal invariant — the identical guarantee as the
+// "completed" describe block above, exercised through the exact same
+// mechanism (applyTransition's shared "entersTerminalClosedState" branch
+// closes the conversation for cancelled too, see
+// collectionRequestStateMachine.ts), not a parallel guard. A cancelled
+// request must be exactly as inert to the webhook as a completed one.
+describe("handleInboundMessage — a cancelled request's conversation never receives automated engagement again", () => {
+  beforeAll(async () => {
+    const client = new PGlite();
+    sharedDb = drizzle(client, { schema }) as unknown as Database;
+    await migrate(sharedDb as never, { migrationsFolder: "./drizzle" });
+  }, 60_000);
+
+  beforeEach(() => {
+    sendTextMessage.mockReset();
+    resolveLanguageModel.mockReset();
+    generateObject.mockReset();
+  });
+
+  async function seedCancelledRequest() {
+    const [org] = await sharedDb
+      .insert(schema.organizations)
+      .values({ name: "Org", googleDriveFolderId: "root-1", documentCollectionEnabled: true, whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
+      .returning();
+    const [clientRow] = await sharedDb
+      .insert(schema.clients)
+      .values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" })
+      .returning();
+    const [service] = await sharedDb.insert(schema.services).values({ organizationId: org.id, name: "Service" }).returning();
+    const [request] = await sharedDb
+      .insert(schema.collectionRequests)
+      .values({ organizationId: org.id, clientId: clientRow.id, serviceId: service.id, periodLabel: "p1", status: "cancelled" })
+      .returning();
+    const [conversation] = await sharedDb
+      .insert(schema.conversations)
+      .values({ organizationId: org.id, clientId: clientRow.id, collectionRequestId: request.id, status: "closed" })
+      .returning();
+    return { org, requestId: request.id, conversationId: conversation.id };
+  }
+
+  it("an incoming text message gets no automated reply, no AI reasoning call, and the request is never revived", async () => {
+    const { org, requestId, conversationId } = await seedCancelledRequest();
+
+    await handleInboundMessage(org, {
+      from: "972500000000",
+      id: `wamid.post-cancel-text-${crypto.randomUUID()}`,
+      type: "text",
+      text: { body: "שלום, עדיין אצטרך לשלוח את המסמכים?" },
+    } as never);
+
+    const messages = await sharedDb.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messages).toHaveLength(1); // recorded as plain history — the one thing still allowed
+    expect(messages[0].direction).toBe("inbound");
+
+    expect(sendTextMessage).not.toHaveBeenCalled();
+    expect(generateObject).not.toHaveBeenCalled();
+    const [request] = await sharedDb.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("cancelled"); // never revived
+    const [conversation] = await sharedDb.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
+    expect(conversation.status).toBe("closed");
+  });
+
+  it("an incoming attachment is never processed, uploaded, or matched — no document row is created and the request stays cancelled", async () => {
+    const { org, requestId, conversationId } = await seedCancelledRequest();
+
+    await handleInboundMessage(org, {
+      from: "972500000000",
+      id: `wamid.post-cancel-attachment-${crypto.randomUUID()}`,
+      type: "image",
+      image: { id: "media-1", mime_type: "image/jpeg" },
+    } as never);
+
+    const documents = await sharedDb.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(documents).toHaveLength(0);
+
+    const [request] = await sharedDb.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("cancelled"); // never auto-reopened
+
+    const messages = await sharedDb.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(messages).toHaveLength(1);
+    expect(messages[0].direction).toBe("inbound");
+    expect(sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it("never creates a new employeeReviewItem or pending confirmation for a cancelled request", async () => {
+    const { org, requestId } = await seedCancelledRequest();
+
+    await handleInboundMessage(org, {
+      from: "972500000000",
+      id: `wamid.post-cancel-question-${crypto.randomUUID()}`,
+      type: "text",
+      text: { body: "אני צריך שתחזרו אליי בהקדם" },
+    } as never);
+
+    const reviewItems = await sharedDb
+      .select()
+      .from(schema.employeeReviewItems)
+      .where(eq(schema.employeeReviewItems.collectionRequestId, requestId));
+    expect(reviewItems).toHaveLength(0);
+
+    const confirmations = await sharedDb
+      .select()
+      .from(schema.pendingConfirmations)
+      .where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    expect(confirmations).toHaveLength(0);
+  });
+});

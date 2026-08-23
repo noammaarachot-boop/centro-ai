@@ -695,6 +695,47 @@ describe("sendConfirmationRemindersAndEscalate", () => {
     expect(after.status).toBe("pending"); // still open — reminded, not resolved
   });
 
+  it("never reminds (or escalates) a confirmation whose collection request was cancelled in the meantime — a cancelled request is fully terminal, even for a reminder that was already due", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest({ businessHoursAlwaysOpen: true });
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await db.update(schema.pendingConfirmations).set({ nextReminderAt: new Date(Date.now() - 1000) }).where(eq(schema.pendingConfirmations.id, confirmation.id));
+    await db.update(schema.collectionRequests).set({ status: "cancelled" }).where(eq(schema.collectionRequests.id, requestId));
+
+    const result = await sendConfirmationRemindersAndEscalate(orgId);
+    expect(result).toEqual({ reminded: 0, escalated: 0 });
+
+    const [after] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.id, confirmation.id));
+    expect(after.remindersSent).toBe(0); // untouched, not reminded
+    expect(after.escalatedAt).toBeNull(); // untouched, not escalated either
+    const [doc] = await db.select().from(schema.documents).where(eq(schema.documents.id, documentId));
+    expect(doc.status).toBe("unsolicited_pending_confirmation"); // untouched
+  });
+
+  it("still reminds a due confirmation on a DIFFERENT, non-cancelled request in the same organization (the exclusion is scoped, not a global kill switch)", async () => {
+    const { orgId, clientId, requestId, documentId } = await seedRequest({ businessHoursAlwaysOpen: true });
+    const cancelledOne = await seedRequest({ businessHoursAlwaysOpen: true });
+    await db.update(schema.collectionRequests).set({ status: "cancelled" }).where(eq(schema.collectionRequests.id, cancelledOne.requestId));
+    await createUnsolicitedDocumentConfirmation({
+      organizationId: orgId,
+      clientId,
+      collectionRequestId: requestId,
+      documentId,
+      documentType: "חשבונית",
+    });
+    const [confirmation] = await db.select().from(schema.pendingConfirmations).where(eq(schema.pendingConfirmations.collectionRequestId, requestId));
+    await db.update(schema.pendingConfirmations).set({ nextReminderAt: new Date(Date.now() - 1000) }).where(eq(schema.pendingConfirmations.id, confirmation.id));
+
+    const result = await sendConfirmationRemindersAndEscalate(orgId);
+    expect(result.reminded).toBe(1);
+  });
+
   it("escalates to needs_review — and only needs_review, never approved or dropped — once the reminder budget is exhausted with no reply", async () => {
     const { orgId, clientId, requestId, documentId } = await seedRequest({ businessHoursAlwaysOpen: true, confirmationMaxReminders: 2 });
     await createUnsolicitedDocumentConfirmation({

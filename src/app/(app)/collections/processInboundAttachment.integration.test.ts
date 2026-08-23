@@ -1746,3 +1746,33 @@ describe("processInboundAttachment — a completed request is never processed, r
     expect(documents).toHaveLength(1);
   });
 });
+
+// Cancellation-is-terminal — the identical guard, same code path, as the
+// completed describe block above (see conversationActions.ts's shared
+// `status === "completed" || status === "cancelled"` check). A document
+// arriving after a client's request was cancelled must never be
+// classified, uploaded, or revive the request.
+describe("processInboundAttachment — a cancelled request is never processed, regardless of caller", () => {
+  it("ignores the attachment entirely: no document row is created, classification never runs, the request is not revived", async () => {
+    const { orgId, clientId, requestId, conversationId } = await seedRequest(["תעודת זהות"]);
+    await db.update(schema.collectionRequests).set({ status: "cancelled" }).where(eq(schema.collectionRequests.id, requestId));
+
+    await processInboundAttachment(
+      orgId,
+      requestId,
+      conversationId,
+      clientId,
+      "image_wamid.late-arrival.jpg",
+      null,
+      Buffer.from("x"),
+      "image/jpeg",
+      "wamid.late-cancel-arrival"
+    );
+
+    expect(classifyDocumentViaVisionAI).not.toHaveBeenCalled();
+    const documents = await db.select().from(schema.documents).where(eq(schema.documents.collectionRequestId, requestId));
+    expect(documents).toHaveLength(0);
+    const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
+    expect(request.status).toBe("cancelled"); // never revived
+  });
+});

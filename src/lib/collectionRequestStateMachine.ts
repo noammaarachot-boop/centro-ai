@@ -307,7 +307,12 @@ export async function applyTransition(
   const reviewDeadlineAt = startsFreshCycle ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) : current.reviewDeadlineAt;
   const deferralCount = startsFreshCycle ? 0 : current.deferralCount;
 
-  await db
+  // CAS on the status just read — closes the race window between the
+  // SELECT above and this UPDATE (e.g. a scheduler tick moving the request
+  // to "completed" a moment before an employee's cancel lands). Every
+  // caller of applyTransition benefits, not just cancel — mirrors the
+  // atomic-claim pattern escalateToHumanReview already uses.
+  const updated = await db
     .update(collectionRequests)
     .set({
       status: nextStatus,
@@ -323,26 +328,36 @@ export async function applyTransition(
       // "completed", including a direct employee status change.
       extensionActive: nextStatus === "completed" ? false : current.extensionActive,
     })
-    .where(eq(collectionRequests.id, collectionRequestId));
+    .where(
+      and(
+        eq(collectionRequests.id, collectionRequestId),
+        eq(collectionRequests.status, current.status)
+      )
+    )
+    .returning({ id: collectionRequests.id });
+  if (updated.length === 0) {
+    return { ok: false, error: "הבקשה כבר עודכנה בינתיים על ידי תהליך אחר. רעננו ונסו שוב." };
+  }
 
-  // Lifecycle closure invariant — "once a collection request is completed,
-  // Centro stops engaging with that conversation entirely." Centralized
-  // here (the one low-level function every path to "completed" already
-  // goes through — a direct employee status change via transitionStatus
-  // used to bypass this, since only caseReview.ts's finalizeCompletion
-  // used to close the conversation) so it's structurally impossible to
-  // reach "completed" without also closing it. The webhook route's own
-  // `conversation.status === "closed"` gate (route.ts) is what actually
-  // stops automation from here on; this is what guarantees that gate sees
-  // the truth no matter which of the several completion call sites fired.
-  if (nextStatus === "completed") {
+  // Lifecycle closure invariant — "once a collection request is completed
+  // OR cancelled, Centro stops engaging with that conversation entirely."
+  // Centralized here (the one low-level function every path to either
+  // terminal status already goes through) so it's structurally impossible
+  // to reach either without also closing the conversation. The webhook
+  // route's own `conversation.status === "closed"` gate (route.ts) is what
+  // actually stops automation from here on; this is what guarantees that
+  // gate sees the truth no matter which call site triggered the
+  // transition. Cancelling reuses the exact same guard completed already
+  // relies on rather than a parallel one.
+  const entersTerminalClosedState = nextStatus === "completed" || nextStatus === "cancelled";
+  if (entersTerminalClosedState) {
     await db
       .update(conversations)
       .set({
         status: "closed",
         updatedAt: new Date(),
-        // A no-op for every completion that never had one pending; when set,
-        // the request completing means there's nothing left to defer/summarize.
+        // A no-op for every completion/cancellation that never had one
+        // pending; when set, there's nothing left to defer/summarize.
         deferredReminderAt: null,
         pendingCaseReviewAt: null,
       })
@@ -350,19 +365,20 @@ export async function applyTransition(
 
     // "אין להשאיר stale alerts או stale review items" — an employee
     // question that was still open when the request happened to complete
-    // through some other path (e.g. every required document got approved
-    // independently of the open question) must not keep surfacing as
+    // or get cancelled through some other path must not keep surfacing as
     // "needs attention" forever. Resolved, never deleted (audit trail
-    // preserved via review_item.resolved... — actually a distinct event
-    // type below, so a reader can tell this wasn't an employee's own
-    // answer); no client-facing message is sent — the request is already
-    // closed, and issue #4's invariant forbids any further automated
-    // message on a closed conversation.
+    // preserved via a distinct event type below, so a reader can tell this
+    // wasn't an employee's own answer); no client-facing message is sent —
+    // the request is already closed, and issue #4's invariant forbids any
+    // further automated message on a closed conversation.
     const staleReviewItems = await db
       .update(employeeReviewItems)
       .set({
         status: "resolved",
-        resolutionText: "הבקשה הושלמה — הפריט נסגר אוטומטית ללא תשובה נפרדת.",
+        resolutionText:
+          nextStatus === "completed"
+            ? "הבקשה הושלמה — הפריט נסגר אוטומטית ללא תשובה נפרדת."
+            : "הבקשה בוטלה — הפריט נסגר אוטומטית ללא תשובה נפרדת.",
         resolvedBy: "ai_context",
         resolvedByUserId: null,
         resolvedAt: new Date(),
@@ -373,8 +389,14 @@ export async function applyTransition(
     for (const item of staleReviewItems) {
       await recordAuditEvent({
         organizationId,
-        eventType: "review_item.auto_resolved_by_completion",
-        description: `הפריט "${item.clientQuestion}" נסגר אוטומטית — הבקשה הושלמה`,
+        eventType:
+          nextStatus === "completed"
+            ? "review_item.auto_resolved_by_completion"
+            : "review_item.auto_resolved_by_cancellation",
+        description:
+          nextStatus === "completed"
+            ? `הפריט "${item.clientQuestion}" נסגר אוטומטית — הבקשה הושלמה`
+            : `הפריט "${item.clientQuestion}" נסגר אוטומטית — הבקשה בוטלה`,
         actorType: "system",
         collectionRequestId,
         metadata: { reviewItemId: item.id },
@@ -404,6 +426,24 @@ export async function applyTransition(
     collectionRequestId,
     metadata: { from: current.status, to: nextStatus },
   });
+
+  // Dedicated event (in addition to the generic one above) — matches the
+  // precedent of escalateToHumanReview's "collection_request.escalated"
+  // and reopenIfCompleted's "collection_request.reopened": who cancelled
+  // and when are already captured by this row's own actorType/actorUserId/
+  // occurredAt (audit.ts), per the project's existing audit architecture —
+  // no new columns needed.
+  if (nextStatus === "cancelled") {
+    await recordAuditEvent({
+      organizationId,
+      eventType: "collection_request.cancelled",
+      description: "בקשת האיסוף בוטלה",
+      actorType,
+      actorUserId,
+      clientId: current.clientId,
+      collectionRequestId,
+    });
+  }
 
   if (nextStatus === "completed") {
     await exitLearningModeIfFirstCycle(organizationId, current.clientId);

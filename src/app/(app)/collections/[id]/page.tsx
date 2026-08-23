@@ -804,95 +804,108 @@ export default async function CollectionRequestDetailPage({
               </div>
             )}
 
-            <div className="flex flex-wrap gap-2 border-t border-border pt-4">
-              <form action={evaluateNow.bind(null, id)}>
-                <button type="submit" className={pillButtonClass}>
-                  הרצת הערכה (סימולציית חוסר פעילות)
-                </button>
-              </form>
-              <form action={markFinished.bind(null, id)}>
-                <button type="submit" className={pillButtonClass}>
-                  הלקוח השיב: סיימתי
-                </button>
-              </form>
-              <form action={markMoreDocuments.bind(null, id)}>
-                <button type="submit" className={pillButtonClass}>
-                  הלקוח השיב: יש עוד מסמכים
-                </button>
-              </form>
-              {conversation.status === "human_control" ? (
-                <form action={releaseConversation.bind(null, id)}>
-                  <button type="submit" className={pillButtonClass}>
-                    החזר לטיפול אוטומטי
-                  </button>
-                </form>
-              ) : (
-                <ConfirmDialog
-                  title="העבר לטיפול אנושי"
-                  description="ה-AI יפסיק לענות אוטומטית ללקוח בבקשה זו, והמשך השיחה יעבור לטיפול המשרד. ניתן להחזיר את הטיפול האוטומטי בכל שלב."
-                  confirmLabel="העבר לטיפול אנושי"
-                  formAction={takeOverConversation.bind(null, id)}
-                  triggerClassName={pillButtonClass}
-                  trigger="העבר לטיפול אנושי"
-                />
-              )}
-            </div>
+            {/* Cancelled is terminal (collectionRequestStateMachine.ts) — no
+                further engagement is meaningful, so every action here
+                (simulated client replies, human-control handoff, manual
+                employee send, the inbound-message simulator below) is
+                hidden. The message history above stays visible either
+                way — read-only viewing of what already happened is always
+                allowed. */}
+            {collectionRequest.status !== "cancelled" && (
+              <>
+                <div className="flex flex-wrap gap-2 border-t border-border pt-4">
+                  <form action={evaluateNow.bind(null, id)}>
+                    <button type="submit" className={pillButtonClass}>
+                      הרצת הערכה (סימולציית חוסר פעילות)
+                    </button>
+                  </form>
+                  <form action={markFinished.bind(null, id)}>
+                    <button type="submit" className={pillButtonClass}>
+                      הלקוח השיב: סיימתי
+                    </button>
+                  </form>
+                  <form action={markMoreDocuments.bind(null, id)}>
+                    <button type="submit" className={pillButtonClass}>
+                      הלקוח השיב: יש עוד מסמכים
+                    </button>
+                  </form>
+                  {conversation.status === "human_control" ? (
+                    <form action={releaseConversation.bind(null, id)}>
+                      <button type="submit" className={pillButtonClass}>
+                        החזר לטיפול אוטומטי
+                      </button>
+                    </form>
+                  ) : (
+                    <ConfirmDialog
+                      title="העבר לטיפול אנושי"
+                      description="ה-AI יפסיק לענות אוטומטית ללקוח בבקשה זו, והמשך השיחה יעבור לטיפול המשרד. ניתן להחזיר את הטיפול האוטומטי בכל שלב."
+                      confirmLabel="העבר לטיפול אנושי"
+                      formAction={takeOverConversation.bind(null, id)}
+                      triggerClassName={pillButtonClass}
+                      trigger="העבר לטיפול אנושי"
+                    />
+                  )}
+                </div>
 
-            {shouldSuggestReleasingControl && (
-              <div className="mt-2 rounded-lg border border-brand-purple/30 bg-brand-purple/5 px-3 py-2 text-xs text-text-primary">
-                נראה שהטיפול הסתיים. להחזיר לטיפול אוטומטי? (ניתן ללחוץ על הכפתור למעלה)
-              </div>
-            )}
+                {shouldSuggestReleasingControl && (
+                  <div className="mt-2 rounded-lg border border-brand-purple/30 bg-brand-purple/5 px-3 py-2 text-xs text-text-primary">
+                    נראה שהטיפול הסתיים. להחזיר לטיפול אוטומטי? (ניתן ללחוץ על הכפתור למעלה)
+                  </div>
+                )}
 
-            <form
-              action={sendEmployeeMessage.bind(null, id)}
-              className="mt-3 flex items-center gap-2"
-            >
-              <input
-                name="body"
-                type="text"
-                placeholder="הודעת עובד ידנית..."
-                className={fieldClass("sm", "flex-1")}
-              />
-              <button type="submit" className={compactButtonClass}>
-                שליחה
-              </button>
-            </form>
-
-            <DevToolsPanel label="סימולציית הודעה נכנסת מהלקוח">
-              <form action={simulateInboundMessage.bind(null, id)} className="space-y-2">
-                <p className="text-[11px] text-text-muted">
-                  הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי). קובץ מצורף עובר סיווג
-                  אוטומטי (AI מדומה) שמשייך אותו לדרישה המתאימה — בחירה ידנית להלן עוקפת את
-                  הסיווג.
-                </p>
-                <input
-                  name="body"
-                  type="text"
-                  placeholder="טקסט ההודעה"
-                  className={fieldClass("sm")}
-                />
-                <div className="flex items-center gap-2">
+                <form
+                  action={sendEmployeeMessage.bind(null, id)}
+                  className="mt-3 flex items-center gap-2"
+                >
                   <input
-                    name="fileName"
+                    name="body"
                     type="text"
-                    placeholder="שם קובץ מצורף (לא חובה)"
+                    placeholder="הודעת עובד ידנית..."
                     className={fieldClass("sm", "flex-1")}
                   />
-                  <select name="requirementId" className={fieldClass("sm")}>
-                    <option value="">— סיווג אוטומטי —</option>
-                    {requirements.map((requirement) => (
-                      <option key={requirement.id} value={requirement.id}>
-                        {requirement.name} (ידני)
-                      </option>
-                    ))}
-                  </select>
                   <button type="submit" className={compactButtonClass}>
-                    הדמיה
+                    שליחה
                   </button>
-                </div>
-              </form>
-            </DevToolsPanel>
+                </form>
+              </>
+            )}
+
+            {collectionRequest.status !== "cancelled" && (
+              <DevToolsPanel label="סימולציית הודעה נכנסת מהלקוח">
+                <form action={simulateInboundMessage.bind(null, id)} className="space-y-2">
+                  <p className="text-[11px] text-text-muted">
+                    הדמיית הודעה נכנסת מהלקוח (עד לחיבור WhatsApp אמיתי). קובץ מצורף עובר סיווג
+                    אוטומטי (AI מדומה) שמשייך אותו לדרישה המתאימה — בחירה ידנית להלן עוקפת את
+                    הסיווג.
+                  </p>
+                  <input
+                    name="body"
+                    type="text"
+                    placeholder="טקסט ההודעה"
+                    className={fieldClass("sm")}
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      name="fileName"
+                      type="text"
+                      placeholder="שם קובץ מצורף (לא חובה)"
+                      className={fieldClass("sm", "flex-1")}
+                    />
+                    <select name="requirementId" className={fieldClass("sm")}>
+                      <option value="">— סיווג אוטומטי —</option>
+                      {requirements.map((requirement) => (
+                        <option key={requirement.id} value={requirement.id}>
+                          {requirement.name} (ידני)
+                        </option>
+                      ))}
+                    </select>
+                    <button type="submit" className={compactButtonClass}>
+                      הדמיה
+                    </button>
+                  </div>
+                </form>
+              </DevToolsPanel>
+            )}
           </>
         )}
       </Card>
@@ -901,9 +914,9 @@ export default async function CollectionRequestDetailPage({
       {canCancel && (
         <div className="flex justify-center">
           <ConfirmDialog
-            title="ביטול הבקשה?"
-            description="הבקשה תבוטל. הפעולה לא מוחקת מסמכים או היסטוריה שכבר נשמרו — ניתן עדיין לצפות בכל מה שהתקבל עד כה."
-            confirmLabel="ביטול הבקשה"
+            title="לבטל את הבקשה?"
+            description="הביטול יחול רק על הלקוח הזה. לא יישלחו יותר תזכורות או הודעות עבור הבקשה הזו. מסמכים שכבר התקבלו יישמרו בתיק הלקוח."
+            confirmLabel="כן, לבטל את הבקשה"
             cancelLabel="חזרה"
             formAction={boundTransition.bind(null, "cancelled")}
             triggerClassName="text-xs font-medium text-text-muted transition-colors hover:text-danger"
