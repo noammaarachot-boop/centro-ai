@@ -7,13 +7,11 @@ import { organizations, whatsappTemplates } from "@/db/schema";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { recordOwnerAuditEvent } from "@/lib/owner/audit";
 import { findOrganizationTemplate } from "@/lib/data/owner/templates";
+import { syncTemplatesAndNotify } from "@/lib/whatsapp/templateApprovalNotice";
 import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
 import {
-  DEFAULT_DOCUMENT_LIST_EXAMPLE,
   DOCUMENT_LIST_PLACEHOLDER,
-  MANAGED_TEMPLATES,
   editTemplateInMeta,
-  fetchTemplateStatuses,
   findManagedTemplate,
   resolveEditEligibility,
   submitTemplateToMeta,
@@ -192,62 +190,27 @@ export async function refreshWhatsAppTemplateStatusesAction(formData: FormData) 
   const organizationId = String(formData.get("organizationId") ?? "");
   if (!organizationId) redirect("/owner/organizations");
 
-  const context = await resolveWhatsAppContext(organizationId);
-  if (!context) {
-    templateRedirect(organizationId, {
-      templateError: "לארגון הזה אין חיבור WhatsApp ידני עם טוקן שמור.",
-    });
-  }
-
-  let statuses;
+  // Both this manual refresh and the background cron pass go through the
+  // same function, so "approved" has exactly one definition and the
+  // one-time email has exactly one mechanism.
+  let result;
   try {
-    statuses = await fetchTemplateStatuses(context.wabaId, context.accessToken);
+    result = await syncTemplatesAndNotify(organizationId);
   } catch (error) {
-    console.error("[owner] refreshWhatsAppTemplateStatuses failed", {
+    console.error('[owner] refreshWhatsAppTemplateStatuses failed', {
       organizationId,
       error: error instanceof Error ? error.message : String(error),
     });
-    templateRedirect(organizationId, { templateError: "רענון הסטטוס מול Meta נכשל. נסו שוב." });
+    templateRedirect(organizationId, { templateError: 'רענון הסטטוס מול Meta נכשל. נסו שוב.' });
   }
 
-  const db = await getDb();
-  let synced = 0;
-  for (const definition of MANAGED_TEMPLATES) {
-    const remote = statuses.find(
-      (candidate) => candidate.name === definition.name && candidate.language === definition.language
-    );
-    if (!remote) continue; // not on this WABA yet — nothing to sync
-
-    const existing = await findOrganizationTemplate(organizationId, definition.name, definition.language);
-    const values = {
-      status: remote.status,
-      category: remote.category,
-      rejectedReason: remote.rejectedReason,
-      metaTemplateId: remote.metaTemplateId,
-      lastSyncedAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    if (existing) {
-      await db.update(whatsappTemplates).set(values).where(eq(whatsappTemplates.id, existing.id));
-    } else {
-      // On the WABA but never recorded here (e.g. submitted directly in
-      // Meta's own UI) — adopt it rather than reporting nothing.
-      await db.insert(whatsappTemplates).values({
-        organizationId,
-        wabaId: context.wabaId,
-        name: definition.name,
-        language: definition.language,
-        bodyText: definition.bodyText,
-        variables: [DOCUMENT_LIST_PLACEHOLDER],
-        exampleValues: [DEFAULT_DOCUMENT_LIST_EXAMPLE],
-        ...values,
-      });
-    }
-    synced += 1;
-  }
-
-  templateRedirect(organizationId, { templateRefreshed: String(synced) });
+  // A failed notification must never present a successful Meta sync as a
+  // failure — it is reported alongside the sync's own result instead.
+  templateRedirect(organizationId, {
+    templateRefreshed: String(result.synced),
+    ...(result.emailSent ? { approvalEmailSent: '1' } : {}),
+    ...(result.emailError ? { approvalEmailError: result.emailError } : {}),
+  });
 }
 
 // Edits an already-submitted template in Meta.

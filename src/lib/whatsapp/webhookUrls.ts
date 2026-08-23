@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 // app-level WEBHOOK_CALLBACK_URL below was already written with; that
 // constant now lives here so the domain has a single source of truth
 // instead of being repeated per call site).
-const PRODUCTION_ORIGIN = "https://www.centro-ai.co.il";
+export const PRODUCTION_ORIGIN = "https://www.centro-ai.co.il";
 
 // The app-level default. Must exactly match the Callback URL verified in
 // the Meta App Dashboard's WhatsApp Configuration — Meta rejects a

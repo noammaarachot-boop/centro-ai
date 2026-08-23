@@ -11,6 +11,7 @@ import { attemptScheduledDelivery } from "@/lib/scheduledSend";
 import { buildReminderSend } from "@/lib/reminderContent";
 import { retryFailedDriveUploads } from "@/lib/storage/driveAdapter";
 import { runRecurringCycleCreation } from "@/lib/recurringScheduler";
+import { pollTemplateApprovalIfDue } from "@/lib/whatsapp/templateApprovalNotice";
 import {
   flushDueIntakeNotificationsForOrganization,
   sendConfirmationRemindersAndEscalate,
@@ -72,6 +73,8 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   intakeNotificationsFlushed: number;
   caseStatusReviewsRun: number;
   stuckMessagesFlagged: number;
+  /** Organizations whose template approval was polled from Meta this tick. */
+  templateApprovalPolls: number;
 }> {
   const db = await getDb();
   const allOrganizations = organizationId
@@ -86,6 +89,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
   let delivered = 0;
   let driveRetried = 0;
   let recurringCyclesCreated = 0;
+  let templateApprovalPolls = 0;
   let caseStatusReviewsRun = 0;
   let stuckMessagesFlagged = 0;
 
@@ -552,6 +556,18 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     const { created } = await runRecurringCycleCreation(organization.id);
     recurringCyclesCreated += created;
 
+    // Meta approves a WhatsApp template hours or days after submission,
+    // and tells nobody. Without this, the office owner's "your templates
+    // are approved" email would only go out if the platform owner happened
+    // to open the organization's page and press refresh.
+    //
+    // Self-throttling and self-terminating: it contacts Meta at most once
+    // per organization per hour, and stops considering an organization
+    // entirely once its email has been sent (see pollTemplateApprovalIfDue).
+    if (await pollTemplateApprovalIfDue(organization.id)) {
+      templateApprovalPolls += 1;
+    }
+
     // Ch.6 3-way document intake (src/lib/documentIntakeReview.ts) — nudges
     // clients who haven't answered an "was this intentional?" or "what
     // document is this?" question yet, and escalates to needs_review only
@@ -656,6 +672,7 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
     delivered,
     driveRetried,
     recurringCyclesCreated,
+    templateApprovalPolls,
     confirmationsReminded,
     confirmationsEscalated,
     intakeNotificationsFlushed,

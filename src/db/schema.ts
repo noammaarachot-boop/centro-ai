@@ -160,6 +160,26 @@ export const organizations = pgTable("organizations", {
   googleHealthOk: boolean("google_health_ok"),
   googleHealthReason: text("google_health_reason"),
   googleHealthCheckedAt: timestamp("google_health_checked_at", { withTimezone: true }),
+  // One-time "your templates are approved" email to the office owner.
+  //
+  // Doubles as the concurrency claim: the sender flips NULL → now() in a
+  // single conditional UPDATE and only proceeds if that update matched a
+  // row, so a cron pass and a manual refresh running at the same moment
+  // can never both send. Reset back to NULL if the send itself then fails,
+  // which is what makes a retry safe rather than permanently suppressed —
+  // see notifyIfTemplatesApproved (lib/whatsapp/templateApprovalNotice.ts).
+  //
+  // Also the signal that stops the cron re-checking this organization's
+  // templates: once set, there is nothing left for that pass to do.
+  templatesApprovedEmailSentAt: timestamp("templates_approved_email_sent_at", {
+    withTimezone: true,
+  }),
+  // Throttle for the background template-approval poll. The cron pass only
+  // considers organizations not polled within the last hour, so a tick
+  // costs at most one Meta call per organization per hour rather than one
+  // per tick — and organizations already notified drop out entirely (see
+  // listOrganizationsAwaitingTemplateApproval).
+  templatesLastPolledAt: timestamp("templates_last_polled_at", { withTimezone: true }),
   // Per-organization Meta template-approval tracking (Phase 2.1 remediation).
   // Message-template review/approval happens per-WABA on Meta's side, not
   // globally — a template approved on one office's WhatsApp Business

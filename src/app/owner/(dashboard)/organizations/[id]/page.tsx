@@ -103,6 +103,8 @@ export default async function OwnerOrganizationDetailPage({
     templateSubmitted?: string;
     templateEdited?: string;
     templateRefreshed?: string;
+    approvalEmailSent?: string;
+    approvalEmailError?: string;
   }>;
 }) {
   await requireOwnerSession();
@@ -114,6 +116,8 @@ export default async function OwnerOrganizationDetailPage({
     templateSubmitted,
     templateEdited,
     templateRefreshed,
+    approvalEmailSent,
+    approvalEmailError,
   } = await searchParams;
 
   const overview = await getOrganizationOverview(id);
@@ -574,6 +578,26 @@ export default async function OwnerOrganizationDetailPage({
                   {templateRefreshed === "0"
                     ? "לא נמצאו תבניות מנוהלות על ה-WABA הזה עדיין."
                     : `סטטוס עודכן מול Meta עבור ${decodeURIComponent(templateRefreshed)} תבניות.`}
+                </p>
+              )}
+
+              {approvalEmailSent && (
+                <p
+                  role="status"
+                  className="mb-4 rounded-xl border border-success/30 bg-success/5 px-4 py-3 text-sm font-medium text-success"
+                >
+                  🎉 כל התבניות אושרו — נשלח מייל לבעל הארגון.
+                </p>
+              )}
+              {/* A mail failure is reported separately from the sync, which
+                  succeeded — and is retried automatically on the next poll. */}
+              {approvalEmailError && (
+                <p
+                  role="alert"
+                  className="mb-4 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm font-medium text-warning"
+                >
+                  הסטטוס עודכן בהצלחה, אך שליחת מייל האישור לבעל הארגון נכשלה:{" "}
+                  {decodeURIComponent(approvalEmailError)}. הניסיון יחזור אוטומטית.
                 </p>
               )}
 

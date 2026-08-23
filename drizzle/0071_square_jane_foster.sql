@@ -1,0 +1,2 @@
+ALTER TABLE "organizations" ADD COLUMN "templates_approved_email_sent_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "organizations" ADD COLUMN "templates_last_polled_at" timestamp with time zone;
