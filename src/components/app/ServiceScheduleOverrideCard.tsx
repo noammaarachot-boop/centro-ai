@@ -87,7 +87,7 @@ export function ServiceScheduleOverrideCard({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-medium text-text-secondary">
                 שעת התחלה
@@ -116,7 +116,7 @@ export function ServiceScheduleOverrideCard({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 flex items-center gap-1 text-xs font-medium text-text-secondary">
                 מרווח תזכורות (שעות)

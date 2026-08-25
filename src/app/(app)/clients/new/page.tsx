@@ -10,7 +10,7 @@ export default async function NewClientPage() {
   await requireSession();
 
   return (
-    <div className="mx-auto max-w-lg animate-fade-in-up px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-lg animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
       <Link
         href="/clients"
         className="mb-3 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"

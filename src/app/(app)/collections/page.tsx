@@ -28,7 +28,7 @@ export default async function CollectionsPage() {
   const templates = await listTemplatesWithActiveCounts(session.organizationId);
 
   return (
-    <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-5xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
       <PageHeader
         title="בקשות איסוף"
         description="תבניות בקשות המסמכים שלכם — כל תבנית אפשר לשלוח לכל לקוח, בכל זמן."

@@ -1036,6 +1036,13 @@ export async function reprocessHeldHumanControlDocument(documentId: string): Pro
 // The manual stand-in for "N minutes of inactivity" firing (Ch.16 FR-16.4)
 // — a real scheduler will call the same evaluateAndPrompt in M6.
 export async function evaluateNow(collectionRequestId: string) {
+  // SECURITY: hidden from the production UI, but a Server Action stays a
+  // callable HTTP endpoint whose id is discoverable from the client bundle.
+  // In production these do not simulate anything: two write a FABRICATED
+  // inbound message attributed to the client, and one triggers a real
+  // outbound WhatsApp send. Forged client speech in a document-collection
+  // audit trail is a data-integrity problem, not a convenience.
+  assertDevToolsEnabled();
   const session = await requireSession();
   const current = await getCollectionRequestOrRedirect(
     session.organizationId,
@@ -1069,6 +1076,13 @@ export async function evaluateNow(collectionRequestId: string) {
 
 // Ch.10 step 5/6: the client's quick-reply choice.
 export async function markFinished(collectionRequestId: string) {
+  // SECURITY: hidden from the production UI, but a Server Action stays a
+  // callable HTTP endpoint whose id is discoverable from the client bundle.
+  // In production these do not simulate anything: two write a FABRICATED
+  // inbound message attributed to the client, and one triggers a real
+  // outbound WhatsApp send. Forged client speech in a document-collection
+  // audit trail is a data-integrity problem, not a convenience.
+  assertDevToolsEnabled();
   const session = await requireSession();
   const current = await getCollectionRequestOrRedirect(
     session.organizationId,
@@ -1107,6 +1121,13 @@ export async function markFinished(collectionRequestId: string) {
 }
 
 export async function markMoreDocuments(collectionRequestId: string) {
+  // SECURITY: hidden from the production UI, but a Server Action stays a
+  // callable HTTP endpoint whose id is discoverable from the client bundle.
+  // In production these do not simulate anything: two write a FABRICATED
+  // inbound message attributed to the client, and one triggers a real
+  // outbound WhatsApp send. Forged client speech in a document-collection
+  // audit trail is a data-integrity problem, not a convenience.
+  assertDevToolsEnabled();
   const session = await requireSession();
   const current = await getCollectionRequestOrRedirect(
     session.organizationId,
@@ -1244,6 +1265,42 @@ export async function sendEmployeeMessage(
   await sendOutboundMessage(session.organizationId, conversation.id, body, "employee");
 
   redirect(`/collections/${collectionRequestId}`);
+}
+
+export interface SendMessageState {
+  error?: string;
+}
+
+/**
+ * useActionState-shaped wrapper around sendEmployeeMessage, so the composer
+ * can show a real failure instead of throwing the whole page to the error
+ * boundary. Deliberately adds no sending logic of its own — it delegates to
+ * the action above, which is unchanged.
+ *
+ * The catch has to re-throw redirects: Next signals both redirect() and
+ * notFound() by throwing, so swallowing everything here would turn a
+ * successful send into a silent no-op — the exact failure mode this whole
+ * change exists to remove.
+ */
+export async function sendEmployeeMessageWithFeedback(
+  collectionRequestId: string,
+  _prevState: SendMessageState,
+  formData: FormData
+): Promise<SendMessageState> {
+  const body = String(formData.get("body") ?? "").trim();
+  if (!body) return { error: "לא ניתן לשלוח הודעה ריקה." };
+
+  try {
+    await sendEmployeeMessage(collectionRequestId, formData);
+    return {};
+  } catch (error) {
+    const digest = (error as { digest?: string })?.digest;
+    if (typeof digest === "string" && (digest.startsWith("NEXT_REDIRECT") || digest === "NEXT_NOT_FOUND")) {
+      throw error;
+    }
+    console.error("[conversation] employee message failed to send", error);
+    return { error: "שליחת ההודעה נכשלה. נסו שוב בעוד רגע." };
+  }
 }
 
 // Milestone 5 — the employee-facing quick-action equivalent of

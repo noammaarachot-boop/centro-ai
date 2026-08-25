@@ -25,7 +25,7 @@ export default async function ReviewQueuePage({
   const items = await listPendingEmployeeReviewItems(session.organizationId);
 
   return (
-    <div className="mx-auto max-w-3xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-3xl animate-fade-in-up space-y-6 px-4 py-10 sm:px-6 lg:px-10">
       <Link href="/dashboard" className="mb-1 inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple">
         <ArrowRight className="h-4 w-4" />
         חזרה לדשבורד

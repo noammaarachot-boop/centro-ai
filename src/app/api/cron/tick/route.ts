@@ -5,6 +5,7 @@ import { getDb } from "@/db";
 import { jobRuns } from "@/db/schema";
 import { captureError } from "@/lib/monitoring/errorReporting";
 import { cleanupExpiredRateLimits } from "@/lib/auth/rateLimiter";
+import { pruneOldJobRuns } from "@/lib/jobRunRetention";
 
 export const dynamic = "force-dynamic";
 // Phase 4.1 remediation — matches the webhook route's own proven ceiling on
@@ -100,14 +101,25 @@ export async function POST(request: Request) {
       console.error("[cron] rate-limit cleanup failed (tick itself succeeded)", error);
     }
 
+    // Retention for this table's own history. Runs BEFORE the row for
+    // this tick is written, so the tick always leaves a record behind even
+    // if pruning fails. Guarded for the same reason as the cleanup above:
+    // housekeeping must never fail the tick.
+    let jobRunsPruned = 0;
+    try {
+      jobRunsPruned = (await pruneOldJobRuns()).deleted;
+    } catch (error) {
+      console.error("[cron] job_runs retention failed (tick itself succeeded)", error);
+    }
+
     await db.insert(jobRuns).values({
       jobName: JOB_NAME,
       startedAt,
       finishedAt: new Date(),
       status: "success",
-      resultSummary: { ...result, rateLimitRowsPruned },
+      resultSummary: { ...result, rateLimitRowsPruned, jobRunsPruned },
     });
-    return NextResponse.json({ status: "ok", ...result, rateLimitRowsPruned });
+    return NextResponse.json({ status: "ok", ...result, rateLimitRowsPruned, jobRunsPruned });
   } catch (error) {
     captureError(error, { jobName: JOB_NAME });
     await db.insert(jobRuns).values({

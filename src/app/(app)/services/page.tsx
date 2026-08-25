@@ -15,7 +15,7 @@ export default async function ServicesPage() {
   const services = await listServices(session.organizationId, "recurring");
 
   return (
-    <div className="mx-auto max-w-4xl animate-fade-in-up px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-4xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
       <PageHeader
         title="איסוף מחזורי"
         description="כל שורה כאן היא סוג לקוח שמקבל מחזורי איסוף אוטומטיים — Centro פותח את המחזור הבא לבד, לפי התדירות שתגדירו."

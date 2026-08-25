@@ -250,7 +250,7 @@ function InProgressTable({ rows }: { rows: OneTimeDashboardView["inProgress"] })
 // page — for the full picture (documents, thread, audit).
 async function KpiDrillDownPage({ organizationId, kpi }: { organizationId: string; kpi: DashboardKpi }) {
   return (
-    <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-5xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
       <Link
         href="/dashboard"
         className="mb-3 inline-flex items-center gap-1.5 text-sm text-text-muted transition-colors hover:text-brand-purple"
@@ -317,7 +317,7 @@ export async function OneTimeDashboard({ organizationId, kpi }: { organizationId
   const view = await getOneTimeDashboardView(organizationId);
 
   return (
-    <div className="mx-auto max-w-5xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-5xl animate-fade-in-up space-y-6 px-4 py-10 sm:px-6 lg:px-10">
       <div className="mb-8">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-[26px] font-bold tracking-tight text-text-primary">לוח בקרה</h1>

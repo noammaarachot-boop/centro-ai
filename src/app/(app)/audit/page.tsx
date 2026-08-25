@@ -295,7 +295,7 @@ export default async function AuditLogPage({
   }
 
   return (
-    <div className="mx-auto max-w-4xl animate-fade-in-up px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-4xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
       <PageHeader
         title="היסטוריית פעילות"
         description="כל מה שקרה במערכת, במקום אחד. בקשות, מסמכים, הודעות ופעולות שבוצעו על ידי הצוות והמערכת."

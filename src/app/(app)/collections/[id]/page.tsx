@@ -36,6 +36,7 @@ import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { listAuditLog } from "@/lib/data/auditLog";
+import { filterUserFacingActivity } from "@/lib/activityHistory";
 import { listOpenConfirmationsForCollectionRequest } from "@/lib/pendingConfirmations";
 import {
   DRIVE_NOT_READY_MESSAGE,
@@ -60,7 +61,7 @@ import {
   releaseConversation,
   respondToClarification,
   respondToConfirmation,
-  sendEmployeeMessage,
+  sendEmployeeMessageWithFeedback,
   simulateInboundMessage,
   takeOverConversation,
 } from "../conversationActions";
@@ -70,6 +71,7 @@ import { buttonVariants } from "@/components/app/Button";
 import { EmptyState } from "@/components/app/EmptyState";
 import { fieldClass } from "@/components/app/FormField";
 import { ConfirmDialog } from "@/components/app/ConfirmDialog";
+import { MessageComposer } from "@/components/app/MessageComposer";
 import { DevToolsPanel } from "@/components/app/DevToolsPanel";
 import { devToolsEnabled } from "@/lib/devTools";
 
@@ -197,7 +199,13 @@ export default async function CollectionRequestDetailPage({
 
   const conversation = await getConversationByCollectionRequest(id);
   const messages = conversation ? await listMessages(conversation.id) : [];
-  const auditHistory = await listAuditLog(session.organizationId, { collectionRequestId: id });
+  // Display-layer filter only — every event is still recorded and still
+  // readable in full on the /audit screen. This drops internal engine
+  // chatter and the per-message "sent" rows the conversation already shows,
+  // so the timeline reads as what happened to the request.
+  const auditHistory = filterUserFacingActivity(
+    await listAuditLog(session.organizationId, { collectionRequestId: id })
+  );
   const openConfirmations = await listOpenConfirmationsForCollectionRequest(id);
 
   // Display-layer only — never rewrites the stored message. A historical
@@ -260,7 +268,7 @@ export default async function CollectionRequestDetailPage({
   const olderMessages = messages.slice(0, -RECENT_MESSAGES_COUNT);
 
   return (
-    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-4 py-10 sm:px-6 lg:px-10">
       <Link
         href="/collections"
         className="inline-flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-brand-purple"
@@ -332,7 +340,7 @@ export default async function CollectionRequestDetailPage({
             grid so the row still reads as intentional whether it's showing
             one tile or three, not a grid with empty-looking gaps. */}
         <div className="mt-5 flex flex-wrap gap-2.5">
-          <div className="w-[150px] rounded-2xl border border-border bg-surface px-3.5 py-3">
+          <div className="min-w-[132px] flex-1 rounded-2xl border border-border bg-surface px-3.5 py-3">
             <p className="text-[11px] font-semibold text-text-muted">התקבלו</p>
             <p className="mt-1 text-xl font-bold tabular-nums text-text-primary">
               {progress.satisfiedCount}/{progress.totalCount}
@@ -340,14 +348,14 @@ export default async function CollectionRequestDetailPage({
             <p className="text-[10.5px] text-text-muted">מסמכים</p>
           </div>
           {attentionCount > 0 && (
-            <div className="w-[150px] rounded-2xl border border-border bg-surface px-3.5 py-3">
+            <div className="min-w-[132px] flex-1 rounded-2xl border border-border bg-surface px-3.5 py-3">
               <p className="text-[11px] font-semibold text-text-muted">לטיפולך</p>
               <p className="mt-1 text-xl font-bold tabular-nums text-danger">{attentionCount}</p>
               <p className="text-[10.5px] text-text-muted">פריטים</p>
             </div>
           )}
           {openConfirmations.length > 0 && (
-            <div className="w-[150px] rounded-2xl border border-border bg-surface px-3.5 py-3">
+            <div className="min-w-[132px] flex-1 rounded-2xl border border-border bg-surface px-3.5 py-3">
               <p className="text-[11px] font-semibold text-text-muted">מחכה ללקוח</p>
               <p className="mt-1 text-xl font-bold tabular-nums text-text-primary">{openConfirmations.length}</p>
               <p className="text-[10.5px] text-text-muted">שאלות פתוחות</p>
@@ -838,22 +846,17 @@ export default async function CollectionRequestDetailPage({
                 allowed. */}
             {collectionRequest.status !== "cancelled" && (
               <>
+                {/* Only real, employee-facing actions live here now. The
+                    three controls that used to sit alongside them — "run
+                    evaluation (inactivity simulation)", "client replied:
+                    done", "client replied: more documents" — were
+                    developer stand-ins from before WhatsApp was live, and
+                    they were reaching real tenants: they rendered for every
+                    user in production, inside the conversation, looking
+                    like ordinary actions. They now sit in the DevToolsPanel
+                    below with the rest of the simulators, so they exist in
+                    development and cannot be reached in production. */}
                 <div className="flex flex-wrap gap-2 border-t border-border pt-4">
-                  <form action={evaluateNow.bind(null, id)}>
-                    <button type="submit" className={pillButtonClass}>
-                      הרצת הערכה (סימולציית חוסר פעילות)
-                    </button>
-                  </form>
-                  <form action={markFinished.bind(null, id)}>
-                    <button type="submit" className={pillButtonClass}>
-                      הלקוח השיב: סיימתי
-                    </button>
-                  </form>
-                  <form action={markMoreDocuments.bind(null, id)}>
-                    <button type="submit" className={pillButtonClass}>
-                      הלקוח השיב: יש עוד מסמכים
-                    </button>
-                  </form>
                   {conversation.status === "human_control" ? (
                     <form action={releaseConversation.bind(null, id)}>
                       <button type="submit" className={pillButtonClass}>
@@ -878,20 +881,7 @@ export default async function CollectionRequestDetailPage({
                   </div>
                 )}
 
-                <form
-                  action={sendEmployeeMessage.bind(null, id)}
-                  className="mt-3 flex items-center gap-2"
-                >
-                  <input
-                    name="body"
-                    type="text"
-                    placeholder="הודעת עובד ידנית..."
-                    className={fieldClass("sm", "flex-1")}
-                  />
-                  <button type="submit" className={compactButtonClass}>
-                    שליחה
-                  </button>
-                </form>
+                <MessageComposer action={sendEmployeeMessageWithFeedback.bind(null, id)} />
               </>
             )}
 
@@ -929,21 +919,47 @@ export default async function CollectionRequestDetailPage({
                     </button>
                   </div>
                 </form>
+
+                {/* Client-reply and inactivity stand-ins from before
+                    WhatsApp was live. They drive real state transitions, so
+                    they stay available in development — but they are not
+                    something a real tenant should ever see, let alone click
+                    inside a conversation with their own client. */}
+                <div className="mt-3 flex flex-wrap gap-2 border-t border-border/60 pt-3">
+                  <form action={evaluateNow.bind(null, id)}>
+                    <button type="submit" className={pillButtonClass}>
+                      הרצת הערכה (סימולציית חוסר פעילות)
+                    </button>
+                  </form>
+                  <form action={markFinished.bind(null, id)}>
+                    <button type="submit" className={pillButtonClass}>
+                      הלקוח השיב: סיימתי
+                    </button>
+                  </form>
+                  <form action={markMoreDocuments.bind(null, id)}>
+                    <button type="submit" className={pillButtonClass}>
+                      הלקוח השיב: יש עוד מסמכים
+                    </button>
+                  </form>
+                </div>
               </DevToolsPanel>
             )}
           </>
         )}
       </Card>
 
-      {/* ===== היסטוריה טכנית — מקופלת כברירת מחדל ===== */}
+      {/* ===== היסטוריית פעילות — מקופלת כברירת מחדל =====
+          What HAPPENED to the request, as opposed to the conversation above,
+          which is what was SAID to the client. The two must not repeat each
+          other — see filterUserFacingActivity. */}
       <details className="group rounded-2xl border border-border bg-surface-muted/40">
         <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 text-sm font-semibold text-text-secondary transition-colors hover:text-text-primary">
           <ScrollText className="h-4 w-4 shrink-0" aria-hidden="true" />
-          היסטוריית ביקורת
+          היסטוריית פעילות
         </summary>
         <div className="border-t border-border px-5 py-4">
           {auditHistory.length === 0 ? (
-            <p className="text-sm text-text-muted">אין עדיין רשומות עבור בקשה זו.</p>
+            <p className="text-sm text-text-muted">אין עדיין פעילות מתועדת בבקשה זו.</p>
           ) : (
             <ul className="space-y-2">
               {auditHistory.map((event) => (
@@ -988,10 +1004,10 @@ function MessageBubble({
     <li
       className={
         isAi
-          ? "centro-ai-gradient ms-auto max-w-[80%] rounded-2xl rounded-es-sm px-3 py-2 text-xs text-white"
+          ? "centro-ai-gradient ms-auto max-w-[80%] break-words rounded-2xl rounded-es-sm px-3 py-2 text-xs text-white"
           : message.direction === "outbound"
-            ? "ms-auto max-w-[80%] rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
-            : "me-auto max-w-[80%] rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
+            ? "ms-auto max-w-[80%] break-words rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
+            : "me-auto max-w-[80%] break-words rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
       }
     >
       <p>{displayBody}</p>

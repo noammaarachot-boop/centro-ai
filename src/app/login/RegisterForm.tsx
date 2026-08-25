@@ -21,7 +21,9 @@ function PasswordToggle({
       type="button"
       onClick={onToggle}
       aria-label={visible ? "הסתרת סיסמה" : "הצגת סיסמה"}
-      className="text-text-muted transition-colors hover:text-brand-purple"
+      // See LoginForm: padding grows the 16px icon's tap area to 32px, the
+      // equal negative margin keeps the icon exactly where it was.
+      className="-m-2 p-2 text-text-muted transition-colors hover:text-brand-purple"
     >
       {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
     </button>

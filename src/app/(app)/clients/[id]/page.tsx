@@ -80,7 +80,7 @@ export default async function ClientDetailPage({
   const boundSetBusinessType = setClientBusinessType.bind(null, client.id);
 
   return (
-    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-4 py-10 sm:px-6 lg:px-10">
       <div>
         <Link
           href="/clients"

@@ -435,7 +435,20 @@ body {
   content: "";
   position: absolute;
   z-index: -2;
-  inset: 4% -12% -38% -12%;
+  /* Horizontal inset is 0, not the -12% it used to be, and that is a
+     correctness constraint rather than a taste call: nothing clips this
+     pseudo-element, so a negative horizontal inset lands in the document's
+     scrollable overflow region and widens the PAGE. It did — by 17px at
+     320, 24px at 375 and 2px at 768, on every screen holding a clickable
+     card, while the glow itself is opacity:0 at rest and never animates on
+     a touch device at all. An invisible decoration was giving every phone
+     user a horizontally scrolling page.
+     The vertical bleed stays: it is where this effect's "spread mostly
+     downward" actually lives, and vertical overflow is what a page does
+     anyway. The 48px blur is unchanged and still carries the glow well
+     past the card's edges — blur is ink overflow, which never enters the
+     scrollable region, so the look survives and the bug does not. */
+  inset: 4% 0 -38% 0;
   border-radius: inherit;
   filter: blur(48px);
   opacity: 0;

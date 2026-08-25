@@ -53,7 +53,7 @@ export default async function SettingsPage({
   );
 
   return (
-    <div className="mx-auto max-w-lg animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-lg animate-fade-in-up space-y-6 px-4 py-10 sm:px-6 lg:px-10">
       <PageHeader
         title="הגדרות"
         description="שעות פעילות וימי עבודה קובעים מתי Centro שולח הודעות אוטומטיות."

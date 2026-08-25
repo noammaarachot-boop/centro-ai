@@ -234,6 +234,14 @@ export function Sidebar({
           // positioning instead), so the physical property is the correct,
           // unambiguous choice here specifically.
           "centro-glass-strong fixed inset-y-0 right-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col border-s border-border transition-transform duration-300 ease-[var(--ease-standard)]",
+          // Parked off-screen with a transform when closed, which is what
+          // makes the open/close slide an animation at all — `hidden` would
+          // make it appear and vanish instantly. Safe for page width: this
+          // panel is `position: fixed`, and a fixed element is positioned
+          // against the viewport, so it never enters the document's
+          // scrollable overflow region no matter how far it is translated.
+          // (Measured: the page overflow this was once blamed for is
+          // unchanged with the sidebar hidden — see .centro-live-card.)
           mobileOpen ? "translate-x-0" : "translate-x-full",
           "lg:sticky lg:top-0 lg:z-auto lg:w-64 lg:translate-x-0 lg:border-s-0 lg:border-e lg:transition-[width]",
           collapsed && "lg:w-[76px]"

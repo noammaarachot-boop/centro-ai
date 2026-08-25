@@ -163,7 +163,7 @@ export default async function DashboardPage({
     const suggestions = await listBusinessTypeSuggestions(session.organizationId);
 
     return (
-      <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+      <div className="mx-auto max-w-5xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
         <Link
           href="/dashboard"
           className="mb-3 inline-flex items-center text-sm text-text-muted transition-colors hover:text-brand-purple"
@@ -219,7 +219,7 @@ export default async function DashboardPage({
     const pending = await listPendingConfirmationsForDashboard(session.organizationId);
 
     return (
-      <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+      <div className="mx-auto max-w-5xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
         <Link
           href="/dashboard"
           className="mb-3 inline-flex items-center text-sm text-text-muted transition-colors hover:text-brand-purple"
@@ -270,7 +270,7 @@ export default async function DashboardPage({
     const rows = await listQueue(session.organizationId, queue as DashboardQueue);
 
     return (
-      <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+      <div className="mx-auto max-w-5xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
         <Link
           href="/dashboard"
           className="mb-3 inline-flex items-center text-sm text-text-muted transition-colors hover:text-brand-purple"
@@ -348,7 +348,7 @@ export default async function DashboardPage({
   const calmCards = QUEUE_CARDS.filter((c) => c.queue !== "needs_review");
 
   return (
-    <div className="mx-auto max-w-5xl animate-fade-in-up px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-5xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
       <div className="mb-8">
         <p className="mb-1.5 text-xs font-semibold tracking-wide text-brand-purple uppercase">
           שלום, {session.organizationName}

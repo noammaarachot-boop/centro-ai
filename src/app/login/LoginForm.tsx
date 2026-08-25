@@ -40,7 +40,12 @@ export function LoginForm() {
           <button
             type="button"
             onClick={() => setShowPassword((v) => !v)}
-            className="text-text-muted transition-colors hover:text-brand-purple"
+            // p-2/-m-2 grows the tap area from the icon's own 16px to 32px
+            // without moving the icon by a pixel — the padding expands the
+            // box, the equal negative margin pulls the box back. The
+            // responsive smoke test measured this at 16x16 on every phone
+            // viewport, which is below anything a thumb can reliably hit.
+            className="-m-2 p-2 text-text-muted transition-colors hover:text-brand-purple"
             aria-label={showPassword ? "הסתרת הסיסמה" : "הצגת הסיסמה"}
           >
             {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}

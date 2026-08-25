@@ -18,7 +18,7 @@ export default async function SupportPage() {
   await requireSession();
 
   return (
-    <div className="mx-auto max-w-lg animate-fade-in-up space-y-6 px-6 py-10 lg:px-10">
+    <div className="mx-auto max-w-lg animate-fade-in-up space-y-6 px-4 py-10 sm:px-6 lg:px-10">
       <PageHeader title="תמיכה" description="נתקלתם בבעיה או צריכים עזרה? אנחנו כאן בשבילכם." />
 
       <Card>
