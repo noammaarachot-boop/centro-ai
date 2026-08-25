@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
@@ -72,6 +72,21 @@ export function Sidebar({
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Escape closes the off-canvas drawer. It behaves like a modal —
+  // full-height panel over a dimming scrim that swallows the page — and
+  // Escape is how one of those is expected to close. Without this the only
+  // ways out were the X or a tap on the scrim, both of which need a pointer
+  // and a sighted aim; a keyboard user had no way to dismiss it at all.
+  // Bound only while open, so nothing listens on desktop or at rest.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen]);
 
   const navContent = (
     <>

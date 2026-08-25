@@ -173,6 +173,23 @@ async function checkTouchTargets(page, viewport, screen) {
     small.length ? `${JSON.stringify(byKind)}${real.length ? ` first-real=${JSON.stringify(real[0])}` : ""}` : "");
 }
 
+/**
+ * Exactly one <main> landmark per page.
+ *
+ * Regression: the collection-request wizard rendered its own <main> while
+ * already inside (app)/layout.tsx's, so /collections/new shipped two "main"
+ * landmarks — invalid HTML, and an ambiguous destination for a screen
+ * reader's jump-to-main. Cheap to check, and it holds for every screen,
+ * so it runs on all of them rather than only the one that broke.
+ */
+async function checkSingleMain(page, viewport, screen) {
+  const mains = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("main")).map((m) => String(m.className || "").slice(0, 50))
+  );
+  record(viewport, screen, "exactly one <main> landmark", mains.length === 1 ? "PASS" : "FAIL",
+    mains.length === 1 ? "" : `${mains.length} found: ${JSON.stringify(mains)}`);
+}
+
 async function shoot(page, viewport, screen) {
   await fs.mkdir(SHOTS, { recursive: true });
   const file = path.join(SHOTS, `${screen}-${viewport}.png`);
@@ -200,6 +217,7 @@ async function visit(page, url, viewport, screen, { shots = true, expectPath = u
   await checkOverflow(page, viewport, screen);
   await checkEscapingElements(page, viewport, screen);
   await checkScrollContainers(page, viewport, screen);
+  await checkSingleMain(page, viewport, screen);
   await checkTouchTargets(page, viewport, screen);
   const dir = await page.evaluate(() => document.documentElement.dir || getComputedStyle(document.documentElement).direction);
   record(viewport, screen, "RTL direction is applied", dir === "rtl" ? "PASS" : "FAIL", dir);
@@ -362,6 +380,11 @@ async function main() {
         ["/settings", "settings"],
         ["/audit", "activity-history"],
         ["/support", "support"],
+        // The collection-request wizard's first step. Included because it
+        // is a whole screen the suite never measured — and the one that
+        // shipped a duplicate <main> landmark. Rendering it creates
+        // nothing; the draft is only written when the step is submitted.
+        ["/collections/new", "collection-request-wizard"],
       ]) {
         await page.goto(`${BASE_URL}${url}`, { waitUntil: "networkidle", timeout: 45_000 });
         const landed = new URL(page.url()).pathname;
@@ -413,8 +436,26 @@ async function main() {
             const ok = await checkOverflow(page, vp.name, "sidebar-open");
             record(vp.name, "sidebar", "opening does not cause page overflow", ok ? "PASS" : "FAIL");
             shots.push(await shoot(page, vp.name, "sidebar-open"));
+
+            // Measured by geometry, not isVisible(): the drawer is parked
+            // off-screen with a transform, which Playwright still reports as
+            // visible, so an isVisible() check here would pass in both
+            // states and prove nothing.
+            const drawerX = async () => {
+              const box = await page.locator("aside").first().boundingBox().catch(() => null);
+              return box ? box.x : null;
+            };
+            const openX = await drawerX();
+            const onScreen = (x) => x !== null && x + 1 < vp.width && x > -vp.width;
+            record(vp.name, "sidebar", "opens into the viewport", onScreen(openX) ? "PASS" : "FAIL", `x=${openX}`);
+
+            // Regression: this drawer is a modal-shaped panel over a
+            // dimming scrim, and Escape did not close it — a keyboard user
+            // had no way out at all. Found by end-to-end QA.
             await page.keyboard.press("Escape");
-            await page.waitForTimeout(300);
+            await page.waitForTimeout(400);
+            const closedX = await drawerX();
+            record(vp.name, "sidebar", "Escape closes it", onScreen(closedX) ? "FAIL" : "PASS", `x=${closedX}`);
           } else {
             record(vp.name, "sidebar", "toggle found", "NOT TESTED", "no toggle located");
           }

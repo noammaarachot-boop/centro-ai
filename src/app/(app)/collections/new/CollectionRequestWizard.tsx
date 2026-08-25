@@ -1045,8 +1045,13 @@ export function CollectionRequestWizard(props: {
     const assignedClients = props.assignedClients ?? [];
     const recipientLabel =
       assignedClients.length === 1 ? assignedClients[0].clientName : `${total || assignedClients.length} לקוחות`;
+    // A div, not a <main>: this wizard renders inside (app)/layout.tsx,
+    // which already provides the page's one <main>. Nesting a second one
+    // gave /collections/new two "main" landmarks — invalid HTML, and an
+    // ambiguous target for landmark navigation. Same classes, so nothing
+    // about the layout changes.
     return (
-      <main className="centro-app-ambient flex min-h-screen justify-center px-4 py-16">
+      <div className="centro-app-ambient flex min-h-screen justify-center px-4 py-16">
         <div className="w-full max-w-sm">
           <div className="centro-glass-strong animate-fade-in-up rounded-2xl border border-border p-8 shadow-card-lg">
             <SuccessStep
@@ -1056,12 +1061,13 @@ export function CollectionRequestWizard(props: {
             />
           </div>
         </div>
-      </main>
+      </div>
     );
   }
 
+  // See the comment above: (app)/layout.tsx owns this page's <main>.
   return (
-    <main className="centro-app-ambient min-h-screen px-4 py-10 sm:py-14">
+    <div className="centro-app-ambient min-h-screen px-4 py-10 sm:py-14">
       <div className="mx-auto w-full max-w-3xl">
         <ProgressDots step={step} />
         <div className="flex flex-col gap-6 lg:flex-row">
@@ -1142,6 +1148,6 @@ export function CollectionRequestWizard(props: {
           )}
         </div>
       </div>
-    </main>
+    </div>
   );
 }

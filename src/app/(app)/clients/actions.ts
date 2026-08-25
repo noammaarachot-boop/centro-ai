@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { clientServices, clients, services } from "@/db/schema";
@@ -20,6 +20,7 @@ import {
   getSuggestedRequirements,
   seedStarterBusinessTypes,
 } from "@/lib/businessTypes";
+import { isSamePhoneNumber } from "@/lib/whatsapp/phone";
 import { resolveScheduleConfig } from "@/lib/businessHours";
 import { computeInitialCollectionRunAt } from "@/lib/recurringScheduler";
 
@@ -82,6 +83,35 @@ function readClientInput(formData: FormData) {
   };
 }
 
+/**
+ * The client in this organization already using this phone number, if any.
+ *
+ * Compares normalized numbers rather than raw strings, because that is what
+ * inbound WhatsApp routing compares (matchClientByPhone). Checking raw
+ * strings let the same real number be stored once per formatting — five
+ * rows for one number, reproducibly — after which a message from that
+ * number reached whichever row the routing scan hit first.
+ *
+ * Reads the organization's phones and compares in memory, the same shape
+ * matchClientByPhone already uses, because the comparison is on the
+ * NORMALIZED value and no index exists on that.
+ */
+async function findClientWithSamePhone(
+  db: Awaited<ReturnType<typeof getDb>>,
+  organizationId: string,
+  phone: string,
+  excludeClientId?: string
+): Promise<{ id: string } | null> {
+  const existing = await db
+    .select({ id: clients.id, phone: clients.phone })
+    .from(clients)
+    .where(eq(clients.organizationId, organizationId));
+  const match = existing.find(
+    (candidate) => candidate.id !== excludeClientId && isSamePhoneNumber(candidate.phone, phone)
+  );
+  return match ? { id: match.id } : null;
+}
+
 function validateClientInput(input: ReturnType<typeof readClientInput>) {
   const fieldErrors: ClientFormState["fieldErrors"] = {};
   if (!input.name) fieldErrors.name = "נא להזין שם לקוח.";
@@ -100,16 +130,7 @@ export async function createClient(
 
   const db = await getDb();
 
-  const [duplicate] = await db
-    .select({ id: clients.id })
-    .from(clients)
-    .where(
-      and(
-        eq(clients.organizationId, session.organizationId),
-        eq(clients.phone, input.phone)
-      )
-    )
-    .limit(1);
+  const duplicate = await findClientWithSamePhone(db, session.organizationId, input.phone);
   if (duplicate) {
     return { fieldErrors: { phone: "מספר טלפון זה כבר משויך ללקוח אחר." } };
   }
@@ -172,17 +193,7 @@ export async function updateClient(
 
   const db = await getDb();
 
-  const [duplicate] = await db
-    .select({ id: clients.id })
-    .from(clients)
-    .where(
-      and(
-        eq(clients.organizationId, session.organizationId),
-        eq(clients.phone, input.phone),
-        ne(clients.id, clientId)
-      )
-    )
-    .limit(1);
+  const duplicate = await findClientWithSamePhone(db, session.organizationId, input.phone, clientId);
   if (duplicate) {
     return { fieldErrors: { phone: "מספר טלפון זה כבר משויך ללקוח אחר." } };
   }

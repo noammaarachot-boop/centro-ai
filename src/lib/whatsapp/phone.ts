@@ -33,3 +33,26 @@ export function toE164(rawPhone: string): string | null {
 
   return E164_PATTERN.test(candidate) ? candidate : null;
 }
+
+/**
+ * Whether two loosely-typed phone inputs are the same real number.
+ *
+ * Everything that ROUTES by phone already compares normalized numbers —
+ * matchClientByPhone in the WhatsApp webhook resolves an inbound message
+ * with `toE164(client.phone) === target`. Uniqueness, though, was checked
+ * on the raw string, so the two disagreed: "0509998877" and
+ * "+972-50-999-8877" are one number to the router and two different
+ * clients to the create form. Five rows for one number was reproducible,
+ * and an inbound message from it then landed on whichever row the scan
+ * happened to reach first.
+ *
+ * Falls back to exact comparison when either side cannot be normalized,
+ * so genuinely unparseable legacy input keeps its previous behaviour
+ * instead of being silently collapsed with something it is not.
+ */
+export function isSamePhoneNumber(a: string, b: string): boolean {
+  const normalizedA = toE164(a);
+  const normalizedB = toE164(b);
+  if (normalizedA && normalizedB) return normalizedA === normalizedB;
+  return a.trim() === b.trim();
+}

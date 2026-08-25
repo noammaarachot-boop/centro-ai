@@ -1,6 +1,7 @@
 "use server";
 
 import { and, eq } from "drizzle-orm";
+import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import {
@@ -1245,42 +1246,32 @@ export async function releaseConversation(collectionRequestId: string) {
   redirect(`/collections/${collectionRequestId}`);
 }
 
-export async function sendEmployeeMessage(
-  collectionRequestId: string,
-  formData: FormData
-) {
-  const session = await requireSession();
-  const current = await getCollectionRequestOrRedirect(
-    session.organizationId,
-    collectionRequestId
-  );
-  const body = String(formData.get("body") ?? "").trim();
-  if (!body) redirect(`/collections/${collectionRequestId}`);
-
-  const conversation = await ensureConversation(
-    session.organizationId,
-    collectionRequestId,
-    current.clientId
-  );
-  await sendOutboundMessage(session.organizationId, conversation.id, body, "employee");
-
-  redirect(`/collections/${collectionRequestId}`);
-}
-
 export interface SendMessageState {
   error?: string;
 }
 
 /**
- * useActionState-shaped wrapper around sendEmployeeMessage, so the composer
- * can show a real failure instead of throwing the whole page to the error
- * boundary. Deliberately adds no sending logic of its own — it delegates to
- * the action above, which is unchanged.
+ * Sends an employee's manual WhatsApp message from the request screen.
  *
- * The catch has to re-throw redirects: Next signals both redirect() and
- * notFound() by throwing, so swallowing everything here would turn a
- * successful send into a silent no-op — the exact failure mode this whole
- * change exists to remove.
+ * Ends with refresh(), NOT redirect(), and that is the whole point.
+ *
+ * This is a useActionState action, and a redirect thrown out of one never
+ * reaches React as a settled result: end-to-end QA measured the send button
+ * stuck on "שולח…" 45 seconds after a click, with no error, no message
+ * echoed and no navigation — while the message row had already been written
+ * 28ms in. An employee had no way to tell whether the client got it, and
+ * clicking again (the obvious response) sends it twice. A plain
+ * <form action={serverAction}> on the same page redirects fine; the
+ * combination with useActionState is what breaks.
+ *
+ * refresh() is also simply the right call here for the reason
+ * services/actions.ts already documents: this form posts back to the page it
+ * lives on, and redirect() to the URL you are already on does not reliably
+ * make the client router drop its cached RSC payload.
+ *
+ * requireSession/getCollectionRequestOrRedirect stay OUTSIDE the try: those
+ * two redirect legitimately (no session, or a request belonging to another
+ * organization) and must navigate, never be reported as "the send failed".
  */
 export async function sendEmployeeMessageWithFeedback(
   collectionRequestId: string,
@@ -1290,17 +1281,26 @@ export async function sendEmployeeMessageWithFeedback(
   const body = String(formData.get("body") ?? "").trim();
   if (!body) return { error: "לא ניתן לשלוח הודעה ריקה." };
 
+  const session = await requireSession();
+  const current = await getCollectionRequestOrRedirect(
+    session.organizationId,
+    collectionRequestId
+  );
+
   try {
-    await sendEmployeeMessage(collectionRequestId, formData);
-    return {};
+    const conversation = await ensureConversation(
+      session.organizationId,
+      collectionRequestId,
+      current.clientId
+    );
+    await sendOutboundMessage(session.organizationId, conversation.id, body, "employee");
   } catch (error) {
-    const digest = (error as { digest?: string })?.digest;
-    if (typeof digest === "string" && (digest.startsWith("NEXT_REDIRECT") || digest === "NEXT_NOT_FOUND")) {
-      throw error;
-    }
     console.error("[conversation] employee message failed to send", error);
     return { error: "שליחת ההודעה נכשלה. נסו שוב בעוד רגע." };
   }
+
+  refresh();
+  return {};
 }
 
 // Milestone 5 — the employee-facing quick-action equivalent of
