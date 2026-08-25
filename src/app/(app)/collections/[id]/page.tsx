@@ -399,7 +399,14 @@ export default async function CollectionRequestDetailPage({
                   confirmLabel="כן, לבטל את הבקשה"
                   cancelLabel="חזרה"
                   formAction={boundTransition.bind(null, "cancelled")}
-                  triggerClassName="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/5 px-3.5 py-1.5 text-xs font-semibold text-danger transition-colors hover:border-danger/60 hover:bg-danger/10"
+                  // py-2, not py-1.5, so this matches the pillButtonClass
+                  // buttons it shares a row with. Those are border + py-2 +
+                  // text-xs = 34px; at py-1.5 this one rendered 30px, so it
+                  // sat 4px short of its own row AND was the only control
+                  // on this screen under the touch-target floor. Measured,
+                  // both are now 34px. This is the one change here that is
+                  // deliberately visible.
+                  triggerClassName="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/5 px-3.5 py-2 text-xs font-semibold text-danger transition-colors hover:border-danger/60 hover:bg-danger/10"
                   trigger={
                     <span className="flex items-center gap-1.5">
                       <Ban className="h-3.5 w-3.5" aria-hidden="true" />
@@ -541,7 +548,11 @@ export default async function CollectionRequestDetailPage({
                       <form action={waiveRequirement.bind(null, id, requirement.id)}>
                         <button
                           type="submit"
-                          className="text-[11px] text-text-muted transition-colors hover:text-warning hover:underline"
+                          // A real action (it waives a requirement) that
+                          // rendered 17px tall. Padding plus the matching
+                          // negative margin takes the tap area to 33px
+                          // without moving anything around it.
+                          className="py-2 -my-2 text-[11px] text-text-muted transition-colors hover:text-warning hover:underline"
                         >
                           לא רלוונטי הפעם
                         </button>

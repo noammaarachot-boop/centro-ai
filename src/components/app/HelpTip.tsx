@@ -30,12 +30,17 @@ export function HelpTip({
     <Popover
       triggerClassName={clsx(
         "inline-flex items-center gap-1.5 rounded-full text-xs font-medium text-brand-purple transition-colors hover:text-brand-purple-deep",
-        // The label alone renders ~16px tall, which the responsive smoke test
-        // flagged as a real control that is hard to hit with a thumb. The
-        // padding doubles the tap area to ~32px; the matching negative margin
-        // keeps it from shifting the labels it sits beside, so this buys
-        // touch reach without changing any layout.
-        "py-2 -my-2",
+        // Tap area only. Padding grows the hit box, the equal negative
+        // margin cancels it out of the margin box, so the trigger occupies
+        // exactly the same space on screen as it did with no padding at
+        // all — nothing beside it moves.
+        //
+        // Both axes, because several call sites pass label="" (see
+        // BusinessHoursForm and ServiceScheduleOverrideCard), which renders
+        // the icon alone: a 14px-wide target measured at 14x30 on a phone.
+        // 9px vertical rather than 8 puts the icon-only case at 32px, the
+        // threshold the responsive smoke test holds controls to.
+        "px-2 -mx-2 py-[9px] -my-[9px]",
         className
       )}
       trigger={

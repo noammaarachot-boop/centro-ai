@@ -98,7 +98,15 @@ export function OfficeInfoForm({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="mt-1 text-xs font-medium text-brand-purple hover:underline"
+            // The only way to attach a logo, and it rendered 16px tall —
+            // under the 24px floor a thumb needs. py-2 takes the hit box to
+            // 32px; the negative margins give the original margin box back
+            // exactly, so nothing around it moves. They are written as
+            // -mt-1/-mb-2 rather than -my-2 because the button already
+            // carried mt-1: -4px top absorbs the 8px of new padding while
+            // keeping the original 4px gap above, and -8px bottom cancels
+            // the padding below.
+            className="-mt-1 -mb-2 py-2 text-xs font-medium text-brand-purple hover:underline"
           >
             {preview ? "החלפת תמונה" : "העלאת תמונה"}
           </button>
