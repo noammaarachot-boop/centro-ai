@@ -258,8 +258,10 @@ export default async function CollectionRequestDetailPage({
   // WhatsApp delivery signal (scheduler.ts's stuck-pending detection, and
   // Meta's own status webhook callbacks) — reused directly from the
   // conversation thread already loaded above, never a new query.
+  // Through the shared resolver, so "did this reach the client" is decided
+  // in exactly one place for the bubble, the counter and this signal.
   const hasFailedOutbound = messages.some(
-    (m) => m.direction === "outbound" && (m.deliveryStatus === "failed" || m.deliveryStatus === "stuck")
+    (m) => m.direction === "outbound" && resolveMessageDeliveryState(m.deliveryStatus) === "failed"
   );
 
   const attentionCount = unmatchedDocuments.length + employeeQuestions.length + (hasFailedOutbound ? 1 : 0);

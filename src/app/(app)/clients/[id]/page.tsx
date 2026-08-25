@@ -11,7 +11,8 @@ import { listBusinessTypes } from "@/lib/businessTypes";
 import { listClientDocumentProfileChanges } from "@/lib/clientDocumentProfile";
 import {
   assignService,
-  deleteClient,
+  archiveClient,
+  restoreClient,
   setClientBusinessType,
   unassignService,
   updateClient,
@@ -75,7 +76,8 @@ export default async function ClientDetailPage({
   }
 
   const boundUpdate = updateClient.bind(null, client.id);
-  const boundDelete = deleteClient.bind(null, client.id);
+  const boundArchive = archiveClient.bind(null, client.id);
+  const boundRestore = restoreClient.bind(null, client.id);
   const boundAssign = assignService.bind(null, client.id);
   const boundSetBusinessType = setClientBusinessType.bind(null, client.id);
 
@@ -303,19 +305,30 @@ export default async function ClientDetailPage({
         )}
       </Card>
 
+      {client.archivedAt ? (
+        <form action={boundRestore}>
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-purple transition-colors hover:underline"
+          >
+            החזרה מהארכיון
+          </button>
+        </form>
+      ) : (
       <ConfirmDialog
-        title="מחיקת לקוח"
-        description={`למחוק את "${client.name}"? פעולה זו אינה הפיכה. אם ללקוח יש היסטוריית בקשות איסוף, המחיקה תיחסם.`}
-        confirmLabel="מחיקת לקוח"
-        formAction={boundDelete}
+        title="העברת לקוח לארכיון"
+        description={`להעביר את "${client.name}" לארכיון? הלקוח ייעלם מרשימת הלקוחות הפעילים, אך כל ההיסטוריה — בקשות, מסמכים, הודעות ותיעוד — תישמר במלואה. אפשר להחזיר בכל רגע.`}
+        confirmLabel="העברה לארכיון"
+        formAction={boundArchive}
         triggerClassName="inline-flex items-center gap-1.5 text-sm font-medium text-danger transition-colors hover:underline"
         trigger={
           <>
             <Trash2 className="h-4 w-4" />
-            מחיקת לקוח
+            העברה לארכיון
           </>
         }
       />
+      )}
     </div>
   );
 }

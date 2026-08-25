@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { clientServices, clients, services } from "@/db/schema";
@@ -224,30 +224,74 @@ export async function updateClient(
   redirect(`/clients/${client.id}`);
 }
 
-export async function deleteClient(clientId: string) {
+/**
+ * Removes a client from day-to-day use WITHOUT destroying their history.
+ *
+ * This replaces a hard DELETE, which was unsafe in a way the old FK-error
+ * handling hid: audit_logs.client_id is ON DELETE SET NULL, so deleting a
+ * client silently severed the record of what had been collected from whom,
+ * and several child tables cascade outright. The foreign key from
+ * collection_requests only refuses the delete once a request exists —
+ * meaning the destructive path was open precisely for the clients with the
+ * least protection, and closed for the ones that looked risky.
+ *
+ * Archiving keeps every row, every message and every audit line linked and
+ * intact, and is reversible. Nothing in this product needs a client's
+ * history to actually disappear; it needs the client out of the list.
+ */
+export async function archiveClient(clientId: string) {
   const session = await requireSession();
   const db = await getDb();
 
-  try {
-    const [client] = await db
-      .delete(clients)
-      .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
-      .returning();
+  const [client] = await db
+    .update(clients)
+    .set({ archivedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(clients.id, clientId),
+        eq(clients.organizationId, session.organizationId),
+        isNull(clients.archivedAt)
+      )
+    )
+    .returning();
 
-    if (client) {
-      await recordAuditEvent({
-        organizationId: session.organizationId,
-        eventType: "client.deleted",
-        description: `הלקוח "${client.name}" נמחק`,
-        actorType: "employee",
-        actorUserId: session.userId,
-      });
-    }
-  } catch {
-    redirect(`/clients/${clientId}?error=has-history`);
-  }
+  if (!client) redirect(`/clients/${clientId}`);
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "client.archived",
+    description: `הלקוח "${client.name}" הועבר לארכיון`,
+    actorType: "employee",
+    actorUserId: session.userId,
+    clientId: client.id,
+  });
 
   redirect("/clients");
+}
+
+/** Puts an archived client back into the active list. */
+export async function restoreClient(clientId: string) {
+  const session = await requireSession();
+  const db = await getDb();
+
+  const [client] = await db
+    .update(clients)
+    .set({ archivedAt: null, updatedAt: new Date() })
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, session.organizationId)))
+    .returning();
+
+  if (!client) redirect("/clients");
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "client.restored",
+    description: `הלקוח "${client.name}" הוחזר מהארכיון`,
+    actorType: "employee",
+    actorUserId: session.userId,
+    clientId: client.id,
+  });
+
+  redirect(`/clients/${clientId}`);
 }
 
 export async function assignService(clientId: string, formData: FormData) {

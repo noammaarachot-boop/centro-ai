@@ -499,6 +499,16 @@ export const clients = pgTable(
     phone: text("phone").notNull(),
     email: text("email"),
     notes: text("notes"),
+    // Archive, not delete.
+    //
+    // Deleting a client destroys history: audit_logs.client_id is
+    // ON DELETE SET NULL, so the trail of what was collected from whom is
+    // silently severed, and several child tables cascade outright. The FK
+    // from collection_requests only blocks the delete once a request
+    // exists, which means the damage is possible precisely for the clients
+    // with the least protection. Archiving keeps every row and every link
+    // intact and simply removes the client from day-to-day lists.
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     // BR-3.003: store the Drive folder ID, not its name. Created lazily
     // (see src/lib/storage/driveAdapter.ts) the first time a document for
     // this client is approved, rather than during client creation.
