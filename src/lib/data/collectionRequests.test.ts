@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { ATTACHMENT_PLACEHOLDER_TEXT, resolveDocumentDisplayLabel, resolveMessageDisplayBody } from "@/lib/documents/displayLabel";
@@ -15,9 +14,8 @@ vi.mock("@/db", () => ({
 const { listDocumentsByWhatsappMessageId } = await import("./collectionRequests");
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
 async function seedRequest() {

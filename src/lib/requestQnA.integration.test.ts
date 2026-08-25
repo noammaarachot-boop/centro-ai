@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import type { RequirementSemanticSpec } from "@/lib/ai/requirementSemantics";
@@ -20,9 +19,8 @@ vi.mock("@/db", () => ({
 const { buildRequirementFacts, answerRequestMessage } = await import("./requestQnA");
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
 function spec(overrides: Partial<RequirementSemanticSpec>): RequirementSemanticSpec {

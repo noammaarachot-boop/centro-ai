@@ -1,8 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 
@@ -42,9 +41,8 @@ const { applyDeferralIfAny } = await import("./reminderDeferral");
 const { runScheduledTasks } = await import("./scheduler");
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
 beforeEach(() => {

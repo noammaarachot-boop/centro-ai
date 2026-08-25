@@ -1,8 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { CONFIRM_NO_BUTTON_ID, CONFIRM_YES_BUTTON_ID } from "@/lib/pendingConfirmations";
@@ -98,9 +97,8 @@ describe("resolveInteractiveReplyText", () => {
 // Postgres engine (PGlite), not just a guessed error shape.
 describe("isUniqueViolation", () => {
   it("recognizes a real unique-constraint violation on documents.whatsapp_message_id", async () => {
-    const client = new PGlite();
+    const client = await createMigratedPglite();
     const db = drizzle(client, { schema });
-    await migrate(db as never, { migrationsFolder: "./drizzle" });
 
     const [org] = await db.insert(schema.organizations).values({ name: "Org" }).returning();
     const [clientRow] = await db
@@ -162,9 +160,8 @@ describe("isUniqueViolation", () => {
 // webhook or a live Meta call.
 describe("handleInboundMessage — Phase 4 cutover: the real entry point routes through understandConversationTurn, never legacy", () => {
   beforeAll(async () => {
-    const client = new PGlite();
+    const client = await createMigratedPglite();
     sharedDb = drizzle(client, { schema }) as unknown as Database;
-    await migrate(sharedDb as never, { migrationsFolder: "./drizzle" });
   }, 60_000);
 
   beforeEach(() => {
@@ -229,9 +226,8 @@ describe("handleInboundMessage — Phase 4 cutover: the real entry point routes 
 // inbound message is still recorded as plain history, and nothing else.
 describe("handleInboundMessage — a completed request's conversation never receives automated engagement again", () => {
   beforeAll(async () => {
-    const client = new PGlite();
+    const client = await createMigratedPglite();
     sharedDb = drizzle(client, { schema }) as unknown as Database;
-    await migrate(sharedDb as never, { migrationsFolder: "./drizzle" });
   }, 60_000);
 
   beforeEach(() => {
@@ -341,9 +337,8 @@ describe("handleInboundMessage — a completed request's conversation never rece
 // request must be exactly as inert to the webhook as a completed one.
 describe("handleInboundMessage — a cancelled request's conversation never receives automated engagement again", () => {
   beforeAll(async () => {
-    const client = new PGlite();
+    const client = await createMigratedPglite();
     sharedDb = drizzle(client, { schema }) as unknown as Database;
-    await migrate(sharedDb as never, { migrationsFolder: "./drizzle" });
   }, 60_000);
 
   beforeEach(() => {

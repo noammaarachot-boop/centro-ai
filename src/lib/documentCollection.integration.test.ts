@@ -1,8 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { isNotNull, eq } from "drizzle-orm";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { getRequestRequirementNames } from "./documentRequestList";
@@ -17,9 +16,8 @@ import { storeWabaConnection } from "./whatsapp/wabaTokens";
 let db: Database;
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
 async function seedOrg(name: string, connected: boolean): Promise<string> {

@@ -1,8 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 
@@ -48,9 +47,8 @@ vi.mock("ai", () => ({
 const { scheduleCaseReviewRelay, CASE_REVIEW_RELAY_MAX_WAIT_MS } = await import("./caseReview");
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
 beforeEach(() => {
@@ -124,92 +122,137 @@ async function seedWaitingRequest(pendingCaseReviewAt: Date) {
 
 describe("scheduleCaseReviewRelay", () => {
   it("fires exactly one review once the due time passes", async () => {
-    const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 150));
+    vi.useFakeTimers();
+    try {
+      const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 150));
 
-    await scheduleCaseReviewRelay({
-      organizationId: org.id,
-      conversationId: conversation.id,
-      collectionRequestId: request.id,
-      clientId: clientRow.id,
-    });
+      const relayPromise = scheduleCaseReviewRelay({
+        organizationId: org.id,
+        conversationId: conversation.id,
+        collectionRequestId: request.id,
+        clientId: clientRow.id,
+      });
+      // The relay sleeps until the due time plus its own 250ms settle
+      // buffer; this carries the clock past that.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await relayPromise;
 
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
-    expect(updated.pendingCaseReviewAt).toBeNull();
+      expect(sendTextMessage).toHaveBeenCalledTimes(1);
+      const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
+      expect(updated.pendingCaseReviewAt).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   }, 15_000);
 
   it("debounces: a pendingCaseReviewAt pushed forward mid-wait is picked up without a separate cancel step", async () => {
-    const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 150));
+    vi.useFakeTimers();
+    try {
+      const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 150));
 
-    const relayPromise = scheduleCaseReviewRelay({
-      organizationId: org.id,
-      conversationId: conversation.id,
-      collectionRequestId: request.id,
-      clientId: clientRow.id,
-    });
+      const relayPromise = scheduleCaseReviewRelay({
+        organizationId: org.id,
+        conversationId: conversation.id,
+        collectionRequestId: request.id,
+        clientId: clientRow.id,
+      });
 
-    // Simulates a second document arriving mid-wait — conversationActions.ts
-    // itself does this unconditionally; the relay must pick it up on its
-    // own next wake rather than firing at the original (now stale) time.
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    const newDueAt = new Date(Date.now() + 200);
-    await db.update(schema.conversations).set({ pendingCaseReviewAt: newDueAt }).where(eq(schema.conversations.id, conversation.id));
+      // Simulates a second document arriving mid-wait — conversationActions.ts
+      // itself does this unconditionally; the relay must pick it up on its
+      // own next wake rather than firing at the original (now stale) time.
+      await vi.advanceTimersByTimeAsync(60);
+      const newDueAt = new Date(Date.now() + 200);
+      await db.update(schema.conversations).set({ pendingCaseReviewAt: newDueAt }).where(eq(schema.conversations.id, conversation.id));
 
-    expect(sendTextMessage).not.toHaveBeenCalled();
+      expect(sendTextMessage).not.toHaveBeenCalled();
 
-    await relayPromise;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await relayPromise;
 
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
-    expect(updated.pendingCaseReviewAt).toBeNull();
+      expect(sendTextMessage).toHaveBeenCalledTimes(1);
+      const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
+      expect(updated.pendingCaseReviewAt).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   }, 15_000);
 
   it("fires correctly for a burst spread over a realistic span, even though the FIRST relay's own budget alone can't cover the whole span (regression: a real production burst spread over ~21s made a single 'first document only' relay give up before the real due time — every document now spawns its own relay instead)", async () => {
-    const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 200));
-    const params = {
-      organizationId: org.id,
-      conversationId: conversation.id,
-      collectionRequestId: request.id,
-      clientId: clientRow.id,
-    };
+    // Fake timers, because the scenario is defined by ORDER, not by
+    // duration: each document must arrive while the review is still
+    // pending. On a real clock that only holds while an 80ms sleep stays
+    // inside a 200ms window, and under a loaded machine it does not — the
+    // sleep overran, the first relay fired before the second document
+    // arrived, the second document then scheduled a fresh review, and the
+    // test saw two sends. Both sends were correct: a document arriving
+    // after a summary has gone out genuinely earns another one. The clock
+    // was wrong, not the code, so the clock is the thing to control.
+    vi.useFakeTimers();
+    try {
+      const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 200));
+      const params = {
+        organizationId: org.id,
+        conversationId: conversation.id,
+        collectionRequestId: request.id,
+        clientId: clientRow.id,
+      };
 
-    // Document 1's relay starts immediately (its own due time: now + 200ms).
-    const relay1 = scheduleCaseReviewRelay(params);
+      // Document 1's relay starts immediately (its own due time: now + 200ms).
+      const relay1 = scheduleCaseReviewRelay(params);
 
-    // Document 2 arrives mid-wait (mirrors conversationActions.ts: pushes
-    // pendingCaseReviewAt forward, and — per the fix — spawns its OWN relay
-    // too, not just relying on relay1).
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    await db.update(schema.conversations).set({ pendingCaseReviewAt: new Date(Date.now() + 200) }).where(eq(schema.conversations.id, conversation.id));
-    const relay2 = scheduleCaseReviewRelay(params);
+      // Document 2 arrives mid-wait (mirrors conversationActions.ts: pushes
+      // pendingCaseReviewAt forward, and — per the fix — spawns its OWN relay
+      // too, not just relying on relay1).
+      await vi.advanceTimersByTimeAsync(80);
+      await db.update(schema.conversations).set({ pendingCaseReviewAt: new Date(Date.now() + 200) }).where(eq(schema.conversations.id, conversation.id));
+      const relay2 = scheduleCaseReviewRelay(params);
 
-    // Document 3 arrives mid-wait again — same pattern.
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    await db.update(schema.conversations).set({ pendingCaseReviewAt: new Date(Date.now() + 200) }).where(eq(schema.conversations.id, conversation.id));
-    const relay3 = scheduleCaseReviewRelay(params);
+      // Document 3 arrives mid-wait again — same pattern.
+      await vi.advanceTimersByTimeAsync(80);
+      await db.update(schema.conversations).set({ pendingCaseReviewAt: new Date(Date.now() + 200) }).where(eq(schema.conversations.id, conversation.id));
+      const relay3 = scheduleCaseReviewRelay(params);
 
-    await Promise.all([relay1, relay2, relay3]);
+      // No document has arrived yet at this point in the story, so nothing
+      // should have fired — the guard that makes the count below meaningful.
+      expect(sendTextMessage).not.toHaveBeenCalled();
 
-    // Exactly one summary, fired by whichever relay's own claim won —
-    // never zero (the old bug: everyone gives up too early) and never more
-    // than one.
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
-    const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
-    expect(updated.pendingCaseReviewAt).toBeNull();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await Promise.all([relay1, relay2, relay3]);
+
+      // Exactly one summary, fired by whichever relay's own claim won —
+      // never zero (the old bug: everyone gives up too early) and never more
+      // than one.
+      expect(sendTextMessage).toHaveBeenCalledTimes(1);
+      const [updated] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
+      expect(updated.pendingCaseReviewAt).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   }, 15_000);
 
   it("never sends twice when two relays race the same due time (claim race safety)", async () => {
-    const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 150));
+    vi.useFakeTimers();
+    try {
+      const { org, clientRow, request, conversation } = await seedWaitingRequest(new Date(Date.now() + 150));
 
-    const params = {
-      organizationId: org.id,
-      conversationId: conversation.id,
-      collectionRequestId: request.id,
-      clientId: clientRow.id,
-    };
-    await Promise.all([scheduleCaseReviewRelay(params), scheduleCaseReviewRelay(params), scheduleCaseReviewRelay(params)]);
+      const params = {
+        organizationId: org.id,
+        conversationId: conversation.id,
+        collectionRequestId: request.id,
+        clientId: clientRow.id,
+      };
+      const relays = Promise.all([
+        scheduleCaseReviewRelay(params),
+        scheduleCaseReviewRelay(params),
+        scheduleCaseReviewRelay(params),
+      ]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await relays;
 
-    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   }, 15_000);
 
   it("never sends twice when a relay races a cron-style claim on the exact same due row", async () => {

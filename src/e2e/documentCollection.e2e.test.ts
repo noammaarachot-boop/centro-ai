@@ -1,9 +1,8 @@
 import { createHmac } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { makeTestDocument, type TestDocument } from "./fixtures";
@@ -219,9 +218,8 @@ vi.mock("ai", () => ({
 const { POST } = await import("@/app/api/webhooks/whatsapp/route");
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
 }, 60_000);
 
 // The unified conversation-understanding layer (src/lib/conversation/) now

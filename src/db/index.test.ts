@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "./schema";
 import { withMigrationLock } from "./index";
@@ -20,7 +20,7 @@ import type { Database } from "./index";
 let db: Database;
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
   // PGlite initializes its WASM engine lazily, on the first query — not in
   // the constructor above. Without this warm-up that one-time cost is

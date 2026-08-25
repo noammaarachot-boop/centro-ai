@@ -13,5 +13,9 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts"],
+    // Builds the migrated PGlite image once, before any worker starts, so
+    // 57 test files stop each running initdb + 74 migrations in parallel.
+    // See src/test/pgliteSnapshot.ts.
+    globalSetup: ["src/test/globalSetup.ts"],
   },
 });

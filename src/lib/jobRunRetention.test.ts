@@ -1,7 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import { sql } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
@@ -17,9 +16,8 @@ vi.mock("@/db", () => ({ getDb: async () => db }));
 const { pruneOldJobRuns, JOB_RUN_RETENTION_DAYS } = await import("./jobRunRetention");
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema }) as unknown as Database;
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
   await db.execute(sql`select 1`);
 }, 60_000);
 

@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { PGlite } from "@electric-sql/pglite";
+import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema";
 import {
@@ -21,9 +20,8 @@ let db: ReturnType<typeof drizzle>;
 let exec: SqlExecutor;
 
 beforeAll(async () => {
-  const client = new PGlite();
+  const client = await createMigratedPglite();
   db = drizzle(client, { schema });
-  await migrate(db as never, { migrationsFolder: "./drizzle" });
   await db.execute(sql`select 1`);
   exec = async (statement: string) => {
     const res = await db.execute(sql.raw(statement));
