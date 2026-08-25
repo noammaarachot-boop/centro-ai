@@ -324,6 +324,13 @@ async function main() {
       // layout coverage at any viewport.
       const anon = await browser.newContext(contextOptions);
       const anonPage = await anon.newPage();
+      // The marketing site, which had no coverage here at all. That gap cost
+      // a real one: the landing page's contact card carried a decorative
+      // wash overhanging its own padding by 8px, and the first thing to
+      // notice was a production smoke test after the deploy.
+      await visit(anonPage, "/", vp.name, "landing");
+      await visit(anonPage, "/privacy", vp.name, "privacy");
+      await visit(anonPage, "/terms", vp.name, "terms");
       await visit(anonPage, "/login", vp.name, "login");
       // /register is a real bookmarkable URL that redirects to AuthTabs'
       // Register tab rather than duplicating the markup, so /login is where

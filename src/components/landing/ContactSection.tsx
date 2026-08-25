@@ -32,7 +32,14 @@ export default function ContactSection() {
         >
           <div
             aria-hidden="true"
-            className="absolute -inset-6 -z-10 rounded-[2.5rem] opacity-30 blur-3xl"
+            // The bleed matches the wrapper's own padding at each breakpoint
+            // (px-4 below sm, px-6 from sm), so this decorative wash reaches
+            // exactly the viewport edge and never past it. At a flat -inset-6
+            // it overhung the 16px mobile padding by 8px, and nothing clips
+            // it, so it widened the whole page on every phone — measured at
+            // 398 against a 390 viewport. Same failure as .centro-live-card's
+            // glow: an invisible decoration deciding the document's width.
+            className="absolute -inset-4 -z-10 rounded-[2.5rem] opacity-30 blur-3xl sm:-inset-6"
             style={{ background: "var(--gradient-hero)" }}
           />
           <div className="rounded-[1.75rem] border border-white/70 bg-white/95 p-6 shadow-card-lg backdrop-blur-md sm:p-8">
