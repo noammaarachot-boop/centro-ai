@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
+import { getOrganization } from "@/lib/data/organizations";
 import {
   getCollectionRequest,
   listDocumentsByWhatsappMessageId,
@@ -37,6 +38,12 @@ import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { listAuditLog } from "@/lib/data/auditLog";
 import { filterUserFacingActivity } from "@/lib/activityHistory";
+import {
+  countRealConversationMessages,
+  DELIVERY_STATE_LABEL,
+  hasReachedClient,
+  resolveMessageDeliveryState,
+} from "@/lib/messageDeliveryState";
 import { listOpenConfirmationsForCollectionRequest } from "@/lib/pendingConfirmations";
 import {
   DRIVE_NOT_READY_MESSAGE,
@@ -168,6 +175,13 @@ export default async function CollectionRequestDetailPage({
 
   const collectionRequest = await getCollectionRequest(session.organizationId, id);
   if (!collectionRequest) notFound();
+
+  // Every time shown on this page is formatted in the ORGANIZATION's zone.
+  // Without an explicit zone these rendered in the server process's zone —
+  // UTC on Vercel — so the conversation was stamped three hours off while
+  // the deferral banner beside it already used Asia/Jerusalem.
+  const organization = await getOrganization(session.organizationId);
+  const organizationTimezone = organization?.timezone ?? "Asia/Jerusalem";
 
   const requirements = await listRequirementsWithDocuments(id);
   const unmatchedDocuments = await listUnmatchedDocuments(id);
@@ -319,16 +333,29 @@ export default async function CollectionRequestDetailPage({
 
         <p className="mt-3 text-sm font-semibold text-text-primary">{summaryLine}</p>
 
+        {/* Two different things write conversations.deferredReminderAt: a
+            genuine client request ("אשלח מחר" — reminderDeferral.ts, which
+            also stores the client's own words), and the scheduler deferring
+            a reminder that came due outside business hours, which is
+            Centro's own decision and stores nothing else. This banner
+            claimed BOTH were the client's doing. Across production every
+            single deferral on record is the scheduler's — 11 of 11 — so
+            every time this text has ever appeared it attributed to a client
+            something they never asked for. The stored client text is the
+            evidence, so it is what the wording keys off. */}
         {collectionRequest.status !== "escalated" && conversation?.deferredReminderAt && (
           <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm font-medium text-warning">
-            נדחה לבקשת הלקוח עד{" "}
+            {conversation.deferredReminderOriginalText
+              ? "נדחה לבקשת הלקוח עד "
+              : "התזכורת נדחתה אוטומטית לשעות הפעילות, עד "}
             {new Date(conversation.deferredReminderAt).toLocaleString("he-IL", {
               dateStyle: "short",
               timeStyle: "short",
-              timeZone: "Asia/Jerusalem",
-            })}{" "}
-            — דחייה {collectionRequest.deferralCount} מתוך 2
-            {conversation.deferredReminderOriginalText && ` ("${conversation.deferredReminderOriginalText}")`}
+              timeZone: organizationTimezone,
+            })}
+            {conversation.deferredReminderOriginalText
+              ? ` — דחייה ${collectionRequest.deferralCount} מתוך 2 ("${conversation.deferredReminderOriginalText}")`
+              : ""}
           </p>
         )}
 
@@ -823,11 +850,12 @@ export default async function CollectionRequestDetailPage({
                 {olderMessages.length > 0 && (
                   <details className="mb-2">
                     <summary className="cursor-pointer text-xs font-semibold text-brand-purple">
-                      פתיחת השיחה המלאה ({messages.length} הודעות)
+                      פתיחת השיחה המלאה ({countRealConversationMessages(messages)} הודעות)
                     </summary>
                     <ul className="mt-2 max-h-64 space-y-2 overflow-y-auto">
                       {olderMessages.map((message) => (
                         <MessageBubble
+                          organizationTimezone={organizationTimezone}
                           key={message.id}
                           message={message}
                           documentLabelByWhatsappMessageId={documentLabelByWhatsappMessageId}
@@ -839,6 +867,7 @@ export default async function CollectionRequestDetailPage({
                 <ul className="space-y-2">
                   {recentMessages.map((message) => (
                     <MessageBubble
+                          organizationTimezone={organizationTimezone}
                       key={message.id}
                       message={message}
                       documentLabelByWhatsappMessageId={documentLabelByWhatsappMessageId}
@@ -992,6 +1021,7 @@ export default async function CollectionRequestDetailPage({
 function MessageBubble({
   message,
   documentLabelByWhatsappMessageId,
+  organizationTimezone,
 }: {
   message: {
     id: string;
@@ -1000,8 +1030,10 @@ function MessageBubble({
     body: string;
     createdAt: Date | string;
     whatsappMessageId: string | null;
+    deliveryStatus?: string | null;
   };
   documentLabelByWhatsappMessageId: Map<string, string>;
+  organizationTimezone: string;
 }) {
   const isAi = message.direction === "outbound" && message.senderType === "ai";
   // Display-layer upgrade only (see the page's own comment on
@@ -1011,6 +1043,8 @@ function MessageBubble({
     ? documentLabelByWhatsappMessageId.get(message.whatsappMessageId)
     : undefined;
   const displayBody = resolveMessageDisplayBody(message.body, resolvedLabel);
+  const deliveryState = resolveMessageDeliveryState(message.deliveryStatus);
+  const reached = hasReachedClient(message);
   return (
     <li
       className={
@@ -1023,7 +1057,25 @@ function MessageBubble({
     >
       <p>{displayBody}</p>
       <p className={isAi ? "mt-0.5 text-[10px] text-white/75" : "mt-0.5 text-[10px] text-text-muted"}>
-        {message.senderType} · {new Date(message.createdAt).toLocaleTimeString("he-IL")}
+        {message.senderType} ·{" "}
+        {/* An explicit timeZone. Without one this formats in whatever zone
+            the RENDERING process happens to be in — UTC on Vercel — so every
+            message in the thread was stamped three hours earlier than it
+            actually happened, while the deferral banner a few hundred lines
+            up already passed Asia/Jerusalem and disagreed with it. */}
+        {new Date(message.createdAt).toLocaleTimeString("he-IL", {
+          timeZone: organizationTimezone,
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+        {/* Outbound only: an inbound message is with us by definition.
+            Without this every row looked like a delivered WhatsApp message,
+            including the 114 that WhatsApp had refused. */}
+        {message.direction === "outbound" && !reached && (
+          <span className={isAi ? "ms-1.5 font-semibold text-white" : "ms-1.5 font-semibold text-danger"}>
+            · {DELIVERY_STATE_LABEL[deliveryState]}
+          </span>
+        )}
       </p>
     </li>
   );

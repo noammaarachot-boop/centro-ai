@@ -125,7 +125,12 @@ describe("startConversation — Phase 2.1: template v2 usage is gated per-organi
 
     const result = await startConversation(orgId, requestId, clientId);
 
-    expect(result.sent).toBe(true); // sendOutboundMessage's own contract: recorded, not gated — even though delivery failed
+    // Contract corrected (production incident): `sent` now means the
+    // provider ACCEPTED the message. It used to be true here "even though
+    // delivery failed", which is exactly the lie that let three requests be
+    // shown as sent to clients who received nothing. The subject of this
+    // test — never looping the v1 fallback — is unchanged below.
+    expect(result.sent).toBe(false);
     expect(sendTemplateMessage).toHaveBeenCalledTimes(2); // v2 attempt + exactly one v1 fallback, never more
   });
 });

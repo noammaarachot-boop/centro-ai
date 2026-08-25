@@ -1179,20 +1179,37 @@ describe("runScheduledTasks — root-cause fix: reminder cycle correctness (O/P/
     });
     const [before] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
 
-    // sendOutboundMessage's own real (unmocked) contract: a genuine Meta
-    // rejection (WhatsAppSendError, thrown from the transport layer this
-    // test mocks) is caught inside sendViaWhatsApp and surfaces as
-    // { sent: true, deliveryStatus: "failed" } — sent:true because the
-    // automation gate itself did allow the attempt, deliveryStatus:"failed"
-    // because Meta rejected it. This is the exact shape the scheduler must
-    // not misread as success.
+    // A genuine Meta rejection (WhatsAppSendError from the transport layer
+    // this test mocks) is caught inside sendViaWhatsApp and surfaces as
+    // { sent: false, deliveryStatus: "failed" }. `sent` used to be true
+    // here — "the automation gate allowed the attempt" — and that is the
+    // contract this file's own scenario proved dangerous in production, so
+    // it now means "the provider accepted it" and nothing weaker.
     sendTemplateMessage.mockRejectedValueOnce(new WhatsAppSendError("simulated Meta rejection"));
     const result = await runScheduledTasks(orgId);
 
     expect(result.reminded).toBe(0);
     const [afterFailure] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversationId));
-    // Restored to the original anchor — the failed attempt never consumed the cycle.
-    expect(afterFailure.reminderAnchorAt.getTime()).toBe(before.reminderAnchorAt.getTime());
+    // The cycle IS consumed now, and that is the fix rather than a
+    // regression. This test used to require the anchor be restored so a
+    // failed attempt "never loses the cycle" — but the cron runs every five
+    // minutes, so restoring it made the conversation due again immediately
+    // and the send was retried forever. Production carries the result: one
+    // conversation with 121 identical reminder rows over 53 hours, another
+    // with 112 over 9 hours, every one deliveryStatus "failed". Consuming
+    // the cycle costs one reminder interval; restoring it cost an unbounded
+    // loop of real client-facing messages.
+    expect(afterFailure.reminderAnchorAt.getTime()).toBeGreaterThan(before.reminderAnchorAt.getTime());
+
+    // The property that actually protects the client: further ticks must
+    // not each produce another attempt.
+    await runScheduledTasks(orgId);
+    await runScheduledTasks(orgId);
+    const afterMoreTicks = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.direction, "outbound")));
+    expect(afterMoreTicks, "extra ticks must not each send another reminder").toHaveLength(1);
 
     // The real persisted message row (sendOutboundMessage's own "pending"
     // row, finalized after the transport call) proves deliveryStatus was
@@ -1218,9 +1235,16 @@ describe("runScheduledTasks — root-cause fix: reminder cycle correctness (O/P/
       .where(and(eq(schema.auditLogs.eventType, "scheduler.reminder_sent"), eq(schema.auditLogs.organizationId, orgId)));
     expect(sentAudit).toHaveLength(0); // never logged as a successful send
 
-    // Retried on the very next tick (still due, nothing consumed) — this
-    // time Meta genuinely accepts it, and it succeeds exactly once — no
-    // duplicate of the failed attempt, no second real send beyond this one.
+    // Retried on the next CYCLE rather than the next tick — the failed
+    // attempt consumed this one, so the conversation becomes due again once
+    // a full reminder interval has passed, which is what this ageing
+    // simulates. The request is never abandoned; it is just not retried
+    // every five minutes. This time Meta accepts, and it succeeds exactly
+    // once — no duplicate of the failed attempt, no second real send.
+    await db
+      .update(schema.conversations)
+      .set({ reminderAnchorAt: new Date(Date.now() - 6 * 60 * 60 * 1000) })
+      .where(eq(schema.conversations.id, conversationId));
     sendTemplateMessage.mockResolvedValueOnce({ messageId: "wamid.out" });
     const secondResult = await runScheduledTasks(orgId);
     expect(secondResult.reminded).toBe(1);

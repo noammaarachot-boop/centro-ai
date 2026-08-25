@@ -288,6 +288,9 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       // failure discipline already established in
       // documentIntakeReview.ts's sendConfirmationRemindersAndEscalate.
       let restoreOnFailure: (() => Promise<void>) | null = null;
+      // Set by whichever branch claims a cycle; identifies the logical
+      // reminder so the database can reject a duplicate send outright.
+      let claimedCycleAt: Date = conversation.reminderAnchorAt;
 
       // Reminder deferral by explicit client commitment
       // (src/lib/reminderDeferral.ts) — a genuine dated promise ("אשלח ביום
@@ -333,7 +336,6 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         const reminderCutoff = new Date(Date.now() - reminderIntervalHours * 60 * 60 * 1000);
         if (conversation.reminderAnchorAt >= reminderCutoff) continue;
 
-        const originalReminderAnchorAt = conversation.reminderAnchorAt;
         // Atomic claim (Phase 4.3 remediation; Bug 3 remediation — claims
         // on reminderAnchorAt, never conversations.updatedAt, so an inbound
         // client message can never reset or delay this cycle). Bumped even
@@ -360,6 +362,10 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         // genuinely untouched row can be claimed on its very first attempt,
         // while still correctly failing to match if some other write really
         // did change the value in the meantime.
+        // The cycle this attempt belongs to — the anchor value being
+        // REPLACED, which is stable for every worker that reads the same
+        // row, and therefore usable as the logical message's identity.
+        claimedCycleAt = conversation.reminderAnchorAt;
         const claimed = await db
           .update(conversations)
           .set({ reminderAnchorAt: new Date() })
@@ -391,12 +397,24 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
           });
           continue;
         }
-        restoreOnFailure = async () => {
-          await db
-            .update(conversations)
-            .set({ reminderAnchorAt: originalReminderAnchorAt })
-            .where(eq(conversations.id, conversation.id));
-        };
+        // Deliberately NO restoreOnFailure for this branch.
+        //
+        // It used to put reminderAnchorAt back to its original value
+        // whenever the send failed, so the conversation was due again on
+        // the very next tick — and this cron runs every 5 minutes. A
+        // request whose sends keep failing therefore re-sent forever:
+        // production holds one conversation with 121 identical reminder
+        // rows over 53 hours and another with 112 over 9 hours, every one
+        // of them deliveryStatus "failed" with no WhatsApp id. That is the
+        // retry storm, and it is also where the "duplicate reminders" and
+        // the inflated conversation counts came from.
+        //
+        // Keeping the claim means a failed attempt costs one reminder
+        // cycle rather than retrying every 5 minutes forever. The request
+        // is not abandoned: the next cycle tries again on the normal
+        // interval, and scheduler.reminder_send_failed records each
+        // attempt. Trading a delayed reminder for an unbounded loop of
+        // real client-facing messages is the right way round.
       }
 
       // organization.reminderV2Approved — THIS organization's own Meta
@@ -419,6 +437,13 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
       // "invalid_phone"). Only deliveryStatus === "sent" is a genuine
       // delivery — the same distinction startConversation already relies on
       // for its own v2-template-rejection fallback.
+      // The claimed cycle IS the message's identity: one reminder per
+      // conversation per cycle, decided by the database. Even if two ticks
+      // somehow both got past the compare-and-swap above, or this whole
+      // function ran twice concurrently, only one insert can carry this key
+      // — the other stops before reaching Meta instead of sending a second
+      // copy to the client.
+      const reminderIdempotencyKey = `reminder:${conversation.id}:${claimedCycleAt.toISOString()}`;
       const { deliveryStatus } = await sendOutboundMessage(
         organization.id,
         conversation.id,
@@ -426,7 +451,9 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         "ai",
         "automated",
         reminderSend.templateSend,
-        reminderSend.allowFreeform
+        reminderSend.allowFreeform,
+        undefined,
+        reminderIdempotencyKey
       );
       if (deliveryStatus === "sent") {
         reminded += 1;

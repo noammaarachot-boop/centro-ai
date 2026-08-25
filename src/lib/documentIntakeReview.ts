@@ -761,7 +761,7 @@ export async function sendConfirmationRemindersAndEscalate(
       row.kind === ("document_clarification" satisfies PendingConfirmationKind)
         ? `רק תזכורת קטנה 🙂\n${row.question}`
         : `רק תזכורת קטנה 🙂\n${formatQuestionWithOptions(row.question, row.groupIndex)}`;
-    const { sent } = await sendOutboundMessage(
+    const { sent, deliveryStatus } = await sendOutboundMessage(
       organizationId,
       row.conversationId,
       resendBody,
@@ -774,7 +774,22 @@ export async function sendConfirmationRemindersAndEscalate(
       pendingConfirmationId: row.id,
       kind: row.kind,
       gatedSent: sent,
+      deliveryStatus,
     });
+
+    // Three outcomes, not two — and conflating the last two is what
+    // produced a 5-minute reminder loop in the scheduler's twin of this
+    // block (121 identical reminders to one client over 53 hours).
+    //
+    //   gate blocked   — deliveryStatus undefined: NOTHING was attempted,
+    //                    so the cycle is genuinely unused. Restore the due
+    //                    date and try again on the next tick.
+    //   provider refused — an attempt really was made and the provider
+    //                    said no. Restoring here would re-attempt every
+    //                    tick forever. The cycle is consumed; the next one
+    //                    tries again on the normal interval.
+    //   accepted       — count it, and schedule the next interval.
+    const gateBlocked = deliveryStatus === undefined;
     if (sent) {
       await db
         .update(pendingConfirmations)
@@ -784,15 +799,27 @@ export async function sendConfirmationRemindersAndEscalate(
         })
         .where(eq(pendingConfirmations.id, row.id));
       reminded += 1;
-    } else {
-      // The automation gate blocked the send (org/service paused) —
-      // restore the original due date so this confirmation stays "due" and
-      // is retried on the next tick, rather than being silently claimed
-      // (nextReminderAt left null) and never reminded again.
+    } else if (gateBlocked) {
       await db
         .update(pendingConfirmations)
         .set({ nextReminderAt: row.nextReminderAt })
         .where(eq(pendingConfirmations.id, row.id));
+    } else {
+      // Attempted and refused. remindersSent is NOT incremented — the
+      // client was never reminded — but the cycle moves on so the next
+      // attempt is one interval away, not one tick.
+      await db
+        .update(pendingConfirmations)
+        .set({ nextReminderAt: new Date(Date.now() + reminderIntervalDays * 24 * 60 * 60 * 1000) })
+        .where(eq(pendingConfirmations.id, row.id));
+      await recordAuditEvent({
+        organizationId,
+        eventType: "document.confirmation_reminder_send_failed",
+        description: `שליחת תזכורת לאישור ממתין נכשלה (${deliveryStatus}) — לא נספרה כתזכורת שנשלחה`,
+        actorType: "system",
+        collectionRequestId: row.collectionRequestId,
+        metadata: { pendingConfirmationId: row.id, deliveryStatus },
+      });
     }
   }
 

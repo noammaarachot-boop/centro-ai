@@ -1359,10 +1359,30 @@ export const messages = pgTable("messages", {
   body: text("body").notNull(),
   whatsappMessageId: text("whatsapp_message_id"),
   deliveryStatus: text("delivery_status"),
+  // Identifies the LOGICAL message, so the same one cannot be sent twice.
+  //
+  // Everything protecting sends until now was check-then-send: read a row,
+  // decide it is due, then send. Two ticks, two workers, a retry or a
+  // double-click could all pass that check before any of them wrote, and
+  // production shows the result — the same reminder text delivered to one
+  // client seven times. The insert below is the claim itself: the unique
+  // index makes the database the arbiter, so the loser of a race fails on
+  // INSERT and never reaches the provider at all.
+  //
+  // Nullable, because ad-hoc sends (an employee typing a message) have no
+  // logical identity to deduplicate on — two deliberate messages with the
+  // same text are two messages.
+  idempotencyKey: text("idempotency_key"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 }, (table) => [
+  // Deliberately NOT a partial index. Postgres treats NULLs as distinct in
+  // a unique index, so unkeyed ad-hoc sends never collide with each other
+  // anyway — and a partial index would force every ON CONFLICT to repeat
+  // the predicate to let the planner infer the arbiter, which is a sharp
+  // edge waiting for the next caller to miss.
+  uniqueIndex("messages_idempotency_key_idx").on(table.idempotencyKey),
   // The stuck-outbound sweep runs on every tick for every organization,
   // and getSendFailureSignal reads the same three columns for one tenant.
   index("messages_organization_id_direction_delivery_status_idx").on(

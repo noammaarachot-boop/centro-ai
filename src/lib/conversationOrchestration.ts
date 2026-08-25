@@ -175,7 +175,7 @@ async function sendViaWhatsApp(
   // own doc comment for the 3-button Meta cap that's why this is only used
   // for a single yes/no question, never a combined multi-group one.
   interactiveButtons?: InteractiveButton[]
-): Promise<{ whatsappMessageId: string | null; deliveryStatus: string }> {
+): Promise<{ whatsappMessageId: string | null; deliveryStatus: string; failureReason?: string }> {
   // [wa-diag] TEMPORARY — no logic changed, recipient number not logged (PII).
   console.log("[wa-diag] sendViaWhatsApp ENTER", {
     senderType,
@@ -269,13 +269,35 @@ async function sendViaWhatsApp(
         eventType: "whatsapp.outbound_send_failed",
         description: "שליחת הודעת WhatsApp יוצאת נכשלה",
         actorType: "system",
-        metadata: { severity: "warning" },
+        // The provider's own reason, not just "warning". 730 failed sends
+        // in production carried metadata {"severity":"warning"} and nothing
+        // else, so there was no way to answer "why did WhatsApp reject
+        // this?" from the data — the single most useful fact about a
+        // failure was the one thing being thrown away. Recorded here only;
+        // never surfaced to the office user, who sees a plain "לא נשלחה".
+        metadata: {
+          severity: "warning",
+          failureReason: describeSendFailure(error),
+          errorName: (error as Error).name,
+        },
       });
     } catch (auditError) {
       console.error("[owner-health] failed to record whatsapp.outbound_send_failed audit event", auditError);
     }
-    return { whatsappMessageId: null, deliveryStatus: "failed" };
+    return { whatsappMessageId: null, deliveryStatus: "failed", failureReason: describeSendFailure(error) };
   }
+}
+
+/**
+ * A short, non-sensitive description of why the provider refused a send.
+ *
+ * Deliberately bounded: enough to debug a class of failure (auth, template,
+ * window, rate limit) without copying an arbitrary provider payload — which
+ * can carry the recipient's phone number — into audit_logs.
+ */
+function describeSendFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\+?\d[\d\s\-()]{7,}\d/g, "[phone]").slice(0, 300);
 }
 
 // BR-18.1 gating is real: outside business hours, automated ("ai")
@@ -321,14 +343,20 @@ export async function sendOutboundMessage(
   allowFreeform = false,
   // WhatsApp Interactive Reply Buttons — see sendViaWhatsApp's own doc
   // comment.
-  interactiveButtons?: InteractiveButton[]
+  interactiveButtons?: InteractiveButton[],
+  // A stable identity for the LOGICAL message. Supplied by autonomous
+  // senders (reminders, scheduled deliveries) so that a repeated
+  // invocation is suppressed by the database rather than trusted not to
+  // happen. Omitted for deliberate human sends, which have no such
+  // identity — two messages an employee actually typed are two messages.
+  idempotencyKey?: string
   // deliveryStatus is additive (Phase 2.1 remediation) — existing callers
   // that only destructure `{ sent }` are unaffected. startConversation
   // uses it to detect a v2-template rejection and fall back to v1 without
   // needing sendOutboundMessage itself to ever throw (its own "never
   // throws, always records" contract stays intact for every other
   // caller).
-): Promise<{ sent: boolean; deliveryStatus?: string }> {
+): Promise<{ sent: boolean; deliveryStatus?: string; failureReason?: string }> {
   const db = await getDb();
   const organization = await getOrganizationConfig(organizationId);
   // Observability remediation — resolved once, up front, so it's available
@@ -399,7 +427,13 @@ export async function sendOutboundMessage(
   // bumped, so the staleness-based reminder/nudge logic never re-fires on
   // the same conversation just because the final status update never
   // landed.
-  const [pendingRow] = await db
+  // THE CLAIM. When the caller supplied an idempotency key, this insert is
+  // what makes a duplicate send impossible: the unique index means only one
+  // of any number of concurrent ticks, workers, retries or double-clicks
+  // can create the row, and only the winner goes on to call the provider.
+  // onConflictDoNothing turns the loser's insert into zero rows rather than
+  // an exception, so it simply stops — before any Meta call, not after.
+  const inserted = await db
     .insert(messages)
     .values({
       organizationId,
@@ -409,14 +443,24 @@ export async function sendOutboundMessage(
       body,
       whatsappMessageId: null,
       deliveryStatus: "pending",
+      idempotencyKey: idempotencyKey ?? null,
     })
+    .onConflictDoNothing({ target: messages.idempotencyKey })
     .returning({ id: messages.id });
+
+  if (inserted.length === 0) {
+    // Someone else already owns this logical message. Not an error, and
+    // emphatically not a second send.
+    console.log("[document-collection] duplicate_send_suppressed", { organizationId, conversationId, idempotencyKey });
+    return { sent: false, deliveryStatus: "duplicate_suppressed" };
+  }
+  const [pendingRow] = inserted;
   await db
     .update(conversations)
     .set({ updatedAt: new Date() })
     .where(eq(conversations.id, conversationId));
 
-  const { whatsappMessageId, deliveryStatus } = await sendViaWhatsApp(
+  const { whatsappMessageId, deliveryStatus, failureReason } = await sendViaWhatsApp(
     organization,
     conversationId,
     body,
@@ -446,6 +490,21 @@ export async function sendOutboundMessage(
   // correct).
   await db.update(messages).set({ whatsappMessageId, deliveryStatus }).where(eq(messages.id, pendingRow.id));
 
+  // `sent` means the PROVIDER ACCEPTED IT — nothing weaker.
+  //
+  // It used to mean only "the automation gate didn't block me", so every
+  // caller that asked "did this go out?" got true for a message Meta had
+  // just rejected. attemptScheduledDelivery then flipped the request to
+  // `active` and wrote the audit line "בקשת האיסוף נשלחה ללקוח" for a
+  // client who received nothing — reproduced in production on a real
+  // request whose 114 message rows are all deliveryStatus "failed" with no
+  // WhatsApp id. Every screen downstream inherited that false success.
+  //
+  // The gate-blocked path above still returns sent:false separately, so
+  // callers can keep telling "held by a gate" apart from "the provider
+  // refused" via deliveryStatus.
+  const accepted = deliveryStatus === "sent";
+
   // Observability remediation — unconditional, covers every deliveryStatus
   // outcome (sent/failed/not_connected/no_template/invalid_phone), so a
   // message that left this function always has a paired audit_logs row
@@ -460,10 +519,10 @@ export async function sendOutboundMessage(
         : `שליחת הודעת WhatsApp לא הושלמה: ${deliveryStatus}`,
     actorType: "system",
     collectionRequestId: collectionRequestId ?? undefined,
-    metadata: { messageId: pendingRow.id, conversationId, trigger, senderType, deliveryStatus, whatsappMessageId },
+    metadata: { messageId: pendingRow.id, conversationId, trigger, senderType, deliveryStatus, whatsappMessageId, failureReason },
   });
 
-  return { sent: true, deliveryStatus };
+  return { sent: accepted, deliveryStatus, failureReason };
 }
 
 export async function recordInboundMessage(

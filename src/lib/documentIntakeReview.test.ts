@@ -13,6 +13,10 @@ vi.mock("@/db", () => ({
   getDb: async () => db,
 }));
 
+// A connected org decrypts its stored token before every send; without
+// this the fixture stops at not_connected and nothing reaches the mock.
+vi.mock("@/lib/whatsapp/tokenCipher", () => ({ decryptWhatsAppToken: () => "token" }));
+
 const sendTextMessage = vi.fn();
 const sendTemplateMessage = vi.fn();
 const sendInteractiveButtonsMessage = vi.fn();
@@ -328,7 +332,13 @@ async function seedRequest(options?: {
       // Suffixed with a fresh uuid — see documentIdentityVerification.test.ts's
       // identical comment (Phase 1.6's unique constraint on this column).
       ...(options?.whatsappPhoneNumberId
-        ? { whatsappPhoneNumberId: `${options.whatsappPhoneNumberId}-${crypto.randomUUID()}` }
+        ? {
+            whatsappPhoneNumberId: `${options.whatsappPhoneNumberId}-${crypto.randomUUID()}`,
+            // A connected org also needs its stored token, or every send
+            // stops at not_connected — which now correctly means nobody was
+            // reminded, instead of being counted as a reminder anyway.
+            whatsappAccessTokenEnc: "enc",
+          }
         : {}),
     })
     .returning();
@@ -672,7 +682,16 @@ describe("applyClarificationReply", () => {
 
 describe("sendConfirmationRemindersAndEscalate", () => {
   it("resends the question and increments remindersSent for a due, unanswered confirmation", async () => {
-    const { orgId, clientId, requestId, documentId } = await seedRequest({ businessHoursAlwaysOpen: true });
+    // Contract change (production incident): a reminder counts only if it
+    // actually reached the client. This org therefore has to be genuinely
+    // connected and the provider has to accept — previously reminded:1 was
+    // reported for an organization with no WhatsApp connection at all.
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.r" });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.r" });
+    const { orgId, clientId, requestId, documentId } = await seedRequest({
+      businessHoursAlwaysOpen: true,
+      whatsappPhoneNumberId: "phone",
+    });
     await createUnsolicitedDocumentConfirmation({
       organizationId: orgId,
       clientId,
@@ -717,7 +736,12 @@ describe("sendConfirmationRemindersAndEscalate", () => {
   });
 
   it("still reminds a due confirmation on a DIFFERENT, non-cancelled request in the same organization (the exclusion is scoped, not a global kill switch)", async () => {
-    const { orgId, clientId, requestId, documentId } = await seedRequest({ businessHoursAlwaysOpen: true });
+    sendTextMessage.mockResolvedValue({ messageId: "wamid.r" });
+    sendInteractiveButtonsMessage.mockResolvedValue({ messageId: "wamid.r" });
+    const { orgId, clientId, requestId, documentId } = await seedRequest({
+      businessHoursAlwaysOpen: true,
+      whatsappPhoneNumberId: "phone",
+    });
     const cancelledOne = await seedRequest({ businessHoursAlwaysOpen: true });
     await db.update(schema.collectionRequests).set({ status: "cancelled" }).where(eq(schema.collectionRequests.id, cancelledOne.requestId));
     await createUnsolicitedDocumentConfirmation({
