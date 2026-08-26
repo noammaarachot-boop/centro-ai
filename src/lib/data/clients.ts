@@ -18,11 +18,10 @@ function buildSearchCondition(search: string) {
   if (!term) return undefined;
   const like = `%${term}%`;
   const digits = term.replace(/[^\d]/g, "");
-  const conditions = [
-    ilike(clients.name, like),
-    ilike(clients.email, like),
-    ilike(clients.notes, like),
-  ];
+  // Name, phone and email only. Notes are private working commentary — an
+  // office typing a client name should not surface every client whose notes
+  // happen to mention it.
+  const conditions = [ilike(clients.name, like), ilike(clients.email, like)];
   if (digits.length >= 6) {
     // Match on the trailing national number rather than on "contains".
     //

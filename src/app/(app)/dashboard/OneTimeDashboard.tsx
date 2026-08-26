@@ -8,6 +8,7 @@ import { KpiCard } from "@/components/app/KpiCard";
 import { PageHeader } from "@/components/app/PageHeader";
 import { TableHead, TableHeadCell, TableRow, TableCell } from "@/components/app/Table";
 import { buttonVariants } from "@/components/app/Button";
+import { describeRequestLine } from "@/lib/requestLabel";
 import { StatusBadge } from "../collections/StatusBadge";
 import {
   getOneTimeDashboardView,
@@ -88,7 +89,7 @@ function DashboardHero({ hero }: { hero: OneTimeDashboardView["hero"] }) {
           {hero.chips.map((chip) => (
             <Link
               key={chip.label}
-              href="/collections"
+              href={chip.href}
               className="inline-flex items-center gap-2.5 rounded-full border border-border bg-surface px-4 py-2.5 text-[13.5px] font-semibold text-text-primary shadow-card transition-all duration-200 ease-[var(--ease-standard)] hover:-translate-y-0.5"
             >
               <span
@@ -206,8 +207,10 @@ function InProgressTable({ rows }: { rows: OneTimeDashboardView["inProgress"] })
               return (
                 <TableRow key={row.collectionRequestId}>
                   <TableCell className="font-medium text-text-primary">{row.clientName}</TableCell>
+                  {/* One line, said once. The period label is derived from
+                      the service name, so printing both repeated it. */}
                   <TableCell className="text-text-secondary">
-                    {row.serviceName} · {row.periodLabel}
+                    {describeRequestLine(row.serviceName, row.periodLabel)}
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">

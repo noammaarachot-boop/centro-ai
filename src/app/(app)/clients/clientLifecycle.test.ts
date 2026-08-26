@@ -83,13 +83,14 @@ async function seedClient(name: string, phone: string, extra?: { email?: string;
 }
 
 describe("client search", () => {
-  it("finds a client by name, email and notes", async () => {
+  it("finds a client by name and email, but never by private notes", async () => {
     await seedClient("רז שלום", "0501111111", { email: "raz@example.com", notes: "לקוח ותיק" });
     await seedClient("אורי שבתאי", "0502222222");
 
     expect((await listClients(orgId, { search: "רז" })).map((c) => c.name)).toEqual(["רז שלום"]);
     expect((await listClients(orgId, { search: "raz@example" })).map((c) => c.name)).toEqual(["רז שלום"]);
-    expect((await listClients(orgId, { search: "ותיק" })).map((c) => c.name)).toEqual(["רז שלום"]);
+    // Notes are deliberately NOT searchable — private working commentary.
+    expect(await listClients(orgId, { search: "ותיק" })).toHaveLength(0);
   });
 
   it("finds a client by their phone in ANY formatting", async () => {

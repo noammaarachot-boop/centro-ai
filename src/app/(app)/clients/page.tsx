@@ -48,7 +48,7 @@ export default async function ClientsPage({
             name="q"
             type="search"
             defaultValue={search ?? ""}
-            placeholder="חיפוש לפי שם, טלפון, אימייל או הערה..."
+            placeholder="חיפוש לפי שם, טלפון או אימייל..."
             aria-label="חיפוש לקוחות"
             className="centro-glass h-11 w-full rounded-xl border border-border ps-10 pe-4 text-sm text-text-primary shadow-card outline-none transition-all duration-200 placeholder:text-text-muted focus:border-brand-purple focus:ring-4 focus:ring-brand-purple/10"
           />

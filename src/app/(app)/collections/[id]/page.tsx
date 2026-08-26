@@ -130,6 +130,15 @@ const pillButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
 // passive dashboard suggestion only, never a state change on its own; the
 // employee must still explicitly click the release button.
 const SUGGEST_RELEASE_IDLE_MS = 15 * 60 * 1000;
+
+// A client deferral is only worth showing while it is still in the future.
+// "נדחה עד 09:00" read at 14:00 tells the reader nothing and contradicts
+// the status beside it. Kept as a function so the time lookup does not
+// happen inline during render.
+function isDeferralStillPending(deferredReminderAt: Date | null | undefined): boolean {
+  if (!deferredReminderAt) return false;
+  return new Date(deferredReminderAt).getTime() > Date.now();
+}
 function computeShouldSuggestReleasingControl(
   conversationStatus: string | undefined,
   lastMessage: { senderType: string; createdAt: Date } | undefined
@@ -345,21 +354,32 @@ export default async function CollectionRequestDetailPage({
             every time this text has ever appeared it attributed to a client
             something they never asked for. The stored client text is the
             evidence, so it is what the wording keys off. */}
-        {collectionRequest.status !== "escalated" && conversation?.deferredReminderAt && (
-          <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm font-medium text-warning">
-            {conversation.deferredReminderOriginalText
-              ? "נדחה לבקשת הלקוח עד "
-              : "התזכורת נדחתה אוטומטית לשעות הפעילות, עד "}
-            {new Date(conversation.deferredReminderAt).toLocaleString("he-IL", {
-              dateStyle: "short",
-              timeStyle: "short",
-              timeZone: organizationTimezone,
-            })}
-            {conversation.deferredReminderOriginalText
-              ? ` — דחייה ${collectionRequest.deferralCount} מתוך 2 ("${conversation.deferredReminderOriginalText}")`
-              : ""}
-          </p>
-        )}
+        {/* Only while it is still true, and only when it is the CLIENT's.
+            Two changes here, both about not saying things that are no
+            longer useful:
+            • A deferral whose time has passed is stale. "נדחה עד 09:00"
+              at 14:00 tells the reader nothing and quietly contradicts the
+              status beside it.
+            • The scheduler's own out-of-hours deferral is bookkeeping, not
+              news: the office cannot act on it, it resolves itself when the
+              day opens, and it was the thing being mistaken for a client
+              request. It stays in the audit trail, where it belongs, and is
+              no longer shown here at all. */}
+        {collectionRequest.status !== "escalated" &&
+          conversation?.deferredReminderAt &&
+          conversation.deferredReminderOriginalText &&
+          isDeferralStillPending(conversation.deferredReminderAt) && (
+            <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm font-medium text-warning">
+              נדחה לבקשת הלקוח עד{" "}
+              {new Date(conversation.deferredReminderAt).toLocaleString("he-IL", {
+                dateStyle: "short",
+                timeStyle: "short",
+                timeZone: organizationTimezone,
+              })}{" "}
+              — דחייה {collectionRequest.deferralCount} מתוך 2 (&quot;
+              {conversation.deferredReminderOriginalText}&quot;)
+            </p>
+          )}
 
         {/* Counters UX simplification — "התקבלו" is the one number that
             always matters and always shows. "לטיפולך"/"מחכה ללקוח" are

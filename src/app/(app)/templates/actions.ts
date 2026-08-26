@@ -12,6 +12,8 @@ import {
   services,
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
+import { getOrganization } from "@/lib/data/organizations";
+import { buildPeriodLabel } from "@/lib/requestLabel";
 import { requireSession } from "@/lib/auth/session";
 import { snapshotServiceRequirements } from "@/lib/collectionRequestStateMachine";
 import { attemptScheduledDelivery } from "@/lib/scheduledSend";
@@ -1017,7 +1019,15 @@ export async function sendTemplateRequest(templateId: string, formData: FormData
     redirect(`${redirectTo}${sep}error=no_active_document_requirements`);
   }
 
-  const periodLabel = `${template.name} — ${new Date().toLocaleDateString("he-IL")}`;
+  // Never stacks a second date onto a template whose name already carries
+  // one, and formats in the ORGANIZATION timezone rather than the server
+  // process's. See src/lib/requestLabel.ts.
+  const labelOrganization = await getOrganization(session.organizationId);
+  const periodLabel = buildPeriodLabel(
+    template.name,
+    new Date(),
+    labelOrganization?.timezone ?? "Asia/Jerusalem"
+  );
   let sentCount = 0;
   let scheduledCount = 0;
 

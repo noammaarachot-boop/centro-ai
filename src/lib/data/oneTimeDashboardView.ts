@@ -124,6 +124,16 @@ export interface HeroChip {
   label: string;
   count: number;
   tone: "danger" | "warning";
+  /**
+   * Where this chip actually goes.
+   *
+   * Every chip used to link to /collections — the generic list — so
+   * clicking "בקשה באיחור" showed everything except the one request that
+   * raised the alert. A chip standing for exactly one request now opens
+   * that request; several open the review queue filtered to their reason,
+   * which is the closest thing to "these ones".
+   */
+  href: string;
 }
 
 export interface OneTimeDashboardView {
@@ -222,7 +232,14 @@ function buildHero(items: NeedsReviewItem[]): OneTimeDashboardView["hero"] {
     const count = countByKind.get(kind);
     if (!count) continue;
     const copy = REASON_COPY[kind];
-    chips.push({ label: copy.chipLabel(count), count, tone: copy.severity });
+    // One item: go straight to it. Several: the review queue for that
+    // reason. Never the undifferentiated list.
+    const matching = items.filter((item) => pickPrimaryReason(item).kind === kind);
+    const href =
+      matching.length === 1 && matching[0].collectionRequestId
+        ? `/collections/${matching[0].collectionRequestId}`
+        : `/dashboard?kpi=needs_review&reason=${encodeURIComponent(kind)}`;
+    chips.push({ label: copy.chipLabel(count), count, tone: copy.severity, href });
     phrases.push(copy.subtextPhrase(count));
   }
 
