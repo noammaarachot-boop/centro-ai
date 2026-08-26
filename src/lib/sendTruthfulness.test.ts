@@ -146,3 +146,62 @@ describe("sendOutboundMessage — sent means the provider accepted it", () => {
     expect(sendTextMessage, "nothing should reach the provider").not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Every failure mode, not just the one the code names.
+ *
+ * sendViaWhatsApp used to rethrow anything that was not a WhatsAppSendError
+ * or an OperationFailedError. A socket timeout, a DNS failure or a
+ * truncated response that blows up on parse therefore escaped: the
+ * finalizing UPDATE never ran, the row stayed "pending" forever with no
+ * recorded reason, and the throw propagated out of sendOutboundMessage —
+ * far enough to abort the rest of a scheduler tick, other organizations
+ * included.
+ */
+describe("sendOutboundMessage — unexpected transport failures", () => {
+  const cases: Array<[string, unknown]> = [
+    ["a socket timeout", Object.assign(new Error("ETIMEDOUT"), { code: "ETIMEDOUT" })],
+    ["a DNS failure", Object.assign(new Error("getaddrinfo ENOTFOUND graph.facebook.com"), { code: "ENOTFOUND" })],
+    ["a truncated/partial response", new SyntaxError("Unexpected end of JSON input")],
+    ["an unexpected programming error", new TypeError("Cannot read properties of undefined (reading 'messages')")],
+  ];
+
+  for (const [label, thrown] of cases) {
+    it(`records ${label} as failed instead of throwing`, async () => {
+      sendTextMessage.mockRejectedValue(thrown);
+
+      // The contract is "never throws, always records".
+      const result = await sendOutboundMessage(orgId, conversationId, "שלום", "employee");
+
+      expect(result.sent, `${label} must never report success`).toBe(false);
+      expect(result.deliveryStatus).toBe("failed");
+
+      const rows = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+      expect(rows, "exactly one row, and it must not be left pending").toHaveLength(1);
+      expect(rows[0].deliveryStatus).toBe("failed");
+      expect(rows[0].whatsappMessageId).toBeNull();
+    });
+  }
+
+  it("leaves no message stuck at pending after an unexpected failure", async () => {
+    sendTextMessage.mockRejectedValue(new TypeError("boom"));
+    await sendOutboundMessage(orgId, conversationId, "שלום", "employee");
+
+    const pending = await db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.conversationId, conversationId), eq(schema.messages.deliveryStatus, "pending")));
+    expect(pending, "a pending row with no resolution is a phantom message").toHaveLength(0);
+  });
+
+  it("a provider response with no message id is not treated as delivered", async () => {
+    // A 200 that carries nothing usable is not an acceptance.
+    sendTextMessage.mockResolvedValue({});
+    const result = await sendOutboundMessage(orgId, conversationId, "שלום", "employee");
+
+    const rows = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
+    expect(rows[0].whatsappMessageId ?? null, "no provider id was returned").toBeNull();
+    // Whatever the status, it must not claim a provider id it never got.
+    expect(result.deliveryStatus === "sent" && rows[0].whatsappMessageId === null).toBe(false);
+  });
+});

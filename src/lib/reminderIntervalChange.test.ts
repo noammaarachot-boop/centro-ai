@@ -172,3 +172,68 @@ describe("changing the reminder interval applies to requests already in flight",
     expect(await sentCount(), "the override governs this request").toBe(0);
   });
 });
+
+/**
+ * The interval is whatever the organization says it is.
+ *
+ * No value is special and none is hard-coded — 6 hours is simply the value
+ * one organization happens to use. These cases walk the whole range and,
+ * critically, prove the setting is isolated per organization: one tenant's
+ * interval must never govern another's reminders.
+ */
+describe("every configured interval is honoured, per organization", () => {
+  for (const hours of [1, 2, 3, 6, 12, 24]) {
+    it(`${hours}h: not due just before, due just after`, async () => {
+      // Just inside the window — must NOT fire.
+      await seed(hours, hours - 0.5);
+      await runScheduledTasks(orgId);
+      expect(await sentCount(), `${hours}h: still inside the window`).toBe(0);
+
+      // Just past it — must fire exactly once.
+      await seed(hours, hours + 0.5);
+      await runScheduledTasks(orgId);
+      expect(await sentCount(), `${hours}h: past the window`).toBe(1);
+    });
+  }
+
+  it("6h → 1h makes an open request due immediately", async () => {
+    await seed(6, 2);
+    await runScheduledTasks(orgId);
+    expect(await sentCount(), "2h < 6h").toBe(0);
+
+    await db.update(schema.organizations).set({ reminderIntervalHours: 1 }).where(eq(schema.organizations.id, orgId));
+    await runScheduledTasks(orgId);
+    expect(await sentCount(), "2h > 1h, so the change takes effect at once").toBe(1);
+  });
+
+  it("one organization's interval never governs another's", async () => {
+    // Org A: 1h, anchored 2h ago — due.
+    await seed(1, 2);
+    const fastOrg = orgId;
+    const fastConversation = conversationId;
+
+    // Org B: 24h, anchored 2h ago — NOT due.
+    await seed(24, 2);
+    const slowOrg = orgId;
+    const slowConversation = conversationId;
+
+    await runScheduledTasks(fastOrg);
+    await runScheduledTasks(slowOrg);
+
+    const fast = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, fastConversation));
+    const slow = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, slowConversation));
+    expect(fast, "the 1h tenant is due").toHaveLength(1);
+    expect(slow, "the 24h tenant is not, and must be unaffected by the other").toHaveLength(0);
+  });
+
+  it("a failed send waits a full configured cycle, not five minutes", async () => {
+    await seed(3, 4);
+    sendTemplateMessage.mockRejectedValue(new Error("provider refused"));
+    sendTextMessage.mockRejectedValue(new Error("provider refused"));
+
+    // Twelve ticks — an hour of cron at five-minute spacing.
+    for (let i = 0; i < 12; i += 1) await runScheduledTasks(orgId);
+
+    expect(await sentCount(), "one attempt per configured cycle, never per tick").toBe(1);
+  });
+});

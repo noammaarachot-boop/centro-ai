@@ -17,6 +17,7 @@ import {
   checkCompletionGate,
 } from "@/lib/collectionRequestStateMachine";
 import { OperationFailedError } from "@/lib/resilience";
+import { captureError } from "@/lib/monitoring/errorReporting";
 import { getRequestRequirementNames } from "@/lib/documentRequestList";
 import { toE164 } from "@/lib/whatsapp/phone";
 import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
@@ -150,6 +151,30 @@ export interface TemplateSend {
   params: TemplateBodyParam[];
 }
 
+
+/**
+ * A send is only 'sent' if the provider handed back a message id.
+ *
+ * A 2xx with no id in the body is not an acceptance we can prove, and
+ * without an id there is no handle to reconcile the message against later —
+ * no delivery webhook can ever match it. Recording it as sent would be the
+ * same unprovable claim this whole area exists to remove, just one layer
+ * lower down.
+ */
+function acceptedOrFailed(
+  result: { messageId?: string | null } | null | undefined
+): { whatsappMessageId: string | null; deliveryStatus: string; failureReason?: string } {
+  const messageId = result?.messageId ?? null;
+  if (!messageId) {
+    return {
+      whatsappMessageId: null,
+      deliveryStatus: "failed",
+      failureReason: "provider returned no message id",
+    };
+  }
+  return { whatsappMessageId: messageId, deliveryStatus: "sent" };
+}
+
 async function sendViaWhatsApp(
   organization: typeof organizations.$inferSelect,
   conversationId: string,
@@ -236,7 +261,7 @@ async function sendViaWhatsApp(
       });
       const result = await sendTemplateMessage(organization.whatsappPhoneNumberId, to, templateName, language, params, accessToken);
       console.log("[wa-diag] template send returned OK", { messageId: result.messageId });
-      return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
+      return acceptedOrFailed(result);
     }
 
     if (senderType === "ai") {
@@ -251,14 +276,32 @@ async function sendViaWhatsApp(
       });
       const result = await sendInteractiveButtonsMessage(organization.whatsappPhoneNumberId, to, body, interactiveButtons, accessToken);
       console.log("[wa-diag] interactive buttons send returned OK", { messageId: result.messageId });
-      return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
+      return acceptedOrFailed(result);
     }
     console.log("[wa-diag] REACHED Meta call (text)", { phoneNumberId: organization.whatsappPhoneNumberId });
     const result = await sendTextMessage(organization.whatsappPhoneNumberId, to, body, accessToken);
     console.log("[wa-diag] text send returned OK", { messageId: result.messageId });
-    return { whatsappMessageId: result.messageId, deliveryStatus: "sent" };
+    return acceptedOrFailed(result);
   } catch (error) {
-    if (!(error instanceof WhatsAppSendError) && !(error instanceof OperationFailedError)) throw error;
+    // EVERY failure is recorded, not just the two we named.
+    //
+    // This used to rethrow anything that wasn't a WhatsAppSendError or an
+    // OperationFailedError — which is exactly the set you cannot enumerate
+    // in advance: a socket timeout, a DNS failure, a malformed or truncated
+    // response that blows up on parse. Those escaped, so the finalizing
+    // UPDATE below never ran and the row stayed "pending" forever with no
+    // record of why, while the throw propagated out of sendOutboundMessage
+    // and could abort the rest of the scheduler tick — every other
+    // organization's work included.
+    //
+    // This function's documented contract is "never throws, always
+    // records". It now actually keeps it. An unexpected error is still
+    // reported to monitoring, so a genuine bug is loud rather than
+    // swallowed; it just no longer takes the tick down with it.
+    const expected = error instanceof WhatsAppSendError || error instanceof OperationFailedError;
+    if (!expected) {
+      captureError(error, { scope: "whatsapp.send", organizationId: organization.id, conversationId });
+    }
     console.error("[whatsapp] send failed (non-fatal, message still recorded)", error);
     // Owner Dashboard System Health signal. Best-effort and isolated from
     // the non-fatal contract above: a failure recording the failure must

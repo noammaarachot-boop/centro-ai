@@ -227,14 +227,22 @@ describe("sendOutboundMessage — Phase 3.1: the message row exists (and convers
       .returning();
     sendTextMessage.mockRejectedValue(new Error("simulated hard crash — not even a WhatsAppSendError"));
 
-    // sendViaWhatsApp only catches WhatsAppSendError/OperationFailedError —
-    // an unexpected error type rethrows, simulating a genuine crash rather
-    // than a normal "Meta rejected it" failure.
-    await expect(sendOutboundMessage(orgId, conversation.id, "test", "employee")).rejects.toThrow();
+    // Contract corrected: sendViaWhatsApp used to rethrow anything that was
+    // not a WhatsAppSendError/OperationFailedError, which left the row stuck
+    // at "pending" forever with no recorded reason AND propagated far enough
+    // to abort the rest of a scheduler tick — other organizations included.
+    // It now honours its documented "never throws, always records" contract
+    // for every error type. The subject of this test is unchanged and now
+    // holds more strongly: no silent data loss.
+    const result = await sendOutboundMessage(orgId, conversation.id, "test", "employee");
+    expect(result.sent, "an unexpected crash is not a successful send").toBe(false);
 
     const rows = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, conversation.id));
     expect(rows).toHaveLength(1);
-    expect(rows[0].deliveryStatus).toBe("pending"); // never updated — the crash happened before that was possible
+    // Resolved rather than abandoned: a permanently "pending" row is itself
+    // a phantom message, indistinguishable from one still in flight.
+    expect(rows[0].deliveryStatus).toBe("failed");
+    expect(rows[0].whatsappMessageId).toBeNull();
     const [conv] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
     expect(conv.updatedAt.getTime()).toBeGreaterThan(0); // already bumped before the crash — a later scheduler tick won't treat this as untouched
   });
