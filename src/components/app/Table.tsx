@@ -1,3 +1,4 @@
+import { clsx } from "clsx";
 import { Card } from "@/components/app/Card";
 
 // The one shared table shell for the app — sticky header, hover rows, a
@@ -39,11 +40,17 @@ export function TableHeadCell({ children }: { children: React.ReactNode }) {
 
 export function TableRow({
   children,
+  className,
   ...props
 }: React.HTMLAttributes<HTMLTableRowElement>) {
   return (
     <tr
-      className="border-t border-border transition-colors ease-[var(--ease-standard)] hover:bg-surface-muted/60"
+      // Merged, not replaced: a caller needs to be able to mark a row as
+      // interactive without losing the shared border/hover treatment.
+      className={clsx(
+        "border-t border-border transition-colors ease-[var(--ease-standard)] hover:bg-surface-muted/60",
+        className
+      )}
       {...props}
     >
       {children}

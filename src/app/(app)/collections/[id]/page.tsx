@@ -38,6 +38,7 @@ import { driveFileLink } from "@/lib/storage/driveAdapter";
 import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { listAuditLog } from "@/lib/data/auditLog";
 import { filterUserFacingActivity } from "@/lib/activityHistory";
+import { describeRequestPeriodDetail } from "@/lib/requestLabel";
 import {
   countRealConversationMessages,
   DELIVERY_STATE_LABEL,
@@ -191,6 +192,10 @@ export default async function CollectionRequestDetailPage({
   // the deferral banner beside it already used Asia/Jerusalem.
   const organization = await getOrganization(session.organizationId);
   const organizationTimezone = organization?.timezone ?? "Asia/Jerusalem";
+  const periodDetail = describeRequestPeriodDetail(
+    collectionRequest.serviceName ?? "",
+    collectionRequest.periodLabel
+  );
 
   const requirements = await listRequirementsWithDocuments(id);
   const unmatchedDocuments = await listUnmatchedDocuments(id);
@@ -335,8 +340,16 @@ export default async function CollectionRequestDetailPage({
               {collectionRequest.clientName} — {collectionRequest.serviceName}
             </h1>
             <p className="mt-0.5 text-xs text-text-muted">
-              תקופה: {collectionRequest.periodLabel}
-              {lastActivity && <> · עדכון אחרון: {formatRelativeTime(lastActivity)}</>}
+              {/* The heading above already names the client and the request.
+                  For a template-created request the "period" is that same name
+                  plus the date it was opened, so only the date is new here. */}
+              {periodDetail && (
+                <>
+                  {periodDetail.label}: {periodDetail.value}
+                  {lastActivity && " · "}
+                </>
+              )}
+              {lastActivity && <>עדכון אחרון: {formatRelativeTime(lastActivity)}</>}
             </p>
           </div>
           <StatusBadge status={collectionRequest.status} />

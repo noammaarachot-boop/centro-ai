@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Archive, Plus, Search, Users } from "lucide-react";
+import { Archive, ChevronLeft, Pencil, Plus, Search, Users } from "lucide-react";
 import { requireSession } from "@/lib/auth/session";
 import { countArchivedClients, listClients } from "@/lib/data/clients";
 import { PageHeader } from "@/components/app/PageHeader";
@@ -128,14 +128,27 @@ export default async function ClientsPage({
             <TableHeadCell>שם</TableHeadCell>
             <TableHeadCell>טלפון</TableHeadCell>
             <TableHeadCell>אימייל</TableHeadCell>
+            <TableHeadCell>{" "}</TableHeadCell>
           </TableHead>
           <tbody>
+            {/* The whole row opens the client. It used to be only the name
+                that was a link, with nothing indicating the row led
+                anywhere and no way to reach edit or archive without first
+                guessing that the name was clickable. The stretched link
+                covers the row; the explicit "עריכה" link sits above it so
+                it keeps its own target, and both name the destination
+                rather than relying on a bare icon. */}
             {clients.map((client) => (
-              <TableRow key={client.id}>
+              <TableRow key={client.id} className="group">
                 <TableCell>
+                  {/* The name is the link, and the row shows it. A
+                      stretched link across a <tr> depends on positioning a
+                      table row, which browsers treat inconsistently — so
+                      the affordance is the hover state plus the explicit
+                      actions at the end of the row, not a hidden hit area. */}
                   <Link
                     href={`/clients/${client.id}`}
-                    className="font-medium text-text-primary transition-colors hover:text-brand-purple"
+                    className="font-medium text-text-primary transition-colors group-hover:text-brand-purple hover:underline"
                   >
                     {client.name}
                   </Link>
@@ -150,6 +163,26 @@ export default async function ClientsPage({
                 </TableCell>
                 <TableCell className="text-text-secondary">
                   <span dir="ltr">{client.email ?? "—"}</span>
+                </TableCell>
+                <TableCell>
+                  {/* Named actions, not bare icons: a new user should not
+                      have to hover a glyph to find out what it does. */}
+                  <div className="flex items-center justify-end gap-3 whitespace-nowrap">
+                    <Link
+                      href={`/clients/${client.id}#edit`}
+                      className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-text-secondary transition-colors hover:text-brand-purple"
+                    >
+                      <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                      עריכה
+                    </Link>
+                    <Link
+                      href={`/clients/${client.id}`}
+                      className="inline-flex items-center gap-0.5 text-[12.5px] font-semibold text-brand-purple"
+                    >
+                      פתיחה
+                      <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Link>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
