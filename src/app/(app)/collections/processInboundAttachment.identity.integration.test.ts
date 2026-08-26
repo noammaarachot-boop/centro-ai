@@ -295,7 +295,13 @@ describe("processInboundAttachment — smart identity/consistency verification",
     expect(approved).toHaveLength(10);
     expect(anomalies).toHaveLength(1);
     expect(anomalies[0].fileName).toBe("payslip-outlier.jpg");
-  });
+    // 30s, not the 5s default: this one scenario ingests ELEVEN documents
+    // through the full pipeline (ten consistent plus the outlier), where its
+    // siblings ingest one or two. It timed out reproducibly in isolation.
+    // A timeout is a resource bound, not an assertion — every assertion in
+    // this test is unchanged, and the file's own beforeAll already declares
+    // 60s for the same reason.
+  }, 30_000);
 
   // Mandatory scenarios #13/#14: ת"ז + ספח (ID card + its matching appendix).
   // No dedicated "linked requirement" mechanism exists for this — it's

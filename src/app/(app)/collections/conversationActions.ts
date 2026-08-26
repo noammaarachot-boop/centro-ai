@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
@@ -10,6 +10,8 @@ import {
   collectionRequests,
   conversations,
   documents,
+  messages,
+  organizations,
 } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { classifyDocumentWithLearning, isFuzzyDuplicate, SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
@@ -52,6 +54,7 @@ import { scheduleAfterResponse } from "@/lib/scheduleAfterResponse";
 import { applyExtensionFinishedDecision, withdrawStaleFinishedCheck } from "@/lib/requestExtension";
 import { applyRequestReopenDecision } from "@/lib/requestReopen";
 import { runConversationUnderstanding } from "@/lib/conversation/conversationDispatch";
+import { buildReminderSend } from "@/lib/reminderContent";
 import { requireSession } from "@/lib/auth/session";
 import { assertDevToolsEnabled } from "@/lib/devTools";
 import {
@@ -1387,4 +1390,167 @@ export async function respondToClarification(
   }
 
   redirect(`/collections/${collectionRequestId}`);
+}
+
+export interface AttentionActionState {
+  error?: string;
+  success?: string;
+}
+
+/**
+ * Re-sends the last outbound message that the provider refused.
+ *
+ * This is what the attention area's "שליחה חוזרת" runs, and it is the
+ * action the old "הפעלה" button pretended to be: that one was a raw state
+ * transition (status → active) which never touched WhatsApp, so on a
+ * request that was already active it changed nothing.
+ *
+ * Goes through sendOutboundMessage — the same engine, the same gates, the
+ * same truthful `sent`. The idempotency key is derived from the FAILED
+ * ROW's id, so a double-click, a double submit or two parallel requests
+ * all collapse to one send: the second insert loses the unique index and
+ * stops before reaching Meta.
+ */
+export async function retryFailedMessage(
+  collectionRequestId: string,
+  _prevState: AttentionActionState,
+  _formData: FormData
+): Promise<AttentionActionState> {
+  const session = await requireSession();
+  const current = await getCollectionRequestOrRedirect(session.organizationId, collectionRequestId);
+  const db = await getDb();
+
+  const conversation = await ensureConversation(
+    session.organizationId,
+    collectionRequestId,
+    current.clientId
+  );
+
+  const [lastOutbound] = await db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.conversationId, conversation.id), eq(messages.direction, "outbound")))
+    .orderBy(desc(messages.createdAt))
+    .limit(1);
+
+  if (!lastOutbound) return { error: "אין הודעה קודמת לשליחה חוזרת." };
+  if (lastOutbound.deliveryStatus === "sent" || lastOutbound.deliveryStatus === "delivered" || lastOutbound.deliveryStatus === "read") {
+    return { error: "ההודעה האחרונה כבר נמסרה — אין צורך לשלוח שוב." };
+  }
+
+  // "employee" + manual: a human explicitly asked for this, so it is not
+  // gated by business hours or the automation switch — the same treatment
+  // any other deliberate human send gets.
+  const { sent, deliveryStatus, failureReason } = await sendOutboundMessage(
+    session.organizationId,
+    conversation.id,
+    lastOutbound.body,
+    "employee",
+    "manual",
+    undefined,
+    false,
+    undefined,
+    `retry:${lastOutbound.id}`
+  );
+
+  if (deliveryStatus === "duplicate_suppressed") {
+    return { error: "שליחה חוזרת עבור ההודעה הזו כבר בוצעה." };
+  }
+  if (!sent) {
+    // The reason is recorded in audit_logs either way; the employee sees a
+    // short, non-technical version.
+    console.error("[attention] retry failed", { collectionRequestId, deliveryStatus, failureReason });
+    return { error: `השליחה נכשלה שוב (${deliveryStatus ?? "לא ידוע"}). הבעיה נשמרה ביומן לבדיקה.` };
+  }
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "conversation.message_retried",
+    description: "הודעה שנכשלה נשלחה שוב ידנית והתקבלה אצל הספק",
+    actorType: "employee",
+    actorUserId: session.userId,
+    collectionRequestId,
+    metadata: { retriedMessageId: lastOutbound.id },
+  });
+
+  refresh();
+  return { success: "ההודעה נשלחה שוב והתקבלה אצל הספק." };
+}
+
+/**
+ * Sends this request's reminder now, without waiting for the next cycle.
+ *
+ * Uses buildReminderSend — the same content the scheduler would produce —
+ * so the client never receives a differently-worded "manual" variant. The
+ * idempotency key is bucketed to the minute: a double-click cannot produce
+ * two reminders, while a genuine second attempt later still can.
+ */
+export async function sendReminderNow(
+  collectionRequestId: string,
+  _prevState: AttentionActionState,
+  _formData: FormData
+): Promise<AttentionActionState> {
+  const session = await requireSession();
+  const current = await getCollectionRequestOrRedirect(session.organizationId, collectionRequestId);
+  const db = await getDb();
+
+  const conversation = await ensureConversation(
+    session.organizationId,
+    collectionRequestId,
+    current.clientId
+  );
+  const [client] = await db.select().from(clients).where(eq(clients.id, current.clientId)).limit(1);
+  const [organization] = await db
+    .select()
+    .from(organizations)
+    .where(eq(organizations.id, session.organizationId))
+    .limit(1);
+
+  const reminderSend = await buildReminderSend(
+    conversation.id,
+    collectionRequestId,
+    client?.name ?? "",
+    organization?.reminderV2Approved ?? false
+  );
+
+  const minuteBucket = new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString();
+  const { sent, deliveryStatus, failureReason } = await sendOutboundMessage(
+    session.organizationId,
+    conversation.id,
+    reminderSend.body,
+    "ai",
+    // Manual: a human asked for it, so business hours do not hold it back.
+    "manual",
+    reminderSend.templateSend,
+    reminderSend.allowFreeform,
+    undefined,
+    `manual-reminder:${conversation.id}:${minuteBucket}`
+  );
+
+  if (deliveryStatus === "duplicate_suppressed") {
+    return { error: "תזכורת כבר נשלחה ברגע זה." };
+  }
+  if (!sent) {
+    console.error("[attention] manual reminder failed", { collectionRequestId, deliveryStatus, failureReason });
+    return { error: `שליחת התזכורת נכשלה (${deliveryStatus ?? "לא ידוע"}). הבעיה נשמרה ביומן לבדיקה.` };
+  }
+
+  // The cycle restarts from this send, so the automatic reminder does not
+  // arrive moments later on top of it.
+  await db
+    .update(conversations)
+    .set({ reminderAnchorAt: new Date() })
+    .where(eq(conversations.id, conversation.id));
+
+  await recordAuditEvent({
+    organizationId: session.organizationId,
+    eventType: "scheduler.reminder_sent",
+    description: "תזכורת נשלחה ידנית מתוך מסך הבקשה",
+    actorType: "employee",
+    actorUserId: session.userId,
+    collectionRequestId,
+  });
+
+  refresh();
+  return { success: "התזכורת נשלחה ללקוח." };
 }

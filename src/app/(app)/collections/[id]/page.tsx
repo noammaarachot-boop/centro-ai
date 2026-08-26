@@ -39,6 +39,9 @@ import { SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { listAuditLog } from "@/lib/data/auditLog";
 import { filterUserFacingActivity } from "@/lib/activityHistory";
 import { describeRequestPeriodDetail } from "@/lib/requestLabel";
+import { resolveRequestAttentionState } from "@/lib/requestAttentionState";
+import { RequestAttentionPanel } from "@/components/app/RequestAttentionPanel";
+import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import {
   countRealConversationMessages,
   DELIVERY_STATE_LABEL,
@@ -69,6 +72,8 @@ import {
   releaseConversation,
   respondToClarification,
   respondToConfirmation,
+  retryFailedMessage,
+  sendReminderNow,
   sendEmployeeMessageWithFeedback,
   simulateInboundMessage,
   takeOverConversation,
@@ -136,6 +141,10 @@ const SUGGEST_RELEASE_IDLE_MS = 15 * 60 * 1000;
 // "נדחה עד 09:00" read at 14:00 tells the reader nothing and contradicts
 // the status beside it. Kept as a function so the time lookup does not
 // happen inline during render.
+function daysSince(from: Date | string): number {
+  return Math.floor((Date.now() - new Date(from).getTime()) / (24 * 60 * 60 * 1000));
+}
+
 function isDeferralStillPending(deferredReminderAt: Date | null | undefined): boolean {
   if (!deferredReminderAt) return false;
   return new Date(deferredReminderAt).getTime() > Date.now();
@@ -192,6 +201,7 @@ export default async function CollectionRequestDetailPage({
   // the deferral banner beside it already used Asia/Jerusalem.
   const organization = await getOrganization(session.organizationId);
   const organizationTimezone = organization?.timezone ?? "Asia/Jerusalem";
+  const integrationStatus = await checkIntegrationStatus(session.organizationId);
   const periodDetail = describeRequestPeriodDetail(
     collectionRequest.serviceName ?? "",
     collectionRequest.periodLabel
@@ -208,7 +218,11 @@ export default async function CollectionRequestDetailPage({
   // states an employee rarely needs to force manually and that read as
   // unclear buttons; "cancelled" isn't hidden, just moved out of this
   // primary row into its own secondary/destructive control below.
-  const HIDDEN_WORKFLOW_TARGETS: CollectionRequestStatus[] = ["waiting_for_client", "processing", "escalated"];
+  // "active" joins the hidden set: as a bare button it read "הפעלה" and
+  // did nothing but flip status, which on an already-active request with a
+  // failed message looked like a remedy and was not. Reactivating a draft
+  // is offered by the attention panel instead, where it says what it does.
+  const HIDDEN_WORKFLOW_TARGETS: CollectionRequestStatus[] = ["waiting_for_client", "processing", "escalated", "active"];
   const visibleTransitionOptions = options.filter(
     (status) => status !== "cancelled" && !HIDDEN_WORKFLOW_TARGETS.includes(status)
   );
@@ -279,6 +293,28 @@ export default async function CollectionRequestDetailPage({
   );
 
   const attentionCount = unmatchedDocuments.length + employeeQuestions.length + (hasFailedOutbound ? 1 : 0);
+
+  // ONE resolver decides what this request needs and which single action
+  // addresses it — see src/lib/requestAttentionState.ts for why the old
+  // stack of sentences plus an "הפעלה" button was the problem.
+  const lastOutbound = [...messages].reverse().find((m) => m.direction === "outbound");
+  const daysOpen = daysSince(collectionRequest.createdAt);
+  const attentionState = resolveRequestAttentionState({
+    status: collectionRequest.status,
+    lastOutboundDeliveryStatus: lastOutbound?.deliveryStatus ?? null,
+    clientHasReplied: messages.some((m) => m.direction === "inbound"),
+    unsatisfiedCount: progress.unsatisfiedCount,
+    reviewItemCount: unmatchedDocuments.length + employeeQuestions.length,
+    whatsappReady: integrationStatus.whatsappReady,
+    hasConversation: !!conversation,
+    daysOpen,
+  });
+  const attentionAction =
+    attentionState.primaryAction?.kind === "retry_send"
+      ? retryFailedMessage.bind(null, id)
+      : attentionState.primaryAction?.kind === "send_reminder"
+        ? sendReminderNow.bind(null, id)
+        : null;
   const summaryLine = buildSummaryLine({
     status: collectionRequest.status,
     escalationReason: collectionRequest.escalationReason,
@@ -356,6 +392,8 @@ export default async function CollectionRequestDetailPage({
         </div>
 
         <p className="mt-3 text-sm font-semibold text-text-primary">{summaryLine}</p>
+
+        <RequestAttentionPanel state={attentionState} action={attentionAction} />
 
         {/* Two different things write conversations.deferredReminderAt: a
             genuine client request ("אשלח מחר" — reminderDeferral.ts, which
