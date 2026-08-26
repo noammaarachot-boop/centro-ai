@@ -1438,20 +1438,47 @@ export async function retryFailedMessage(
     return { error: "ההודעה האחרונה כבר נמסרה — אין צורך לשלוח שוב." };
   }
 
-  // "employee" + manual: a human explicitly asked for this, so it is not
-  // gated by business hours or the automation switch — the same treatment
-  // any other deliberate human send gets.
+  // Retried the way it was SENT, not as free text.
+  //
+  // This re-sent every failed message as senderType "employee", i.e. plain
+  // text — and WhatsApp only permits free text inside the 24-hour customer
+  // service window. The client this was reproduced on has never messaged
+  // in, so that window has never been open, and Meta answered
+  // "(#100) Invalid parameter" every time. An "ai" message went out as an
+  // approved template, so its retry has to go out as one too — which means
+  // rebuilding the template descriptor rather than replaying the rendered
+  // body, since a reminder body carries a document list and never matches
+  // a template by exact text.
+  const isTemplateSend = lastOutbound.senderType === "ai";
+  const [retryClient] = await db.select().from(clients).where(eq(clients.id, current.clientId)).limit(1);
+  const [retryOrganization] = await db
+    .select()
+    .from(organizations)
+    .where(eq(organizations.id, session.organizationId))
+    .limit(1);
+  const rebuilt = isTemplateSend
+    ? await buildReminderSend(
+        conversation.id,
+        collectionRequestId,
+        retryClient?.name ?? "",
+        retryOrganization?.reminderV2Approved ?? false
+      )
+    : null;
+
   const { sent, deliveryStatus, failureReason } = await sendOutboundMessage(
     session.organizationId,
     conversation.id,
-    lastOutbound.body,
-    "employee",
+    rebuilt?.body ?? lastOutbound.body,
+    isTemplateSend ? "ai" : "employee",
+    // Manual: a human asked for this, so no business-hours or automation
+    // gate holds it back.
     "manual",
-    undefined,
-    false,
+    rebuilt?.templateSend,
+    rebuilt?.allowFreeform ?? false,
     undefined,
     `retry:${lastOutbound.id}`
   );
+
 
   if (deliveryStatus === "duplicate_suppressed") {
     return { error: "שליחה חוזרת עבור ההודעה הזו כבר בוצעה." };
@@ -1459,8 +1486,11 @@ export async function retryFailedMessage(
   if (!sent) {
     // The reason is recorded in audit_logs either way; the employee sees a
     // short, non-technical version.
+    // The raw deliveryStatus used to be printed here ("failed",
+    // "no_template"…). Those are internal names; the employee cannot act on
+    // them and they were never translated. The detail goes to the log.
     console.error("[attention] retry failed", { collectionRequestId, deliveryStatus, failureReason });
-    return { error: `השליחה נכשלה שוב (${deliveryStatus ?? "לא ידוע"}). הבעיה נשמרה ביומן לבדיקה.` };
+    return { error: "גם הפעם ההודעה לא נשלחה. הפרטים נשמרו ביומן, ואפשר לפנות ללקוח בדרך אחרת." };
   }
 
   await recordAuditEvent({

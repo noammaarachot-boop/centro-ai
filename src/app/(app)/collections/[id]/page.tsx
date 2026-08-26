@@ -24,6 +24,7 @@ import {
 } from "@/lib/data/collectionRequests";
 import {
   getConversationByCollectionRequest,
+  isFreeformWindowOpen,
   listMessages,
 } from "@/lib/conversationOrchestration";
 import {
@@ -282,17 +283,12 @@ export default async function CollectionRequestDetailPage({
   const lastActivityMap = await getLastActivityAtByRequest([id]);
   const lastActivity = lastActivityMap.get(id) ?? null;
 
-  // "כשל בשליחה" — messages.deliveryStatus is the real, already-tracked
-  // WhatsApp delivery signal (scheduler.ts's stuck-pending detection, and
-  // Meta's own status webhook callbacks) — reused directly from the
-  // conversation thread already loaded above, never a new query.
-  // Through the shared resolver, so "did this reach the client" is decided
-  // in exactly one place for the bubble, the counter and this signal.
-  const hasFailedOutbound = messages.some(
-    (m) => m.direction === "outbound" && resolveMessageDeliveryState(m.deliveryStatus) === "failed"
-  );
-
-  const attentionCount = unmatchedDocuments.length + employeeQuestions.length + (hasFailedOutbound ? 1 : 0);
+  // A failed send is deliberately NOT part of this count. It is reported
+  // once, by the attention panel, which is the only place that also offers a
+  // way to fix it — the delivery signal itself comes from the same shared
+  // resolver the message bubbles use, so "did this reach the client" is
+  // still decided in exactly one place.
+  const attentionCount = unmatchedDocuments.length + employeeQuestions.length;
 
   // ONE resolver decides what this request needs and which single action
   // addresses it — see src/lib/requestAttentionState.ts for why the old
@@ -307,6 +303,12 @@ export default async function CollectionRequestDetailPage({
     reviewItemCount: unmatchedDocuments.length + employeeQuestions.length,
     whatsappReady: integrationStatus.whatsappReady,
     hasConversation: !!conversation,
+    // A template send (senderType "ai") is always retryable. Plain text is
+    // only accepted inside the 24h window a client message opens — this is
+    // exactly what failed in production: the client had never written in, so
+    // the window had never been open, and every resend was refused with the
+    // same error.
+    retryCanSucceed: lastOutbound?.senderType === "ai" || isFreeformWindowOpen(messages),
     daysOpen,
   });
   const attentionAction =
@@ -531,22 +533,10 @@ export default async function CollectionRequestDetailPage({
             </span>
           </h2>
           <div className="space-y-2.5">
-            {hasFailedOutbound && (
-              <Card className="border-danger/25 bg-danger/5" padding="sm">
-                <div className="flex items-start gap-2.5">
-                  <span className="centro-icon-danger grid h-8 w-8 shrink-0 place-items-center rounded-lg">
-                    <Send className="h-3.5 w-3.5" aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-text-primary">שליחת הודעה נכשלה</p>
-                    <p className="mt-0.5 text-xs text-text-secondary">
-                      הודעה אחרונה ללקוח לא נמסרה בהצלחה — כדאי לבדוק את השיחה למטה.
-                    </p>
-                  </div>
-                </div>
-              </Card>
-            )}
-
+            {/* The failed-send warning used to be repeated here, worded as
+                "כדאי לבדוק את השיחה למטה" — a second copy of what the
+                attention panel already says, with no action attached. The
+                panel is the single source for it now. */}
             {employeeQuestions.map((reason) => (
               <Card key={reason.sourceId} className="border-warning/30 bg-warning/5" padding="sm">
                 <div className="flex items-start gap-2.5">
@@ -889,8 +879,12 @@ export default async function CollectionRequestDetailPage({
         </Card>
       )}
 
-      {/* ===== וואטסאפ — מצומצם ===== */}
-      <Card>
+      {/* ===== וואטסאפ — מצומצם =====
+          The target of "פתיחת השיחה" in the attention panel. That link
+          pointed at #conversation while nothing on the page carried the id,
+          so clicking it did nothing at all. scroll-mt keeps the heading
+          clear of the sticky header once it lands. */}
+      <Card id="conversation" className="scroll-mt-24">
         <div className="mb-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <MessageCircle className="h-5 w-5 shrink-0 text-brand-purple" />

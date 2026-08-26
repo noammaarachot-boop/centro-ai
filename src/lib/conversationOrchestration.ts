@@ -604,6 +604,24 @@ export async function recordInboundMessage(
 // "the client wrote recently" apart from "Centro sent something recently."
 // Used by src/lib/reminderContent.ts to decide whether a reminder can use
 // natural free text or must fall back to a pre-approved Template.
+export const FREEFORM_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// The rule itself, over messages already in hand. The collection request
+// page needs the same answer to decide whether offering a resend is honest,
+// and it has the thread loaded — this keeps that decision and the send path
+// from ever disagreeing about when the window is open.
+export function isFreeformWindowOpen(
+  thread: { direction: string; createdAt: Date }[],
+  now: number = Date.now()
+): boolean {
+  let latest = 0;
+  for (const message of thread) {
+    if (message.direction !== "inbound") continue;
+    latest = Math.max(latest, message.createdAt.getTime());
+  }
+  return latest > 0 && now - latest < FREEFORM_WINDOW_MS;
+}
+
 export async function isWithinFreeformSessionWindow(conversationId: string): Promise<boolean> {
   const db = await getDb();
   const [lastInbound] = await db
@@ -612,8 +630,7 @@ export async function isWithinFreeformSessionWindow(conversationId: string): Pro
     .where(and(eq(messages.conversationId, conversationId), eq(messages.direction, "inbound")))
     .orderBy(desc(messages.createdAt))
     .limit(1);
-  if (!lastInbound) return false;
-  return Date.now() - lastInbound.createdAt.getTime() < 24 * 60 * 60 * 1000;
+  return isFreeformWindowOpen(lastInbound ? [{ direction: "inbound", createdAt: lastInbound.createdAt }] : []);
 }
 
 // Ch.10 flow step 1: "Send one initial request."

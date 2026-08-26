@@ -147,3 +147,35 @@ describe("idempotency key — a logical message can only be sent once", () => {
     expect(dup.deliveryStatus).not.toBe("sent");
   });
 });
+
+/**
+ * Scenario 10 — the employee double-clicks "שליחה חוזרת".
+ *
+ * The retry key is derived from the id of the message that failed, so it is
+ * the same on every click for the same failure. A second click therefore
+ * claims nothing and sends nothing, while a LATER failure — a different row
+ * — is still retryable.
+ */
+describe("retrying a failed send", () => {
+  it("double-clicking the retry button sends exactly once", async () => {
+    const failedMessageId = "3f1d9a52-0000-4000-8000-000000000001";
+    const key = `retry:${failedMessageId}`;
+
+    const [first, second] = await Promise.all([
+      sendOutboundMessage(orgId, conversationId, "תזכורת", "ai", "manual", undefined, true, undefined, key),
+      sendOutboundMessage(orgId, conversationId, "תזכורת", "ai", "manual", undefined, true, undefined, key),
+    ]);
+
+    expect([first.sent, second.sent].filter(Boolean), "exactly one click may send").toHaveLength(1);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(await outbound()).toHaveLength(1);
+  });
+
+  it("a later failure is a different message, so it can still be retried", async () => {
+    await sendOutboundMessage(orgId, conversationId, "א", "ai", "manual", undefined, true, undefined, "retry:msg-a");
+    const next = await sendOutboundMessage(orgId, conversationId, "ב", "ai", "manual", undefined, true, undefined, "retry:msg-b");
+
+    expect(next.sent, "a new failure must not be suppressed by an older retry").toBe(true);
+    expect(await outbound()).toHaveLength(2);
+  });
+});

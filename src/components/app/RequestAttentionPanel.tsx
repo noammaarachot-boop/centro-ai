@@ -78,10 +78,24 @@ export function RequestAttentionPanel({
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">
-          {/* Line 1 — what happened. */}
-          <p className="text-sm font-bold text-text-primary">{state.title}</p>
-          {/* Line 2 — what to do now. */}
-          <p className="mt-1 text-sm text-text-secondary">{state.guidance}</p>
+          {/* Line 1 — a short heading, always the same words. */}
+          <p className="text-sm font-bold text-text-primary">דורש טיפול</p>
+
+          {/* Line 2 — EVERY reason, business first. Two things can be wrong
+              at once (the client is overdue AND the message never arrived),
+              and fixing the second must not hide the first. */}
+          <ul className="mt-1.5 space-y-1">
+            {state.reasons.map((reason) => (
+              <li key={reason.title} className="text-sm text-text-secondary">
+                <span className="font-semibold text-text-primary">{reason.title}</span>
+                {" — "}
+                {reason.detail}
+              </li>
+            ))}
+          </ul>
+
+          {/* Line 3 — what to do now, or why nothing can be done. */}
+          <p className="mt-2 text-sm text-text-secondary">{state.guidance}</p>
 
           {/* Line 3 — the action, and only one that can actually run. */}
           {(state.primaryAction || state.secondaryAction) && (
