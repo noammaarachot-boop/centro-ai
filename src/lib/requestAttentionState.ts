@@ -1,4 +1,5 @@
 import { resolveMessageDeliveryState } from "@/lib/messageDeliveryState";
+import { OVERDUE_AFTER_DAYS, describeElapsed } from "@/lib/elapsedTime";
 
 /**
  * What a request needs from the employee, and the one thing to do about it.
@@ -92,8 +93,6 @@ export interface RequestAttentionInput {
   daysOpen: number;
 }
 
-const OVERDUE_AFTER_DAYS = 3;
-
 export function resolveRequestAttentionState(input: RequestAttentionInput): RequestAttentionState {
   const {
     status,
@@ -146,7 +145,7 @@ export function resolveRequestAttentionState(input: RequestAttentionInput): Requ
   if (clientIsLate) {
     reasons.push({
       title: clientHasReplied ? "הלקוח עדיין לא השלים את הבקשה" : "הלקוח לא הגיב לבקשה",
-      detail: `עברו ${daysOpen} ימים והמסמכים עדיין חסרים.`,
+      detail: `${describeElapsed(daysOpen)} והמסמכים עדיין חסרים.`,
     });
   }
 

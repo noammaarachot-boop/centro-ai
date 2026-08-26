@@ -1,3 +1,4 @@
+import { stripFrozenDayCount } from "@/lib/elapsedTime";
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, services } from "@/db/schema";
@@ -68,7 +69,11 @@ const REASON_COPY: Record<
   escalated: {
     severity: "danger",
     title: (clientName) => `${clientName} — הבקשה באיחור`,
-    meta: (detail) => detail || "הבקשה עברה את חלון הטיפול הרגיל.",
+    // stripFrozenDayCount, because escalationReason has the 3-day THRESHOLD
+    // baked into it ("חלפו 3 ימים") from the moment the scheduler wrote it.
+    // The real age is appended as `elapsed` below, so leaving the frozen
+    // number in produced two different ages in a single line.
+    meta: (detail) => stripFrozenDayCount(detail) || "הבקשה עברה את חלון הטיפול הרגיל.",
     actionLabel: "לפתיחת הבקשה",
     chipLabel: (count) => (count === 1 ? "בקשה באיחור" : "בקשות באיחור"),
     subtextPhrase: (count) => (count === 1 ? "בקשה אחת באיחור" : `${count} בקשות באיחור`),

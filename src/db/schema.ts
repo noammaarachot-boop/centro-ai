@@ -946,9 +946,15 @@ export const collectionRequests = pgTable("collection_requests", {
   // message text, so rewording never resets it.
   deferralCount: integer("deferral_count").notNull().default(0),
   // Human-readable reason shown next to StatusBadge whenever status is
-  // "escalated" (e.g. "חלפו 3 ימים ללא השלמת המסמכים") — so an employee
+  // "escalated" (e.g. "לא ענה והבקשה עדיין לא הושלמה") — so an employee
   // never has to dig through audit_logs to understand why automation
   // stopped on this request.
+  //
+  // Must NOT contain a day count. This string is frozen when the escalation
+  // happens and then displayed for as long as the request stays escalated,
+  // so an embedded number goes stale immediately: it used to read "חלפו 3
+  // ימים" (the threshold, not elapsed time) beside a panel correctly saying
+  // "עברו 7 ימים". Age is measured at display time — src/lib/elapsedTime.ts.
   escalationReason: text("escalation_reason"),
 }, (table) => [
   // The scheduler filters (organizationId, status) on every tick — the

@@ -42,6 +42,7 @@ import { filterUserFacingActivity } from "@/lib/activityHistory";
 import { describeRequestPeriodDetail } from "@/lib/requestLabel";
 import { resolveRequestAttentionState } from "@/lib/requestAttentionState";
 import { RequestAttentionPanel } from "@/components/app/RequestAttentionPanel";
+import { daysSince, describeEscalation } from "@/lib/elapsedTime";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import {
   countRealConversationMessages,
@@ -128,6 +129,16 @@ const CONVERSATION_STATUS_META: Record<string, { label: string; tone: BadgeTone 
   closed: { label: "סגורה", tone: "neutral" },
 };
 
+// Who wrote a message, in words a person uses. The column stores the audit
+// actor enum ("ai" | "employee" | "client" | "system"), which was being
+// rendered verbatim under every bubble.
+const SENDER_LABEL: Record<string, string> = {
+  ai: "Centro",
+  employee: "המשרד",
+  client: "הלקוח",
+  system: "מערכת",
+};
+
 const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_EXTENSIONS.map((ext) => `.${ext}`).join(",");
 
 const compactButtonClass = buttonVariants({ variant: "secondary", size: "sm" });
@@ -142,10 +153,6 @@ const SUGGEST_RELEASE_IDLE_MS = 15 * 60 * 1000;
 // "נדחה עד 09:00" read at 14:00 tells the reader nothing and contradicts
 // the status beside it. Kept as a function so the time lookup does not
 // happen inline during render.
-function daysSince(from: Date | string): number {
-  return Math.floor((Date.now() - new Date(from).getTime()) / (24 * 60 * 60 * 1000));
-}
-
 function isDeferralStillPending(deferredReminderAt: Date | null | undefined): boolean {
   if (!deferredReminderAt) return false;
   return new Date(deferredReminderAt).getTime() > Date.now();
@@ -166,12 +173,15 @@ function computeShouldSuggestReleasingControl(
 function buildSummaryLine(params: {
   status: CollectionRequestStatus;
   escalationReason: string | null;
+  daysOpen: number;
   attentionCount: number;
   unsatisfiedCount: number;
   waitingOnClientCount: number;
 }): string {
-  const { status, escalationReason, attentionCount, unsatisfiedCount, waitingOnClientCount } = params;
-  if (status === "escalated") return escalationReason || "הבקשה הוסלמה לבדיקה ידנית";
+  const { status, escalationReason, daysOpen, attentionCount, unsatisfiedCount, waitingOnClientCount } = params;
+  // Never the stored string as-is: it carries the 3-day THRESHOLD frozen in
+  // at escalation time, which contradicted the real age shown just below.
+  if (status === "escalated") return describeEscalation(escalationReason, daysOpen);
   if (attentionCount > 0 && unsatisfiedCount > 0) {
     return `${attentionCount} דברים מחכים לטיפולך, וחסרים עוד ${unsatisfiedCount} מסמכים מהלקוח`;
   }
@@ -320,6 +330,7 @@ export default async function CollectionRequestDetailPage({
   const summaryLine = buildSummaryLine({
     status: collectionRequest.status,
     escalationReason: collectionRequest.escalationReason,
+    daysOpen,
     attentionCount,
     unsatisfiedCount: progress.unsatisfiedCount,
     waitingOnClientCount: openConfirmations.length,
@@ -913,13 +924,22 @@ export default async function CollectionRequestDetailPage({
                 description="השיחה נפתחה אך טרם נשלחו או התקבלו הודעות."
               />
             ) : (
-              <div className="mb-4">
+              /* ONE scroll container: the page.
+
+                 The thread used to be split in two — history inside a
+                 `max-h-64 overflow-y-auto` box, and the last three messages
+                 in a separate list below it, outside that box. Scrolling the
+                 inner box moved the history while those three stayed put,
+                 which read as if the newest messages were pinned. Nothing
+                 here is sticky or fixed and there is no nested scroller, so
+                 every message moves together. */
+              <div className="mb-4 space-y-2">
                 {olderMessages.length > 0 && (
-                  <details className="mb-2">
-                    <summary className="cursor-pointer text-xs font-semibold text-brand-purple">
-                      פתיחת השיחה המלאה ({countRealConversationMessages(messages)} הודעות)
+                  <details className="space-y-2">
+                    <summary className="mb-2 cursor-pointer text-xs font-semibold text-brand-purple">
+                      הצגת ההודעות הקודמות ({countRealConversationMessages(messages)} הודעות בסך הכול)
                     </summary>
-                    <ul className="mt-2 max-h-64 space-y-2 overflow-y-auto">
+                    <ul className="space-y-2">
                       {olderMessages.map((message) => (
                         <MessageBubble
                           organizationTimezone={organizationTimezone}
@@ -934,7 +954,7 @@ export default async function CollectionRequestDetailPage({
                 <ul className="space-y-2">
                   {recentMessages.map((message) => (
                     <MessageBubble
-                          organizationTimezone={organizationTimezone}
+                      organizationTimezone={organizationTimezone}
                       key={message.id}
                       message={message}
                       documentLabelByWhatsappMessageId={documentLabelByWhatsappMessageId}
@@ -1102,7 +1122,7 @@ function MessageBubble({
   documentLabelByWhatsappMessageId: Map<string, string>;
   organizationTimezone: string;
 }) {
-  const isAi = message.direction === "outbound" && message.senderType === "ai";
+  const isOutbound = message.direction === "outbound";
   // Display-layer upgrade only (see the page's own comment on
   // documentLabelByWhatsappMessageId) — the stored message row is never
   // rewritten. Still never the raw storage filename either way.
@@ -1113,18 +1133,29 @@ function MessageBubble({
   const deliveryState = resolveMessageDeliveryState(message.deliveryStatus);
   const reached = hasReachedClient(message);
   return (
+    /* Two tones only, and neither of them shouts.
+
+       Messages from the office (both the AI's and an employee's) used to
+       differ from each other — one a full-strength blue/purple gradient in
+       white text, the other a purple tint — while the client's sat in the
+       same neutral grey as the page furniture. Three treatments for two
+       speakers, with the loudest reserved for the side the reader cares
+       least about identifying. Now: everything we send is calm neutral, and
+       the client's own words carry the single soft accent, so "who wrote
+       this" reads instantly without any colour competing with the text. */
     <li
       className={
-        isAi
-          ? "centro-ai-gradient ms-auto max-w-[80%] break-words rounded-2xl rounded-es-sm px-3 py-2 text-xs text-white"
-          : message.direction === "outbound"
-            ? "ms-auto max-w-[80%] break-words rounded-2xl rounded-es-sm bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
-            : "me-auto max-w-[80%] break-words rounded-2xl rounded-ee-sm bg-surface-muted px-3 py-2 text-xs text-text-primary"
+        isOutbound
+          ? "ms-auto max-w-[80%] break-words rounded-2xl rounded-es-sm border border-border bg-surface-muted px-3 py-2 text-xs text-text-primary"
+          : "me-auto max-w-[80%] break-words rounded-2xl rounded-ee-sm border border-brand-purple/20 bg-brand-purple/10 px-3 py-2 text-xs text-text-primary"
       }
     >
       <p>{displayBody}</p>
-      <p className={isAi ? "mt-0.5 text-[10px] text-white/75" : "mt-0.5 text-[10px] text-text-muted"}>
-        {message.senderType} ·{" "}
+      <p className="mt-0.5 text-[10px] text-text-muted">
+        {/* The raw enum used to be printed here — "ai", "employee",
+            "client" — which is both jargon and, for the client, wrong: the
+            person reading it knows who the client is by name. */}
+        {SENDER_LABEL[message.senderType] ?? message.senderType} ·{" "}
         {/* An explicit timeZone. Without one this formats in whatever zone
             the RENDERING process happens to be in — UTC on Vercel — so every
             message in the thread was stamped three hours earlier than it
@@ -1138,10 +1169,8 @@ function MessageBubble({
         {/* Outbound only: an inbound message is with us by definition.
             Without this every row looked like a delivered WhatsApp message,
             including the 114 that WhatsApp had refused. */}
-        {message.direction === "outbound" && !reached && (
-          <span className={isAi ? "ms-1.5 font-semibold text-white" : "ms-1.5 font-semibold text-danger"}>
-            · {DELIVERY_STATE_LABEL[deliveryState]}
-          </span>
+        {isOutbound && !reached && (
+          <span className="ms-1.5 font-semibold text-danger">· {DELIVERY_STATE_LABEL[deliveryState]}</span>
         )}
       </p>
     </li>

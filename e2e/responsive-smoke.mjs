@@ -190,6 +190,97 @@ async function checkSingleMain(page, viewport, screen) {
     mains.length === 1 ? "" : `${mains.length} found: ${JSON.stringify(mains)}`);
 }
 
+/**
+ * The conversation must be ONE continuous scroll unit.
+ *
+ * It used to be two: the history lived in a `max-h-64 overflow-y-auto` box
+ * and the three newest messages sat in a separate list outside it. Scrolling
+ * the inner box moved the history while those three stayed put, so the
+ * newest messages looked pinned to the page.
+ *
+ * Measured in the browser rather than asserted against the source, because
+ * what matters is the computed style of the real ancestor chain — a nested
+ * scroller can reappear from any utility class, not just the one removed.
+ */
+async function checkConversationScroll(page, viewport, screen) {
+  const result = await page.evaluate(() => {
+    const anchor = document.getElementById("conversation");
+    if (!anchor) return { skipped: true };
+    const bubbles = [...anchor.querySelectorAll("li")];
+    if (bubbles.length === 0) return { skipped: true };
+
+    const scrollers = new Set();
+    const pinned = [];
+    for (const bubble of bubbles) {
+      const own = getComputedStyle(bubble).position;
+      if (own === "sticky" || own === "fixed") pinned.push(`li[position:${own}]`);
+      for (let el = bubble.parentElement; el && el !== document.body; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if (s.overflowY === "auto" || s.overflowY === "scroll") {
+          scrollers.add(`<${el.tagName.toLowerCase()} class="${String(el.className || "").slice(0, 48)}">`);
+        }
+        if (s.position === "sticky" || s.position === "fixed") {
+          pinned.push(`<${el.tagName.toLowerCase()} position:${s.position}>`);
+        }
+      }
+    }
+    return { skipped: false, count: bubbles.length, scrollers: [...scrollers], pinned: [...new Set(pinned)] };
+  });
+
+  if (result.skipped) {
+    record(viewport, screen, "conversation is one scroll container", "NOT TESTED", "no messages rendered");
+    return;
+  }
+  record(
+    viewport,
+    screen,
+    "conversation is one scroll container",
+    result.scrollers.length === 0 ? "PASS" : "FAIL",
+    result.scrollers.length ? `nested scroller(s): ${result.scrollers.join(", ")}` : ""
+  );
+  record(
+    viewport,
+    screen,
+    "no message is pinned while the rest scrolls",
+    result.pinned.length === 0 ? "PASS" : "FAIL",
+    result.pinned.length ? `pinned: ${result.pinned.join(", ")}` : ""
+  );
+}
+
+/**
+ * The two speakers must be visually distinct — that is the whole point of
+ * the restyle. Compares the computed background of an outbound bubble with
+ * an inbound one.
+ */
+async function checkConversationContrast(page, viewport, screen) {
+  const result = await page.evaluate(() => {
+    const anchor = document.getElementById("conversation");
+    if (!anchor) return { skipped: true };
+    const bubbles = [...anchor.querySelectorAll("li")];
+    // Outbound bubbles are pushed to the inline end, inbound to the start.
+    const groups = { start: null, end: null };
+    for (const b of bubbles) {
+      const s = getComputedStyle(b);
+      const side = s.marginInlineStart === "0px" ? "start" : "end";
+      groups[side] = groups[side] ?? s.backgroundColor;
+    }
+    if (!groups.start || !groups.end) return { skipped: true };
+    return { skipped: false, ...groups };
+  });
+
+  if (result.skipped) {
+    record(viewport, screen, "client and office messages look different", "NOT TESTED", "only one side present");
+    return;
+  }
+  record(
+    viewport,
+    screen,
+    "client and office messages look different",
+    result.start !== result.end ? "PASS" : "FAIL",
+    result.start === result.end ? `both sides are ${result.start}` : `${result.start} vs ${result.end}`
+  );
+}
+
 async function shoot(page, viewport, screen) {
   await fs.mkdir(SHOTS, { recursive: true });
   const file = path.join(SHOTS, `${screen}-${viewport}.png`);
@@ -407,6 +498,8 @@ async function main() {
           record(vp.name, "collection-detail", "reachable", "NOT TESTED", "redirected to /login");
         } else {
           await visit(page, url, vp.name, "collection-detail");
+          await checkConversationScroll(page, vp.name, "conversation");
+          await checkConversationContrast(page, vp.name, "conversation");
           const composer = page.locator('input[name="body"]').first();
           if (await composer.count()) {
             const box = await composer.boundingBox();

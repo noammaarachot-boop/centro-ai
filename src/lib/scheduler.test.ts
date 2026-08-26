@@ -511,7 +511,14 @@ describe("runScheduledTasks — human-review escalation after the 3-day completi
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
     expect(request.status).toBe("escalated");
-    expect(request.escalationReason).toContain("3 ימים");
+    // A reason is recorded and it says why — but it must NOT bake in a day
+    // count. This string is frozen at escalation time and then displayed for
+    // as long as the request stays escalated, so "חלפו 3 ימים" (the
+    // THRESHOLD, not elapsed time) still read "3 ימים" on day seven, beside
+    // an attention panel correctly saying "עברו 7 ימים". The age is measured
+    // at display time now — see src/lib/elapsedTime.ts.
+    expect(request.escalationReason).toContain("לא ענה");
+    expect(request.escalationReason).not.toMatch(/\d+\s+ימים/u);
     expect(request.reviewDeadlineAt).toBeNull();
     expect(sendTemplateMessage).not.toHaveBeenCalled();
     expect(sendTextMessage).not.toHaveBeenCalled();

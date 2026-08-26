@@ -271,7 +271,13 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         await escalateToHumanReview(
           organization.id,
           conversation.collectionRequestId,
-          "לא ענה — חלפו 3 ימים והבקשה עדיין לא הושלמה",
+          // No day count here. This string is frozen into escalationReason
+          // and then displayed for as long as the request stays escalated —
+          // it used to read "חלפו 3 ימים", which was the THRESHOLD, not
+          // elapsed time, so on day seven the request page showed "3 ימים"
+          // and "עברו 7 ימים" side by side. The age is measured at display
+          // time now (src/lib/elapsedTime.ts).
+          "לא ענה והבקשה עדיין לא הושלמה",
           "system"
         );
         continue;
