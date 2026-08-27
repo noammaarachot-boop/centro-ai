@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { runScheduledTasks } from "@/lib/scheduler";
+import { sendManualReminder } from "@/lib/manualReminder";
 import { getDb } from "@/db";
 import { jobRuns } from "@/db/schema";
 import { captureError } from "@/lib/monitoring/errorReporting";
@@ -39,6 +40,40 @@ export async function POST(request: Request) {
       { error: "CRON_SECRET is not configured" },
       { status: 503 }
     );
+  }
+
+  // Operational single-request trigger.
+  //
+  // Sends ONE reminder for ONE collection request through exactly the same
+  // path as the employee's "שליחת תזכורת עכשיו" button — the shared
+  // sendManualReminder — rather than running the whole tick. It exists
+  // because verifying a live WhatsApp send previously required either
+  // running the full scheduler (which would message every client that
+  // happens to be due) or an interactive session, and neither is usable for
+  // a controlled production check.
+  //
+  // Same CRON_SECRET as the tick itself: no new credential, no new
+  // authorization model. organizationId and collectionRequestId must agree
+  // or the request is not found — the caller cannot reach another tenant.
+  const body = await request
+    .clone()
+    .json()
+    .catch(() => null);
+  if (body && typeof body === "object" && "collectionRequestId" in body) {
+    const { organizationId, collectionRequestId } = body as {
+      organizationId?: string;
+      collectionRequestId?: string;
+    };
+    if (!organizationId || !collectionRequestId) {
+      return NextResponse.json(
+        { error: "organizationId and collectionRequestId are both required" },
+        { status: 400 }
+      );
+    }
+    const result = await sendManualReminder(organizationId, collectionRequestId, {
+      actorType: "system",
+    });
+    return NextResponse.json(result, { status: result.ok ? 200 : 422 });
   }
 
   // Owner Dashboard System Health foundation — previously this tick's

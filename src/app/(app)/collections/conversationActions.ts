@@ -55,6 +55,7 @@ import { applyExtensionFinishedDecision, withdrawStaleFinishedCheck } from "@/li
 import { applyRequestReopenDecision } from "@/lib/requestReopen";
 import { runConversationUnderstanding } from "@/lib/conversation/conversationDispatch";
 import { buildReminderSend } from "@/lib/reminderContent";
+import { sendManualReminder } from "@/lib/manualReminder";
 import { requireSession } from "@/lib/auth/session";
 import { assertDevToolsEnabled } from "@/lib/devTools";
 import {
@@ -1525,68 +1526,23 @@ export async function sendReminderNow(
   _formData: FormData
 ): Promise<AttentionActionState> {
   const session = await requireSession();
-  const current = await getCollectionRequestOrRedirect(session.organizationId, collectionRequestId);
-  const db = await getDb();
+  // Confirms the request belongs to THIS employee's organization (redirects
+  // if not) before the shared sender is handed that organizationId.
+  await getCollectionRequestOrRedirect(session.organizationId, collectionRequestId);
 
-  const conversation = await ensureConversation(
-    session.organizationId,
-    collectionRequestId,
-    current.clientId
-  );
-  const [client] = await db.select().from(clients).where(eq(clients.id, current.clientId)).limit(1);
-
-  const reminderSend = await buildReminderSend(
-    conversation.id,
-    collectionRequestId,
-    client?.name ?? "",
-    session.organizationId
-  );
-
-  // No approved template for this office: say so, and send nothing. The
-  // old path fell back to another hardcoded template that Meta rejected
-  // for the same reason, which is how this surfaced as a mystery instead
-  // of a configuration error.
-  if (reminderSend.unavailable) {
-    return { error: reminderSend.unavailable.reason };
-  }
-
-  const minuteBucket = new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString();
-  const { sent, deliveryStatus, failureReason } = await sendOutboundMessage(
-    session.organizationId,
-    conversation.id,
-    reminderSend.body,
-    "ai",
-    // Manual: a human asked for it, so business hours do not hold it back.
-    "manual",
-    reminderSend.templateSend,
-    reminderSend.allowFreeform,
-    undefined,
-    `manual-reminder:${conversation.id}:${minuteBucket}`
-  );
-
-  if (deliveryStatus === "duplicate_suppressed") {
-    return { error: "תזכורת כבר נשלחה ברגע זה." };
-  }
-  if (!sent) {
-    console.error("[attention] manual reminder failed", { collectionRequestId, deliveryStatus, failureReason });
-    return { error: `שליחת התזכורת נכשלה (${deliveryStatus ?? "לא ידוע"}). הבעיה נשמרה ביומן לבדיקה.` };
-  }
-
-  // The cycle restarts from this send, so the automatic reminder does not
-  // arrive moments later on top of it.
-  await db
-    .update(conversations)
-    .set({ reminderAnchorAt: new Date() })
-    .where(eq(conversations.id, conversation.id));
-
-  await recordAuditEvent({
-    organizationId: session.organizationId,
-    eventType: "scheduler.reminder_sent",
-    description: "תזכורת נשלחה ידנית מתוך מסך הבקשה",
+  const result = await sendManualReminder(session.organizationId, collectionRequestId, {
     actorType: "employee",
     actorUserId: session.userId,
-    collectionRequestId,
   });
+
+  if (!result.ok) {
+    console.error("[attention] manual reminder failed", {
+      collectionRequestId,
+      deliveryStatus: result.deliveryStatus,
+      failureReason: result.failureReason,
+    });
+    return { error: result.error ?? "שליחת התזכורת נכשלה." };
+  }
 
   refresh();
   return { success: "התזכורת נשלחה ללקוח." };
