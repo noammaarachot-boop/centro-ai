@@ -20,12 +20,20 @@ import { OVERDUE_AFTER_DAYS, describeElapsed } from "@/lib/elapsedTime";
 export type RequestAttentionKind =
   | "message_failed"
   | "awaiting_client"
+  | "awaiting_reply"
   | "not_connected"
   | "needs_review"
   | "paused"
   | "none";
 
 export type AttentionActionKind = "retry_send" | "send_reminder" | "reactivate" | "open_conversation";
+
+/**
+ * How long after a reminder the panel reports "waiting for a reply" instead
+ * of offering to send another one. Long enough that the client has a real
+ * chance to answer before the employee is invited to nudge again.
+ */
+export const REMINDER_QUIET_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export interface AttentionAction {
   kind: AttentionActionKind;
@@ -89,6 +97,19 @@ export interface RequestAttentionInput {
    * can always be retried.
    */
   retryCanSucceed: boolean;
+  /**
+   * When a reminder was last actually delivered to the provider for this
+   * request, or null if never.
+   *
+   * Without it the panel could only ask "is the client late?", so it kept
+   * offering "שליחת תזכורת עכשיו" immediately after a reminder had just
+   * gone out — the request looked untouched by the employee's own action.
+   */
+  lastReminderSentAt?: Date | string | null;
+  /** True once the client has replied SINCE that reminder. */
+  clientRepliedSinceReminder?: boolean;
+  /** Injected so the window is testable and render stays pure. */
+  now?: number;
   /** Days since the request was opened, for the overdue wording. */
   daysOpen: number;
 }
@@ -103,6 +124,9 @@ export function resolveRequestAttentionState(input: RequestAttentionInput): Requ
     whatsappReady,
     hasConversation,
     retryCanSucceed,
+    lastReminderSentAt,
+    clientRepliedSinceReminder,
+    now = Date.now(),
     daysOpen,
   } = input;
 
@@ -209,6 +233,28 @@ export function resolveRequestAttentionState(input: RequestAttentionInput): Requ
       reasons,
       severity: "warning",
       guidance: "עברו על הפריטים למטה כדי להמשיך את הבקשה.",
+      primaryAction: null,
+      secondaryAction: openConversation,
+    };
+  }
+
+  // A reminder has just gone out and the client has not answered it yet.
+  //
+  // The request is still genuinely overdue, so it stays in "דורש טיפול" —
+  // but the thing that needs attention has changed. Offering "send a
+  // reminder" again here is both wrong (one was just sent) and an invitation
+  // to message the client twice for the same thing.
+  const remindedAt = lastReminderSentAt ? new Date(lastReminderSentAt).getTime() : null;
+  const remindedRecently =
+    remindedAt !== null && Number.isFinite(remindedAt) && now - remindedAt < REMINDER_QUIET_WINDOW_MS;
+  if (remindedRecently && !clientRepliedSinceReminder) {
+    return {
+      kind: "awaiting_reply",
+      reasons,
+      severity: "warning",
+      guidance: "תזכורת נשלחה — ממתינים לתגובת הלקוח.",
+      // Deliberately no send action: the reminder is out, and the next
+      // automatic one is already scheduled.
       primaryAction: null,
       secondaryAction: openConversation,
     };

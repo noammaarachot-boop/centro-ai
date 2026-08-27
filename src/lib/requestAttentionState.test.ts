@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { resolveRequestAttentionState, type RequestAttentionInput } from "./requestAttentionState";
+import {
+  REMINDER_QUIET_WINDOW_MS,
+  resolveRequestAttentionState,
+  type RequestAttentionInput,
+} from "./requestAttentionState";
 
 /**
  * Regression — the attention area must name ONE action that can run.
@@ -285,5 +289,79 @@ describe("a resend that cannot work is not offered", () => {
 
   it("does offer the resend when the send can actually go out", () => {
     expect(resolve({ ...failed, retryCanSucceed: true }).primaryAction?.kind).toBe("retry_send");
+  });
+});
+
+/**
+ * Regression — "שליחת תזכורת עכשיו" left the request looking untouched.
+ *
+ * A reminder was sent successfully and the panel still said the same thing:
+ * overdue, with a button offering to send a reminder. The employee had just
+ * done that. The request IS still overdue — the client has not answered — so
+ * it correctly stays in "דורש טיפול", but the thing needing attention has
+ * changed from "nobody has nudged them" to "we are waiting for their reply",
+ * and offering to send again invites messaging the client twice.
+ */
+describe("after a reminder has just been sent", () => {
+  const overdue = { unsatisfiedCount: 2, daysOpen: 5, lastOutboundDeliveryStatus: "sent" };
+  const NOW = Date.parse("2026-08-28T12:00:00Z");
+  const minutesAgo = (n: number) => new Date(NOW - n * 60_000);
+
+  it("reports waiting for a reply, and offers NO second reminder", () => {
+    const state = resolve({ ...overdue, lastReminderSentAt: minutesAgo(5), now: NOW });
+
+    expect(state.kind).toBe("awaiting_reply");
+    expect(state.guidance).toContain("ממתינים לתגובת הלקוח");
+    expect(state.primaryAction, "one reminder was just sent; do not offer another").toBeNull();
+  });
+
+  it("still says WHY it needs attention — the client is late, and that has not changed", () => {
+    const state = resolve({ ...overdue, lastReminderSentAt: minutesAgo(5), now: NOW });
+
+    expect(state.reasons.map((r) => r.title)).toContain("הלקוח לא הגיב לבקשה");
+    expect(state.reasons[0].detail, "the real elapsed time, not reset by the send").toContain("5");
+  });
+
+  it("goes back to offering a reminder once the quiet window has passed", () => {
+    const state = resolve({
+      ...overdue,
+      lastReminderSentAt: new Date(NOW - REMINDER_QUIET_WINDOW_MS - 1),
+      now: NOW,
+    });
+
+    expect(state.kind).toBe("awaiting_client");
+    expect(state.primaryAction?.kind).toBe("send_reminder");
+  });
+
+  it("a reminder that FAILED does not count — the client had nothing to reply to", () => {
+    // The caller only passes a timestamp for a send that reached the
+    // provider, so a failed one arrives as null and the request keeps
+    // asking for a reminder rather than waiting on a message nobody got.
+    const state = resolve({ ...overdue, lastReminderSentAt: null, now: NOW });
+
+    expect(state.kind).toBe("awaiting_client");
+    expect(state.primaryAction?.kind).toBe("send_reminder");
+  });
+
+  it("once the client replies, it stops waiting on them", () => {
+    const state = resolve({
+      ...overdue,
+      lastReminderSentAt: minutesAgo(5),
+      clientRepliedSinceReminder: true,
+      now: NOW,
+    });
+
+    expect(state.kind).not.toBe("awaiting_reply");
+  });
+
+  it("a delivery failure still outranks it — a reminder nobody received is not 'waiting'", () => {
+    const state = resolve({
+      ...overdue,
+      lastOutboundDeliveryStatus: "failed",
+      lastReminderSentAt: minutesAgo(5),
+      now: NOW,
+    });
+
+    expect(state.kind).toBe("message_failed");
   });
 });

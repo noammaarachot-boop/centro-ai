@@ -322,6 +322,27 @@ export default async function CollectionRequestDetailPage({
     // the window had never been open, and every resend was refused with the
     // same error.
     retryCanSucceed: lastOutbound?.senderType === "ai" || isFreeformWindowOpen(messages),
+    // The last automated message that actually reached the provider. A
+    // reminder that failed is not a reminder the client could reply to, so
+    // it must not put the request into "waiting for a reply".
+    lastReminderSentAt:
+      [...messages]
+        .reverse()
+        .find(
+          (m) =>
+            m.direction === "outbound" &&
+            m.senderType === "ai" &&
+            hasReachedClient(m)
+        )?.createdAt ?? null,
+    clientRepliedSinceReminder: (() => {
+      const reminder = [...messages]
+        .reverse()
+        .find((m) => m.direction === "outbound" && m.senderType === "ai" && hasReachedClient(m));
+      if (!reminder) return false;
+      return messages.some(
+        (m) => m.direction === "inbound" && new Date(m.createdAt) > new Date(reminder.createdAt)
+      );
+    })(),
     daysOpen,
   });
   const attentionAction =

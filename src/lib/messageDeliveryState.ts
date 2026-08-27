@@ -69,7 +69,12 @@ export function hasReachedClient(message: {
  */
 export const DELIVERY_STATE_LABEL: Record<MessageDeliveryState, string> = {
   pending: "ממתינה לשליחה",
-  sent: "נשלחה",
+  // "sent" is exactly one fact: Meta accepted the message and returned a
+  // message id. It is NOT proof the client received anything — that only
+  // arrives as a delivery status webhook. Labelling it plain "נשלחה" was
+  // read as "it got there", so a message Meta accepted and never delivered
+  // looked like a success with no way to tell the difference.
+  sent: "נשלחה — טרם אושרה מסירה",
   delivered: "נמסרה",
   read: "נקראה",
   failed: "לא נשלחה",
