@@ -62,6 +62,17 @@ export async function seedConversation(databaseUrl) {
       ["inbound", "client", LONG_TEXT],
       ["outbound", "ai", `אפשר להעלות כאן: ${LONG_URL}`],
       ["inbound", "client", LONG_URL],
+      // A long thread, so the conversation area has something to scroll.
+      // With only a handful of messages the container never overflows and
+      // "scrolling works" / "opens at the latest message" would both pass
+      // without ever exercising a scroll.
+      ...Array.from({ length: 40 }, (_, i) =>
+        i % 2 === 0
+          ? ["outbound", "ai", `תזכורת ${i / 2 + 1}: עדיין ממתינים למסמכים.`]
+          : ["inbound", "client", `בסדר, אשלח בקרוב (${(i + 1) / 2}).`]
+      ),
+      // Must end up visible without scrolling: the container opens at the
+      // bottom, and this is the newest message.
       ["outbound", "employee", "תודה, בדקנו ונחזור אליך."],
     ];
     for (const [direction, senderType, body] of messages) {

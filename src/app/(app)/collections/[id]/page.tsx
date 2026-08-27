@@ -87,6 +87,7 @@ import { EmptyState } from "@/components/app/EmptyState";
 import { fieldClass } from "@/components/app/FormField";
 import { ConfirmDialog } from "@/components/app/ConfirmDialog";
 import { MessageComposer } from "@/components/app/MessageComposer";
+import { ConversationScroll } from "@/components/app/ConversationScroll";
 import { DevToolsPanel } from "@/components/app/DevToolsPanel";
 import { devToolsEnabled } from "@/lib/devTools";
 
@@ -304,7 +305,10 @@ export default async function CollectionRequestDetailPage({
   // addresses it — see src/lib/requestAttentionState.ts for why the old
   // stack of sentences plus an "הפעלה" button was the problem.
   const lastOutbound = [...messages].reverse().find((m) => m.direction === "outbound");
-  const daysOpen = daysSince(collectionRequest.createdAt);
+  // Measured at every render from the request's own createdAt — never a
+  // stored snapshot — so the figure keeps climbing on its own with no new
+  // escalation, and a refresh can never bring an older number back.
+  const daysOpen = daysSince(collectionRequest.createdAt, organizationTimezone);
   const attentionState = resolveRequestAttentionState({
     status: collectionRequest.status,
     lastOutboundDeliveryStatus: lastOutbound?.deliveryStatus ?? null,
@@ -342,9 +346,10 @@ export default async function CollectionRequestDetailPage({
     lastMessage ? { senderType: lastMessage.senderType, createdAt: new Date(lastMessage.createdAt) } : undefined
   );
 
-  const RECENT_MESSAGES_COUNT = 3;
-  const recentMessages = messages.slice(-RECENT_MESSAGES_COUNT);
-  const olderMessages = messages.slice(0, -RECENT_MESSAGES_COUNT);
+  // No "recent" / "older" split. Slicing the last three messages into their
+  // own list outside the scroller is what made them look pinned while the
+  // rest of the thread moved; the thread renders as one list now, and the
+  // slice is gone rather than merely unused so it cannot quietly return.
 
   return (
     <div className="mx-auto max-w-2xl animate-fade-in-up space-y-6 px-4 py-10 sm:px-6 lg:px-10">
@@ -924,35 +929,15 @@ export default async function CollectionRequestDetailPage({
                 description="השיחה נפתחה אך טרם נשלחו או התקבלו הודעות."
               />
             ) : (
-              /* ONE scroll container: the page.
+              /* ONE bounded scroll region holding EVERY message.
 
-                 The thread used to be split in two — history inside a
-                 `max-h-64 overflow-y-auto` box, and the last three messages
-                 in a separate list below it, outside that box. Scrolling the
-                 inner box moved the history while those three stayed put,
-                 which read as if the newest messages were pinned. Nothing
-                 here is sticky or fixed and there is no nested scroller, so
-                 every message moves together. */
-              <div className="mb-4 space-y-2">
-                {olderMessages.length > 0 && (
-                  <details className="space-y-2">
-                    <summary className="mb-2 cursor-pointer text-xs font-semibold text-brand-purple">
-                      הצגת ההודעות הקודמות ({countRealConversationMessages(messages)} הודעות בסך הכול)
-                    </summary>
-                    <ul className="space-y-2">
-                      {olderMessages.map((message) => (
-                        <MessageBubble
-                          organizationTimezone={organizationTimezone}
-                          key={message.id}
-                          message={message}
-                          documentLabelByWhatsappMessageId={documentLabelByWhatsappMessageId}
-                        />
-                      ))}
-                    </ul>
-                  </details>
-                )}
+                 No split between older and recent: that split is exactly
+                 what made the three newest messages look pinned, because
+                 they sat outside the scroller the rest of the thread used.
+                 One list, one scroller, opened at the newest message. */
+              <ConversationScroll>
                 <ul className="space-y-2">
-                  {recentMessages.map((message) => (
+                  {messages.map((message) => (
                     <MessageBubble
                       organizationTimezone={organizationTimezone}
                       key={message.id}
@@ -961,7 +946,7 @@ export default async function CollectionRequestDetailPage({
                     />
                   ))}
                 </ul>
-              </div>
+              </ConversationScroll>
             )}
 
             {/* Cancelled is terminal (collectionRequestStateMachine.ts) — no

@@ -209,49 +209,89 @@ async function checkConversationScroll(page, viewport, screen) {
     const bubbles = [...anchor.querySelectorAll("li")];
     if (bubbles.length === 0) return { skipped: true };
 
-    const scrollers = new Set();
+    // The nearest scrollable ancestor of each bubble. Every message must
+    // resolve to the SAME one — the split that put the newest three outside
+    // the scroller showed up here as two distinct answers (and as `null`,
+    // meaning "the page itself", for those three).
+    const owners = [];
     const pinned = [];
+    let box = null;
     for (const bubble of bubbles) {
       const own = getComputedStyle(bubble).position;
       if (own === "sticky" || own === "fixed") pinned.push(`li[position:${own}]`);
+      let owner = "page";
       for (let el = bubble.parentElement; el && el !== document.body; el = el.parentElement) {
         const s = getComputedStyle(el);
-        if (s.overflowY === "auto" || s.overflowY === "scroll") {
-          scrollers.add(`<${el.tagName.toLowerCase()} class="${String(el.className || "").slice(0, 48)}">`);
-        }
-        if (s.position === "sticky" || s.position === "fixed") {
-          pinned.push(`<${el.tagName.toLowerCase()} position:${s.position}>`);
+        if (s.position === "sticky" || s.position === "fixed") pinned.push(`<${el.tagName.toLowerCase()} position:${s.position}>`);
+        if (owner === "page" && (s.overflowY === "auto" || s.overflowY === "scroll")) {
+          owner = `<${el.tagName.toLowerCase()} class="${String(el.className || "").slice(0, 40)}">`;
+          box = { h: el.clientHeight, scrollH: el.scrollHeight, top: el.scrollTop };
         }
       }
+      owners.push(owner);
     }
-    return { skipped: false, count: bubbles.length, scrollers: [...scrollers], pinned: [...new Set(pinned)] };
+    return {
+      skipped: false,
+      count: bubbles.length,
+      owners: [...new Set(owners)],
+      pinned: [...new Set(pinned)],
+      box,
+      pageHeight: document.documentElement.scrollHeight,
+    };
   });
 
   if (result.skipped) {
     record(viewport, screen, "conversation is one scroll container", "NOT TESTED", "no messages rendered");
     return;
   }
-  record(
-    viewport,
-    screen,
-    "conversation is one scroll container",
-    result.scrollers.length === 0 ? "PASS" : "FAIL",
-    result.scrollers.length ? `nested scroller(s): ${result.scrollers.join(", ")}` : ""
-  );
-  record(
-    viewport,
-    screen,
-    "no message is pinned while the rest scrolls",
+
+  // Exactly one owner, and it must not be the page: that is what "bounded
+  // region with internal scrolling" means, and "page" would mean the whole
+  // history is stretching the request page again.
+  const single = result.owners.length === 1 && result.owners[0] !== "page";
+  record(viewport, screen, "conversation is one scroll container", single ? "PASS" : "FAIL",
+    single ? "" : `message scroll owners: ${result.owners.join(" | ")}`);
+
+  record(viewport, screen, "no message is pinned while the rest scrolls",
     result.pinned.length === 0 ? "PASS" : "FAIL",
-    result.pinned.length ? `pinned: ${result.pinned.join(", ")}` : ""
-  );
+    result.pinned.length ? `pinned: ${result.pinned.join(", ")}` : "");
+
+  // The whole point of restoring the box: the thread must not set the page's
+  // height. Allow generous headroom — this only has to catch "unbounded".
+  const bounded = result.box && result.box.h <= Math.max(560, Math.round(window_innerHeightFallback(viewport)));
+  record(viewport, screen, "conversation height is bounded", bounded ? "PASS" : "FAIL",
+    result.box ? `container ${result.box.h}px, content ${result.box.scrollH}px` : "no scroll container found");
 }
 
+/** Viewport heights used by the harness are not exposed here; 900 is the tallest. */
+function window_innerHeightFallback() { return 900; }
+
 /**
- * The two speakers must be visually distinct — that is the whole point of
- * the restyle. Compares the computed background of an outbound bubble with
- * an inbound one.
+ * Opening the conversation must show the NEWEST messages, not the oldest.
  */
+async function checkConversationStartsAtLatest(page, viewport, screen) {
+  const r = await page.evaluate(() => {
+    const anchor = document.getElementById("conversation");
+    const bubble = anchor?.querySelector("li");
+    if (!bubble) return { skipped: true };
+    for (let el = bubble.parentElement; el && el !== document.body; el = el.parentElement) {
+      const s = getComputedStyle(el);
+      if (s.overflowY === "auto" || s.overflowY === "scroll") {
+        return { skipped: false, scrollTop: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+      }
+    }
+    return { skipped: true };
+  });
+  if (r.skipped) {
+    record(viewport, screen, "conversation opens at the latest message", "NOT TESTED", "no scroll container");
+    return;
+  }
+  // Nothing to scroll is also "already at the latest".
+  const atBottom = r.max <= 1 || r.scrollTop >= r.max - 4;
+  record(viewport, screen, "conversation opens at the latest message", atBottom ? "PASS" : "FAIL",
+    atBottom ? "" : `scrollTop ${r.scrollTop} of ${r.max}`);
+}
+
 async function checkConversationContrast(page, viewport, screen) {
   const result = await page.evaluate(() => {
     const anchor = document.getElementById("conversation");
@@ -500,6 +540,7 @@ async function main() {
           await visit(page, url, vp.name, "collection-detail");
           await checkConversationScroll(page, vp.name, "conversation");
           await checkConversationContrast(page, vp.name, "conversation");
+          await checkConversationStartsAtLatest(page, vp.name, "conversation");
           const composer = page.locator('input[name="body"]').first();
           if (await composer.count()) {
             const box = await composer.boundingBox();

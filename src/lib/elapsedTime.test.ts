@@ -21,21 +21,48 @@ const NOW = new Date("2026-08-26T12:00:00Z").getTime();
 const daysAgo = (n: number) => new Date(NOW - n * 24 * 60 * 60 * 1000);
 
 describe("daysSince", () => {
+  const TZ = "Asia/Jerusalem";
+
+  it("counts CALENDAR days, not 24-hour blocks", () => {
+    // 23.8 10:36 Israel -> 27.8 09:09 Israel is 3.94 * 24h, but four dates
+    // have turned over. Math.floor(ms / 24h) said 3 and is the whole bug.
+    expect(daysSince("2026-08-23T07:36:55Z", TZ, Date.parse("2026-08-27T06:09:32Z"))).toBe(4);
+  });
+
   it("counts whole elapsed days", () => {
-    expect(daysSince(daysAgo(7), NOW)).toBe(7);
-    expect(daysSince(daysAgo(0), NOW)).toBe(0);
+    expect(daysSince(daysAgo(7), TZ, NOW)).toBe(7);
+    expect(daysSince(daysAgo(0), TZ, NOW)).toBe(0);
   });
 
   it("never returns a negative age for a future timestamp", () => {
-    expect(daysSince(new Date(NOW + 5 * 86400000), NOW)).toBe(0);
+    expect(daysSince(new Date(NOW + 5 * 86400000), TZ, NOW)).toBe(0);
   });
 
   it("accepts the string form a serialized row arrives as", () => {
-    expect(daysSince(daysAgo(3).toISOString(), NOW)).toBe(3);
+    expect(daysSince(daysAgo(3).toISOString(), TZ, NOW)).toBe(3);
   });
 
   it("does not throw on an unparseable value", () => {
-    expect(daysSince("not a date", NOW)).toBe(0);
+    expect(daysSince("not a date", TZ, NOW)).toBe(0);
+  });
+
+  it("uses the organization's zone, not the render process's", () => {
+    // 22:30Z on the 26th is already the 27th in Israel: one date has turned
+    // over there, none in UTC. Vercel renders in UTC.
+    const opened = "2026-08-26T22:30:00Z";
+    const later = Date.parse("2026-08-27T05:00:00Z");
+    expect(daysSince(opened, TZ, later)).toBe(0);
+    expect(daysSince(opened, "UTC", later)).toBe(1);
+  });
+
+  it("advances by one each day WITHOUT anything being rewritten", () => {
+    const opened = "2026-08-23T07:36:55Z";
+    const ages = [
+      daysSince(opened, TZ, Date.parse("2026-08-26T13:00:00Z")),
+      daysSince(opened, TZ, Date.parse("2026-08-27T06:09:00Z")),
+      daysSince(opened, TZ, Date.parse("2026-08-28T06:09:00Z")),
+    ];
+    expect(ages, "the number must climb on its own").toEqual([3, 4, 5]);
   });
 });
 
