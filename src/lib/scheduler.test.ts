@@ -5,6 +5,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { WhatsAppSendError } from "@/lib/whatsapp/send";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Reminder infrastructure — "ביטול תזכורת כאשר הדרישה הושלמה": the
 // scheduler's stale-conversation reminder must never nudge a client for
@@ -60,6 +61,7 @@ async function seedStaleWaitingConversation(options: { withUnsatisfiedRequiremen
       reminderIntervalDays: 2,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" })
@@ -105,6 +107,7 @@ async function seedIdleOpenConversation(options: { withUnsatisfiedRequirement: b
       inactivityTimeoutMinutes: 15,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: "+972500000001" })
@@ -309,6 +312,7 @@ async function seedReminderScenario(options: {
       reminderIntervalHours: options.reminderIntervalHours ?? 5,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: `+9725${Math.floor(Math.random() * 100000000)}` })
@@ -1368,6 +1372,7 @@ describe("runScheduledTasks — a cancelled request is skipped entirely, sibling
         reminderIntervalDays: 2,
       })
       .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
     const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות חודשי" }).returning();
     const staleUpdatedAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
     const clients: { clientId: string; requestId: string; conversationId: string; phone: string }[] = [];

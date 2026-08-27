@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 let db: Database;
 
@@ -261,6 +262,7 @@ async function seedRequest(options?: { businessHoursAlwaysOpen?: boolean; whatsa
         : {}),
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "נועם שלום", phone: "+972500000000" })

@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 /**
  * Regression — a failing reminder must not re-fire on every tick.
@@ -69,6 +70,7 @@ async function seedDueReminder() {
       reminderIntervalHours: 6,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: "+972500000111" })

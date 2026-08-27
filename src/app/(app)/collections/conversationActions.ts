@@ -1451,19 +1451,23 @@ export async function retryFailedMessage(
   // a template by exact text.
   const isTemplateSend = lastOutbound.senderType === "ai";
   const [retryClient] = await db.select().from(clients).where(eq(clients.id, current.clientId)).limit(1);
-  const [retryOrganization] = await db
-    .select()
-    .from(organizations)
-    .where(eq(organizations.id, session.organizationId))
-    .limit(1);
   const rebuilt = isTemplateSend
     ? await buildReminderSend(
         conversation.id,
         collectionRequestId,
         retryClient?.name ?? "",
-        retryOrganization?.reminderV2Approved ?? false
+        session.organizationId
       )
     : null;
+
+  // Same resolver, same rules as the scheduler and the manual reminder: if
+  // this office has no approved template for the intent, the retry reports
+  // that instead of falling through to `lastOutbound.body` as free text —
+  // which is what turned an unapproved-template problem into a 24-hour-window
+  // rejection and hid the real cause.
+  if (rebuilt?.unavailable) {
+    return { error: rebuilt.unavailable.reason };
+  }
 
   const { sent, deliveryStatus, failureReason } = await sendOutboundMessage(
     session.organizationId,
@@ -1530,18 +1534,21 @@ export async function sendReminderNow(
     current.clientId
   );
   const [client] = await db.select().from(clients).where(eq(clients.id, current.clientId)).limit(1);
-  const [organization] = await db
-    .select()
-    .from(organizations)
-    .where(eq(organizations.id, session.organizationId))
-    .limit(1);
 
   const reminderSend = await buildReminderSend(
     conversation.id,
     collectionRequestId,
     client?.name ?? "",
-    organization?.reminderV2Approved ?? false
+    session.organizationId
   );
+
+  // No approved template for this office: say so, and send nothing. The
+  // old path fell back to another hardcoded template that Meta rejected
+  // for the same reason, which is how this surfaced as a mystery instead
+  // of a configuration error.
+  if (reminderSend.unavailable) {
+    return { error: reminderSend.unavailable.reason };
+  }
 
   const minuteBucket = new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString();
   const { sent, deliveryStatus, failureReason } = await sendOutboundMessage(

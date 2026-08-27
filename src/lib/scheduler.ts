@@ -434,8 +434,25 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
         conversation.id,
         conversation.collectionRequestId,
         conversation.clientName,
-        organization.reminderV2Approved
+        organization.id
       );
+      // No approved template for this office, or its connection is
+      // incomplete: record why and move on. Sending "something else" here
+      // would be a cross-tenant guess, and the previous fallback template
+      // was rejected by Meta for exactly the same reason as the one it
+      // replaced.
+      if (reminderSend.unavailable) {
+        await recordAuditEvent({
+          organizationId: organization.id,
+          eventType: "scheduler.reminder_template_unavailable",
+          description: `לא נשלחה תזכורת: ${reminderSend.unavailable.reason}`,
+          actorType: "system",
+          collectionRequestId: conversation.collectionRequestId,
+          metadata: { problem: reminderSend.unavailable.problem },
+        });
+        if (restoreOnFailure) await restoreOnFailure();
+        continue;
+      }
       // deliveryStatus, not the broader `sent` flag, is the true signal —
       // sendOutboundMessage returns sent:true for any attempt that wasn't
       // blocked by the automation gate, even one Meta itself rejected

@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 let db: Database;
 vi.mock("@/db", () => ({ getDb: async () => db }));
@@ -46,6 +47,7 @@ async function seedRequest() {
     // column (see caseReview.test.ts's identical comment).
     .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}`, documentCollectionEnabled: true })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db.insert(schema.clients).values({ organizationId: org.id, name: "רז שלום", phone: "+972500000000" }).returning();
   const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "Service" }).returning();
   const [request] = await db.insert(schema.collectionRequests).values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "p" }).returning();

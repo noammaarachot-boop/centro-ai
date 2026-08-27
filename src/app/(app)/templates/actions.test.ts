@@ -5,6 +5,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import type { Session } from "@/lib/auth/session";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Proves sendTemplateRequest — the one real path every "send a template to
 // clients" UI (the wizard, and the new template gallery's combined
@@ -104,6 +105,7 @@ async function seedOrgWithTemplate(requirementNames: string[] = ["תעודת ז�
       businessDays: "0,1,2,3,4,5,6",
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [user] = await db
     .insert(schema.users)
     .values({ organizationId: org.id, email: `${crypto.randomUUID()}@test.com`, passwordHash: "x", fullName: "Tester" })

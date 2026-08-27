@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Multi-active-collection-request disambiguation — unit/integration
 // coverage for the resolver logic itself (src/lib/requestDisambiguation.ts),
@@ -52,6 +53,7 @@ async function seedOrgAndClient() {
     .insert(schema.organizations)
     .values({ name: "Org", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}`, documentCollectionEnabled: true })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" })

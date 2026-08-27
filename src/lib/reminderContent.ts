@@ -2,12 +2,10 @@ import { isWithinFreeformSessionWindow, type TemplateSend } from "@/lib/conversa
 import { listMissingRequirementNames } from "@/lib/caseReview";
 import { formatRequirementListForTemplateParam } from "@/lib/documentRequestList";
 import {
-  REMINDER_BODY,
-  REMINDER_V2_BODY,
-  REMINDER_V2_ENABLED,
-  REMINDER_V2_PARAM_NAME,
-  REMINDER_V2_TEMPLATE_NAME,
-} from "@/lib/whatsapp/templates";
+  buildTemplateParams,
+  renderTemplateBody,
+  resolveApprovedTemplate,
+} from "@/lib/whatsapp/organizationWhatsApp";
 
 /**
  * Dynamic reminder content — instead of a static "still waiting for your
@@ -18,36 +16,51 @@ import {
  *
  *   - Window open (the client messaged within the last 24h): free-form
  *     text can say exactly this, naturally.
- *   - Window closed: only a pre-approved Template may be sent at all — the
- *     dynamic centro_reminder_v2 Template once approved on the WABA
- *     (REMINDER_V2_ENABLED), or today's static centro_reminder Template as
- *     the safe fallback until then. Never silently fails: sendOutboundMessage's
- *     own template resolution surfaces a clear "no_template"/delivery
- *     failure if it can't send, rather than losing the reminder silently.
+ *   - Window closed: only a template THIS organization has approved on its
+ *     own WABA may be sent, resolved by intent. There is deliberately no
+ *     fallback to another template — the old code fell back to the static
+ *     centro_reminder, which is just as absent from a given office's WABA as
+ *     the template that failed, turning a diagnosable configuration problem
+ *     into a second identical Meta rejection.
  */
 
 export interface ReminderSend {
   body: string;
   templateSend?: TemplateSend;
   allowFreeform: boolean;
+  /**
+   * Set when no send is possible. The caller reports this instead of
+   * sending — it never substitutes a different template.
+   */
+  unavailable?: { problem: string; reason: string };
 }
 
-// v2Enabled is injectable (same pattern as buildInitialRequestSend's own
-// v2Enabled parameter) so the Template-selection branch stays independently
-// unit-testable regardless of the live REMINDER_V2_ENABLED flag — real
-// callers never pass it and get today's live flag value.
+/**
+ * `organizationId` replaced a `v2Enabled` boolean that came from
+ * organizations.reminderV2Approved — a hand-set flag claiming a hardcoded
+ * template name (centro_reminder_v2) was approved, with nothing verifying
+ * that the name existed on that office's WABA at all. In production it was
+ * true for an office whose WABA holds only centro_document_reminder_v3, so
+ * every reminder asked Meta for a template that account does not have and
+ * came back "(#100) Invalid parameter". The template is now looked up from
+ * the organization's own approved rows, by intent.
+ */
 export async function buildReminderSend(
   conversationId: string,
   collectionRequestId: string,
   clientName: string,
-  v2Enabled: boolean = REMINDER_V2_ENABLED
+  organizationId: string
 ): Promise<ReminderSend> {
   const missing = await listMissingRequirementNames(collectionRequestId);
   if (missing.length === 0) {
     // Shouldn't normally be reached — the scheduler already checks
     // checkCompletionGate before ever calling this — but never invents a
     // missing-document list when there genuinely isn't one.
-    return { body: REMINDER_BODY, allowFreeform: false };
+    return {
+      body: "",
+      allowFreeform: false,
+      unavailable: { problem: "nothing_missing", reason: "אין מסמכים חסרים — אין על מה להזכיר." },
+    };
   }
 
   const withinWindow = await isWithinFreeformSessionWindow(conversationId);
@@ -60,20 +73,26 @@ export async function buildReminderSend(
     };
   }
 
-  if (v2Enabled) {
+  // Window closed: only a template this organization has approved on its own
+  // WABA can be sent. Resolved by intent, with the parameters built in
+  // whatever placeholder style that approved body actually declares.
+  const resolved = await resolveApprovedTemplate(organizationId, "DOCUMENT_REMINDER");
+  if (resolved.ok) {
     const listParam = formatRequirementListForTemplateParam(missing);
     return {
-      body: REMINDER_V2_BODY.replace("{{documents}}", listParam),
+      body: renderTemplateBody(resolved.template, [listParam]),
       templateSend: {
-        templateName: REMINDER_V2_TEMPLATE_NAME,
-        language: "he",
-        params: [{ name: REMINDER_V2_PARAM_NAME, value: listParam }],
+        templateName: resolved.template.name,
+        language: resolved.template.language,
+        params: buildTemplateParams(resolved.template, [listParam]),
       },
       allowFreeform: false,
     };
   }
 
-  // Fallback until centro_reminder_v2 is approved on the WABA — today's
-  // exact behavior, unchanged.
-  return { body: REMINDER_BODY, allowFreeform: false };
+  return {
+    body: "",
+    allowFreeform: false,
+    unavailable: { problem: resolved.problem, reason: resolved.reason },
+  };
 }

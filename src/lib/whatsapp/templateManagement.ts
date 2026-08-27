@@ -35,7 +35,18 @@ export class WhatsAppTemplateSubmissionError extends Error {
 export const DOCUMENT_LIST_PLACEHOLDER = "{{1}}";
 export const DEFAULT_DOCUMENT_LIST_EXAMPLE = "תעודת זהות, 3 תלושי שכר ואישור ניהול חשבון";
 
+/**
+ * What a template is FOR, independent of what any one organization named it
+ * on its own WABA. The send path asks for an intent; the resolver returns
+ * that organization's own approved template for it. A hardcoded name like
+ * centro_reminder_v2 is one office's template on one WABA — Centro is
+ * multi-tenant, so a name can never be what the sender asks for.
+ */
+export type TemplateIntent = "DOCUMENT_REQUEST" | "DOCUMENT_REMINDER";
+
 export interface ManagedTemplateDefinition {
+  /** The business purpose the send path resolves by. */
+  intent: TemplateIntent;
   /** Meta template name: lowercase letters, digits and underscores only. */
   name: string;
   /** Hebrew label for the owner screen. */
@@ -68,6 +79,7 @@ export interface ManagedTemplateDefinition {
 // touches how missing documents are calculated; this is wording alone.
 export const MANAGED_TEMPLATES: ManagedTemplateDefinition[] = [
   {
+    intent: "DOCUMENT_REQUEST",
     name: "centro_document_request_v3",
     label: "בקשת מסמכים",
     purpose: "נשלחת בפנייה הראשונה ללקוח",
@@ -82,6 +94,7 @@ export const MANAGED_TEMPLATES: ManagedTemplateDefinition[] = [
       "תודה!",
   },
   {
+    intent: "DOCUMENT_REMINDER",
     name: "centro_document_reminder_v3",
     label: "תזכורת",
     purpose: "נשלחת כשעדיין חסרים מסמכים",
@@ -155,6 +168,10 @@ export function isPlaceholderPositionValid(bodyText: string): boolean {
 
 export function findManagedTemplate(name: string): ManagedTemplateDefinition | undefined {
   return MANAGED_TEMPLATES.find((template) => template.name === name);
+}
+
+export function findManagedTemplateByIntent(intent: TemplateIntent): ManagedTemplateDefinition | undefined {
+  return MANAGED_TEMPLATES.find((template) => template.intent === intent);
 }
 
 // Meta rejects a parameterized template outright (rejected_reason:

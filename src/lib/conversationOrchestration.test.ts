@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 /**
  * Phase 2.1 remediation coverage — the per-organization Meta
@@ -60,6 +61,7 @@ async function seedRequest(initialRequestV2Approved: boolean) {
       businessDays: "0,1,2,3,4,5,6",
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח בדיקה", phone: "+972500000000" })
@@ -73,65 +75,64 @@ async function seedRequest(initialRequestV2Approved: boolean) {
   return { orgId: org.id, clientId: client.id, requestId: request.id };
 }
 
-describe("startConversation — Phase 2.1: template v2 usage is gated per-organization", () => {
-  it("organization has NOT approved v2 — sends the static v1 template, never guesses approval", async () => {
+/**
+ * Replaces the "Phase 2.1" v1/v2 gating tests.
+ *
+ * Those covered a design that is gone: a hardcoded template name chosen by
+ * organizations.initialRequestV2Approved — a hand-set boolean asserting that
+ * a name Centro holds was approved on an office's WABA, which nothing ever
+ * verified against Meta. In production it was true for an office whose WABA
+ * held neither name, so every send was rejected with "(#100) Invalid
+ * parameter". The template is now resolved from that organization's own
+ * synced-from-Meta rows, by business intent.
+ */
+describe("startConversation — the template comes from THIS organization's approved rows", () => {
+  it("sends the organization's own approved DOCUMENT_REQUEST template", async () => {
     const { orgId, clientId, requestId } = await seedRequest(false);
     sendTemplateMessage.mockResolvedValue({ messageId: "wamid.1" });
 
     await startConversation(orgId, requestId, clientId);
 
     expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
-    expect(sendTemplateMessage.mock.calls[0][2]).toBe("centro_initial_request");
-    expect(sendTemplateMessage.mock.calls[0][4]).toEqual([]);
-  });
-
-  it("organization HAS approved v2 — sends the dynamic v2 template with the real requirement list", async () => {
-    const { orgId, clientId, requestId } = await seedRequest(true);
-    sendTemplateMessage.mockResolvedValue({ messageId: "wamid.1" });
-
-    await startConversation(orgId, requestId, clientId);
-
-    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
-    expect(sendTemplateMessage.mock.calls[0][2]).toBe("centro_initial_request_v2");
+    expect(sendTemplateMessage.mock.calls[0][2]).toBe("centro_document_request_v3");
+    // {{1}} is positional, so a bare string — not a {name, value} pair,
+    // which Meta rejects for a positional body.
     expect(sendTemplateMessage.mock.calls[0][4]).toEqual(["תעודת זהות"]);
   });
 
-  it("v2 approved but Meta rejects the send (e.g. stale approval flag) — falls back to v1 automatically, client still gets a real message", async () => {
-    const { orgId, clientId, requestId } = await seedRequest(true);
-    const { WhatsAppSendError } = await import("@/lib/whatsapp/send");
-    sendTemplateMessage.mockRejectedValueOnce(new WhatsAppSendError("simulated: template not approved on this WABA"));
-    sendTemplateMessage.mockResolvedValueOnce({ messageId: "wamid.fallback" });
+  it("ignores initialRequestV2Approved entirely — the flag no longer decides anything", async () => {
+    const approved = await seedRequest(true);
+    const notApproved = await seedRequest(false);
+    sendTemplateMessage.mockResolvedValue({ messageId: "wamid.1" });
 
-    const result = await startConversation(orgId, requestId, clientId);
+    await startConversation(approved.orgId, approved.requestId, approved.clientId);
+    await startConversation(notApproved.orgId, notApproved.requestId, notApproved.clientId);
 
-    expect(result.sent).toBe(true);
-    expect(sendTemplateMessage).toHaveBeenCalledTimes(2);
-    expect(sendTemplateMessage.mock.calls[0][2]).toBe("centro_initial_request_v2"); // first attempt
-    expect(sendTemplateMessage.mock.calls[1][2]).toBe("centro_initial_request"); // fallback
-
-    // Both attempts are on the record — nothing hidden — and the LAST
-    // message is the one that actually reached the client.
-    const rows = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, result.conversation.id)).orderBy(schema.messages.createdAt);
-    expect(rows).toHaveLength(2);
-    expect(rows[0].deliveryStatus).toBe("failed");
-    expect(rows[1].deliveryStatus).toBe("sent");
-    expect(rows[1].whatsappMessageId).toBe("wamid.fallback");
+    expect(sendTemplateMessage.mock.calls[0][2]).toBe("centro_document_request_v3");
+    expect(sendTemplateMessage.mock.calls[1][2]).toBe("centro_document_request_v3");
   });
 
-  it("never retries more than once — a second v1 failure is not looped", async () => {
+  it("sends NOTHING when the organization has no approved template — never another template", async () => {
     const { orgId, clientId, requestId } = await seedRequest(true);
-    const { WhatsAppSendError } = await import("@/lib/whatsapp/send");
-    sendTemplateMessage.mockRejectedValue(new WhatsAppSendError("simulated: total outage"));
+    await db.delete(schema.whatsappTemplates).where(eq(schema.whatsappTemplates.organizationId, orgId));
 
     const result = await startConversation(orgId, requestId, clientId);
 
-    // Contract corrected (production incident): `sent` now means the
-    // provider ACCEPTED the message. It used to be true here "even though
-    // delivery failed", which is exactly the lie that let three requests be
-    // shown as sent to clients who received nothing. The subject of this
-    // test — never looping the v1 fallback — is unchanged below.
     expect(result.sent).toBe(false);
-    expect(sendTemplateMessage).toHaveBeenCalledTimes(2); // v2 attempt + exactly one v1 fallback, never more
+    expect(sendTemplateMessage, "no substitute template may be attempted").not.toHaveBeenCalled();
+  });
+
+  it("does not retry with a second template when Meta rejects the approved one", async () => {
+    const { orgId, clientId, requestId } = await seedRequest(true);
+    const { WhatsAppSendError } = await import("@/lib/whatsapp/send");
+    sendTemplateMessage.mockRejectedValue(new WhatsAppSendError("simulated: rejected by Meta"));
+
+    const result = await startConversation(orgId, requestId, clientId);
+
+    // The old fallback retried with a different hardcoded name, which is no
+    // likelier to exist on this WABA — it only hid the real rejection.
+    expect(result.sent).toBe(false);
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1);
   });
 });
 

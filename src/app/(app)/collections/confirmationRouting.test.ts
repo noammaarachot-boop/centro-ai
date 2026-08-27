@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Regression coverage for a real production bug: respondToConfirmation
 // (the employee "הלקוח אישר/סירב" quick-action) used to call only
@@ -100,6 +101,7 @@ async function seedRequest(status: "active" | "completed" = "active") {
     .insert(schema.organizations)
     .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" })

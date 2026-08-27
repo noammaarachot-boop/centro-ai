@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // scheduleCaseReviewRelay — the real-time, after()-driven counterpart to
 // scheduler.ts's cron sweep of conversations.pendingCaseReviewAt. These
@@ -71,6 +72,7 @@ async function seedWaitingRequest(pendingCaseReviewAt: Date) {
       timezone: "Asia/Jerusalem",
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [clientRow] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "רז שלום", phone: `+97250${Math.floor(Math.random() * 10_000_000)}` })

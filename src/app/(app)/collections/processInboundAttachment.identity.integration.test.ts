@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Smart identity/consistency verification (src/lib/documentIdentityVerification.ts)
 // end-to-end through the real intake pipeline: a document of exactly the
@@ -141,6 +142,7 @@ async function seedRequest(requirementNames: string[], clientName = "נועם ש
     // column (see caseReview.test.ts's identical comment).
     .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: clientName, phone: "+972500000000" })

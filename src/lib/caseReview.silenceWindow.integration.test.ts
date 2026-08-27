@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Silence-window case review (src/lib/caseReview.ts's
 // runAutomaticCaseStatusReview + conversations.pendingCaseReviewAt) — an
@@ -82,6 +83,7 @@ async function seedWaitingRequest(
       ...overrides,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [clientRow] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "רז שלום", phone: "+972500000000" })

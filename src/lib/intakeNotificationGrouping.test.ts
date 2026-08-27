@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Reproduces the exact production report: a request for רז שלום's תעודת
 // זהות + דרכון instead received both documents under ישראל ישראלי's name, plus
@@ -146,6 +147,7 @@ async function seedRequest() {
     // column (see caseReview.test.ts's identical comment).
     .values({ name: "Org", googleDriveFolderId: "root-1", whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "רז שלום", phone: "+972500000000" })

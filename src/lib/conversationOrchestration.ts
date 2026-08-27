@@ -20,8 +20,13 @@ import { OperationFailedError } from "@/lib/resilience";
 import { captureError } from "@/lib/monitoring/errorReporting";
 import { getRequestRequirementNames } from "@/lib/documentRequestList";
 import { toE164 } from "@/lib/whatsapp/phone";
-import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
-import { buildInitialRequestSend } from "@/lib/whatsapp/initialRequestMessage";
+import { formatRequirementListForTemplateParam } from "@/lib/documentRequestList";
+import {
+  buildTemplateParams,
+  renderTemplateBody,
+  resolveApprovedTemplate,
+  resolveOrganizationWhatsAppConfig,
+} from "@/lib/whatsapp/organizationWhatsApp";
 import {
   type InteractiveButton,
   type TemplateBodyParam,
@@ -219,9 +224,28 @@ async function sendViaWhatsApp(
   // column null and is completely unaffected — undefined here means
   // send.ts's own postMessage falls back to the shared token exactly as
   // before this feature existed.
-  const accessToken = organization.whatsappAccessTokenEnc
-    ? decryptWhatsAppToken(organization.whatsappAccessTokenEnc)
-    : undefined;
+  // This organization's own credentials, resolved together.
+  // `undefined` when absent, which let send.ts fall back to the shared
+  // WHATSAPP_SYSTEM_USER_TOKEN — Centro's own account — so an office with a
+  // broken connection would send from the wrong WhatsApp number instead of
+  // reporting that its connection is broken.
+  // One resolver decides the credential AND which account it belongs to, so
+  // the phone number id and the token can never come from different
+  // organizations. It returns the office's own token for a manual connection
+  // and Centro's Tech Provider token for an Embedded Signup one — both are
+  // authorised for THIS organization's WABA, and neither is another tenant's.
+  const resolvedConfig = await resolveOrganizationWhatsAppConfig(organization.id);
+  if (!resolvedConfig.ok) {
+    console.log("[wa-diag] BLOCKED: organization WhatsApp configuration incomplete → NO Meta call", {
+      problem: resolvedConfig.problem,
+    });
+    return {
+      whatsappMessageId: null,
+      deliveryStatus: "not_connected",
+      failureReason: resolvedConfig.reason,
+    };
+  }
+  const accessToken = resolvedConfig.config.accessToken;
 
   const rawPhone = await getClientPhoneForConversation(conversationId);
   const to = rawPhone ? toE164(rawPhone) : null;
@@ -664,44 +688,51 @@ export async function startConversation(
   // approves a template per-WABA, not for every connected office at once.
   // An org that hasn't had centro_initial_request_v2 approved on its own
   // WABA yet safely gets the static, always-approved v1 template.
-  const organization = await getOrganizationConfig(organizationId);
   const requirementNames = await getRequestRequirementNames(organizationId, collectionRequestId);
-  const initial = buildInitialRequestSend(requirementNames, organization.initialRequestV2Approved);
+
+  // THIS organization's own approved DOCUMENT_REQUEST template, resolved by
+  // intent. It used to be a hardcoded name gated on
+  // organizations.initialRequestV2Approved — a hand-set boolean asserting
+  // that a name Centro holds is approved on an office's WABA, which nothing
+  // ever verified against Meta.
+  const resolvedRequest = await resolveApprovedTemplate(organizationId, "DOCUMENT_REQUEST");
+  if (!resolvedRequest.ok) {
+    console.error("[whatsapp] no approved DOCUMENT_REQUEST template for organization", {
+      organizationId,
+      problem: resolvedRequest.problem,
+    });
+    await recordAuditEvent({
+      organizationId,
+      eventType: "conversation.initial_request_template_unavailable",
+      description: `לא נשלחה פנייה ראשונית: ${resolvedRequest.reason}`,
+      actorType: "system",
+      collectionRequestId,
+      metadata: { problem: resolvedRequest.problem },
+    });
+    return { conversation, sent: false };
+  }
+
+  const listParam = formatRequirementListForTemplateParam(requirementNames);
   const result = await sendOutboundMessage(
     organizationId,
     conversation.id,
-    initial.renderedBody,
+    renderTemplateBody(resolvedRequest.template, [listParam]),
     "ai",
     trigger,
-    { templateName: initial.templateName, language: initial.language, params: initial.params }
+    {
+      templateName: resolvedRequest.template.name,
+      language: resolvedRequest.template.language,
+      params: buildTemplateParams(resolvedRequest.template, [listParam]),
+    }
   );
 
-  // Fallback-on-rejection (Phase 2.1 remediation) — organizations.initialRequestV2Approved
-  // is set by a human confirming Meta's approval, so a stale/premature
-  // "true" is possible (approval revoked, a typo, a copy-pasted org
-  // setting). Rather than leaving the very first client-facing message of
-  // a collection request permanently "failed", retry once with the
-  // always-approved static v1 template — never silently drop the client's
-  // first message over a template-tracking mistake. Both attempts stay on
-  // the message history (nothing hidden), and only ever retries with v1
-  // once, never loops.
-  if (initial.usedV2 && result.deliveryStatus === "failed") {
-    console.error("[whatsapp] v2 initial-request template send failed — falling back to static v1 template", {
-      organizationId,
-      collectionRequestId,
-    });
-    const fallback = buildInitialRequestSend(requirementNames, false);
-    const fallbackResult = await sendOutboundMessage(
-      organizationId,
-      conversation.id,
-      fallback.renderedBody,
-      "ai",
-      trigger,
-      { templateName: fallback.templateName, language: fallback.language, params: fallback.params }
-    );
-    return { conversation, sent: fallbackResult.sent };
-  }
-
+  // The retry-with-a-different-template fallback that used to live here is
+  // gone. It existed because initialRequestV2Approved could be wrong, and it
+  // retried with a second hardcoded name — which is no more likely to exist
+  // on this office's WABA than the first. The template now comes from rows
+  // synced from Meta, so a rejection is a real signal about that specific
+  // approved template and is left visible rather than papered over with a
+  // second send.
   return { conversation, sent: result.sent };
 }
 

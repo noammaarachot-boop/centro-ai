@@ -53,6 +53,10 @@ export const metadata: Metadata = { title: "פרטי ארגון — מסוף ב�
 // raw status rather than being hidden.
 const TEMPLATE_STATUS_LABEL: Record<string, string> = {
   LOCAL_DRAFT: "טרם הוגשה",
+  // Meta does not have this template on the WABA at all — distinct from
+  // "never submitted", and it must never read as "waiting for approval":
+  // nothing is waiting, and no send can succeed until it is resubmitted.
+  MISSING: "לא קיימת ב-Meta",
   PENDING: "ממתינה לאישור",
   APPROVED: "מאושרת",
   REJECTED: "נדחתה",
@@ -64,6 +68,7 @@ const TEMPLATE_STATUS_LABEL: Record<string, string> = {
 
 const TEMPLATE_STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = {
   LOCAL_DRAFT: "neutral",
+  MISSING: "danger",
   PENDING: "warning",
   APPROVED: "success",
   REJECTED: "danger",

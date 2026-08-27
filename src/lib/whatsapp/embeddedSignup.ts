@@ -301,16 +301,36 @@ export function parseGraphErrorBody(body: string): {
   message?: string;
   code?: number;
   error_subcode?: number;
+  type?: string;
+  /** Meta's own support reference — the only way to have them trace a call. */
+  fbtrace_id?: string;
+  /** e.g. {messaging_product, details} on a send rejection. */
+  error_data?: unknown;
 } {
   try {
     const json = JSON.parse(body) as {
-      error?: { message?: string; code?: number; error_subcode?: number };
+      error?: {
+        message?: string;
+        code?: number;
+        error_subcode?: number;
+        type?: string;
+        fbtrace_id?: string;
+        error_data?: unknown;
+      };
       error_description?: string;
     };
     return {
       message: json.error?.message ?? json.error_description,
       code: json.error?.code,
+      // Subcode is what separates otherwise identical failures: code 100 with
+      // subcode 33 is "this object is not visible to this token" (a
+      // permissions/wrong-account problem), while code 100 with no subcode on
+      // /messages is a bad parameter such as a template name the WABA does
+      // not have. Discarding it made those indistinguishable in the logs.
       error_subcode: json.error?.error_subcode,
+      type: json.error?.type,
+      fbtrace_id: json.error?.fbtrace_id,
+      error_data: json.error?.error_data,
     };
   } catch {
     return { message: body.slice(0, 240) };

@@ -6,6 +6,7 @@ import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { AUTO_APPROVE_CONFIDENCE, type DocumentClassification } from "@/lib/ai/documentClassifier";
 import { flushDueIntakeNotifications, resolveConfirmationFromReply } from "@/lib/pendingConfirmations";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 let db: Database;
 
@@ -342,6 +343,7 @@ async function seedRequest(options?: {
         : {}),
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "רז שלום", phone: "+972500000000" })

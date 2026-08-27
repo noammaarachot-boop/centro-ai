@@ -114,8 +114,29 @@ async function postMessage(
     // own message (which src/lib/conversationOrchestration.ts's catch
     // block does log in full).
     const parsed = parseGraphErrorBody(body);
-    console.error("[wa-diag] Meta response NOT OK", { httpStatus: response.status, code: parsed.code, message: parsed.message });
-    throw new WhatsAppSendError(`WhatsApp send failed (${response.status}): code=${parsed.code ?? "?"} message=${parsed.message ?? "(unparseable body)"}`);
+    // Subcode, type and fbtrace_id are the difference between a diagnosable
+    // failure and a guess: code 100 alone cannot tell "template not on this
+    // WABA" apart from "this token cannot see this account" (100/33). They
+    // are structured Meta fields, not echoed request content, so recording
+    // them leaks no recipient or parameter data.
+    console.error("[wa-diag] Meta response NOT OK", {
+      httpStatus: response.status,
+      code: parsed.code,
+      subcode: parsed.error_subcode,
+      type: parsed.type,
+      fbtrace_id: parsed.fbtrace_id,
+      message: parsed.message,
+    });
+    const detail = [
+      `code=${parsed.code ?? "?"}`,
+      parsed.error_subcode !== undefined ? `subcode=${parsed.error_subcode}` : null,
+      parsed.type ? `type=${parsed.type}` : null,
+      parsed.fbtrace_id ? `fbtrace_id=${parsed.fbtrace_id}` : null,
+      `message=${parsed.message ?? "(unparseable body)"}`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    throw new WhatsAppSendError(`WhatsApp send failed (${response.status}): ${detail}`);
   }
   console.log("[wa-diag] Meta response OK", { httpStatus: response.status });
   const data = (await response.json()) as SendMessagesResponse;

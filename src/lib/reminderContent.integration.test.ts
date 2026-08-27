@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Dynamic reminder content (mandatory scenarios #15/#16): within the 24h
 // WhatsApp session window a reminder can use natural free text naming
@@ -26,6 +27,7 @@ beforeAll(async () => {
 
 async function seedRequestWithMissingRequirement(inboundMessageAgeHours: number | null) {
   const [org] = await db.insert(schema.organizations).values({ name: "Org" }).returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [clientRow] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "רז שלום", phone: "+972500000000" })
@@ -54,14 +56,14 @@ async function seedRequestWithMissingRequirement(inboundMessageAgeHours: number 
       createdAt: new Date(Date.now() - inboundMessageAgeHours * 60 * 60 * 1000),
     });
   }
-  return { conversationId: conversation.id, requestId: request.id };
+  return { conversationId: conversation.id, requestId: request.id, organizationId: org.id };
 }
 
 describe("mandatory #15: reminder within the 24h session window uses free text", () => {
   it("names exactly the missing document, as natural free text with allowFreeform true", async () => {
-    const { conversationId, requestId } = await seedRequestWithMissingRequirement(2); // 2h ago — within window
+    const { conversationId, requestId, organizationId } = await seedRequestWithMissingRequirement(2); // 2h ago — within window
 
-    const send = await buildReminderSend(conversationId, requestId, "רז שלום");
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", organizationId);
     expect(send.allowFreeform).toBe(true);
     expect(send.templateSend).toBeUndefined();
     expect(send.body).toContain("אישור שכירות");
@@ -71,49 +73,56 @@ describe("mandatory #15: reminder within the 24h session window uses free text",
 
 describe("mandatory #16: reminder outside the 24h window uses the Meta template", () => {
   it("never sent as free text once the window has closed", async () => {
-    const { conversationId, requestId } = await seedRequestWithMissingRequirement(30); // 30h ago — window closed
+    const { conversationId, requestId, organizationId } = await seedRequestWithMissingRequirement(30); // 30h ago — window closed
 
-    const send = await buildReminderSend(conversationId, requestId, "רז שלום");
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", organizationId);
     expect(send.allowFreeform).toBe(false);
   });
 
   it("no inbound message at all (never messaged) also falls outside the window", async () => {
-    const { conversationId, requestId } = await seedRequestWithMissingRequirement(null);
+    const { conversationId, requestId, organizationId } = await seedRequestWithMissingRequirement(null);
 
-    const send = await buildReminderSend(conversationId, requestId, "רז שלום");
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", organizationId);
     expect(send.allowFreeform).toBe(false);
   });
 
-  it("once centro_reminder_v2 is approved (v2Enabled), selects the new dynamic Template with the real missing-document list as its named 'documents' param", async () => {
-    const { conversationId, requestId } = await seedRequestWithMissingRequirement(30);
+  it("selects THIS organization's own approved template, with its real placeholder style", async () => {
+    const { conversationId, requestId, organizationId } = await seedRequestWithMissingRequirement(30);
 
-    const send = await buildReminderSend(conversationId, requestId, "רז שלום", true);
-    expect(send.templateSend).toEqual({
-      templateName: "centro_reminder_v2",
-      language: "he",
-      params: [{ name: "documents", value: "אישור שכירות" }],
-    });
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", organizationId);
+
+    // The name is whatever this office had approved — never a name the code
+    // holds. centro_reminder_v2 used to be hardcoded here and did not exist
+    // on the WABA at all, which is what Meta rejected with "(#100)".
+    expect(send.templateSend?.templateName).toBe("centro_document_reminder_v3");
+    expect(send.templateSend?.language).toBe("he");
+    // {{1}} is positional, so the parameter is a bare string — a named
+    // {name, value} pair here is what Meta rejects for a positional body.
+    expect(send.templateSend?.params).toEqual(["אישור שכירות"]);
     expect(send.body).toContain("אישור שכירות");
   });
 
-  it("still falls back to the static template while v2 is not yet enabled (today's live default)", async () => {
-    const { conversationId, requestId } = await seedRequestWithMissingRequirement(30);
+  it("refuses to send — rather than substituting another template — when the organization has none approved", async () => {
+    const { conversationId, requestId, organizationId } = await seedRequestWithMissingRequirement(30);
+    await db.delete(schema.whatsappTemplates).where(eq(schema.whatsappTemplates.organizationId, organizationId));
 
-    const send = await buildReminderSend(conversationId, requestId, "רז שלום", false);
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", organizationId);
+
     expect(send.templateSend).toBeUndefined();
+    expect(send.unavailable?.problem).toBe("no_template");
   });
 });
 
 describe("buildReminderSend — never invents a missing document that isn't real", () => {
   it("nothing actually missing -> falls back to the generic body, never a guessed list", async () => {
-    const { conversationId, requestId } = await seedRequestWithMissingRequirement(2);
+    const { conversationId, requestId, organizationId } = await seedRequestWithMissingRequirement(2);
     // Waive the one requirement so nothing is genuinely missing.
     await db
       .update(schema.collectionRequestRequirements)
       .set({ exceptionStatus: "waived" })
       .where(eq(schema.collectionRequestRequirements.collectionRequestId, requestId));
 
-    const send = await buildReminderSend(conversationId, requestId, "רז שלום");
+    const send = await buildReminderSend(conversationId, requestId, "רז שלום", organizationId);
     expect(send.body).not.toContain("אישור שכירות");
   });
 });

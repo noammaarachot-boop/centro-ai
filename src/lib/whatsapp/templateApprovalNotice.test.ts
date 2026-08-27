@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // The one-time "your templates are approved" email.
 //
@@ -64,6 +65,7 @@ async function seedOrg(options?: {
       templatesApprovedEmailSentAt: options?.alreadyNotified ? new Date() : null,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   await db.insert(schema.users).values({
     organizationId: org.id,
     email: options?.email ?? `${crypto.randomUUID()}@office.example`,
@@ -280,6 +282,7 @@ describe("failed send is retryable and never falsely recorded", () => {
         whatsappAccessTokenEnc: encryptWhatsAppToken("org-own-token"),
       })
       .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
 
     const result = await notifyTemplatesApproved(org.id);
 
@@ -300,11 +303,18 @@ describe("pollTemplateApprovalIfDue — the cron pass stays cheap and self-termi
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("never polls an organization that was already notified", async () => {
+  it("KEEPS polling an already-notified organization — the email is one-shot, the status is not", async () => {
+    // This used to assert the opposite. templatesApprovedEmailSentAt gated
+    // the poll itself, so status synchronisation stopped permanently the
+    // moment the approval email went out — after which Meta pausing,
+    // disabling or deleting a template was invisible to Centro forever, and
+    // the send path kept believing a template was approved. The email keeps
+    // its own one-shot claim inside notifyTemplatesApproved.
     const org = await seedOrg({ alreadyNotified: true });
 
-    expect(await pollTemplateApprovalIfDue(org.id)).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await pollTemplateApprovalIfDue(org.id)).toBe(true);
+    expect(fetchMock, "Meta must still be asked for the current status").toHaveBeenCalled();
+    expect(sendTransactionalEmail, "but the owner is never emailed twice").not.toHaveBeenCalled();
   });
 
   it("never polls an organization with no WhatsApp connection", async () => {

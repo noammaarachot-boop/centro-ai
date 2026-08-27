@@ -7,6 +7,7 @@ import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { makeTestDocument, type TestDocument } from "./fixtures";
 import { CONFIRM_NO_BUTTON_ID, CONFIRM_YES_BUTTON_ID } from "@/lib/pendingConfirmations";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 /**
  * Document-collection engine — comprehensive, re-runnable, end-to-end
@@ -467,6 +468,7 @@ async function seedActiveRequest(
       reminderIntervalDays: 2,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     // Matches the fixture documents' own extractedPersonName (fixtures.ts)
@@ -1421,6 +1423,7 @@ describe("human_control — silences the bot, strictly scoped to one conversatio
         businessDays: "0,1,2,3,4,5,6",
       })
       .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
     const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות" }).returning();
 
     async function seedClientRequest(name: string, phone: string) {
@@ -1589,6 +1592,7 @@ describe("Multi-active-collection-request disambiguation", () => {
         businessDays: "0,1,2,3,4,5,6",
       })
       .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
     const [client] = await db
       .insert(schema.clients)
       .values({ organizationId: org.id, name: "ישראל ישראלי בדיקה", phone: TEST_CLIENT_PHONE })

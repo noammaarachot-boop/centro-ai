@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 /**
  * DEFINED BEHAVIOUR — changing the reminder interval.
@@ -78,6 +79,7 @@ async function seed(intervalHours: number, hoursAgo: number) {
       reminderIntervalHours: intervalHours,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: "+972500000111" })

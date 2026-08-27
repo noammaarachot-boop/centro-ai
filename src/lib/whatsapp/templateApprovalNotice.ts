@@ -37,10 +37,11 @@ interface WhatsAppCredentials {
   accessToken: string;
 }
 
-// An organization's own token when it has one (a manual connection), and
-// the shared system-user token otherwise (Embedded Signup, whose WABA that
-// token does cover). Same prefer-the-organization's-own rule the send path
-// follows — and the reason this feature works for BOTH connection types.
+// THIS organization's WABA, paired with whichever token is authorised for
+// it: the office's own for a manual connection, Centro's Tech Provider
+// System User for an Embedded Signup one. The wabaId always comes from this
+// organization's row, so no token is ever pointed at another tenant's
+// account.
 async function resolveCredentials(organizationId: string): Promise<WhatsAppCredentials | null> {
   const db = await getDb();
   const [org] = await db
@@ -62,6 +63,10 @@ async function resolveCredentials(organizationId: string): Promise<WhatsAppCrede
     }
   }
 
+  // Embedded Signup: the office has no token by design and Meta authorised
+  // Centro's own System User on its WABA, so the shared token is the correct
+  // credential — but it is only ever paired with THIS organization's wabaId,
+  // read above. It is never used to reach another tenant's account.
   try {
     const { systemUserToken } = getWhatsAppConfig();
     return systemUserToken ? { wabaId: org.wabaId, accessToken: systemUserToken } : null;
@@ -95,12 +100,40 @@ export async function syncTemplatesAndNotify(organizationId: string): Promise<Te
     const remote = statuses.find(
       (candidate) => candidate.name === definition.name && candidate.language === definition.language
     );
-    if (!remote) continue;
+    // Meta does not have this template on this WABA. That is a real, distinct
+    // state — the office genuinely has nothing to send with — and it used to
+    // be a silent `continue`, which left the row absent and the screen saying
+    // "טרם הוגשה" (never submitted) whether the template had never been sent
+    // for review or had been deleted on Meta's side. Recorded as MISSING so
+    // the two are distinguishable.
+    if (!remote) {
+      const [existingMissing] = await db
+        .select({ id: whatsappTemplates.id, status: whatsappTemplates.status })
+        .from(whatsappTemplates)
+        .where(
+          and(
+            eq(whatsappTemplates.organizationId, organizationId),
+            eq(whatsappTemplates.name, definition.name),
+            eq(whatsappTemplates.language, definition.language)
+          )
+        )
+        .limit(1);
+      // Only a row that Meta previously knew about becomes MISSING; a local
+      // draft that was never submitted stays a local draft.
+      if (existingMissing && existingMissing.status !== "LOCAL_DRAFT") {
+        await db
+          .update(whatsappTemplates)
+          .set({ status: "MISSING", lastSyncedAt: new Date(), updatedAt: new Date() })
+          .where(eq(whatsappTemplates.id, existingMissing.id));
+      }
+      continue;
+    }
 
     if (remote.status === "APPROVED") approvedCount += 1;
     synced += 1;
 
     const values = {
+      intent: definition.intent,
       status: remote.status,
       category: remote.category,
       rejectedReason: remote.rejectedReason,
@@ -255,7 +288,13 @@ export async function pollTemplateApprovalIfDue(organizationId: string): Promise
         eq(organizations.id, organizationId),
         isNotNull(organizations.whatsappBusinessAccountId),
         isNotNull(organizations.whatsappConnectedAt),
-        isNull(organizations.templatesApprovedEmailSentAt),
+        // NOT gated on templatesApprovedEmailSentAt any more. That column
+        // exists to send the "your templates are approved" email exactly
+        // once, and using it as the poll gate meant status synchronisation
+        // stopped permanently the moment that email went out — after which
+        // Meta pausing, disabling or deleting a template was invisible to
+        // Centro forever. notifyTemplatesApproved keeps its own one-shot
+        // claim, so the email still cannot be sent twice.
         isNull(organizations.suspendedAt),
         sql`(${organizations.templatesLastPolledAt} is null
              or ${organizations.templatesLastPolledAt} < now() - interval '${sql.raw(TEMPLATE_POLL_THROTTLE)}')`

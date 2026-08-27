@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Reminder deferral by explicit client commitment, end to end: a real
 // dated promise stores a real deferred instant and suppresses the normal
@@ -70,6 +71,7 @@ async function seedWaitingRequest(overrides: Partial<typeof schema.organizations
       ...overrides,
     })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [clientRow] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "רז שלום", phone: "+972500000000" })

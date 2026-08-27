@@ -73,11 +73,24 @@ describe("sendTemplateMessage — Meta error responses never leak request conten
       ok: false,
       status: 400,
       text: async () =>
-        JSON.stringify({ error: { message: "Invalid parameter", code: 100, error_subcode: 2494010 } }),
+        JSON.stringify({
+          error: {
+            message: "Invalid parameter",
+            code: 100,
+            error_subcode: 2494010,
+            type: "OAuthException",
+            fbtrace_id: "AbCdEfGhIjK",
+          },
+        }),
     });
     await expect(
-      sendTemplateMessage("phone-1", "972500000000", "centro_initial_request_v2", "he", ["תעודת זהות, אישור שכירות"])
-    ).rejects.toThrow(/code=100 message=Invalid parameter/);
+      sendTemplateMessage("phone-1", "972500000000", "centro_document_request_v3", "he", ["תעודת זהות, אישור שכירות"])
+      // Subcode, type and fbtrace_id are now carried too: code 100 alone
+      // cannot distinguish "template not on this WABA" from "this token
+      // cannot see this account" (100/33), and fbtrace_id is the only
+      // reference Meta support can act on. All are structured error fields,
+      // never echoed request content.
+    ).rejects.toThrow(/code=100 subcode=2494010 type=OAuthException fbtrace_id=AbCdEfGhIjK message=Invalid parameter/);
   });
 
   it("never includes the sensitive recipient/params echo Meta's error body can contain", async () => {

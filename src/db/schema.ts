@@ -201,6 +201,19 @@ export const organizations = pgTable("organizations", {
   // flipping this to true. Flipping it early would repeat exactly the bug
   // this column exists to fix, just scoped to one org instead of all of
   // them.
+  //
+  // DEPRECATED — these no longer gate any send. A human asserting "Meta
+  // approved this" is exactly the failure this pair was meant to prevent and
+  // reproduced anyway: reminderV2Approved was true for an office whose WABA
+  // held no template by that name, so every reminder was rejected with
+  // "(#100) Invalid parameter". Approval is now read from Meta itself into
+  // whatsapp_templates.status per organization, and the send path resolves a
+  // template by INTENT from those rows
+  // (src/lib/whatsapp/organizationWhatsApp.ts).
+  //
+  // Kept, not dropped, so the owner screen's existing toggles keep working
+  // against a real column rather than 500-ing — but they now control nothing.
+  // Removing the columns and those controls is a separate, deliberate change.
   initialRequestV2Approved: boolean("initial_request_v2_approved").notNull().default(false),
   reminderV2Approved: boolean("reminder_v2_approved").notNull().default(false),
   // Explicit, dedicated gate for the automated document-collection
@@ -2139,6 +2152,14 @@ export const whatsappTemplates = pgTable(
     // must be recorded honestly, never dropped or crash an insert.
     // "LOCAL_DRAFT" is Centro's own value for a row composed here but not
     // yet submitted.
+    // Which business purpose this template serves for THIS organization —
+    // "DOCUMENT_REQUEST" | "DOCUMENT_REMINDER". The send path resolves a
+    // template by intent + organization, never by a hardcoded name: a name
+    // like centro_reminder_v2 is one office's template on one WABA, and
+    // Centro is multi-tenant. Nullable because a row adopted from Meta
+    // whose name matches no managed definition has no known purpose, and
+    // guessing one would be worse than admitting it.
+    intent: text("intent"),
     status: text("status").notNull().default("LOCAL_DRAFT"),
     // Meta's rejected_reason verbatim (e.g. INVALID_FORMAT), null unless
     // the current status is REJECTED.

@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import type { Session } from "@/lib/auth/session";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 /**
  * Regression — production, 26.8.2026.
@@ -69,6 +70,7 @@ beforeEach(async () => {
     .insert(schema.organizations)
     .values({ name: "Org", reminderV2Approved: true })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [user] = await db
     .insert(schema.users)
     .values({ organizationId: org.id, email: `o-${Date.now()}-${Math.random()}@example.com`, passwordHash: "x" })

@@ -4,6 +4,7 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
+import { seedApprovedWhatsAppTemplates } from "@/test/whatsappFixtures";
 
 // Phase 3 (conversation-intelligence redesign) — proves the general
 // reasoning layer (ACT/ANSWER/CLARIFY/ESCALATE/UNRELATED) end to end, in
@@ -74,6 +75,7 @@ async function seedOrgAndClient() {
     .insert(schema.organizations)
     .values({ name: "Org", googleDriveFolderId: "root-1", documentCollectionEnabled: true, whatsappPhoneNumberId: `phone-${crypto.randomUUID()}` })
     .returning();
+  await seedApprovedWhatsAppTemplates(db, org.id);
   const [client] = await db
     .insert(schema.clients)
     .values({ organizationId: org.id, name: "לקוח", phone: "+972500000000" })
