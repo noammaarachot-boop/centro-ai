@@ -1,4 +1,4 @@
-import { CentroMark } from "./icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
 const FOOTER_LINKS = [
   { href: "#how-it-works", label: "איך זה עובד" },
@@ -21,7 +21,7 @@ export default function Footer() {
         <div className="flex flex-col items-center gap-8 sm:flex-row sm:items-start sm:justify-between">
           <div className="text-center sm:text-right">
             <div className="flex items-center justify-center gap-2 sm:justify-start">
-              <CentroMark className="h-8 w-8" title="Centro" />
+              <CentroLogo className="h-8 w-8" title="Centro" />
               <span className="text-lg font-bold tracking-tight" dir="ltr">
                 Centro
               </span>

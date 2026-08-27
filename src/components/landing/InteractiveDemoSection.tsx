@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { fadeUp, viewportOnce } from "@/lib/motion";
 import { WhatsAppGlyph, PDFGlyph, DriveGlyph } from "./icons/IntegrationIcons";
-import { CentroMark } from "./icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
 type DemoStep = {
   label: string;
@@ -176,7 +176,7 @@ export default function InteractiveDemoSection() {
                       "linear-gradient(155deg, color-mix(in oklab, var(--color-brand-purple) 16%, white), color-mix(in oklab, var(--color-brand-blue) 16%, white))",
                   }}
                 >
-                  <CentroMark className="h-7 w-7" title="Centro" />
+                  <CentroLogo className="h-7 w-7" title="Centro" />
                 </span>
                 <div>
                   <p className="text-base font-semibold text-text-primary">

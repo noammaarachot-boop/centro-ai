@@ -321,6 +321,53 @@ async function checkConversationContrast(page, viewport, screen) {
   );
 }
 
+/**
+ * The brand mark must actually RENDER, everywhere it appears.
+ *
+ * The logo moved from an inline SVG to an <img> from /public. A wrong path
+ * or a missing asset produces no error and no visible element — every other
+ * check would still pass while the product shipped with no logo at all. So
+ * this asserts the bitmap decoded (naturalWidth > 0) and that its box keeps
+ * the mark's aspect ratio rather than stretching it.
+ */
+async function checkBrandLogo(page, viewport, screen) {
+  const r = await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll('img[src*="centro-logo"]')];
+    if (imgs.length === 0) return { none: true };
+    return {
+      none: false,
+      total: imgs.length,
+      broken: imgs.filter((i) => !i.complete || i.naturalWidth === 0).length,
+      stretched: imgs.filter((i) => {
+        const s = getComputedStyle(i);
+        return s.objectFit !== "contain" && s.objectFit !== "scale-down";
+      }).length,
+      natural: imgs[0].naturalWidth + "x" + imgs[0].naturalHeight,
+    };
+  });
+  if (r.none) {
+    record(viewport, screen, "Centro logo renders", "NOT TESTED", "no brand mark on this screen");
+    return;
+  }
+  record(viewport, screen, "Centro logo renders", r.broken === 0 ? "PASS" : "FAIL",
+    r.broken ? `${r.broken}/${r.total} failed to load` : `${r.total} mark(s), source ${r.natural}`);
+  record(viewport, screen, "Centro logo keeps its aspect ratio", r.stretched === 0 ? "PASS" : "FAIL",
+    r.stretched ? `${r.stretched}/${r.total} without object-contain` : "");
+}
+
+/** The tab icon must be a real, non-empty image. */
+async function checkFavicon(page, viewport, screen) {
+  const r = await page.evaluate(async () => {
+    const res = await fetch("/icon.png", { cache: "no-store" });
+    if (!res.ok) return { ok: false, status: res.status };
+    const blob = await res.blob();
+    const bmp = await createImageBitmap(blob);
+    return { ok: true, type: blob.type, bytes: blob.size, w: bmp.width, h: bmp.height };
+  });
+  record(viewport, screen, "favicon is a real image", r.ok && r.w > 0 ? "PASS" : "FAIL",
+    r.ok ? `${r.type} ${r.w}x${r.h}, ${r.bytes}B` : `HTTP ${r.status}`);
+}
+
 async function shoot(page, viewport, screen) {
   await fs.mkdir(SHOTS, { recursive: true });
   const file = path.join(SHOTS, `${screen}-${viewport}.png`);
@@ -349,6 +396,7 @@ async function visit(page, url, viewport, screen, { shots = true, expectPath = u
   await checkEscapingElements(page, viewport, screen);
   await checkScrollContainers(page, viewport, screen);
   await checkSingleMain(page, viewport, screen);
+  await checkBrandLogo(page, viewport, screen);
   await checkTouchTargets(page, viewport, screen);
   const dir = await page.evaluate(() => document.documentElement.dir || getComputedStyle(document.documentElement).direction);
   record(viewport, screen, "RTL direction is applied", dir === "rtl" ? "PASS" : "FAIL", dir);
@@ -481,6 +529,7 @@ async function main() {
       await visit(anonPage, "/privacy", vp.name, "privacy");
       await visit(anonPage, "/terms", vp.name, "terms");
       await visit(anonPage, "/login", vp.name, "login");
+      await checkFavicon(anonPage, vp.name, "login");
       // /register is a real bookmarkable URL that redirects to AuthTabs'
       // Register tab rather than duplicating the markup, so /login is where
       // the register form genuinely lives.

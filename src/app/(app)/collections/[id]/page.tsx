@@ -45,7 +45,6 @@ import { RequestAttentionPanel } from "@/components/app/RequestAttentionPanel";
 import { daysSince, describeEscalation } from "@/lib/elapsedTime";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import {
-  countRealConversationMessages,
   DELIVERY_STATE_LABEL,
   hasReachedClient,
   resolveMessageDeliveryState,

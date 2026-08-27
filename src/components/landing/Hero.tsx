@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import HeroVisual from "./HeroVisual";
 import TrialCta from "./TrialCta";
 import { fadeUp, staggerContainer } from "@/lib/motion";
-import { CentroMark } from "./icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
 function scrollToContact(event: React.MouseEvent<HTMLAnchorElement>) {
   event.preventDefault();
@@ -35,7 +35,7 @@ export default function Hero() {
             variants={fadeUp}
             className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-white px-4 py-1.5 text-sm font-medium text-text-secondary shadow-sm"
           >
-            <CentroMark className="h-4 w-4" title="Centro" />
+            <CentroLogo className="h-4 w-4" title="Centro" />
             <span className="centro-status-dot h-1.5 w-1.5 rounded-full bg-brand-emerald" />
             העובד הדיגיטלי לאיסוף מסמכים
           </motion.span>

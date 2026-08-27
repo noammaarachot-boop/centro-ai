@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { AlertTriangle, Clock3, Sparkles } from "lucide-react";
 import { fadeUp, staggerContainer, viewportOnce } from "@/lib/motion";
-import { CentroMark } from "./icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
 const WAITING_CLIENTS = [
   { name: "לקוח א׳ — עוסק מורשה", status: "ממתין ל־2 קבצים" },
@@ -54,7 +54,7 @@ export default function DashboardPreviewSection() {
         <div className="rounded-[1.75rem] border border-white/70 bg-white p-3 shadow-card-lg sm:bg-white/90 sm:p-4 sm:backdrop-blur-xl">
           <div className="flex items-center justify-between rounded-2xl bg-surface-muted/70 px-4 py-2.5">
             <span className="flex items-center gap-2 text-sm font-semibold text-text-primary">
-              <CentroMark className="h-6 w-6" title="Centro" />
+              <CentroLogo className="h-6 w-6" title="Centro" />
               לוח הבקרה של Centro
             </span>
             <span className="flex items-center gap-1.5 text-xs font-medium text-text-muted">

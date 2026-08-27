@@ -1,6 +1,6 @@
-import { CentroMark } from "@/components/landing/icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
-// Wraps the official CentroMark with an optional soft glow halo and/or
+// Wraps the official CentroLogo with an optional soft glow halo and/or
 // gentle breathing scale, per the brand rule: the mark itself (imported,
 // never redrawn) is untouched — only this wrapper's presentation varies.
 export function CentroMarkGlow({
@@ -28,7 +28,7 @@ export function CentroMarkGlow({
         className={breathe ? "centro-mark-breathe relative z-[1]" : "relative z-[1]"}
         style={{ width: size, height: size }}
       >
-        <CentroMark className="h-full w-full" title="Centro" />
+        <CentroLogo className="h-full w-full" title="Centro" />
       </span>
     </span>
   );

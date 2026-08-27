@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import ContactForm, { SUBMITTED_STORAGE_KEY } from "./ContactForm";
-import { CentroMark } from "./icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 import { WhatsAppOfficialBadge } from "./icons/IntegrationIcons";
 import { WHATSAPP_NUMBER } from "./FloatingWhatsAppButton";
 
@@ -172,7 +172,7 @@ export default function DemoRequestModal() {
                     "linear-gradient(155deg, color-mix(in oklab, var(--color-brand-purple) 16%, white), color-mix(in oklab, var(--color-brand-blue) 16%, white))",
                 }}
               >
-                <CentroMark className="h-6 w-6" title="Centro" />
+                <CentroLogo className="h-6 w-6" title="Centro" />
               </span>
               <h2
                 id={headingId}

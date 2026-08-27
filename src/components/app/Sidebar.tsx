@@ -19,7 +19,7 @@ import {
   Sparkles,
   LifeBuoy,
 } from "lucide-react";
-import { CentroMark } from "@/components/landing/icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
 // "עוזר AI" is hidden (not rendered) rather than removed — every route,
 // API, and component behind it is untouched, this only stops the nav
@@ -92,7 +92,7 @@ export function Sidebar({
     <>
       <div className="flex items-center justify-between gap-2.5 px-5 py-5">
         <div className="flex items-center gap-2.5">
-          <CentroMark
+          <CentroLogo
             className="h-8 w-8 shrink-0 drop-shadow-[0_2px_10px_rgba(124,58,237,0.35)]"
             title="Centro"
           />
@@ -227,7 +227,7 @@ export function Sidebar({
         </button>
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-text-primary">Centro</span>
-          <CentroMark className="h-6 w-6" title="Centro" />
+          <CentroLogo className="h-6 w-6" title="Centro" />
         </div>
       </div>
 

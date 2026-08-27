@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { CheckCircle2, FolderCheck, ScanLine } from "lucide-react";
 import { WhatsAppGlyph, DriveGlyph, PDFGlyph } from "./icons/IntegrationIcons";
-import { CentroMark } from "./icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
 function CentroNode({ className = "h-10 w-10" }: { className?: string }) {
   return (
@@ -15,7 +15,7 @@ function CentroNode({ className = "h-10 w-10" }: { className?: string }) {
           "linear-gradient(155deg, color-mix(in oklab, var(--color-brand-purple) 14%, white), color-mix(in oklab, var(--color-brand-blue) 14%, white))",
       }}
     >
-      <CentroMark className="h-[65%] w-[65%]" title="Centro" />
+      <CentroLogo className="h-[65%] w-[65%]" title="Centro" />
     </span>
   );
 }

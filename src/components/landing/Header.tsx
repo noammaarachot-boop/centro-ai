@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Menu, X } from "lucide-react";
-import { CentroMark } from "./icons/CentroMark";
+import { CentroLogo } from "@/components/brand/CentroLogo";
 
 const NAV_LINKS = [
   { href: "#how-it-works", label: "איך זה עובד" },
@@ -50,7 +50,7 @@ export default function Header() {
         }`}
       >
         <a href="#top" className="flex items-center gap-2 rounded-lg" aria-label="Centro, לעמוד הבית">
-          <CentroMark
+          <CentroLogo
             className="h-8 w-8 drop-shadow-[0_2px_10px_rgba(124,58,237,0.35)]"
             title="Centro"
           />
