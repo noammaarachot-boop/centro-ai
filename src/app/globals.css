@@ -873,3 +873,88 @@ html[data-a11y-underline="true"] a {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* ---------------------------------------------------------------
+   Dark app sidebar — a dark rail beside a light workspace.
+
+   Scoped custom properties plus hand-written rules, NOT overrides of
+   the --color-* theme tokens. Tailwind v4's `@theme inline` resolves
+   every token-derived utility (text-text-primary, bg-surface-muted,
+   border-border, ...) to a literal value at build time, so redefining
+   those properties inside a scope has no effect on classes already
+   generated — the same finding written up for .centro-owner-shell
+   above. The sidebar markup therefore drops its light colour
+   utilities and takes colour from here; it keeps its layout utilities.
+
+   Everything is defined in this one block so the palette is changed in
+   one place rather than by editing colours scattered through the
+   component.
+
+   Deliberately scoped to the sidebar only. This is NOT a dark theme:
+   the workspace to its left keeps the light palette untouched.
+---------------------------------------------------------------- */
+.centro-sidebar {
+  /* Charcoal-navy with a violet undertone, so it sits with the brand
+     purple/blue rather than fighting them. Not pure black — that reads
+     as a void next to a light workspace and makes the brand colours
+     glare. */
+  --sidebar-bg: #16192a;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-text: #e9ebf5;
+  --sidebar-text-muted: #99a0bb;
+  --sidebar-hover-bg: rgba(255, 255, 255, 0.055);
+  /* Active: a restrained brand-purple wash, not a gradient panel. The
+     thin gradient indicator bar on the inline edge does the rest. */
+  --sidebar-active-bg: rgba(124, 58, 237, 0.18);
+  --sidebar-active-text: #cbb6ff;
+  --sidebar-panel-bg: rgba(255, 255, 255, 0.045);
+  /* The light theme's danger (#f0466f) is too dark to read here. */
+  --sidebar-danger: #ff92a8;
+
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+}
+
+/* The brand name beside the logo. */
+.centro-sidebar__wordmark {
+  color: var(--sidebar-text);
+}
+
+/* Nav links, the collapse toggle, the close button and logout all share
+   one resting/hover treatment so the rail reads as one surface. */
+.centro-sidebar__item {
+  color: var(--sidebar-text-muted);
+  transition: background-color 200ms var(--ease-standard), color 200ms var(--ease-standard);
+}
+.centro-sidebar__item:hover {
+  background: var(--sidebar-hover-bg);
+  color: var(--sidebar-text);
+}
+
+.centro-sidebar__item--active,
+.centro-sidebar__item--active:hover {
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-text);
+}
+
+.centro-sidebar__item--danger:hover {
+  /* Tinted from the readable-on-dark danger, so the hover still reads as
+     "this one is destructive" without the light theme's near-black red. */
+  background: color-mix(in oklab, var(--sidebar-danger) 14%, transparent);
+  color: var(--sidebar-danger);
+}
+
+.centro-sidebar__divider {
+  border-color: var(--sidebar-border);
+}
+
+/* The organization/email card above logout. */
+.centro-sidebar__panel {
+  background: var(--sidebar-panel-bg);
+}
+.centro-sidebar__panel-title {
+  color: var(--sidebar-text);
+}
+.centro-sidebar__panel-meta {
+  color: var(--sidebar-text-muted);
+}

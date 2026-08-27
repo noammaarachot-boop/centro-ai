@@ -368,6 +368,154 @@ async function checkFavicon(page, viewport, screen) {
     r.ok ? `${r.type} ${r.w}x${r.h}, ${r.bytes}B` : `HTTP ${r.status}`);
 }
 
+function relLuminance(rgb) {
+  const [r, g, b] = rgb.map((v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function parseRgb(str) {
+  const m = String(str).match(/-?[\d.]+/g);
+  return m ? m.slice(0, 3).map(Number) : null;
+}
+function contrastRatio(a, b) {
+  const la = relLuminance(a), lb = relLuminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+async function readSidebar(page) {
+  return page.evaluate(() => {
+    const aside = document.querySelector("aside.centro-sidebar");
+    if (!aside) return null;
+    const items = [...aside.querySelectorAll("a.centro-sidebar__item, button.centro-sidebar__item")];
+    const active = aside.querySelector(".centro-sidebar__item--active");
+    const cs = (el) => ({ color: getComputedStyle(el).color, bg: getComputedStyle(el).backgroundColor });
+    const main = document.querySelector("main") ?? document.body;
+    const logo = aside.querySelector('img[src*="centro-logo"]');
+    const word = aside.querySelector(".centro-sidebar__wordmark");
+    const meta = aside.querySelector(".centro-sidebar__panel-meta");
+    return {
+      asideBg: getComputedStyle(aside).backgroundColor,
+      mainBg: getComputedStyle(main).backgroundColor,
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      items: items.map(cs),
+      active: active ? cs(active) : null,
+      activeIndicator: active ? !!active.querySelector("span[class*=gradient]") : false,
+      wordmark: word ? getComputedStyle(word).color : null,
+      panelMeta: meta ? getComputedStyle(meta).color : null,
+      logoOk: logo ? logo.complete && logo.naturalWidth > 0 : null,
+      width: aside.getBoundingClientRect().width,
+      overflowX: aside.scrollWidth - aside.clientWidth,
+    };
+  });
+}
+
+/**
+ * The sidebar is a dark rail beside a LIGHT workspace.
+ *
+ * Measured from computed styles, not eyeballed: the two things most likely
+ * to go wrong are invisible in a screenshot — text that renders but fails
+ * contrast on the new background, and a dark token leaking out of the rail
+ * into the workspace, which would be a silent slide into a half dark mode.
+ */
+async function checkSidebarTheme(page, viewport, screen) {
+  const s = await readSidebar(page);
+  if (!s) { record(viewport, screen, "sidebar is dark", "NOT TESTED", "no sidebar on this screen"); return; }
+  const asideRgb = parseRgb(s.asideBg);
+  const lum = relLuminance(asideRgb);
+  const notBlack = !(asideRgb[0] === 0 && asideRgb[1] === 0 && asideRgb[2] === 0);
+  record(viewport, screen, "sidebar is dark (and not pure black)", lum < 0.10 && notBlack ? "PASS" : "FAIL",
+    `${s.asideBg}, luminance ${lum.toFixed(4)}`);
+
+  const all = [...s.items.map((i) => i.color), s.wordmark, s.panelMeta].filter(Boolean);
+  const worst = all.reduce((acc, c) => {
+    const r = contrastRatio(parseRgb(c), asideRgb);
+    return r < acc.r ? { r, c } : acc;
+  }, { r: Infinity, c: "" });
+  record(viewport, screen, "sidebar text meets contrast", worst.r >= 4.5 ? "PASS" : "FAIL",
+    `worst ${worst.r.toFixed(2)}:1 (${worst.c}) on ${s.asideBg}`);
+
+  // Some routes deliberately have no nav entry (e.g. /services, whose link
+  // is hidden: true while the route stays live), so nothing is active there.
+  // That is correct product behaviour, not a styling failure.
+  if (!s.active) {
+    record(viewport, screen, "active nav item is distinct", "NOT TESTED", "this route has no nav entry");
+    record(viewport, screen, "active item keeps its brand indicator", "NOT TESTED", "this route has no nav entry");
+  } else {
+    const resting = s.items.find((i) => i.bg !== s.active.bg);
+    record(viewport, screen, "active nav item is distinct", resting && s.active.bg !== resting.bg ? "PASS" : "FAIL",
+      `active ${s.active.bg} vs resting ${resting && resting.bg}`);
+    record(viewport, screen, "active item keeps its brand indicator", s.activeIndicator ? "PASS" : "FAIL", "");
+  }
+  record(viewport, screen, "sidebar logo still renders", s.logoOk ? "PASS" : "FAIL", "");
+  record(viewport, screen, "sidebar does not overflow", s.overflowX <= 1 ? "PASS" : "FAIL", `${s.overflowX}px`);
+
+  // <main> is usually transparent and inherits the page background, so a
+  // fully transparent colour must fall through to <body> rather than being
+  // read as black — which is what "rgba(0, 0, 0, 0)" parses to.
+  const opaque = (c) => {
+    const m = String(c).match(/-?[d.]+/g);
+    if (!m) return null;
+    if (m.length > 3 && Number(m[3]) === 0) return null;
+    return m.slice(0, 3).map(Number);
+  };
+  const mainRgb = opaque(s.mainBg) || opaque(s.bodyBg) || [255, 255, 255];
+  const mainLum = relLuminance(mainRgb);
+  record(viewport, screen, "main workspace stays light", mainLum > 0.6 ? "PASS" : "FAIL",
+    `main ${s.mainBg} / body ${s.bodyBg}, luminance ${mainLum.toFixed(3)}`);
+}
+
+/** Hover must give feedback, and the collapsed rail must stay usable. */
+async function checkSidebarStates(page, viewport, screen) {
+  // Below lg the rail is parked off-screen with translate-x-full until the
+  // drawer is opened, so it cannot be hovered — and hover is a pointer
+  // affordance that means nothing on a touch viewport anyway.
+  if (viewport < 1024 || !(await page.locator("aside.centro-sidebar").count())) {
+    record(viewport, screen, "sidebar hover responds", "NOT TESTED", "rail is off-canvas below lg");
+    record(viewport, screen, "collapsed sidebar stays correct", "NOT TESTED", "collapse is desktop-only");
+    return;
+  }
+  const resting = page.locator("aside.centro-sidebar a.centro-sidebar__item:not(.centro-sidebar__item--active)").first();
+  if (await resting.count()) {
+    const before = await resting.evaluate((el) => getComputedStyle(el).backgroundColor);
+    await resting.hover();
+    await page.waitForTimeout(280);
+    const after = await resting.evaluate((el) => getComputedStyle(el).backgroundColor);
+    record(viewport, screen, "sidebar hover responds", before !== after ? "PASS" : "FAIL", `${before} -> ${after}`);
+    await page.mouse.move(2, 2);
+    await page.waitForTimeout(120);
+  }
+
+  // By accessible name, not position: the first .centro-sidebar__item button
+  // in the DOM is the mobile drawer's close control, which is lg:hidden and
+  // so never visible on the desktop viewports this path runs on.
+  const toggle = page.locator('aside.centro-sidebar button[aria-label="צמצום תפריט"]').first();
+  const canCollapse = await toggle.isVisible().catch(() => false);
+  if (!canCollapse) {
+    record(viewport, screen, "collapsed sidebar stays correct", "NOT TESTED", "collapse is desktop-only");
+    return;
+  }
+  const wide = (await readSidebar(page)).width;
+  await toggle.click();
+  await page.waitForTimeout(450);
+  const c = await readSidebar(page);
+  const centred = await page.evaluate(() => {
+    const aside = document.querySelector("aside.centro-sidebar");
+    return [...aside.querySelectorAll("a.centro-sidebar__item")].every((l) => {
+      const svg = l.querySelector("svg");
+      if (!svg) return false;
+      const lb = l.getBoundingClientRect(), sb = svg.getBoundingClientRect();
+      return Math.abs((sb.left + sb.width / 2) - (lb.left + lb.width / 2)) <= 2.5;
+    });
+  });
+  const ok = c.width < wide && c.overflowX <= 1 && !!c.active && centred && c.logoOk;
+  record(viewport, screen, "collapsed sidebar stays correct", ok ? "PASS" : "FAIL",
+    `width ${Math.round(wide)}->${Math.round(c.width)}, overflow ${c.overflowX}px, icons centred ${centred}, active kept ${!!c.active}, logo ${c.logoOk}`);
+  await page.locator('aside.centro-sidebar button[aria-label="הרחבת תפריט"]').first().click();
+  await page.waitForTimeout(450);
+}
+
 async function shoot(page, viewport, screen) {
   await fs.mkdir(SHOTS, { recursive: true });
   const file = path.join(SHOTS, `${screen}-${viewport}.png`);
@@ -397,6 +545,7 @@ async function visit(page, url, viewport, screen, { shots = true, expectPath = u
   await checkScrollContainers(page, viewport, screen);
   await checkSingleMain(page, viewport, screen);
   await checkBrandLogo(page, viewport, screen);
+  await checkSidebarTheme(page, viewport, screen);
   await checkTouchTargets(page, viewport, screen);
   const dir = await page.evaluate(() => document.documentElement.dir || getComputedStyle(document.documentElement).direction);
   record(viewport, screen, "RTL direction is applied", dir === "rtl" ? "PASS" : "FAIL", dir);
@@ -578,6 +727,7 @@ async function main() {
       // And the gate in the other direction: an organization that HAS
       // finished onboarding must not be sent back into the wizard.
       await expectRedirect(page, "/onboarding", "/dashboard", vp.name, "onboarding");
+      await checkSidebarStates(page, vp.name, "sidebar");
 
       // ── collection detail: conversation, composer, activity ──
       if (seeded) {

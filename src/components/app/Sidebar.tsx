@@ -90,14 +90,21 @@ export function Sidebar({
 
   const navContent = (
     <>
-      <div className="flex items-center justify-between gap-2.5 px-5 py-5">
+      <div
+        className={clsx(
+          "flex items-center gap-2.5 py-5",
+          // Collapsed there is no wordmark and the close button is lg:hidden,
+          // so start-aligned padding left the mark off-centre in the rail.
+          collapsed ? "justify-center px-0" : "justify-between px-5"
+        )}
+      >
         <div className="flex items-center gap-2.5">
           <CentroLogo
             className="h-8 w-8 shrink-0 drop-shadow-[0_2px_10px_rgba(124,58,237,0.35)]"
             title="Centro"
           />
           {!collapsed && (
-            <span className="animate-fade-in-up truncate text-base font-bold text-text-primary">
+            <span className="centro-sidebar__wordmark animate-fade-in-up truncate text-base font-bold">
               Centro
             </span>
           )}
@@ -106,7 +113,7 @@ export function Sidebar({
           type="button"
           onClick={() => setMobileOpen(false)}
           aria-label="סגירת תפריט"
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-text-secondary hover:bg-surface-muted lg:hidden"
+          className="centro-sidebar__item grid h-8 w-8 shrink-0 place-items-center rounded-lg lg:hidden"
         >
           <X className="h-4.5 w-4.5" />
         </button>
@@ -118,10 +125,15 @@ export function Sidebar({
             pathname === link.href || pathname.startsWith(`${link.href}/`);
           const Icon = link.icon;
           const linkClassName = clsx(
-            "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ease-[var(--ease-standard)]",
-            active
-              ? "bg-gradient-to-l from-brand-purple/10 to-brand-blue/5 text-brand-purple"
-              : "text-text-secondary hover:bg-surface-muted hover:text-text-primary"
+            "group relative flex items-center rounded-xl py-2.5 text-sm font-medium transition-all duration-200 ease-[var(--ease-standard)]",
+            // Colour comes from .centro-sidebar in globals.css, not from
+            // theme utilities: those are inlined light values at build time
+            // and cannot be re-scoped (see that block's own comment).
+            "centro-sidebar__item",
+            // Collapsed, the label is not rendered, so start-aligned padding
+            // left every icon sitting off-centre in the 76px rail.
+            collapsed ? "justify-center px-0" : "gap-3 px-3",
+            active && "centro-sidebar__item--active"
           );
 
           if ("external" in link && link.external) {
@@ -158,11 +170,16 @@ export function Sidebar({
         })}
       </nav>
 
-      <div className="border-t border-border p-3">
+      <div className="centro-sidebar__divider border-t p-3">
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
-          className="mb-2 hidden w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:bg-surface-muted hover:text-text-primary lg:flex"
+          // Collapsed, this button is a bare chevron with no text, so it had
+          // no accessible name at all. The label is always present and does
+          // not depend on the visible caption.
+          aria-label={collapsed ? "הרחבת תפריט" : "צמצום תפריט"}
+          aria-expanded={!collapsed}
+          className="centro-sidebar__item mb-2 hidden w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-medium lg:flex"
         >
           {collapsed ? (
             <ChevronsLeft className="h-4 w-4" />
@@ -175,7 +192,7 @@ export function Sidebar({
         </button>
 
         {!collapsed && (
-          <div className="mb-2 flex items-center gap-2.5 rounded-xl bg-surface-muted px-3 py-2.5">
+          <div className="centro-sidebar__panel mb-2 flex items-center gap-2.5 rounded-xl px-3 py-2.5">
             {logoUrl && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
@@ -185,10 +202,10 @@ export function Sidebar({
               />
             )}
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-text-primary">
+              <p className="centro-sidebar__panel-title truncate text-sm font-semibold">
                 {organizationName}
               </p>
-              <p className="truncate text-xs text-text-muted" dir="ltr">
+              <p className="centro-sidebar__panel-meta truncate text-xs" dir="ltr">
                 {email}
               </p>
             </div>
@@ -198,7 +215,10 @@ export function Sidebar({
         <form action={logoutAction}>
           <button
             type="submit"
-            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-danger/5 hover:text-danger"
+            className={clsx(
+              "centro-sidebar__item centro-sidebar__item--danger flex w-full items-center rounded-xl py-2.5 text-sm font-medium",
+              collapsed ? "justify-center px-0" : "gap-3 px-3"
+            )}
             title={collapsed ? "התנתקות" : undefined}
           >
             <LogOut className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
@@ -248,7 +268,7 @@ export function Sidebar({
           // computed-style inspection: it fell back to left-anchored
           // positioning instead), so the physical property is the correct,
           // unambiguous choice here specifically.
-          "centro-glass-strong fixed inset-y-0 right-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col border-s border-border transition-transform duration-300 ease-[var(--ease-standard)]",
+          "centro-sidebar fixed inset-y-0 right-0 z-50 flex h-screen w-72 max-w-[85vw] flex-col border-s transition-transform duration-300 ease-[var(--ease-standard)] centro-sidebar__divider",
           // Parked off-screen with a transform when closed, which is what
           // makes the open/close slide an animation at all — `hidden` would
           // make it appear and vanish instantly. Safe for page width: this
