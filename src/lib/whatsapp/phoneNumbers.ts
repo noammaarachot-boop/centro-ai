@@ -224,3 +224,51 @@ function uniqueTokens(tokens: Array<string | undefined>): string[] {
   }
   return result;
 }
+
+/**
+ * Confirms an access token was issued by CENTRO's own Meta app.
+ *
+ * Subscribing a WABA to webhooks attaches the app that ISSUED the token used
+ * for the call — never an app named in the request. A token minted inside the
+ * client's own Business Manager therefore subscribes that Business Manager's
+ * app and leaves Centro's unsubscribed, while every call still reports
+ * success. Meta then routes the client's inbound messages to that other app
+ * and Centro receives nothing.
+ *
+ * This is not hypothetical: an office connected this way sent outbound
+ * messages perfectly for days (sending only needs a token authorised on the
+ * phone number) while every inbound message silently went elsewhere. Checked
+ * at connection time so the mismatch is refused up front, with a real
+ * explanation, instead of surfacing later as "the client never replies".
+ */
+export async function describeTokenApp(
+  accessToken: string
+): Promise<{ matchesCentroApp: boolean; tokenAppId: string | null; error: string | null }> {
+  const { appId, appSecret } = getWhatsAppConfig();
+  try {
+    const url = new URL(`${GRAPH_API_BASE}/debug_token`);
+    url.searchParams.set("input_token", accessToken);
+    url.searchParams.set("access_token", `${appId}|${appSecret}`);
+    const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const parsed = (await response.json().catch(() => null)) as {
+      data?: { app_id?: string };
+      error?: { message?: string };
+    } | null;
+    // Meta answers a foreign token with exactly this, rather than a payload:
+    // "The App_id in the input_token did not match the Viewing App".
+    if (!response.ok || !parsed?.data?.app_id) {
+      return { matchesCentroApp: false, tokenAppId: null, error: parsed?.error?.message ?? "unknown" };
+    }
+    return {
+      matchesCentroApp: parsed.data.app_id === appId,
+      tokenAppId: parsed.data.app_id,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      matchesCentroApp: false,
+      tokenAppId: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}

@@ -9,6 +9,7 @@ import { recordOwnerAuditEvent } from "@/lib/owner/audit";
 import { subscribeToWabaWebhooks } from "@/lib/whatsapp/embeddedSignup";
 import {
   getPhoneNumberInWaba,
+  describeTokenApp,
   setPhoneNumberWebhookOverride,
   WhatsAppApiError,
   type PhoneNumberDetails,
@@ -290,6 +291,33 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
   // it — a failed subscription must not leave the owner believing the
   // connection is live when messages will actually never arrive, so nothing
   // is saved unless this also succeeds.
+  // The token must have been issued by CENTRO's Meta app. Subscribing a WABA
+  // attaches the app that issued the token, so a token minted in the client's
+  // own Business Manager subscribes THAT app — Meta then delivers the
+  // client's inbound messages there and Centro receives nothing, while every
+  // call below still reports success. Outbound keeps working throughout
+  // (sending only needs a token authorised on the phone number), which is
+  // what made this so hard to see: an office sent reminders perfectly for
+  // days while every reply vanished.
+  const tokenApp = await describeTokenApp(accessToken);
+  if (!tokenApp.matchesCentroApp) {
+    console.error("[owner] manuallyConnectWhatsApp token belongs to another Meta app", {
+      organizationId,
+      wabaId,
+      phoneNumberId,
+      tokenAppId: tokenApp.tokenAppId,
+      error: tokenApp.error,
+    });
+    redirect(
+      `/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(
+        "ה-Access Token הונפק על ידי אפליקציית Meta אחרת ולא על ידי האפליקציה של Centro. " +
+          "עם טוקן כזה הודעות יוצאות אמנם יישלחו, אבל הודעות נכנסות מהלקוח יגיעו לאפליקציה האחרת " +
+          "ו-Centro לא יקבל אותן לעולם. יש להנפיק טוקן מתוך האפליקציה של Centro (Embedded Signup, " +
+          "או System User באפליקציה של Centro עם הרשאה ל-WABA הזה)."
+      )}`
+    );
+  }
+
   let webhooksOk: boolean;
   try {
     // No shared-token fallback here: this organization has its own

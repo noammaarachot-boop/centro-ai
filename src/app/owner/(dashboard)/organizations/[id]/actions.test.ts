@@ -90,12 +90,16 @@ async function expectRedirect(fn: () => Promise<unknown>) {
 }
 
 function mockMetaVerifySuccess(phoneNumberId: string) {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    json: async () => ({
-      data: [{ id: phoneNumberId, display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
-    }),
-  });
+  fetchMock.mockImplementation(async (url: string) =>
+    String(url).includes("/debug_token")
+      ? { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) }
+      : {
+          ok: true,
+          json: async () => ({
+            data: [{ id: phoneNumberId, display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
+          }),
+        }
+  );
 }
 
 // Routes each Meta call by URL so a single step (e.g. the per-number
@@ -103,6 +107,13 @@ function mockMetaVerifySuccess(phoneNumberId: string) {
 function mockMetaByUrl(options: { overrideOk: boolean; phoneNumberId: string }) {
   fetchMock.mockImplementation(async (url: string) => {
     const target = String(url);
+    // The connect action now refuses a token issued by a DIFFERENT Meta app,
+    // because subscribing a WABA attaches the token's own app — so such a
+    // token routes the client's inbound messages to that other app while
+    // outbound keeps working. "app-1" is this suite's Centro appId.
+    if (target.includes("/debug_token")) {
+      return { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) };
+    }
     if (target.includes("/phone_numbers")) {
       return {
         ok: true,
@@ -170,6 +181,48 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
     expect((relevant?.metadata as Record<string, unknown> | null)?.webhooksSubscribed).toBe(true);
   });
 
+  it("REFUSES a token issued by another Meta app — nothing is saved", async () => {
+    // Production incident: subscribing a WABA attaches the app that ISSUED
+    // the token, so a token minted in the client's own Business Manager
+    // subscribed THAT app. Meta then delivered every inbound message there
+    // and Centro received none — while outbound kept working perfectly,
+    // because sending only needs a token authorised on the phone number.
+    // Meta's own answer to a foreign token is the debug_token error below.
+    const orgId = await seedOrg();
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{ id: "phone-1", display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: { message: "(#100) The App_id in the input_token did not match the Viewing App", code: 100 },
+        }),
+      });
+
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({
+          organizationId: orgId,
+          wabaId: "waba-1",
+          phoneNumberId: "phone-1",
+          accessToken: "EAAG_token_from_another_app",
+        })
+      )
+    );
+
+    expect(result.params.whatsappError).toMatch(/אפליקציית Meta אחרת/);
+    // Nothing saved, and the WABA was never subscribed with the wrong app.
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappAccessTokenEnc).toBeNull();
+    expect(org.whatsappBusinessAccountId).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/subscribed_apps"))).toBe(false);
+  });
+
   it("webhook subscription fails (e.g. token lacks whatsapp_business_management) — nothing is saved, and the owner sees a clear error", async () => {
     const orgId = await seedOrg();
     fetchMock
@@ -179,6 +232,10 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
           data: [{ id: "phone-1", display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
         }),
       })
+      // The token-app guard runs after the phone check and must pass, so
+      // this test still exercises the webhook-subscription failure it is
+      // about rather than stopping one step earlier.
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) })
       .mockResolvedValue({ ok: false, status: 403, text: async () => "missing permission" });
 
     const result = await expectRedirect(() =>
@@ -232,6 +289,9 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
 
     fetchMock.mockImplementation(async (url: string) => {
       const target = String(url);
+      if (target.includes("/debug_token")) {
+        return { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) };
+      }
       if (target.includes("/phone_numbers")) {
         return {
           ok: true,
