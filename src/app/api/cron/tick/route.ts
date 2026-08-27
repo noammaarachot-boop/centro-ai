@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { runScheduledTasks } from "@/lib/scheduler";
 import { sendManualReminder } from "@/lib/manualReminder";
+import { diagnoseInbound } from "@/lib/whatsapp/inboundDiagnostics";
 import { getDb } from "@/db";
 import { jobRuns } from "@/db/schema";
 import { captureError } from "@/lib/monitoring/errorReporting";
@@ -59,6 +60,21 @@ export async function POST(request: Request) {
     .clone()
     .json()
     .catch(() => null);
+
+  // Inbound diagnostics. Reading whether Meta is actually routing this
+  // office's messages to us needs the organization's own token, which is
+  // only decryptable in the deployed environment — so without this there is
+  // no way to tell "Meta never delivered" from "we received and dropped it".
+  // Read-only unless `repair` is set, and both repairs are idempotent.
+  if (body && typeof body === "object" && "diagnoseInboundFor" in body) {
+    const { diagnoseInboundFor, repair } = body as { diagnoseInboundFor?: string; repair?: boolean };
+    if (!diagnoseInboundFor) {
+      return NextResponse.json({ error: "diagnoseInboundFor is required" }, { status: 400 });
+    }
+    const result = await diagnoseInbound(diagnoseInboundFor, { repair: repair === true });
+    return NextResponse.json(result, { status: "error" in result ? 422 : 200 });
+  }
+
   if (body && typeof body === "object" && "collectionRequestId" in body) {
     const { organizationId, collectionRequestId } = body as {
       organizationId?: string;
