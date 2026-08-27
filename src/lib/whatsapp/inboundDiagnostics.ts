@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
-import { GRAPH_API_BASE } from "./config";
+import { GRAPH_API_BASE, getWhatsAppConfig } from "./config";
 import { resolveOrganizationWhatsAppConfig } from "./organizationWhatsApp";
 import { subscribeToWabaWebhooks } from "./embeddedSignup";
 import { setPhoneNumberWebhookOverride } from "./phoneNumbers";
@@ -25,6 +25,8 @@ export interface InboundDiagnosis {
   wabaId: string | null;
   phoneNumberId: string;
   tokenSource: string;
+  /** Which Meta app issued the token — decides which app a subscribe call attaches. */
+  tokenIssuedByApp: unknown;
   /** Whether this WABA is subscribed to Centro's app — the inbound switch. */
   wabaSubscribedApps: unknown;
   /** Per-number override, if any. Absent means the app-level URL is used. */
@@ -79,9 +81,43 @@ export async function diagnoseInbound(
     "id,display_phone_number,webhook_configuration"
   ).catch((e) => ({ httpStatus: 0, body: { error: String(e) } }));
 
+  // WHICH Meta app issued this organization's token.
+  //
+  // Subscribing an app to a WABA means POSTing /{waba}/subscribed_apps with
+  // a token issued FOR that app — the call subscribes the token's own app,
+  // not one named in the request. So a token minted in the client's own
+  // Business Manager subscribes THAT app, and Centro's app is left
+  // unsubscribed no matter how many times the call succeeds. This reports
+  // the issuing app id so that can be seen rather than inferred.
+  let tokenAppId: unknown = null;
+  try {
+    const { appId, appSecret } = getWhatsAppConfig();
+    const url = new URL(`${GRAPH_API_BASE}/debug_token`);
+    url.searchParams.set("input_token", token);
+    url.searchParams.set("access_token", `${appId}|${appSecret}`);
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const parsed = (await res.json().catch(() => null)) as {
+      data?: { app_id?: string; application?: string; type?: string; is_valid?: boolean };
+      error?: unknown;
+    } | null;
+    tokenAppId = {
+      httpStatus: res.status,
+      centroAppId: appId,
+      tokenAppId: parsed?.data?.app_id ?? null,
+      application: parsed?.data?.application ?? null,
+      type: parsed?.data?.type ?? null,
+      isValid: parsed?.data?.is_valid ?? null,
+      matchesCentroApp: parsed?.data?.app_id === appId,
+      error: parsed?.error ?? null,
+    };
+  } catch (error) {
+    tokenAppId = { error: error instanceof Error ? error.message : String(error) };
+  }
+
   const diagnosis: InboundDiagnosis = {
     organizationId,
     organizationName: org.name,
+    tokenIssuedByApp: tokenAppId,
     wabaId,
     phoneNumberId,
     tokenSource,
