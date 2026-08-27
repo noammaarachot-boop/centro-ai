@@ -90,16 +90,28 @@ async function expectRedirect(fn: () => Promise<unknown>) {
 }
 
 function mockMetaVerifySuccess(phoneNumberId: string) {
-  fetchMock.mockImplementation(async (url: string) =>
-    String(url).includes("/debug_token")
-      ? { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) }
-      : {
+  fetchMock.mockImplementation(async (url: string) => {
+    if (String(url).includes("/debug_token")) {
+      return { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) };
+    }
+      // Centro's app id, read back from /{waba}/subscribed_apps. The connect
+      // action now verifies this rather than trusting the POST, because the
+      // POST subscribes whichever app issued the token.
+      if (String(url).includes("/subscribed_apps")) {
+        return {
           ok: true,
-          json: async () => ({
-            data: [{ id: phoneNumberId, display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
-          }),
-        }
-  );
+          json: async () => ({ data: [{ whatsapp_business_api_data: { id: "app-1" } }] }),
+          text: async () => "",
+        };
+      }
+    return {
+      ok: true,
+      json: async () => ({
+        data: [{ id: phoneNumberId, display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
+      }),
+      text: async () => "",
+    };
+  });
 }
 
 // Routes each Meta call by URL so a single step (e.g. the per-number
@@ -113,6 +125,13 @@ function mockMetaByUrl(options: { overrideOk: boolean; phoneNumberId: string }) 
     // outbound keeps working. "app-1" is this suite's Centro appId.
     if (target.includes("/debug_token")) {
       return { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) };
+    }
+    if (target.includes("/subscribed_apps")) {
+      return {
+        ok: true,
+        json: async () => ({ data: [{ whatsapp_business_api_data: { id: "app-1" } }] }),
+        text: async () => "",
+      };
     }
     if (target.includes("/phone_numbers")) {
       return {
@@ -179,6 +198,52 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
     const audits = await db.select().from(schema.platformOwnerAuditLog);
     const relevant = audits.find((a) => a.eventType === "owner.whatsapp_manually_connected");
     expect((relevant?.metadata as Record<string, unknown> | null)?.webhooksSubscribed).toBe(true);
+  });
+
+  it("REFUSES a connection where subscribe reports success but Centro's app is NOT attached", async () => {
+    // The exact production failure. POST /{waba}/subscribed_apps subscribes
+    // whichever app issued the token and returns 200 either way, so the
+    // WABA ended up carrying a DIFFERENT app. The WABA is still the
+    // organization's own — that is correct and unchanged — but without
+    // Centro's app on it Meta delivers this office's inbound messages
+    // elsewhere, while outbound keeps working because sending needs no
+    // subscription at all. Reading subscribed_apps back is the only way to
+    // tell the two apart.
+    const orgId = await seedOrg();
+    fetchMock.mockImplementation(async (url: string) => {
+      const target = String(url);
+      if (target.includes("/debug_token")) {
+        return { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) };
+      }
+      if (target.includes("/subscribed_apps")) {
+        // Success, but the attached app is somebody else's.
+        return {
+          ok: true,
+          json: async () => ({ data: [{ whatsapp_business_api_data: { id: "2293192351503059" } }] }),
+          text: async () => "",
+        };
+      }
+      if (target.includes("/phone_numbers")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [{ id: "phone-1", display_phone_number: "+972500009999", verified_name: "לקוח בדיקה" }],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ success: true }), text: async () => "" };
+    });
+
+    const result = await expectRedirect(() =>
+      manuallyConnectWhatsAppAction(
+        formData({ organizationId: orgId, wabaId: "waba-1", phoneNumberId: "phone-1", accessToken: "EAAG_tok" })
+      )
+    );
+
+    expect(result.params.whatsappError).toBeTruthy();
+    const [org] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, orgId));
+    expect(org.whatsappAccessTokenEnc, "a connection with no inbound must not be saved").toBeNull();
+    expect(org.whatsappWebhookSubscribedAt).toBeNull();
   });
 
   it("REFUSES a token issued by another Meta app — nothing is saved", async () => {
@@ -291,6 +356,13 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
       const target = String(url);
       if (target.includes("/debug_token")) {
         return { ok: true, json: async () => ({ data: { app_id: "app-1", is_valid: true } }) };
+      }
+      if (target.includes("/subscribed_apps")) {
+        return {
+          ok: true,
+          json: async () => ({ data: [{ whatsapp_business_api_data: { id: "app-1" } }] }),
+          text: async () => "",
+        };
       }
       if (target.includes("/phone_numbers")) {
         return {

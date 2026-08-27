@@ -105,3 +105,25 @@ export async function clearWabaConnection(organizationId: string): Promise<void>
     })
     .where(eq(organizations.id, organizationId));
 }
+
+/**
+ * Records whether Centro's Meta App is verified as subscribed to this
+ * organization's WABA.
+ *
+ * Stored per organization so the owner screen can say "webhook ready" only
+ * when it has actually been read back from Meta — never inferred from a
+ * subscribe call that may have attached a different app.
+ */
+export async function recordWebhookSubscriptionState(
+  organizationId: string,
+  subscribed: boolean
+): Promise<void> {
+  const db = await getDb();
+  await db
+    .update(organizations)
+    .set({
+      whatsappWebhookSubscribedAt: subscribed ? new Date() : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(organizations.id, organizationId));
+}

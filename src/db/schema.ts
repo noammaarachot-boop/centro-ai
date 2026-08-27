@@ -143,6 +143,16 @@ export const organizations = pgTable("organizations", {
   // pair, and this column is the honest answer to "is Meta actually
   // routing here yet".
   whatsappWebhookOverrideAt: timestamp("whatsapp_webhook_override_at", { withTimezone: true }),
+  // When Centro's Meta App was last VERIFIED (read back from
+  // /{waba}/subscribed_apps) as subscribed to this organization's WABA.
+  //
+  // The WABA belongs to the organization; this records only that Centro's
+  // app is authorised to receive its webhooks. Distinct from "the subscribe
+  // call returned ok": that call subscribes whichever app issued the token,
+  // so it can succeed while Centro's app is never attached — which is
+  // exactly how one office ran for days with working outbound and zero
+  // inbound. Null means unverified, and inbound should not be trusted.
+  whatsappWebhookSubscribedAt: timestamp("whatsapp_webhook_subscribed_at", { withTimezone: true }),
   // Result of the last EXPLICIT connection check the owner ran ("בדוק
   // וחבר" / "בדוק חיבור"), per integration. These exist so the owner
   // screens can show a truthful "דורש טיפול" without making a live Meta /

@@ -3,11 +3,12 @@ import {
   exchangeSignupCode,
   resolveWabaIdFromToken,
   subscribeToWabaWebhooks,
+  verifyCentroAppSubscribed,
   WhatsAppSignupError,
   type WhatsAppSignupStep,
 } from "@/lib/whatsapp/embeddedSignup";
 import { getFirstPhoneNumberForWaba, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
-import { storeWabaConnection } from "@/lib/whatsapp/wabaTokens";
+import { recordWebhookSubscriptionState, storeWabaConnection } from "@/lib/whatsapp/wabaTokens";
 import { ensureTemplatesProvisioned } from "@/lib/whatsapp/templates";
 
 export interface CompleteWhatsAppSignupResult {
@@ -66,16 +67,36 @@ export async function completeWhatsAppSignup(params: {
       actorUserId: params.userId,
     });
 
+    // Subscribe Centro's Meta App to THIS organization's WABA, then read
+    // back that it actually took.
+    //
+    // The WABA stays the organization's own — this only authorises Centro's
+    // app to receive its webhooks. Verification is separate from the POST
+    // on purpose: POST /{waba}/subscribed_apps subscribes the app that
+    // ISSUED the token, so a token from another app returns success while
+    // Centro's app is never attached. That ran undetected in production —
+    // outbound worked for days (sending needs no subscription) while every
+    // inbound message was delivered to the other app.
     step = "webhook-subscribe";
-    const webhooksOk = await subscribeToWabaWebhooks(wabaId, userAccessToken);
+    const subscribePosted = await subscribeToWabaWebhooks(wabaId, userAccessToken);
+    const verification = await verifyCentroAppSubscribed(wabaId, userAccessToken);
+    const webhooksOk = subscribePosted && verification.subscribed;
     if (!webhooksOk) {
-      console.error(
-        `[whatsapp-oauth] connection stored for org=${params.organizationId} waba=${wabaId}, but WABA webhook subscription failed (non-fatal; inbound messages may not arrive until reconnect)`
-      );
+      console.error("[whatsapp-oauth] Centro's app is NOT subscribed to this WABA — inbound will not arrive", {
+        organizationId: params.organizationId,
+        wabaId,
+        subscribePosted,
+        verified: verification.subscribed,
+        subscribedAppIds: verification.subscribedAppIds,
+        error: verification.error,
+      });
     }
+    await recordWebhookSubscriptionState(params.organizationId, webhooksOk);
 
     try {
-      await ensureTemplatesProvisioned(wabaId);
+      // The organization's own token: the shared one has no access to this
+      // WABA, so provisioning with it silently did nothing.
+      await ensureTemplatesProvisioned(wabaId, undefined, userAccessToken);
     } catch (error) {
       console.error("[whatsapp-oauth] template auto-provisioning failed (non-fatal)", error);
     }

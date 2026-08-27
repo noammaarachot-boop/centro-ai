@@ -541,3 +541,50 @@ function uniqueTokens(tokens: Array<string | undefined>): string[] {
   }
   return result;
 }
+
+/**
+ * Reads back whether CENTRO's app is actually subscribed to this WABA.
+ *
+ * subscribeToWabaWebhooks reports whether the POST succeeded, which is not
+ * the same question. POST /{waba}/subscribed_apps subscribes the app that
+ * ISSUED the token, so a token minted under a different app returns a
+ * perfectly successful response while Centro's app is never attached — and
+ * Meta then delivers that office's inbound messages to the other app. That
+ * exact situation ran undetected in production: outbound worked for days
+ * (sending needs no app subscription) while every reply went elsewhere.
+ *
+ * The WABA still belongs to the organization throughout. This only confirms
+ * that Centro's app has been authorised to receive its webhooks.
+ */
+export async function verifyCentroAppSubscribed(
+  wabaId: string,
+  accessToken: string
+): Promise<{ subscribed: boolean; subscribedAppIds: string[]; error: string | null }> {
+  const { appId } = getWhatsAppConfig();
+  try {
+    const response = await fetch(
+      `${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/subscribed_apps`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(15_000),
+      }
+    );
+    const body = (await response.json().catch(() => null)) as {
+      data?: Array<{ whatsapp_business_api_data?: { id?: string } }>;
+      error?: { message?: string };
+    } | null;
+    if (!response.ok) {
+      return { subscribed: false, subscribedAppIds: [], error: body?.error?.message ?? `HTTP ${response.status}` };
+    }
+    const ids = (body?.data ?? [])
+      .map((row) => row.whatsapp_business_api_data?.id)
+      .filter((id): id is string => typeof id === "string");
+    return { subscribed: ids.includes(appId), subscribedAppIds: ids, error: null };
+  } catch (error) {
+    return {
+      subscribed: false,
+      subscribedAppIds: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}

@@ -6,7 +6,7 @@ import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
 import { requireOwnerSession } from "@/lib/auth/ownerSession";
 import { recordOwnerAuditEvent } from "@/lib/owner/audit";
-import { subscribeToWabaWebhooks } from "@/lib/whatsapp/embeddedSignup";
+import { subscribeToWabaWebhooks, verifyCentroAppSubscribed } from "@/lib/whatsapp/embeddedSignup";
 import {
   getPhoneNumberInWaba,
   describeTokenApp,
@@ -16,7 +16,7 @@ import {
 } from "@/lib/whatsapp/phoneNumbers";
 import { ensureTemplatesProvisioned } from "@/lib/whatsapp/templates";
 import { buildPhoneNumberWebhookUrl, generateWebhookVerifyToken } from "@/lib/whatsapp/webhookUrls";
-import { storeWabaConnection, WhatsAppConnectionConflictError } from "@/lib/whatsapp/wabaTokens";
+import { recordWebhookSubscriptionState, storeWabaConnection, WhatsAppConnectionConflictError } from "@/lib/whatsapp/wabaTokens";
 
 // A layout only protects the pages it wraps, not the Server Actions
 // those pages invoke — each action here independently calls
@@ -324,9 +324,23 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     // credentials, so a failure must surface as a real permissions problem
     // now, rather than being masked by the shared token and resurfacing
     // later as an unexplained send failure.
-    webhooksOk = await subscribeToWabaWebhooks(wabaId, accessToken, {
+    const posted = await subscribeToWabaWebhooks(wabaId, accessToken, {
       allowSharedTokenFallback: false,
     });
+    // Read it back. The POST subscribes whichever app issued the token, so
+    // it can return success while Centro's app is never attached — the WABA
+    // stays the organization's either way, but without Centro's app on it
+    // Meta delivers this office's inbound messages somewhere else.
+    const verification = await verifyCentroAppSubscribed(wabaId, accessToken);
+    if (posted && !verification.subscribed) {
+      console.error("[owner] manuallyConnectWhatsApp: subscribe reported ok but Centro's app is not attached", {
+        organizationId,
+        wabaId,
+        subscribedAppIds: verification.subscribedAppIds,
+        error: verification.error,
+      });
+    }
+    webhooksOk = posted && verification.subscribed;
   } catch (error) {
     console.error("[owner] manuallyConnectWhatsApp webhook subscription threw", {
       organizationId,
@@ -361,6 +375,7 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
   const webhookVerifyToken = generateWebhookVerifyToken();
 
   try {
+    await recordWebhookSubscriptionState(organizationId, webhooksOk);
     await storeWabaConnection(organizationId, {
       businessAccountId: wabaId,
       phoneNumberId,
