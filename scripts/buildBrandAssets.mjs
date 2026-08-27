@@ -88,13 +88,18 @@ async function main() {
   await fs.mkdir(OUT, { recursive: true });
 
   // ── 3. The mark itself, at its own aspect ratio. ───────────────────
-  const MARK_W = 1024;
+  // 512 is ~6x the largest size the mark is ever rendered at (78px), so it
+  // stays sharp on any display while a palette PNG keeps it at ~34KB rather
+  // than the ~360KB a 1024px truecolour version costs on every page load.
+  const MARK_W = 512;
   await cropped
     .clone()
     .resize({ width: MARK_W, kernel: "lanczos3" })
-    // A half-pixel blur on alpha only would need a separate pass; lanczos
-    // downscaling from the 733px original already anti-aliases the edge.
-    .png({ compressionLevel: 9 })
+    // Lanczos downscaling from the 735px original anti-aliases the edge, so
+    // no separate alpha feathering pass is needed. Palette quantisation is
+    // visually clean here — checked against the truecolour render for
+    // banding across the purple-to-cyan gradient.
+    .png({ palette: true, quality: 90, compressionLevel: 9 })
     .toFile(path.join(OUT, "centro-logo.png"));
   console.log("wrote", path.join(OUT, "centro-logo.png"));
 
@@ -110,14 +115,14 @@ async function main() {
     create: { width: ICON, height: ICON, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
   })
     .composite([{ input: square, left: Math.round((ICON - iw) / 2), top: Math.round((ICON - ih) / 2) }])
-    .png({ compressionLevel: 9 })
+    .png({ palette: true, quality: 90, compressionLevel: 9 })
     .toFile(path.join(OUT, "centro-icon.png"));
   console.log(`wrote ${path.join(OUT, "centro-icon.png")} (${iw}x${ih} inside ${ICON})`);
 
   // Next.js file-convention icons. Static files, so they stay pixel-exact
   // instead of being re-rendered by satori at request time.
   for (const [file, size] of [["src/app/icon.png", 96], ["src/app/apple-icon.png", 180]]) {
-    await sharp(path.join(OUT, "centro-icon.png")).resize(size, size, { kernel: "lanczos3" }).png().toFile(file);
+    await sharp(path.join(OUT, "centro-icon.png")).resize(size, size, { kernel: "lanczos3" }).png({ palette: true, quality: 90, compressionLevel: 9 }).toFile(file);
     console.log("wrote", file, `(${size}px)`);
   }
 }

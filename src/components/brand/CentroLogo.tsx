@@ -14,12 +14,15 @@
  * that script — never hand-edit an asset, and never add a second drawing.
  *
  * Sizing is the ONLY thing a caller may vary. `object-contain` inside the
- * caller's box preserves the mark's 735:621 aspect ratio at every size, so a
+ * caller's box preserves the mark's 512:433 aspect ratio at every size, so a
  * square slot letterboxes rather than stretching it.
  */
 
-/** Intrinsic size of public/brand/centro-logo.png, for aspect + no layout shift. */
-export const CENTRO_LOGO_ASPECT = { width: 735, height: 621 } as const;
+/**
+ * Intrinsic size of public/brand/centro-logo.png, for aspect + no layout
+ * shift. Must match what scripts/buildBrandAssets.mjs emits.
+ */
+export const CENTRO_LOGO_ASPECT = { width: 512, height: 433 } as const;
 
 export function CentroLogo({
   className = "",
