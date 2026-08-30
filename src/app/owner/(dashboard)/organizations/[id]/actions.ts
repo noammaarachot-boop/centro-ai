@@ -324,9 +324,17 @@ export async function manuallyConnectWhatsAppAction(formData: FormData) {
     // credentials, so a failure must surface as a real permissions problem
     // now, rather than being masked by the shared token and resurfacing
     // later as an unexplained send failure.
-    const posted = await subscribeToWabaWebhooks(wabaId, accessToken, {
-      allowSharedTokenFallback: false,
-    });
+    // Centro's shared token IS allowed here, and is in fact the one that
+    // matters. Subscribing attaches the app that issued the token, so only a
+    // Centro-app-issued token can attach Centro's app; the office's own
+    // token can only ever attach the office's own app. Excluding the shared
+    // token — which this call used to do, reasoning that an organization
+    // should use its own credentials — made a correct subscription
+    // impossible for every manually connected office.
+    //
+    // This is about WEBHOOK ROUTING only. The WABA stays the organization's,
+    // and every send still uses the organization's own credentials.
+    const posted = await subscribeToWabaWebhooks(wabaId, accessToken);
     // Read it back. The POST subscribes whichever app issued the token, so
     // it can return success while Centro's app is never attached — the WABA
     // stays the organization's either way, but without Centro's app on it

@@ -132,9 +132,7 @@ export async function diagnoseInbound(
     // re-setting an identical override are both no-ops at Meta.
     let wabaSubscribed = false;
     try {
-      wabaSubscribed = await subscribeToWabaWebhooks(wabaId, token, {
-        allowSharedTokenFallback: false,
-      });
+      wabaSubscribed = await subscribeToWabaWebhooks(wabaId, token);
     } catch (error) {
       errors.push(`subscribeToWabaWebhooks: ${error instanceof Error ? error.message : String(error)}`);
     }

@@ -190,10 +190,18 @@ describe("manuallyConnectWhatsAppAction — verifies against Meta before ever sa
       )
     );
 
-    const subscribeCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/waba-1/subscribed_apps"));
+    // Subscribing attaches the app that ISSUED the token, so Centro's own
+    // shared token is what must be used here — the office's token could only
+    // ever attach the office's own app, which is how one WABA ended up
+    // routing its inbound messages to somebody else's application. The WABA
+    // is still the organization's, and every SEND still uses the
+    // organization's own credentials.
+    const subscribeCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes("/waba-1/subscribed_apps") && init?.method === "POST"
+    );
     expect(subscribeCall).toBeDefined();
     const [, init] = subscribeCall!;
-    expect(init.headers.Authorization).toBe("Bearer EAAG_real_token");
+    expect(init.headers.Authorization).toBe("Bearer fake-system-token");
 
     const audits = await db.select().from(schema.platformOwnerAuditLog);
     const relevant = audits.find((a) => a.eventType === "owner.whatsapp_manually_connected");

@@ -468,9 +468,24 @@ export async function subscribeToWabaWebhooks(
 ): Promise<boolean> {
   const { appId, appSecret, systemUserToken, webhookVerifyToken } = getWhatsAppConfig();
   const allowFallback = options?.allowSharedTokenFallback ?? true;
+
+  // CENTRO's own token first, then the organization's.
+  //
+  // POST /{waba}/subscribed_apps subscribes the app that ISSUED the token —
+  // it has no parameter naming an app. The organization's own token was
+  // tried first, returned 200 (it happily subscribed the app that minted
+  // it) and the loop broke on that success, so Centro's app was never
+  // attached. Meta then delivered that office's inbound messages to the
+  // other app while outbound kept working, because sending needs no
+  // subscription at all. Only a Centro-app-issued token can subscribe
+  // Centro's app, and the shared System User token is exactly that.
+  //
+  // The organization's token stays in the list because in Embedded Signup
+  // it IS Centro-app-issued (it comes from exchanging Centro's own signup
+  // code), and there it may reach a WABA the shared System User cannot.
   const tokens = uniqueTokens([
-    preferredAccessToken,
     ...(allowFallback ? [systemUserToken] : []),
+    preferredAccessToken,
   ]);
 
   let subscribed = false;
@@ -483,11 +498,21 @@ export async function subscribeToWabaWebhooks(
         signal: AbortSignal.timeout(WHATSAPP_SIGNUP_REQUEST_TIMEOUT_MS),
       })
     );
-    if (wabaResponse.ok) {
+    if (!wabaResponse.ok) {
+      lastFailure = await wabaResponse.text();
+      continue;
+    }
+    // A 200 only means SOME app was subscribed. Read back whether it was
+    // ours before believing it — that distinction is the whole bug.
+    const check = await verifyCentroAppSubscribed(wabaId, accessToken);
+    if (check.subscribed) {
       subscribed = true;
       break;
     }
-    lastFailure = await wabaResponse.text();
+    lastFailure =
+      `subscribe returned ok but Centro's app (${appId}) is not attached; ` +
+      `subscribed apps: ${check.subscribedAppIds.join(", ") || "none"}` +
+      (check.error ? ` (${check.error})` : "");
   }
 
   if (!subscribed) {

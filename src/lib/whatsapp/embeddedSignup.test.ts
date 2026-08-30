@@ -104,25 +104,52 @@ describe("subscribeToWabaWebhooks — shared-token fallback is opt-out for organ
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer org-own-token");
   });
 
-  it("still falls back to the shared token by default — the Embedded Signup path is unchanged", async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "no permission" });
-
-    await subscribeToWabaWebhooks("waba-1", "signup-user-token");
-
-    // Both tokens attempted, in order: the signup token first, then shared.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer signup-user-token");
-    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer fake-system-token");
-  });
-
-  it("uses the org's own token for the WABA-level subscribe when it succeeds on the first try", async () => {
-    fetchMock.mockResolvedValue({ ok: true, text: async () => "" });
-
-    const result = await subscribeToWabaWebhooks("waba-1", "org-own-token", {
-      allowSharedTokenFallback: false,
+  it("tries CENTRO's shared token FIRST — it is the app being subscribed", async () => {
+    // POST /{waba}/subscribed_apps has no parameter naming an app: it
+    // subscribes whichever app ISSUED the token. The organization's token was
+    // tried first, returned 200 (it subscribed the app that minted it) and
+    // the loop broke on that success — so Centro's app was never attached and
+    // Meta delivered that office's inbound messages elsewhere, while outbound
+    // kept working because sending needs no subscription. The WABA remains
+    // the organization's throughout; this is webhook routing only.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ whatsapp_business_api_data: { id: "app-1" } }] }),
+      text: async () => "",
     });
 
+    const result = await subscribeToWabaWebhooks("waba-1", "org-own-token");
+
     expect(result).toBe(true);
-    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer org-own-token");
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer fake-system-token");
+  });
+
+  it("a 200 that attached SOMEBODY ELSE'S app is not treated as success", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ whatsapp_business_api_data: { id: "2293192351503059" } }] }),
+      text: async () => "",
+    });
+
+    const result = await subscribeToWabaWebhooks("waba-1", "org-own-token");
+
+    expect(result, "a subscription that routes nothing to us is not a success").toBe(false);
+  });
+
+  it("falls through to the organization's token — in Embedded Signup that IS Centro-app-issued", async () => {
+    // The app-level field subscription that follows sends no Authorization
+    // header (it authenticates with appId|appSecret in the body), so this
+    // must not assume one is present.
+    fetchMock.mockImplementation(async (_url: string, init?: { headers?: { Authorization?: string } }) =>
+      init?.headers?.Authorization === "Bearer signup-user-token"
+        ? {
+            ok: true,
+            json: async () => ({ data: [{ whatsapp_business_api_data: { id: "app-1" } }] }),
+            text: async () => "",
+          }
+        : { ok: false, status: 403, text: async () => "no permission", json: async () => ({}) }
+    );
+
+    expect(await subscribeToWabaWebhooks("waba-1", "signup-user-token")).toBe(true);
   });
 });
