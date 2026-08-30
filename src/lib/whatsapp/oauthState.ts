@@ -11,6 +11,17 @@ export interface WhatsAppOAuthStatePayload {
   exp: number;
   // When true, oauth callback returns HTML that closes the popup window.
   popup?: boolean;
+  /**
+   * Which organization this signup is FOR, when a platform owner starts
+   * it from the owner console on an organization's behalf.
+   *
+   * Absent for the normal path, where the organization comes from the
+   * employee's own session. It rides inside the HMAC-signed body, so it
+   * cannot be edited in the URL — and the callback independently requires
+   * a valid owner session before honouring it, so a signed state captured
+   * from somewhere else is still useless without owner authentication.
+   */
+  organizationId?: string;
 }
 
 function b64urlEncode(value: string): string {

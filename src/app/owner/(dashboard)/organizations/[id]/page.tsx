@@ -5,6 +5,7 @@ import {
   ArrowRight,
   CheckCircle2,
   ClipboardList,
+  Link2 as LinkIcon,
   ListChecks,
   RefreshCw,
   ShieldAlert,
@@ -40,7 +41,11 @@ import {
   reactivateOrganizationAction,
   suspendOrganizationAction,
 } from "./actions";
-import { checkDriveConnectionAction, checkWhatsAppConnectionAction } from "./connectionActions";
+import {
+  checkDriveConnectionAction,
+  checkWhatsAppConnectionAction,
+  reconnectWhatsAppAction,
+} from "./connectionActions";
 import {
   editWhatsAppTemplateAction,
   refreshWhatsAppTemplateStatusesAction,
@@ -321,6 +326,28 @@ export default async function OwnerOrganizationDetailPage({
                   <p className="mt-1.5 text-[11px] text-text-muted">
                     נבדק לאחרונה: {formatOwnerDateTime(overview.whatsappHealthCheckedAt)}
                   </p>
+                )}
+                {/* Repairing a connection had no entry point at all: the
+                    product UI hides "connect" once an organization is
+                    connected, leaving only "ניתוק" — and disconnecting a WABA
+                    that sends fine, in order to fix receiving, is not a
+                    repair. Nothing is cleared by this; the existing
+                    credentials keep working until Meta has validated new
+                    ones. */}
+                {overview.whatsappConnectedAt && (
+                  <form action={reconnectWhatsAppAction} className="mt-2.5">
+                    <input type="hidden" name="organizationId" value={overview.id} />
+                    <AsyncActionButton
+                      idleLabel="תקן / חבר מחדש WhatsApp"
+                      pendingLabel="פותח את Meta…"
+                      variant="secondary"
+                      icon={<LinkIcon className="h-4 w-4" aria-hidden="true" />}
+                    />
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-text-muted">
+                      בחרו ב-Meta את אותו חשבון, אותו WABA ואותו מספר שכבר מחוברים. החיבור הקיים
+                      נשמר ולא נמחק — הוא יוחלף רק לאחר אימות מול Meta.
+                    </p>
+                  </form>
                 )}
               </div>
 

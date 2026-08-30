@@ -272,3 +272,47 @@ export async function describeTokenApp(
     };
   }
 }
+
+/**
+ * The phone number an organization already uses, confirmed to still be on
+ * this WABA — never "whichever came back first".
+ *
+ * getFirstPhoneNumberForWaba is correct for a brand-new connection, where
+ * there is nothing to preserve. It is wrong for repairing an existing one: a
+ * WABA can hold several numbers, and silently re-pointing an office at a
+ * different one would send its clients' messages from a number they have
+ * never seen, and orphan the conversation history tied to the old id.
+ *
+ * Returns null when the expected number is not on the WABA, so the caller can
+ * stop rather than attach the wrong one.
+ */
+export async function findPhoneNumberOnWaba(
+  wabaId: string,
+  expectedPhoneNumberId: string,
+  accessToken: string
+): Promise<PhoneNumberDetails | null> {
+  const response = await withRetry(() =>
+    fetch(
+      `${GRAPH_API_BASE}/${encodeURIComponent(wabaId)}/phone_numbers?fields=display_phone_number,verified_name`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(WHATSAPP_PHONE_NUMBER_REQUEST_TIMEOUT_MS),
+      }
+    )
+  );
+  if (!response.ok) {
+    throw new WhatsAppApiError(
+      `Could not list phone numbers for WhatsApp Business Account ${wabaId} (${response.status})`
+    );
+  }
+  const data = (await response.json()) as {
+    data?: Array<{ id: string; display_phone_number?: string; verified_name?: string }>;
+  };
+  const match = (data.data ?? []).find((row) => row.id === expectedPhoneNumberId);
+  if (!match) return null;
+  return {
+    id: match.id,
+    displayPhoneNumber: match.display_phone_number ?? "",
+    verifiedName: match.verified_name ?? "",
+  };
+}

@@ -7,7 +7,24 @@ import {
   WhatsAppSignupError,
   type WhatsAppSignupStep,
 } from "@/lib/whatsapp/embeddedSignup";
-import { getFirstPhoneNumberForWaba, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
+import {
+  findPhoneNumberOnWaba,
+  getFirstPhoneNumberForWaba,
+  WhatsAppApiError,
+} from "@/lib/whatsapp/phoneNumbers";
+import { eq } from "drizzle-orm";
+import { getDb } from "@/db";
+import { organizations } from "@/db/schema";
+
+async function getExistingPhoneNumberId(organizationId: string): Promise<string | null> {
+  const db = await getDb();
+  const [org] = await db
+    .select({ phoneNumberId: organizations.whatsappPhoneNumberId })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  return org?.phoneNumberId ?? null;
+}
 import { recordWebhookSubscriptionState, storeWabaConnection } from "@/lib/whatsapp/wabaTokens";
 import { ensureTemplatesProvisioned } from "@/lib/whatsapp/templates";
 
@@ -49,7 +66,29 @@ export async function completeWhatsAppSignup(params: {
     const wabaId = await resolveWabaIdFromToken(userAccessToken);
 
     step = "phone-lookup";
-    const phoneNumber = await getFirstPhoneNumberForWaba(wabaId, userAccessToken);
+    // Repairing an existing connection must keep the SAME number.
+    //
+    // A WABA can hold several numbers, and "the first one Meta returns"
+    // is not a choice — re-pointing an office at a different number would
+    // message its clients from a number they have never seen and orphan
+    // the conversation history keyed to the old phone_number_id. When the
+    // organization already has one, that exact id must still be on the
+    // WABA or the flow stops rather than attaching the wrong number.
+    const existingPhoneNumberId = await getExistingPhoneNumberId(params.organizationId);
+    let phoneNumber;
+    if (existingPhoneNumberId) {
+      const matched = await findPhoneNumberOnWaba(wabaId, existingPhoneNumberId, userAccessToken);
+      if (!matched) {
+        throw new WhatsAppSignupError(
+          "המספר שהארגון מחובר אליו אינו נמצא בחשבון ה-WhatsApp שנבחר. " +
+            "יש לבחור את אותו חשבון ואותו מספר שכבר מחוברים, או לנתק תחילה במכוון.",
+          "phone-lookup"
+        );
+      }
+      phoneNumber = matched;
+    } else {
+      phoneNumber = await getFirstPhoneNumberForWaba(wabaId, userAccessToken);
+    }
 
     step = "store";
     await storeWabaConnection(params.organizationId, {

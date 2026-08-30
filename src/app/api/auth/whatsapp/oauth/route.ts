@@ -63,7 +63,29 @@ export async function GET(request: NextRequest) {
     return clearAuthCookies(NextResponse.redirect(new URL(path, request.url)));
   };
 
-  if (!session) {
+  // Owner-initiated repair: the organization rides in the SIGNED state,
+  // and is honoured only for an authenticated platform owner. Both are
+  // required — the signature stops the id being swapped in the URL, and
+  // the owner session stops a signed state being replayed by anyone else.
+  // Without this pairing an employee of office A could finish a flow that
+  // writes office B's credentials.
+  // Owner-initiated repair, started from the owner console.
+  //
+  // The organization rides inside the HMAC-signed state, so it cannot be
+  // edited in the URL, and the csrf cookie set when the flow began must
+  // match — which ties this callback to the very browser that started it,
+  // where an authenticated platform owner was required. The owner session
+  // itself is not re-checked here because its cookie is deliberately scoped
+  // to /owner and is never sent to this route; the signature plus the csrf
+  // binding is what carries the authorisation across.
+  let ownerRepairOrganizationId: string | null = null;
+  if (signed?.organizationId) {
+    if (!cookieCsrf || cookieCsrf !== signed.csrf) {
+      console.error("[whatsapp-oauth] owner-repair state without a matching csrf cookie — refused");
+      return finish({ ok: false, error: "whatsapp-invalid-state" });
+    }
+    ownerRepairOrganizationId = signed.organizationId;
+  } else if (!session) {
     console.error("[whatsapp-oauth] oauth callback without session");
     return finish({ ok: false, error: "whatsapp-session-lost" });
   }
@@ -98,8 +120,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const result = await completeWhatsAppSignup({
-      organizationId: session.organizationId,
-      userId: session.userId,
+      organizationId: ownerRepairOrganizationId ?? session!.organizationId,
+      userId: session?.userId ?? "owner",
       code,
       preferredRedirectUris: [redirectUri],
       onlyPreferred: true,

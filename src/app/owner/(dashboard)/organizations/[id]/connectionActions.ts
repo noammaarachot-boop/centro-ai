@@ -1,5 +1,7 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
+import { cookies } from "next/headers";
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
@@ -9,7 +11,15 @@ import { getValidAccessToken } from "@/lib/googleAuth/driveTokens";
 import { getDriveFolder } from "@/lib/googleAuth/drive";
 import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
 import { getPhoneNumberInWaba, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
-import { verifyCentroAppSubscribed } from "@/lib/whatsapp/embeddedSignup";
+import { verifyCentroAppSubscribed, WHATSAPP_OAUTH_CALLBACK_URI } from "@/lib/whatsapp/embeddedSignup";
+import { GRAPH_API_VERSION } from "@/lib/whatsapp/config";
+import { WHATSAPP_HARDCODE_ENABLED, WHATSAPP_HARDCODED } from "@/lib/whatsapp/hardcodedConfig";
+import {
+  encodeWhatsAppOAuthState,
+  WHATSAPP_OAUTH_REDIRECT_URI_COOKIE,
+  WHATSAPP_OAUTH_RETURN_TO_COOKIE,
+  WHATSAPP_OAUTH_STATE_COOKIE,
+} from "@/lib/whatsapp/oauthState";
 
 // Real connection checks — both of these make a genuine API call and store
 // what actually came back. Neither infers health from "credentials exist",
@@ -166,4 +176,86 @@ export async function checkDriveConnectionAction(formData: FormData) {
     .where(eq(organizations.id, organizationId));
 
   backToConnections(organizationId);
+}
+
+/**
+ * Re-runs Embedded Signup for one organization, from the owner console.
+ *
+ * Needed because there is no way to repair a connection from the product UI:
+ * the connect button is hidden once an organization is connected
+ * (Step3Connect renders it only when !isConnected), leaving "ניתוק" as the
+ * only control — and disconnecting a WABA that is sending fine, to fix
+ * receiving, is not an acceptable repair path.
+ *
+ * The organization is carried in the HMAC-signed OAuth state rather than a
+ * query parameter, so it cannot be swapped for another tenant's between here
+ * and the callback, and the csrf cookie set below ties the callback to this
+ * browser — the one where an authenticated platform owner stood. The owner
+ * cookie itself is scoped to /owner and never reaches the callback route,
+ * which is why the authorisation has to travel this way.
+ *
+ * NOTHING is cleared here. The existing credentials keep working throughout;
+ * completeWhatsAppSignup only overwrites them after Meta has validated the
+ * new ones, so a flow abandoned halfway leaves the working connection intact.
+ */
+export async function reconnectWhatsAppAction(formData: FormData) {
+  await requireOwnerSession();
+  const organizationId = String(formData.get("organizationId") ?? "");
+  if (!organizationId) redirect("/owner/organizations");
+
+  const db = await getDb();
+  const [org] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  if (!org) redirect("/owner/organizations");
+
+  const appId = WHATSAPP_HARDCODE_ENABLED
+    ? WHATSAPP_HARDCODED.appId
+    : process.env.NEXT_PUBLIC_WHATSAPP_APP_ID;
+  const configId = WHATSAPP_HARDCODE_ENABLED
+    ? WHATSAPP_HARDCODED.configId
+    : process.env.NEXT_PUBLIC_WHATSAPP_CONFIG_ID;
+  if (!appId || !configId) {
+    redirect(
+      `/owner/organizations/${organizationId}?whatsappError=${encodeURIComponent(
+        "חיבור WhatsApp אינו מוגדר בסביבה (App ID / Config ID חסרים)."
+      )}#connections`
+    );
+  }
+
+  const csrf = randomUUID();
+  const redirectUri = WHATSAPP_OAUTH_CALLBACK_URI;
+  const state = encodeWhatsAppOAuthState({
+    csrf,
+    returnTo: `/owner/organizations/${organizationId}`,
+    redirectUri,
+    exp: Date.now() + 10 * 60 * 1000,
+    organizationId,
+  });
+
+  const cookieStore = await cookies();
+  const cookieBase = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: 600,
+  };
+  cookieStore.set(WHATSAPP_OAUTH_STATE_COOKIE, csrf, cookieBase);
+  cookieStore.set(WHATSAPP_OAUTH_RETURN_TO_COOKIE, `/owner/organizations/${organizationId}`, cookieBase);
+  cookieStore.set(WHATSAPP_OAUTH_REDIRECT_URI_COOKIE, redirectUri, cookieBase);
+
+  const params = new URLSearchParams({
+    client_id: appId,
+    redirect_uri: redirectUri,
+    state,
+    response_type: "code",
+    config_id: configId,
+    override_default_response_type: "true",
+    extras: JSON.stringify({ setup: {}, featureType: "", sessionInfoVersion: "3" }),
+  });
+
+  redirect(`https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth?${params.toString()}`);
 }
