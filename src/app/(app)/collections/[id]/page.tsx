@@ -89,6 +89,7 @@ import { MessageComposer } from "@/components/app/MessageComposer";
 import { ConversationScroll } from "@/components/app/ConversationScroll";
 import { DevToolsPanel } from "@/components/app/DevToolsPanel";
 import { devToolsEnabled } from "@/lib/devTools";
+import { formatDateAndTime } from "@/lib/formatDateTime";
 
 const TRANSITION_LABELS: Record<CollectionRequestStatus, string> = {
   draft: "חזרה לטיוטה",
@@ -1097,7 +1098,7 @@ export default async function CollectionRequestDetailPage({
               {auditHistory.map((event) => (
                 <li key={event.id} className="text-xs text-text-secondary">
                   <span className="text-text-muted">
-                    {new Date(event.occurredAt).toLocaleString("he-IL")} ·{" "}
+                    {formatDateAndTime(event.occurredAt, organizationTimezone)} ·{" "}
                   </span>
                   {event.description}
                 </li>

@@ -7,6 +7,7 @@ import { Card } from "@/components/app/Card";
 import { Badge } from "@/components/app/Badge";
 import { EmptyState } from "@/components/app/EmptyState";
 import { resolveReviewItem } from "./actions";
+import { formatDateAndTime } from "@/lib/formatDateTime";
 
 const CATEGORY_LABEL: Record<string, string> = {
   missing_document: "מסמך חסר",
@@ -52,7 +53,7 @@ export default async function ReviewQueuePage({
                     <Badge tone="blue">{CATEGORY_LABEL[item.category] ?? item.category}</Badge>
                     <span className="text-sm font-semibold text-text-primary">{item.clientName}</span>
                   </div>
-                  <span className="text-xs text-text-muted">{new Date(item.createdAt).toLocaleString("he-IL")}</span>
+                  <span className="text-xs text-text-muted">{formatDateAndTime(item.createdAt)}</span>
                 </div>
                 <p className="mb-1 text-sm text-text-primary">&quot;{item.clientQuestion}&quot;</p>
                 {gist && <p className="mb-3 text-xs text-text-muted">הבנת ה-AI: {gist}</p>}

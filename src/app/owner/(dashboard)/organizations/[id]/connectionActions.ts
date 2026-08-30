@@ -9,6 +9,7 @@ import { getValidAccessToken } from "@/lib/googleAuth/driveTokens";
 import { getDriveFolder } from "@/lib/googleAuth/drive";
 import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
 import { getPhoneNumberInWaba, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
+import { verifyCentroAppSubscribed } from "@/lib/whatsapp/embeddedSignup";
 
 // Real connection checks — both of these make a genuine API call and store
 // what actually came back. Neither infers health from "credentials exist",
@@ -42,6 +43,7 @@ export async function checkWhatsAppConnectionAction(formData: FormData) {
     .limit(1);
 
   let ok = false;
+  let inboundOk = false;
   let reason: string | null = null;
 
   if (!org?.wabaId || !org.phoneNumberId) {
@@ -52,9 +54,21 @@ export async function checkWhatsAppConnectionAction(formData: FormData) {
     // verify here. Reported honestly rather than as a failure.
     reason = "החיבור בוצע דרך Embedded Signup — אין טוקן ייעודי לארגון לבדיקה.";
   } else {
+    // Two independent capabilities, checked separately.
+    //
+    // This used to verify only that the token could read the phone number on
+    // the WABA — which proves OUTBOUND works — and then reported "החיבור
+    // תקין". An organization whose WABA is not subscribed to Centro's Meta
+    // App receives no inbound messages and no delivery statuses at all, and
+    // that state passed as fully healthy. Sending and receiving are separate
+    // things and are now reported as such.
+    //
+    // Both calls are GETs: a health check must never message a client.
+    const accessToken = decryptWhatsAppToken(org.tokenEnc);
+    let outboundOk = false;
     try {
-      await getPhoneNumberInWaba(org.wabaId, org.phoneNumberId, decryptWhatsAppToken(org.tokenEnc));
-      ok = true;
+      await getPhoneNumberInWaba(org.wabaId, org.phoneNumberId, accessToken);
+      outboundOk = true;
     } catch (error) {
       reason =
         error instanceof WhatsAppApiError
@@ -66,6 +80,18 @@ export async function checkWhatsAppConnectionAction(formData: FormData) {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+
+    if (outboundOk) {
+      const subscription = await verifyCentroAppSubscribed(org.wabaId, accessToken);
+      inboundOk = subscription.subscribed;
+      if (!inboundOk) {
+        reason =
+          "חיבור חלקי — שליחת הודעות זמינה, קבלת הודעות אינה מחוברת. " +
+          "חשבון ה-WhatsApp של הארגון אינו מקושר לאפליקציה של Centro, ולכן הודעות נכנסות " +
+          "ועדכוני מסירה לא יגיעו. יש לבצע חיבור מחדש (Connect WhatsApp) כדי להשלים זאת.";
+      }
+      ok = inboundOk;
+    }
   }
 
   await db
@@ -73,6 +99,9 @@ export async function checkWhatsAppConnectionAction(formData: FormData) {
     .set({
       whatsappHealthOk: ok,
       whatsappHealthReason: ok ? null : reason,
+      // Readiness to RECEIVE, recorded from what Meta actually reports
+      // rather than inferred from the connection existing.
+      whatsappWebhookSubscribedAt: inboundOk ? new Date() : null,
       whatsappHealthCheckedAt: new Date(),
       updatedAt: new Date(),
     })

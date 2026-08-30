@@ -16,6 +16,7 @@ import {
 import { PageHeader } from "@/components/app/PageHeader";
 import { EmptyState } from "@/components/app/EmptyState";
 import { Badge, type BadgeTone } from "@/components/app/Badge";
+import { formatDayLabel } from "@/lib/formatDateTime";
 
 const ACTOR_LABELS: Record<string, string> = {
   employee: "עובד",
@@ -90,7 +91,9 @@ function dayLabel(date: Date): string {
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
   if (day.getTime() === yesterday.getTime()) return "אתמול";
-  return day.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" });
+  // Explicit zone: without one this formats in the rendering process's zone
+  // (UTC on Vercel), which put events on the wrong day near midnight.
+  return formatDayLabel(day);
 }
 
 function timeLabel(date: Date): string {
