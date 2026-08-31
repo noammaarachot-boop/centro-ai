@@ -2244,3 +2244,71 @@ export const rateLimitAttempts = pgTable("rate_limit_attempts", {
 }, (table) => [
   index("rate_limit_attempts_expires_at_idx").on(table.expiresAt),
 ]);
+
+/**
+ * "An employee has dealt with this" — for ONE occurrence of ONE attention
+ * reason.
+ *
+ * The dashboard's attention items are DERIVED, not stored: getItemsNeedingReview
+ * unions four real conditions (an escalated request, a document awaiting
+ * review, an open client question, a requirement reported missing). That is
+ * deliberately good — a derived item cannot go stale, and it disappears by
+ * itself the moment the underlying cause is gone, which is why completing or
+ * cancelling a request already clears its items.
+ *
+ * What was missing is the human case: the employee has handled something out
+ * of band (phoned the client, fixed it elsewhere) and the underlying
+ * condition legitimately still stands. Changing the business state to silence
+ * the badge would be a lie; leaving it forever makes the list unusable.
+ *
+ * So a dismissal is recorded ALONGSIDE the condition and never mutates it.
+ * Nothing here closes a request, accepts a document, or resolves a question.
+ *
+ * `occurrenceAt` is what makes recurrence work without ever re-opening
+ * history. A dismissal silences the occurrence it was made for and any older
+ * one; if the same condition genuinely happens again later, the underlying
+ * row's timestamp moves past it and a NEW attention item appears, leaving the
+ * original dismissal untouched as an audit record.
+ */
+export const attentionDismissals = pgTable(
+  "attention_dismissals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    collectionRequestId: uuid("collection_request_id")
+      .notNull()
+      .references(() => collectionRequests.id, { onDelete: "cascade" }),
+    /** ReviewReasonKind — which of the four conditions was dismissed. */
+    reasonKind: text("reason_kind").notNull(),
+    /**
+     * The underlying row's id (document / review item / requirement). Empty
+     * string for "escalated", which has no row of its own beyond the request
+     * — a sentinel rather than NULL so the unique index below actually binds
+     * (Postgres treats NULLs as distinct, so two dismissals could otherwise
+     * both be created for the same escalation).
+     */
+    sourceId: text("source_id").notNull().default(""),
+    /** The occurrence silenced: this one and anything older. */
+    occurrenceAt: timestamp("occurrence_at", { withTimezone: true }).notNull(),
+    /** The reason text as it read when dismissed — history, never rewritten. */
+    reasonDetail: text("reason_detail"),
+    dismissedByUserId: uuid("dismissed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Idempotency, enforced by the database rather than by hoping callers
+    // behave: a double click, a retry, or two concurrent requests can only
+    // ever leave one row for the same occurrence.
+    uniqueIndex("attention_dismissals_occurrence_idx").on(
+      table.organizationId,
+      table.collectionRequestId,
+      table.reasonKind,
+      table.sourceId,
+      table.occurrenceAt
+    ),
+  ]
+);

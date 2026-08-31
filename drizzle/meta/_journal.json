@@ -547,6 +547,13 @@
       "when": 1787863986245,
       "tag": "0077_tense_pyro",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1788161511340,
+      "tag": "0078_marvelous_vance_astro",
+      "breakpoints": true
     }
   ]
 }

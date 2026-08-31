@@ -106,6 +106,8 @@ const REASON_COPY: Record<
 
 export interface NeedsAttentionRow {
   collectionRequestId: string;
+  reasonKind: ReviewReasonKind;
+  sourceId: string;
   severity: "danger" | "warning";
   title: string;
   meta: string;
@@ -320,6 +322,10 @@ async function buildNeedsAttentionRows(organizationId: string, needsReviewItems:
       const elapsed = formatRelativeTime(reason.occurredAt);
       return {
         collectionRequestId: item.collectionRequestId,
+        // Which specific reason this row is showing, so "טופל" dismisses
+        // exactly that occurrence and not the whole request.
+        reasonKind: reason.kind,
+        sourceId: reason.sourceId ?? "",
         severity: copy.severity,
         title: copy.title(summary.clientName),
         meta: `${copy.meta(reason.detail)} · ${elapsed}`,

@@ -10,9 +10,7 @@ import {
   collectionRequests,
   conversations,
   documents,
-  messages,
-  organizations,
-} from "@/db/schema";
+  messages,} from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { classifyDocumentWithLearning, isFuzzyDuplicate, SUPPORTED_EXTENSIONS } from "@/lib/ai/documentClassifier";
 import { applyDocumentProfileConfirmation } from "@/lib/clientDocumentProfile";

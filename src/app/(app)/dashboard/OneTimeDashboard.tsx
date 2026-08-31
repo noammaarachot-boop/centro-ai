@@ -18,6 +18,8 @@ import {
   type NeedsAttentionRow,
   type OneTimeDashboardView,
 } from "@/lib/data/oneTimeDashboardView";
+import { DismissAttentionButton } from "@/components/app/DismissAttentionButton";
+import { dismissAttentionItem } from "./attentionActions";
 
 // The three KPI tiles' own real drill-down targets (issue: every KPI card
 // used to point at /collections — the template gallery — regardless of
@@ -147,6 +149,15 @@ function NeedsAttentionRows({ rows }: { rows: NeedsAttentionRow[] }) {
           >
             {row.actionLabel} ←
           </Link>
+          {/* Marks THIS occurrence as handled. Nothing about the request,
+              its documents or its status changes — an item that resolves
+              itself (the request completes, the client answers) already
+              disappears on its own; this is only for the case where a human
+              dealt with it out of band and the condition legitimately
+              still stands. */}
+          <DismissAttentionButton
+            action={dismissAttentionItem.bind(null, row.collectionRequestId, row.reasonKind, row.sourceId)}
+          />
         </div>
       ))}
     </div>

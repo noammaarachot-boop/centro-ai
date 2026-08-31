@@ -1,6 +1,7 @@
 import { and, eq, gte, inArray, isNotNull, notInArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
+  attentionDismissals,
   auditLogs,
   collectionRequestRequirements,
   collectionRequests,
@@ -224,7 +225,44 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
     });
   }
 
-  return [...items.values()];
+  // Drop anything an employee has already marked as handled.
+  //
+  // Applied HERE, at the single place attention items are derived, so the
+  // priority list and the "דורש בדיקה" counter cannot disagree — the KPI is
+  // literally the length of this array. Filtering in the view instead would
+  // have recreated exactly the "list shows 2, badge says 3" drift.
+  const dismissals = await db
+    .select({
+      collectionRequestId: attentionDismissals.collectionRequestId,
+      reasonKind: attentionDismissals.reasonKind,
+      sourceId: attentionDismissals.sourceId,
+      occurrenceAt: attentionDismissals.occurrenceAt,
+    })
+    .from(attentionDismissals)
+    .where(eq(attentionDismissals.organizationId, organizationId));
+
+  // Newest dismissal per (request, kind, source). A reason stays hidden only
+  // while its occurrence is not newer than what was dismissed; when the
+  // underlying row changes again the item legitimately returns as a NEW
+  // occurrence, and the old dismissal is left untouched as history.
+  const dismissedUpTo = new Map<string, number>();
+  for (const row of dismissals) {
+    const key = `${row.collectionRequestId}|${row.reasonKind}|${row.sourceId}`;
+    const at = row.occurrenceAt.getTime();
+    dismissedUpTo.set(key, Math.max(dismissedUpTo.get(key) ?? 0, at));
+  }
+
+  const visible: NeedsReviewItem[] = [];
+  for (const item of items.values()) {
+    const reasons = item.reasons.filter((reason) => {
+      const key = `${item.collectionRequestId}|${reason.kind}|${reason.sourceId ?? ""}`;
+      const covered = dismissedUpTo.get(key);
+      return covered === undefined || reason.occurredAt.getTime() > covered;
+    });
+    // A request whose every reason is handled leaves the list entirely.
+    if (reasons.length > 0) visible.push({ ...item, reasons });
+  }
+  return visible;
 }
 
 // One consistent "when did anything real last happen on this request"
