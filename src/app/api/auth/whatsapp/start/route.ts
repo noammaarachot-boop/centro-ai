@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/session";
-import { GRAPH_API_VERSION } from "@/lib/whatsapp/config";
 import {
   WHATSAPP_HARDCODE_ENABLED,
   WHATSAPP_HARDCODED,
 } from "@/lib/whatsapp/hardcodedConfig";
-import { WHATSAPP_OAUTH_CALLBACK_URI } from "@/lib/whatsapp/embeddedSignup";
+import { buildEmbeddedSignupDialogUrl, WHATSAPP_OAUTH_CALLBACK_URI } from "@/lib/whatsapp/embeddedSignup";
 import {
   WHATSAPP_OAUTH_REDIRECT_URI_COOKIE,
   WHATSAPP_OAUTH_RETURN_TO_COOKIE,
@@ -92,23 +91,19 @@ export async function GET(request: NextRequest) {
     popup,
   });
 
-  const extras = JSON.stringify({
-    setup: {},
-    featureType: "",
-    sessionInfoVersion: "3",
-  });
-
-  const params = new URLSearchParams({
-    client_id: appId,
-    redirect_uri: redirectUri,
+  // Built in one shared place so this and the owner's reconnect action
+  // cannot drift — they already had, and only one of them asked Meta to
+  // re-run the account picker.
+  const dialogUrl = buildEmbeddedSignupDialogUrl({
+    appId,
+    configId,
+    redirectUri,
     state,
-    response_type: "code",
-    config_id: configId,
-    override_default_response_type: "true",
-    extras,
+    // A first connection has no earlier grant to re-request, but asking
+    // costs nothing and guarantees the picker is shown even to a Facebook
+    // user who authorised this app for some other organization before.
+    rerequest: true,
   });
-
-  const dialogUrl = `https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth?${params.toString()}`;
   console.log("[whatsapp-oauth] starting dialog/oauth", {
     appId,
     redirectUri,

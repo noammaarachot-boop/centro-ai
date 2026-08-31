@@ -11,8 +11,11 @@ import { getValidAccessToken } from "@/lib/googleAuth/driveTokens";
 import { getDriveFolder } from "@/lib/googleAuth/drive";
 import { decryptWhatsAppToken } from "@/lib/whatsapp/tokenCipher";
 import { getPhoneNumberInWaba, WhatsAppApiError } from "@/lib/whatsapp/phoneNumbers";
-import { verifyCentroAppSubscribed, WHATSAPP_OAUTH_CALLBACK_URI } from "@/lib/whatsapp/embeddedSignup";
-import { GRAPH_API_VERSION } from "@/lib/whatsapp/config";
+import {
+  buildEmbeddedSignupDialogUrl,
+  verifyCentroAppSubscribed,
+  WHATSAPP_OAUTH_CALLBACK_URI,
+} from "@/lib/whatsapp/embeddedSignup";
 import { WHATSAPP_HARDCODE_ENABLED, WHATSAPP_HARDCODED } from "@/lib/whatsapp/hardcodedConfig";
 import {
   encodeWhatsAppOAuthState,
@@ -247,15 +250,27 @@ export async function reconnectWhatsAppAction(formData: FormData) {
   cookieStore.set(WHATSAPP_OAUTH_RETURN_TO_COOKIE, `/owner/organizations/${organizationId}`, cookieBase);
   cookieStore.set(WHATSAPP_OAUTH_REDIRECT_URI_COOKIE, redirectUri, cookieBase);
 
-  const params = new URLSearchParams({
-    client_id: appId,
-    redirect_uri: redirectUri,
+  // rerequest is what makes a REPEAT signup actually offer the account
+  // picker. Without it Meta sees the app is already authorised for this
+  // Facebook user, shows only "you previously linked Centro AI Messaging —
+  // continue as …", and hands back a code carrying the FIRST grant's
+  // permissions. The WhatsApp Business Account and phone number are then
+  // never selectable, and the token comes back scoped to whatever WABA that
+  // earlier signup happened to cover — which is why the reconnect kept
+  // failing at phone-lookup against an account nobody chose.
+  const dialogUrl = buildEmbeddedSignupDialogUrl({
+    appId,
+    configId,
+    redirectUri,
     state,
-    response_type: "code",
-    config_id: configId,
-    override_default_response_type: "true",
-    extras: JSON.stringify({ setup: {}, featureType: "", sessionInfoVersion: "3" }),
+    rerequest: true,
   });
-
-  redirect(`https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth?${params.toString()}`);
+  console.log("[whatsapp-oauth] owner reconnect dialog", {
+    organizationId,
+    appId,
+    configId,
+    redirectUri,
+    rerequest: true,
+  });
+  redirect(dialogUrl);
 }

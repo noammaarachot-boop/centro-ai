@@ -1,5 +1,5 @@
 import { withRetry } from "@/lib/resilience";
-import { getWhatsAppConfig, GRAPH_API_BASE } from "./config";
+import { getWhatsAppConfig, GRAPH_API_BASE, GRAPH_API_VERSION } from "./config";
 import { WHATSAPP_HARDCODE_ENABLED, WHATSAPP_HARDCODED } from "./hardcodedConfig";
 import { WEBHOOK_CALLBACK_URL } from "./webhookUrls";
 
@@ -620,4 +620,48 @@ export async function verifyCentroAppSubscribed(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * The one place the WhatsApp Embedded Signup dialog URL is built.
+ *
+ * There were two copies — the employee start route and the owner's reconnect
+ * action — and they were free to drift. They did: only one of them is the
+ * reason a reconnect silently skipped the account picker.
+ *
+ * `auth_type: "rerequest"` is what makes a REPEAT signup work. Without it
+ * Meta sees the app is already authorised for this Facebook user, shows only
+ * "you previously linked Centro AI Messaging — continue as …", and returns a
+ * code carrying the permissions granted the FIRST time. No WhatsApp Business
+ * Account or phone number picker is ever displayed, so an organization can
+ * never be pointed at the account it actually meant — and the token comes
+ * back scoped to whatever WABA an earlier signup happened to grant.
+ *
+ * The WABA still belongs to the organization; this only governs which
+ * account the operator is allowed to authorise Centro's app against.
+ */
+export function buildEmbeddedSignupDialogUrl(params: {
+  appId: string;
+  configId: string;
+  redirectUri: string;
+  state: string;
+  /**
+   * Force Meta to re-run the setup flow instead of silently reusing an
+   * earlier grant. Always true for a reconnect; a first-time signup has
+   * nothing to re-request, and passing it there is harmless.
+   */
+  rerequest?: boolean;
+}): string {
+  const search = new URLSearchParams({
+    client_id: params.appId,
+    redirect_uri: params.redirectUri,
+    state: params.state,
+    response_type: "code",
+    config_id: params.configId,
+    override_default_response_type: "true",
+    // Meta's documented Embedded Signup payload (session info v3).
+    extras: JSON.stringify({ setup: {}, featureType: "", sessionInfoVersion: "3" }),
+  });
+  if (params.rerequest) search.set("auth_type", "rerequest");
+  return `https://www.facebook.com/${GRAPH_API_VERSION}/dialog/oauth?${search.toString()}`;
 }
