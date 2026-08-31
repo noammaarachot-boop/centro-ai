@@ -31,6 +31,14 @@ export interface WhatsAppSignupPublicMeta {
     code?: number;
     error_subcode?: number;
   }>;
+  /**
+   * Which account/number the operator actually picked versus the one the
+   * organization is already connected to. Ids only — no secrets — so the
+   * owner console can say what went wrong instead of "signup failed".
+   */
+  selectedWabaId?: string;
+  expectedWabaId?: string;
+  expectedPhoneNumberId?: string;
 }
 
 export class WhatsAppSignupError extends Error {

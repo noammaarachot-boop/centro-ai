@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { decodeWhatsAppOAuthState, encodeWhatsAppOAuthState } from "./oauthState";
 
 /**
@@ -11,8 +11,16 @@ import { decodeWhatsAppOAuthState, encodeWhatsAppOAuthState } from "./oauthState
  * be detectable, or one organization's reconnect could write another's
  * credentials.
  */
+// Restored afterwards: the signing secret is process-global, and leaving it
+// changed can alter unrelated suites sharing the worker.
+let previousAppSecret: string | undefined;
 beforeAll(() => {
+  previousAppSecret = process.env.WHATSAPP_APP_SECRET;
   process.env.WHATSAPP_APP_SECRET = "test-signing-secret";
+});
+afterAll(() => {
+  if (previousAppSecret === undefined) delete process.env.WHATSAPP_APP_SECRET;
+  else process.env.WHATSAPP_APP_SECRET = previousAppSecret;
 });
 
 const base = {

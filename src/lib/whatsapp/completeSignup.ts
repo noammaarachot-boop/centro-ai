@@ -8,7 +8,7 @@ import {
   type WhatsAppSignupStep,
 } from "@/lib/whatsapp/embeddedSignup";
 import {
-  findPhoneNumberOnWaba,
+  listPhoneNumbersOnWaba,
   getFirstPhoneNumberForWaba,
   WhatsAppApiError,
 } from "@/lib/whatsapp/phoneNumbers";
@@ -16,14 +16,19 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { organizations } from "@/db/schema";
 
-async function getExistingPhoneNumberId(organizationId: string): Promise<string | null> {
+async function getExistingConnection(
+  organizationId: string
+): Promise<{ wabaId: string | null; phoneNumberId: string | null }> {
   const db = await getDb();
   const [org] = await db
-    .select({ phoneNumberId: organizations.whatsappPhoneNumberId })
+    .select({
+      wabaId: organizations.whatsappBusinessAccountId,
+      phoneNumberId: organizations.whatsappPhoneNumberId,
+    })
     .from(organizations)
     .where(eq(organizations.id, organizationId))
     .limit(1);
-  return org?.phoneNumberId ?? null;
+  return { wabaId: org?.wabaId ?? null, phoneNumberId: org?.phoneNumberId ?? null };
 }
 import { recordWebhookSubscriptionState, storeWabaConnection } from "@/lib/whatsapp/wabaTokens";
 import { ensureTemplatesProvisioned } from "@/lib/whatsapp/templates";
@@ -74,15 +79,36 @@ export async function completeWhatsAppSignup(params: {
     // the conversation history keyed to the old phone_number_id. When the
     // organization already has one, that exact id must still be on the
     // WABA or the flow stops rather than attaching the wrong number.
-    const existingPhoneNumberId = await getExistingPhoneNumberId(params.organizationId);
+    const existing = await getExistingConnection(params.organizationId);
+
+    // The WABA is checked BEFORE the phone number, because it produces the
+    // answer the operator can act on. Checking only the number reported
+    // "your number is not in the selected account" — true, but it never said
+    // that a DIFFERENT account had been selected, which is the actual
+    // mistake and the only thing worth telling someone.
+    if (existing.wabaId && existing.wabaId !== wabaId) {
+      throw new WhatsAppSignupError(
+        `בתהליך נבחר חשבון WhatsApp אחר (${wabaId}) מזה שהארגון כבר מחובר אליו ` +
+          `(${existing.wabaId}). החיבור הקיים נשמר ולא שונה. יש להריץ שוב ולבחור בדיאלוג ` +
+          `של Meta את אותו חשבון ואותו מספר הקיימים.`,
+        "waba-resolve",
+        { message: "wrong-waba", selectedWabaId: wabaId, expectedWabaId: existing.wabaId }
+      );
+    }
+
     let phoneNumber;
-    if (existingPhoneNumberId) {
-      const matched = await findPhoneNumberOnWaba(wabaId, existingPhoneNumberId, userAccessToken);
+    if (existing.phoneNumberId) {
+      const lookup = await listPhoneNumbersOnWaba(wabaId, userAccessToken);
+      const matched = lookup.find((row) => row.id === existing.phoneNumberId);
       if (!matched) {
+        // Names what was actually found, so the next attempt is informed
+        // rather than another guess.
         throw new WhatsAppSignupError(
-          "המספר שהארגון מחובר אליו אינו נמצא בחשבון ה-WhatsApp שנבחר. " +
-            "יש לבחור את אותו חשבון ואותו מספר שכבר מחוברים, או לנתק תחילה במכוון.",
-          "phone-lookup"
+          `המספר שהארגון מחובר אליו (${existing.phoneNumberId}) אינו נמצא בחשבון שנבחר. ` +
+            `המספרים שנמצאו בחשבון: ${lookup.map((r) => `${r.displayPhoneNumber || r.id}`).join(", ") || "אין"}. ` +
+            `החיבור הקיים נשמר ולא שונה.`,
+          "phone-lookup",
+          { message: "wrong-phone-number", expectedPhoneNumberId: existing.phoneNumberId }
         );
       }
       phoneNumber = matched;
