@@ -7,7 +7,10 @@ const STATUS_META: Record<CollectionRequestStatus, { label: string; tone: BadgeT
   waiting_for_client: { label: "ממתין ללקוח", tone: "warning" },
   processing: { label: "בעיבוד", tone: "purple" },
   completed: { label: "הושלם", tone: "success" },
-  escalated: { label: "הוסלם", tone: "danger" },
+  // "הוסלם" is internal vocabulary — it describes what the SYSTEM did, not
+  // what the reader needs to know. The enum keeps its name because code and
+  // history depend on it; only the wording a person sees changes.
+  escalated: { label: "דורש טיפול", tone: "danger" },
   cancelled: { label: "בוטל", tone: "neutral" },
 };
 

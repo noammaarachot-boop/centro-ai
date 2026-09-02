@@ -7,6 +7,7 @@ import { attentionDismissals, collectionRequests } from "@/db/schema";
 import { requireSession } from "@/lib/auth/session";
 import { recordAuditEvent } from "@/lib/audit";
 import { getItemsNeedingReview, type ReviewReasonKind } from "@/lib/data/dashboardReadModel";
+import { restoreLifecycleAfterEscalation } from "@/lib/collectionRequestStateMachine";
 
 /**
  * "טופל" — the employee has dealt with one attention item.
@@ -81,6 +82,19 @@ export async function dismissAttentionItem(
     // second row.
     .onConflictDoNothing();
 
+  // An escalation IS the request's status, so clearing the attention has to
+  // give the lifecycle back — otherwise the request keeps showing as
+  // escalated in "בקשות בתהליך" while nothing needs attention any more.
+  //
+  // This is the one case where dismissing touches the request, and it is not
+  // a business decision: it restores what escalateToHumanReview overwrote.
+  // Nothing is completed, cancelled or accepted; a terminal request is left
+  // exactly as it is.
+  let restoredStatus: string | null = null;
+  if (reasonKind === "escalated") {
+    restoredStatus = await restoreLifecycleAfterEscalation(session.organizationId, collectionRequestId);
+  }
+
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "attention.dismissed",
@@ -88,7 +102,12 @@ export async function dismissAttentionItem(
     actorType: "employee",
     actorUserId: session.userId,
     collectionRequestId,
-    metadata: { reasonKind, sourceId, occurrenceAt: reason.occurredAt.toISOString() },
+    metadata: {
+      reasonKind,
+      sourceId,
+      occurrenceAt: reason.occurredAt.toISOString(),
+      ...(restoredStatus ? { restoredStatus } : {}),
+    },
   });
 
   refresh();

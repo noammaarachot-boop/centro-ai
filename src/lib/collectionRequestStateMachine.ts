@@ -578,3 +578,72 @@ export async function snapshotServiceRequirements(
     })
   );
 }
+
+/**
+ * Returns a request from "escalated" to its real lifecycle status.
+ *
+ * collectionRequests.status carries two different ideas at once: where the
+ * request is in its life (draft → active → waiting_for_client → processing →
+ * completed), and whether a human is currently needed. escalateToHumanReview
+ * OVERWRITES the first with the second, destroying the lifecycle value — so
+ * once the attention was handled there was nothing to go back to, and the
+ * request sat in "escalated" forever while genuinely just waiting on its
+ * client.
+ *
+ * Rather than add a second state machine, this restores the lifecycle from
+ * the conversation, using the SAME pairing isWaitingForClientCondition
+ * already encodes: a conversation waiting on the client means the request is
+ * waiting_for_client; an open one means the request is active.
+ *
+ * Terminal requests are never touched — a completed or cancelled request has
+ * a real answer already, and no attention outcome may overwrite it.
+ */
+export async function restoreLifecycleAfterEscalation(
+  organizationId: string,
+  collectionRequestId: string
+): Promise<CollectionRequestStatus | null> {
+  const db = await getDb();
+  const [row] = await db
+    .select({
+      status: collectionRequests.status,
+      conversationStatus: conversations.status,
+    })
+    .from(collectionRequests)
+    .leftJoin(conversations, eq(conversations.collectionRequestId, collectionRequests.id))
+    .where(
+      and(
+        eq(collectionRequests.id, collectionRequestId),
+        eq(collectionRequests.organizationId, organizationId)
+      )
+    )
+    .limit(1);
+
+  // Only an escalation is restored. Anything else is already a real answer.
+  if (!row || row.status !== "escalated") return null;
+
+  const restored: CollectionRequestStatus =
+    row.conversationStatus === "waiting_for_client" ? "waiting_for_client" : "active";
+
+  await db
+    .update(collectionRequests)
+    .set({
+      status: restored,
+      // The reason belongs to the escalation that just ended. Leaving it
+      // would keep "לא ענה…" on screen beside a status that no longer says
+      // anything is wrong.
+      escalationReason: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(collectionRequests.id, collectionRequestId),
+        eq(collectionRequests.organizationId, organizationId),
+        // Compare-and-swap: if something else moved this request in the
+        // meantime (the client answered, an employee completed it), that
+        // decision wins and this no-ops.
+        eq(collectionRequests.status, "escalated")
+      )
+    );
+
+  return restored;
+}

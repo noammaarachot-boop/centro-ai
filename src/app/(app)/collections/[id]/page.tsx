@@ -97,7 +97,7 @@ const TRANSITION_LABELS: Record<CollectionRequestStatus, string> = {
   waiting_for_client: "המתנה ללקוח",
   processing: "העברה לעיבוד",
   completed: "השלמה",
-  escalated: "הסלמה",
+  escalated: "העברה לטיפול",
   cancelled: "ביטול",
 };
 
