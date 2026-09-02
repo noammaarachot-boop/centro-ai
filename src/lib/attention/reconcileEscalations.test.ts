@@ -280,3 +280,52 @@ describe("a finished request never carries an escalation", () => {
     expect((await rowOf(request.id)).escalatedAt).not.toBeNull();
   });
 });
+
+describe("a handled escalation does not wake the client up", () => {
+  it("restarts the reminder interval, the way 'טופל' does", async () => {
+    const id = await seedLegacyEscalated({});
+    const stale = new Date("2026-08-24T15:00:00Z");
+    await db
+      .update(schema.conversations)
+      .set({ reminderAnchorAt: stale })
+      .where(eq(schema.conversations.collectionRequestId, id));
+    await db.insert(schema.attentionDismissals).values({
+      organizationId: orgId,
+      collectionRequestId: id,
+      reasonKind: "escalated",
+      sourceId: "",
+      occurrenceAt: new Date("2026-08-27T08:40:00.543Z"),
+      reasonDetail: "לא ענה",
+    });
+
+    await applyEscalationReconciliation(await planEscalationReconciliation());
+
+    const [conversation] = await db
+      .select()
+      .from(schema.conversations)
+      .where(eq(schema.conversations.collectionRequestId, id));
+    expect(
+      conversation.reminderAnchorAt.getTime(),
+      "a stale anchor would message the client the instant the scheduler returns"
+    ).toBeGreaterThan(stale.getTime());
+  });
+
+  it("leaves a still-open escalation's reminder timing untouched", async () => {
+    const id = await seedLegacyEscalated({});
+    const stale = new Date("2026-08-24T15:00:00Z");
+    await db
+      .update(schema.conversations)
+      .set({ reminderAnchorAt: stale })
+      .where(eq(schema.conversations.collectionRequestId, id));
+
+    await applyEscalationReconciliation(await planEscalationReconciliation());
+
+    const [conversation] = await db
+      .select()
+      .from(schema.conversations)
+      .where(eq(schema.conversations.collectionRequestId, id));
+    // It stays escalated, so the scheduler skips it anyway — reconciliation
+    // must not quietly reschedule anything it did not resolve.
+    expect(conversation.reminderAnchorAt).toEqual(stale);
+  });
+});

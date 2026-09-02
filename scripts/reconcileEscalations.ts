@@ -9,7 +9,6 @@
  *
  * Safe to run repeatedly — see src/lib/attention/reconcileEscalations.ts.
  */
-import "dotenv/config";
 import {
   applyEscalationReconciliation,
   clearEscalationsOnTerminalRequests,

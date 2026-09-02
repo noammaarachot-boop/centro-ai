@@ -150,6 +150,23 @@ export async function applyEscalationReconciliation(
       .returning({ id: collectionRequests.id });
     if (!updated) continue;
 
+    // For an escalation that was already handled, this is finishing the job
+    // that "טופל" started — so it does what clearEscalation does, including
+    // restarting the reminder interval. Without it the anchor is still the
+    // stale pre-escalation one, and the moment the scheduler comes back it
+    // would message a client whose escalation an employee closed days ago.
+    if (row.alreadyDismissed) {
+      await db
+        .update(conversations)
+        .set({ reminderAnchorAt: new Date(), deferredReminderAt: null })
+        .where(
+          and(
+            eq(conversations.collectionRequestId, row.collectionRequestId),
+            eq(conversations.organizationId, row.organizationId)
+          )
+        );
+    }
+
     await db.insert(auditLogs).values({
       organizationId: row.organizationId,
       collectionRequestId: row.collectionRequestId,
