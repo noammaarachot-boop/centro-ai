@@ -7,6 +7,12 @@ import { Button } from "@/components/app/Button";
 import { HelpTip } from "@/components/app/HelpTip";
 import { fieldClass } from "@/components/app/FormField";
 import { SUPPORTED_TIMEZONES } from "@/lib/businessHours";
+import {
+  MAX_HUMAN_REVIEW_AFTER_DAYS,
+  MIN_HUMAN_REVIEW_AFTER_DAYS,
+  RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS,
+  isValidHumanReviewAfterDays,
+} from "@/lib/attention/policy";
 import { updateBusinessHours, type SettingsFormState } from "@/app/(app)/settings/actions";
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
@@ -18,6 +24,7 @@ interface FormValues {
   end: string; // "HH:MM"
   timezone: string;
   reminderIntervalHours: number;
+  humanReviewAfterDays: number;
 }
 
 function sortedDays(days: Iterable<number>): number[] {
@@ -30,6 +37,8 @@ function valuesEqual(a: FormValues, b: FormValues): boolean {
     a.end === b.end &&
     a.timezone === b.timezone &&
     a.reminderIntervalHours === b.reminderIntervalHours &&
+    a.humanReviewAfterDays === b.humanReviewAfterDays &&
+    a.humanReviewAfterDays === b.humanReviewAfterDays &&
     a.days.length === b.days.length &&
     a.days.every((d, i) => d === b.days[i])
   );
@@ -41,12 +50,22 @@ function valuesEqual(a: FormValues, b: FormValues): boolean {
 // value never even reaches a round trip. The server keeps validating too
 // (never trust the client) — this is a UX improvement, not a second source
 // of truth for what "valid" means.
-function computeErrors(values: FormValues): { days?: string; hours?: string; reminder?: string } {
-  const errors: { days?: string; hours?: string; reminder?: string } = {};
+function computeErrors(values: FormValues): {
+  days?: string;
+  hours?: string;
+  reminder?: string;
+  humanReview?: string;
+} {
+  const errors: { days?: string; hours?: string; reminder?: string; humanReview?: string } = {};
   if (values.days.length === 0) errors.days = "יש לבחור לפחות יום עבודה אחד.";
   if (values.start >= values.end) errors.hours = "שעת הסיום חייבת להיות מאוחרת משעת ההתחלה.";
   if (!Number.isInteger(values.reminderIntervalHours) || values.reminderIntervalHours < 1 || values.reminderIntervalHours > 24) {
     errors.reminder = "מרווח התזכורות חייב להיות בין 1 ל-24 שעות.";
+  }
+  // Same predicate the server action validates with — not a second opinion
+  // about what "valid" means, just an earlier one.
+  if (!isValidHumanReviewAfterDays(values.humanReviewAfterDays)) {
+    errors.humanReview = `יש להזין מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS} ימים.`;
   }
   return errors;
 }
@@ -74,6 +93,7 @@ export function BusinessHoursForm({
     businessHoursEnd: string;
     timezone: string;
     reminderIntervalHours: number;
+    humanReviewAfterDays: number;
   };
   /**
    * Which server action saves the values. Defaults to Settings' own — the
@@ -102,8 +122,16 @@ export function BusinessHoursForm({
       end: organization.businessHoursEnd,
       timezone: organization.timezone,
       reminderIntervalHours: organization.reminderIntervalHours,
+      humanReviewAfterDays: organization.humanReviewAfterDays,
     }),
-    [organization.businessDays, organization.businessHoursStart, organization.businessHoursEnd, organization.timezone, organization.reminderIntervalHours]
+    [
+      organization.businessDays,
+      organization.businessHoursStart,
+      organization.businessHoursEnd,
+      organization.timezone,
+      organization.reminderIntervalHours,
+      organization.humanReviewAfterDays,
+    ]
   );
 
   const [savedValues, setSavedValues] = useState(persisted);
@@ -241,6 +269,42 @@ export function BusinessHoursForm({
           className={fieldClass("md")}
         />
         {clientErrors.reminder && <p className="mt-1.5 text-xs font-medium text-danger">{clientErrors.reminder}</p>}
+      </div>
+
+      {/* Sits directly after the reminder cadence because it is the end of
+          that same story: how often Centro nudges, and when it stops nudging
+          and asks a person instead. */}
+      <div>
+        <label
+          htmlFor="humanReviewAfterDays"
+          className="mb-1.5 flex items-center gap-1 text-sm font-medium text-text-secondary"
+        >
+          מתי להעביר בקשה לטיפול אנושי?
+        </label>
+        <p className="mb-2 text-xs leading-relaxed text-text-muted">
+          אם הלקוח לא מגיב והבקשה עדיין לא הושלמה, Centro תמשיך לשלוח תזכורות לפי ההגדרות שלך. לאחר פרק
+          הזמן שתבחר, הבקשה תסומן כ״דורש טיפול״ ותועבר אליך.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-text-secondary">העבר לטיפול אחרי:</span>
+          <input
+            id="humanReviewAfterDays"
+            name="humanReviewAfterDays"
+            type="number"
+            min={MIN_HUMAN_REVIEW_AFTER_DAYS}
+            max={MAX_HUMAN_REVIEW_AFTER_DAYS}
+            value={values.humanReviewAfterDays}
+            onChange={(e) => setValues((v) => ({ ...v, humanReviewAfterDays: Number(e.target.value) }))}
+            className={clsx(fieldClass("md"), "w-24")}
+          />
+          <span className="text-sm text-text-secondary">ימים</span>
+        </div>
+        <p className="mt-1.5 text-xs text-text-muted">
+          מומלץ: {RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS.min}–{RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS.max} ימים
+        </p>
+        {clientErrors.humanReview && (
+          <p className="mt-1.5 text-xs font-medium text-danger">{clientErrors.humanReview}</p>
+        )}
       </div>
 
       {state.error && (

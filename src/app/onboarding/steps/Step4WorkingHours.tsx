@@ -21,6 +21,7 @@ export function Step4WorkingHours({
     businessHoursEnd: string;
     timezone: string;
     reminderIntervalHours: number;
+    humanReviewAfterDays: number;
   };
 }) {
   return (

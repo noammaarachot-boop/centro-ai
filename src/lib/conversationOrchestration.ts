@@ -1,5 +1,7 @@
 import { desc, eq, and, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
+import { humanReviewDeadlineFrom } from "@/lib/attention/policy";
+import { loadHumanReviewAfterDays } from "@/lib/attention/organizationPolicy";
 import {
   clients,
   collectionRequests,
@@ -107,7 +109,8 @@ export async function ensureConversation(
     .returning();
   await db
     .update(collectionRequests)
-    .set({ reviewDeadlineAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) })
+    // The office's own window, not a third private copy of "3 days".
+    .set({ reviewDeadlineAt: humanReviewDeadlineFrom(Date.now(), await loadHumanReviewAfterDays(organizationId)) })
     .where(and(eq(collectionRequests.id, collectionRequestId), isNull(collectionRequests.reviewDeadlineAt)));
   return conversation;
 }

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  OVERDUE_AFTER_DAYS,
   daysSince,
   describeElapsed,
   describeEscalation,
@@ -108,14 +107,17 @@ describe("describeEscalation", () => {
   });
 });
 
-describe("the threshold is not a duration", () => {
-  it("stays available as internal logic", () => {
-    expect(OVERDUE_AFTER_DAYS).toBe(3);
-  });
-
+describe("the threshold does not live here any more", () => {
   it("is never what the user is told has elapsed", () => {
-    // A request escalated at the threshold but read four days later.
+    // This file used to export its own OVERDUE_AFTER_DAYS = 3 while the
+    // scheduler held a second copy. The threshold is now the organization's
+    // own setting (organizations.humanReviewAfterDays, resolved in
+    // src/lib/attention/policy.ts), and a module-level constant here would be
+    // a value with no tenant attached — exactly what had to stop existing.
+    //
+    // What this file still owns is how long something has actually been, for
+    // a person to read, which is a different number from any threshold.
     expect(describeElapsed(7)).toBe("עברו 7 ימים");
-    expect(describeElapsed(OVERDUE_AFTER_DAYS)).toBe("עברו 3 ימים");
+    expect(describeElapsed(3)).toBe("עברו 3 ימים");
   });
 });

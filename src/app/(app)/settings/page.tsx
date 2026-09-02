@@ -164,6 +164,7 @@ export default async function SettingsPage({
             businessHoursEnd: organization.businessHoursEnd,
             timezone: organization.timezone,
             reminderIntervalHours: organization.reminderIntervalHours,
+            humanReviewAfterDays: organization.humanReviewAfterDays,
           }}
         />
       </Card>

@@ -4,6 +4,8 @@ import { collectionRequests, conversations, organizations } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { escalateToHumanReview } from "@/lib/collectionRequestStateMachine";
+import { humanReviewDeadlineFrom } from "@/lib/attention/policy";
+import { loadHumanReviewAfterDays } from "@/lib/attention/organizationPolicy";
 import {
   endOfTodayOrNextOpen,
   isWithinBusinessHours,
@@ -20,11 +22,13 @@ import { classifyFollowUpIntent } from "@/lib/ai/conversationReplyIntent";
 // wording) before automation stops and an employee takes over. Counted by
 // collectionRequests.deferralCount, never derived from message text.
 const MAX_DEFERRALS = 2;
-// A granted deferral genuinely restarts the 3-day completion window from
-// the new date (never from the original request date) — see
+// A granted deferral genuinely restarts the completion window from the new
+// date (never from the original request date) — see
 // collectionRequestStateMachine.ts's applyTransition for the matching
-// initial-entry case (first time into waiting_for_client).
-const REVIEW_WINDOW_AFTER_DEFERRAL_MS = 3 * 24 * 60 * 60 * 1000;
+// initial-entry case (first time into waiting_for_client). The window itself
+// is the office's own setting; this used to be a third private copy of "3
+// days", which meant an office that changed its policy silently kept the old
+// one wherever a client had asked to defer.
 
 /**
  * Reminder deferral by explicit client commitment — "the client asked for
@@ -253,13 +257,14 @@ async function claimDeferralSlot(
 }
 
 // Writes the granted deferral itself (conversations.deferredReminderAt and
-// friends — unchanged shape) and extends the request's own 3-day
-// review-escalation deadline to resolvedAt + 3 days: a granted deferral
+// friends — unchanged shape) and extends the request's own
+// review-escalation deadline to resolvedAt + the office's window: a granted deferral
 // genuinely restarts the completion window from the new date, never
 // leaves the original, now-irrelevant deadline in place (see
 // collectionRequestStateMachine.ts's applyTransition for the matching
 // first-entry case).
 async function recordGrantedDeferral(params: {
+  organizationId: string;
   conversationId: string;
   collectionRequestId: string;
   resolvedAt: Date;
@@ -280,7 +285,12 @@ async function recordGrantedDeferral(params: {
 
   await db
     .update(collectionRequests)
-    .set({ reviewDeadlineAt: new Date(params.resolvedAt.getTime() + REVIEW_WINDOW_AFTER_DEFERRAL_MS) })
+    .set({
+      reviewDeadlineAt: humanReviewDeadlineFrom(
+        params.resolvedAt,
+        await loadHumanReviewAfterDays(params.organizationId)
+      ),
+    })
     .where(eq(collectionRequests.id, params.collectionRequestId));
 }
 
@@ -319,6 +329,7 @@ export async function applyDeferralIfAny(params: {
 
     const resolvedAt = endOfTodayOrNextOpen(businessHours, now);
     await recordGrantedDeferral({
+      organizationId: params.organizationId,
       conversationId: params.conversationId,
       collectionRequestId: params.collectionRequestId,
       resolvedAt,
@@ -348,6 +359,7 @@ export async function applyDeferralIfAny(params: {
 
     const resolvedAt = endOfTodayOrNextOpen(businessHours, now);
     await recordGrantedDeferral({
+      organizationId: params.organizationId,
       conversationId: params.conversationId,
       collectionRequestId: params.collectionRequestId,
       resolvedAt,
@@ -396,6 +408,7 @@ export async function applyDeferralIfAny(params: {
   if (!claim.granted) return true; // escalated — no confirmation sent, no wait for the requested date
 
   await recordGrantedDeferral({
+    organizationId: params.organizationId,
     conversationId: params.conversationId,
     collectionRequestId: params.collectionRequestId,
     resolvedAt: resolved.date,

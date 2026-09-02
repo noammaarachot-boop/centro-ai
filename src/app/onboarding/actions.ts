@@ -24,6 +24,11 @@ import { isSupportedTimezone } from "@/lib/businessHours";
 import type { SettingsFormState } from "@/app/(app)/settings/actions";
 import { markOnboardingComplete } from "@/lib/onboarding";
 import { clampCollectionDay, clampReminderHours } from "@/lib/businessHours";
+import {
+  MAX_HUMAN_REVIEW_AFTER_DAYS,
+  MIN_HUMAN_REVIEW_AFTER_DAYS,
+  isValidHumanReviewAfterDays,
+} from "@/lib/attention/policy";
 import { checkIntegrationStatus } from "@/lib/integrationRequirements";
 import { BUSINESS_CATEGORIES, type BusinessCategory } from "@/lib/businessCategories";
 import {
@@ -1368,8 +1373,9 @@ export async function updateOnboardingWorkingHours(
   const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
   const timezone = String(formData.get("timezone") ?? "Asia/Jerusalem");
   const reminderIntervalHoursRaw = Number(formData.get("reminderIntervalHours"));
+  const humanReviewAfterDaysRaw = Number(formData.get("humanReviewAfterDays"));
 
-  // Mirrors updateBusinessHours (settings/actions.ts) exactly — same four
+  // Mirrors updateBusinessHours (settings/actions.ts) exactly — same
   // conditions, same messages.
   if (!businessDays) {
     return { error: "יש לבחור לפחות יום עבודה אחד." };
@@ -1384,6 +1390,11 @@ export async function updateOnboardingWorkingHours(
   if (!Number.isInteger(reminderIntervalHoursRaw) || reminderIntervalHoursRaw < 1 || reminderIntervalHoursRaw > 24) {
     return { error: "מרווח התזכורות חייב להיות מספר שלם בין 1 ל-24 שעות." };
   }
+  if (!isValidHumanReviewAfterDays(humanReviewAfterDaysRaw)) {
+    return {
+      error: `מספר הימים להעברה לטיפול אנושי חייב להיות מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS}.`,
+    };
+  }
   if (!isSupportedTimezone(timezone)) {
     return { error: "אזור הזמן שנבחר אינו נתמך." };
   }
@@ -1397,6 +1408,7 @@ export async function updateOnboardingWorkingHours(
       businessDays,
       timezone,
       reminderIntervalHours: reminderIntervalHoursRaw,
+      humanReviewAfterDays: humanReviewAfterDaysRaw,
       onboardingStep: 5,
       updatedAt: new Date(),
     })

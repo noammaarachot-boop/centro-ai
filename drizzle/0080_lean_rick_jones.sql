@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "human_review_after_days" integer DEFAULT 3 NOT NULL;

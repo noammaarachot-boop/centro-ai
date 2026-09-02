@@ -9,12 +9,13 @@ import {
   documents,
   employeeReviewItems,
   messages,
+  organizations,
 } from "@/db/schema";
 import {
   computeRequirementsProgressBulk,
   isWaitingForClientCondition,
 } from "@/lib/collectionRequestStateMachine";
-import { currentOverdueOccurrence } from "@/lib/attention/policy";
+import { currentOverdueOccurrence, resolveHumanReviewAfterDays } from "@/lib/attention/policy";
 import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
 
 // Single read-model layer for every owner-facing dashboard. Every function
@@ -257,6 +258,17 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
   // it means the office sees the truth even when automation is down — and
   // a broken scheduler shows up as missing reminders, not as a silently
   // clean dashboard.
+  // The office's own patience — "מתי להעביר בקשה לטיפול אנושי?" — read once
+  // per derivation, tenant-scoped, and used for every request below. Never a
+  // constant: two organizations legitimately want different answers, and a
+  // hard-coded threshold is what this whole area stopped having.
+  const [organization] = await db
+    .select({ humanReviewAfterDays: organizations.humanReviewAfterDays })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  const humanReviewAfterDays = resolveHumanReviewAfterDays(organization?.humanReviewAfterDays);
+
   const openRequests = await db
     .select({
       id: collectionRequests.id,
@@ -283,7 +295,7 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
       row.deferredReminderOriginalText !== null &&
       row.deferredReminderAt !== null &&
       row.deferredReminderAt.getTime() > Date.now();
-    return !clientAskedToWait && currentOverdueOccurrence(row.createdAt) !== null;
+    return !clientAskedToWait && currentOverdueOccurrence(row.createdAt, humanReviewAfterDays) !== null;
   });
 
   // "Still missing" uses the engine's own completion algorithm, batched —
@@ -295,7 +307,7 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
   for (const row of overdueCandidates) {
     const progress = progressByRequest.get(row.id);
     if (!progress || progress.unsatisfiedCount === 0) continue;
-    const occurredAt = currentOverdueOccurrence(row.createdAt);
+    const occurredAt = currentOverdueOccurrence(row.createdAt, humanReviewAfterDays);
     if (!occurredAt) continue;
     addReason(row.id, row.clientId, {
       kind: "client_overdue",

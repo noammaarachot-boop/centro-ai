@@ -12,14 +12,16 @@
  * The threshold stays internal. Anything shown to a user is measured here.
  */
 
-/**
- * Escalation fires once a request has gone this long without completing.
- *
- * Re-exported from the policy module rather than declared here: this file
- * used to hold its own `= 3` while the scheduler held another, and the two
- * were the same rule maintained in two places.
- */
-export { HUMAN_REVIEW_AFTER_DAYS as OVERDUE_AFTER_DAYS } from "@/lib/attention/policy";
+// There is deliberately no OVERDUE_AFTER_DAYS constant here any more.
+//
+// This file used to own its own `= 3` while the scheduler owned another, and
+// the two were one rule maintained in two places. The threshold is now the
+// organization's own setting (organizations.humanReviewAfterDays) and lives
+// entirely in src/lib/attention/policy.ts. A module-level constant would be a
+// value with no tenant attached, which is exactly the thing that has to stop
+// existing — so anything needing the threshold must load the organization.
+//
+// What stays here is only how long something has been, for a person to read.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

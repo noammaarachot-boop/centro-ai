@@ -5,7 +5,9 @@ import { createMigratedPglite } from "@/test/pgliteSnapshot";
 import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 import { resolveDisplayStatus } from "@/lib/requestDisplayStatus";
-import { HUMAN_REVIEW_WINDOW_MS } from "@/lib/attention/policy";
+import { DEFAULT_HUMAN_REVIEW_AFTER_DAYS } from "@/lib/attention/policy";
+
+const DEFAULT_WINDOW_MS = DEFAULT_HUMAN_REVIEW_AFTER_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * One request, one meaning, on every screen.
@@ -292,7 +294,7 @@ describe("a dismissal is not a permanent silence", () => {
     // request opened, so editing that would shift every boundary including
     // the one already dismissed, and prove nothing.
     const realNow = Date.now();
-    const clock = vi.spyOn(Date, "now").mockReturnValue(realNow + HUMAN_REVIEW_WINDOW_MS);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(realNow + DEFAULT_WINDOW_MS);
 
     const reopened = await getItemsNeedingReview(orgId);
     clock.mockRestore();

@@ -9,6 +9,7 @@ import {
   employeeReviewItems,
 } from "@/db/schema";
 import { humanReviewDeadlineFrom } from "@/lib/attention/policy";
+import { loadHumanReviewAfterDays } from "@/lib/attention/organizationPolicy";
 import { recordAuditEvent } from "@/lib/audit";
 import { detectMissingRequirements, resolveEffectiveRequirementNames } from "@/lib/clientDocumentProfile";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
@@ -351,9 +352,11 @@ export async function applyTransition(
   // deliberate employee action (transitionStatus).
   const isExplicitResendFromEscalation = current.status === "escalated" && nextStatus === "active";
   const startsFreshCycle = nextStatus === "waiting_for_client" || isExplicitResendFromEscalation;
-  // One policy, one place — this was a bare literal that had to be kept in
-  // step by hand with the threshold the request card measured against.
-  const reviewDeadlineAt = startsFreshCycle ? humanReviewDeadlineFrom(Date.now()) : current.reviewDeadlineAt;
+  // The OFFICE's window, not a constant — read only when a fresh cycle is
+  // actually starting, so an unrelated transition costs no extra query.
+  const reviewDeadlineAt = startsFreshCycle
+    ? humanReviewDeadlineFrom(Date.now(), await loadHumanReviewAfterDays(organizationId))
+    : current.reviewDeadlineAt;
   const deferralCount = startsFreshCycle ? 0 : current.deferralCount;
 
   // CAS on the status just read — closes the race window between the
@@ -679,7 +682,7 @@ export async function clearEscalation(
       // request gets a full window again rather than being instantly overdue,
       // and the deferrals the client already used do not count against them
       // forever.
-      reviewDeadlineAt: humanReviewDeadlineFrom(Date.now()),
+      reviewDeadlineAt: humanReviewDeadlineFrom(Date.now(), await loadHumanReviewAfterDays(organizationId)),
       deferralCount: 0,
       updatedAt: new Date(),
     })

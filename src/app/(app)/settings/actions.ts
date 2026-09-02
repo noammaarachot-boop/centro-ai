@@ -9,6 +9,11 @@ import { requireSession } from "@/lib/auth/session";
 import { assertDevToolsEnabled } from "@/lib/devTools";
 import { runScheduledTasks } from "@/lib/scheduler";
 import { isSupportedTimezone } from "@/lib/businessHours";
+import {
+  MAX_HUMAN_REVIEW_AFTER_DAYS,
+  MIN_HUMAN_REVIEW_AFTER_DAYS,
+  isValidHumanReviewAfterDays,
+} from "@/lib/attention/policy";
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 
@@ -38,6 +43,7 @@ export async function updateBusinessHours(
   const businessDays = WEEKDAYS.filter((day) => formData.get(`day-${day}`) === "on").join(",");
   const timezone = String(formData.get("timezone") ?? "Asia/Jerusalem");
   const reminderIntervalHoursRaw = Number(formData.get("reminderIntervalHours"));
+  const humanReviewAfterDaysRaw = Number(formData.get("humanReviewAfterDays"));
 
   if (!businessDays) {
     return { error: "יש לבחור לפחות יום עבודה אחד." };
@@ -52,6 +58,15 @@ export async function updateBusinessHours(
   if (!Number.isInteger(reminderIntervalHoursRaw) || reminderIntervalHoursRaw < 1 || reminderIntervalHoursRaw > 24) {
     return { error: "מרווח התזכורות חייב להיות מספר שלם בין 1 ל-24 שעות." };
   }
+  // Validate-then-reject, like every other field here: clamping 45 into 30
+  // would save a policy the office never chose and never tell them. There is
+  // deliberately no "unlimited" — a request nobody is ever told about is not
+  // a feature.
+  if (!isValidHumanReviewAfterDays(humanReviewAfterDaysRaw)) {
+    return {
+      error: `מספר הימים להעברה לטיפול אנושי חייב להיות מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS}.`,
+    };
+  }
   if (!isSupportedTimezone(timezone)) {
     return { error: "אזור הזמן שנבחר אינו נתמך." };
   }
@@ -65,6 +80,7 @@ export async function updateBusinessHours(
       businessDays,
       timezone,
       reminderIntervalHours: reminderIntervalHoursRaw,
+      humanReviewAfterDays: humanReviewAfterDaysRaw,
       updatedAt: new Date(),
     })
     .where(eq(organizations.id, session.organizationId));
@@ -72,7 +88,10 @@ export async function updateBusinessHours(
   await recordAuditEvent({
     organizationId: session.organizationId,
     eventType: "configuration.updated",
-    description: "הגדרות שעות הפעילות והתזכורות עודכנו",
+    // Names what actually changed, including the human-review window — an
+    // office reading its own audit trail should be able to see that the
+    // threshold governing "דורש טיפול" was moved, and to what.
+    description: `הגדרות שעות הפעילות והתזכורות עודכנו (העברה לטיפול אנושי אחרי ${humanReviewAfterDaysRaw} ימים)`,
     actorType: "employee",
     actorUserId: session.userId,
   });

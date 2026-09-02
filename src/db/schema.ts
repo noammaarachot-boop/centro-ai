@@ -278,6 +278,21 @@ export const organizations = pgTable("organizations", {
   // user sets to 1..24 (never trust the client — see clampCollectionDay's
   // own doc comment for the same discipline applied to another field).
   reminderIntervalHours: integer("reminder_interval_hours").notNull().default(5),
+  // "מתי להעביר בקשה לטיפול אנושי?" — how long a client may stay silent, with
+  // documents still missing, before the request is raised to the office as
+  // "דורש טיפול".
+  //
+  // This was a hard-coded 3 that lived in the code twice. It is the office's
+  // policy, not Centro's: a payroll firm chasing a monthly deadline and an
+  // accountant collecting annual paperwork do not want the same patience.
+  //
+  // NOT NULL DEFAULT 3 is what makes this backwards-compatible: every
+  // organization that existed before this column keeps exactly the behavior
+  // it already had, with no backfill step. 1..30 is enforced server-side by
+  // every writer (see src/lib/attention/policy.ts) — deliberately no
+  // "unlimited", because a request nobody is ever told about is not a
+  // feature.
+  humanReviewAfterDays: integer("human_review_after_days").notNull().default(3),
   inactivityTimeoutMinutes: integer("inactivity_timeout_minutes")
     .notNull()
     .default(15),
