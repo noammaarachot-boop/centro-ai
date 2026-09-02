@@ -50,8 +50,19 @@ beforeEach(async () => {
   await db.delete(schema.services);
   await db.delete(schema.organizations);
 
-  const [org] = await db.insert(schema.organizations).values({ name: "משרד" }).returning();
-  const [other] = await db.insert(schema.organizations).values({ name: "משרד אחר" }).returning();
+  // Open every day: this file is about the attention plumbing agreeing with
+  // itself, so "N days" and "N working days" are kept the same number rather
+  // than making every assertion depend on which weekday the suite runs.
+  // Closed days have their own coverage in configuredWindow.test.ts.
+  const openEveryDay = { businessDays: "0,1,2,3,4,5,6" };
+  const [org] = await db
+    .insert(schema.organizations)
+    .values({ name: "משרד", ...openEveryDay })
+    .returning();
+  const [other] = await db
+    .insert(schema.organizations)
+    .values({ name: "משרד אחר", ...openEveryDay })
+    .returning();
   orgId = org.id;
   otherOrgId = other.id;
   const [client] = await db

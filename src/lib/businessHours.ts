@@ -267,3 +267,116 @@ export function endOfTodayOrNextOpen(config: BusinessHoursConfig, from: Date = n
   const parts = zonedDateParts(from, config.timezone);
   return zonedWallTimeToUtc(parts.year, parts.month, parts.day, endHour, endMinute, config.timezone);
 }
+
+/**
+ * The office's open weekdays, as a set.
+ *
+ * One parse of the stored comma-separated string, shared by everything below
+ * — the same shape isWithinBusinessHours and nextBusinessOpenTime already
+ * derive inline from `config.businessDays`.
+ */
+export function parseBusinessDays(businessDays: string): Set<number> {
+  return new Set(
+    businessDays
+      .split(",")
+      .map((day) => day.trim())
+      // Number("") is 0, so blank entries would silently read as Sunday and
+      // turn an empty configuration into a one-day week.
+      .filter((day) => day.length > 0)
+      .map(Number)
+      .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+  );
+}
+
+/** The weekday of a civil date. A calendar date has one, in any timezone. */
+function weekdayOfCivilDate(year: number, month: number, day: number): number {
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+function nextCivilDate(date: { year: number; month: number; day: number }) {
+  const next = new Date(Date.UTC(date.year, date.month - 1, date.day) + 86_400_000);
+  return { year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, day: next.getUTCDate() };
+}
+
+// A request left open for a decade still terminates. Real windows are days;
+// this only exists so a malformed configuration cannot spin forever.
+const MAX_DAYS_WALKED = 4000;
+
+/**
+ * `count` business days after `start`, keeping the same time of day.
+ *
+ * "Three days without an answer" means three days the office was actually
+ * open. A request that goes quiet on Thursday at an office working Sunday to
+ * Thursday is not two thirds of the way to needing attention by Saturday
+ * night — nobody was there to be answered, and nobody was there to act.
+ *
+ * Counted in the office's OWN timezone, over its OWN configured days, so
+ * there is nothing here that knows which days of the week are a weekend
+ * anywhere in particular.
+ *
+ * The time of day is preserved rather than snapped to opening or closing
+ * time: it keeps the window a whole number of days as a person would count
+ * them, and it makes the result stable — the same start always produces the
+ * same instant, which is what the attention occurrence relies on.
+ *
+ * Wall-clock preservation across a DST change means the elapsed milliseconds
+ * may differ by an hour. That is the correct behavior for a window a human
+ * expresses in days, not a rounding error.
+ *
+ * An office with no configured business days would have no day to advance
+ * to, so every day counts — a degenerate configuration must not freeze the
+ * clock and leave requests unable to ever reach attention.
+ */
+export function addBusinessDays(config: BusinessHoursConfig, start: Date, count: number): Date {
+  const allowedDays = parseBusinessDays(config.businessDays);
+  const parts = zonedDateParts(start, config.timezone);
+  let cursor = { year: parts.year, month: parts.month, day: parts.day };
+
+  let remaining = Math.max(0, Math.floor(count));
+  let walked = 0;
+  while (remaining > 0 && walked < MAX_DAYS_WALKED) {
+    cursor = nextCivilDate(cursor);
+    walked += 1;
+    if (allowedDays.size === 0 || allowedDays.has(weekdayOfCivilDate(cursor.year, cursor.month, cursor.day))) {
+      remaining -= 1;
+    }
+  }
+
+  return zonedWallTimeToUtc(cursor.year, cursor.month, cursor.day, parts.hour, parts.minute, config.timezone);
+}
+
+/**
+ * How many business days have fully passed between `start` and `now`.
+ *
+ * The exact inverse of addBusinessDays and deliberately so: this counts the
+ * business dates whose same-time-of-day anniversary of `start` has already
+ * arrived, which makes `businessDaysElapsed(start, now) >= n` true exactly
+ * when `addBusinessDays(start, n) <= now`. Two functions that disagreed here
+ * would put a request past its deadline while still reporting it as not yet
+ * due, so they are defined against each other rather than independently.
+ */
+export function businessDaysElapsed(config: BusinessHoursConfig, start: Date, now: Date): number {
+  if (now.getTime() <= start.getTime()) return 0;
+
+  const allowedDays = parseBusinessDays(config.businessDays);
+  const parts = zonedDateParts(start, config.timezone);
+  let cursor = { year: parts.year, month: parts.month, day: parts.day };
+
+  let elapsed = 0;
+  for (let walked = 0; walked < MAX_DAYS_WALKED; walked += 1) {
+    cursor = nextCivilDate(cursor);
+    const instant = zonedWallTimeToUtc(
+      cursor.year,
+      cursor.month,
+      cursor.day,
+      parts.hour,
+      parts.minute,
+      config.timezone
+    );
+    if (instant.getTime() > now.getTime()) break;
+    if (allowedDays.size === 0 || allowedDays.has(weekdayOfCivilDate(cursor.year, cursor.month, cursor.day))) {
+      elapsed += 1;
+    }
+  }
+  return elapsed;
+}

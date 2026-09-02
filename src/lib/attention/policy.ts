@@ -1,3 +1,5 @@
+import { addBusinessDays, businessDaysElapsed, type BusinessHoursConfig } from "@/lib/businessHours";
+
 /**
  * How long the office gives a client before a human should step in.
  *
@@ -32,7 +34,15 @@ export const MAX_HUMAN_REVIEW_AFTER_DAYS = 30;
 /** What the UI suggests, without preventing anything else in range. */
 export const RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS = { min: 3, max: 7 } as const;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * The office's open days and zone, for counting.
+ *
+ * Always produced by resolveScheduleConfig (src/lib/businessHours.ts) from the
+ * organization and, where one exists, the request's own service override —
+ * the single source of truth for "when is this business open". Nothing here
+ * decides that, and nothing here knows which days are a weekend anywhere.
+ */
+export type HumanReviewSchedule = BusinessHoursConfig;
 
 /**
  * Whether a submitted value may be stored.
@@ -62,16 +72,21 @@ export function resolveHumanReviewAfterDays(configured: number | null | undefine
   return isValidHumanReviewAfterDays(configured) ? configured : DEFAULT_HUMAN_REVIEW_AFTER_DAYS;
 }
 
-export function humanReviewWindowMs(configuredDays: number | null | undefined): number {
-  return resolveHumanReviewAfterDays(configuredDays) * DAY_MS;
-}
-
-/** The instant a request opened at `start` becomes overdue for this office. */
+/**
+ * The instant a request opened at `start` becomes overdue for this office.
+ *
+ * Counted in BUSINESS days: a request that goes quiet on Thursday at an
+ * office working Sunday to Thursday is not two thirds of the way to needing
+ * attention by Saturday night — nobody was there to be answered, and nobody
+ * was there to act on it. The days that count, and the zone they are counted
+ * in, come from the office's own configuration.
+ */
 export function humanReviewDeadlineFrom(
   start: Date | string | number,
-  configuredDays: number | null | undefined
+  configuredDays: number | null | undefined,
+  schedule: HumanReviewSchedule
 ): Date {
-  return new Date(new Date(start).getTime() + humanReviewWindowMs(configuredDays));
+  return addBusinessDays(schedule, new Date(start), resolveHumanReviewAfterDays(configuredDays));
 }
 
 /**
@@ -95,24 +110,35 @@ export function humanReviewDeadlineFrom(
  * instant here, which is what makes the dismissal's unique index a real
  * idempotency guarantee rather than a hope.
  *
- * Measured in elapsed 24-hour periods from when the request opened, NOT in
- * calendar dates — see this module's own tests. That makes it independent of
- * any timezone, so it cannot drift with the server's zone or with DST. The
- * elapsed figure a PERSON reads ("עברו 4 ימים") is a separate, calendar-based
- * count rendered in the organization's own zone by src/lib/elapsedTime.ts.
+ * Counted in the office's own BUSINESS days and its own timezone, via the
+ * shared addBusinessDays/businessDaysElapsed pair — closed days do not
+ * advance the clock, and nothing here knows which weekday is a weekend
+ * anywhere in particular.
+ *
+ * The elapsed figure a PERSON reads ("עברו 4 ימים") remains a plain calendar
+ * count in the same zone (src/lib/elapsedTime.ts). The two answer different
+ * questions on purpose: how long this has been going on, versus how much of
+ * the office's own working time it has consumed.
  */
 export function currentOverdueOccurrence(
   openedAt: Date | string | number,
   configuredDays: number | null | undefined,
+  schedule: HumanReviewSchedule,
   now: number = Date.now()
 ): Date | null {
-  const opened = new Date(openedAt).getTime();
-  if (!Number.isFinite(opened)) return null;
+  const opened = new Date(openedAt);
+  if (!Number.isFinite(opened.getTime())) return null;
 
-  const windowMs = humanReviewWindowMs(configuredDays);
-  const elapsed = now - opened;
-  if (elapsed < windowMs) return null;
+  const windowDays = resolveHumanReviewAfterDays(configuredDays);
+  const elapsed = businessDaysElapsed(schedule, opened, new Date(now));
 
-  const periodsCrossed = Math.floor(elapsed / windowMs);
-  return new Date(opened + periodsCrossed * windowMs);
+  // How many whole windows of the office's working time have gone by. Zero
+  // means it is simply not overdue yet.
+  const periodsCrossed = Math.floor(elapsed / windowDays);
+  if (periodsCrossed < 1) return null;
+
+  // The boundary instant itself, never `now` — see this function's contract
+  // above. addBusinessDays is the exact inverse of the count just made, so
+  // this lands on the same instant for every caller inside the same period.
+  return addBusinessDays(schedule, opened, periodsCrossed * windowDays);
 }

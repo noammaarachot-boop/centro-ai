@@ -5,7 +5,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { sendOutboundMessage } from "@/lib/conversationOrchestration";
 import { escalateToHumanReview } from "@/lib/collectionRequestStateMachine";
 import { humanReviewDeadlineFrom } from "@/lib/attention/policy";
-import { loadHumanReviewAfterDays } from "@/lib/attention/organizationPolicy";
+import { loadHumanReviewPolicy } from "@/lib/attention/organizationPolicy";
 import {
   endOfTodayOrNextOpen,
   isWithinBusinessHours,
@@ -273,6 +273,7 @@ async function recordGrantedDeferral(params: {
   reason: string;
 }): Promise<void> {
   const db = await getDb();
+  const policy = await loadHumanReviewPolicy(params.organizationId, params.collectionRequestId);
   await db
     .update(conversations)
     .set({
@@ -286,10 +287,7 @@ async function recordGrantedDeferral(params: {
   await db
     .update(collectionRequests)
     .set({
-      reviewDeadlineAt: humanReviewDeadlineFrom(
-        params.resolvedAt,
-        await loadHumanReviewAfterDays(params.organizationId)
-      ),
+      reviewDeadlineAt: humanReviewDeadlineFrom(params.resolvedAt, policy.days, policy.schedule),
     })
     .where(eq(collectionRequests.id, params.collectionRequestId));
 }

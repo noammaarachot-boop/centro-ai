@@ -10,13 +10,24 @@ import {
   employeeReviewItems,
   messages,
   organizations,
+  services,
 } from "@/db/schema";
 import {
   computeRequirementsProgressBulk,
   isWaitingForClientCondition,
 } from "@/lib/collectionRequestStateMachine";
 import { currentOverdueOccurrence, resolveHumanReviewAfterDays } from "@/lib/attention/policy";
+import { resolveScheduleConfig, type BusinessHoursConfig } from "@/lib/businessHours";
 import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
+
+// Only reachable if the organization row itself cannot be read; a request
+// must still be countable rather than silently never becoming overdue.
+const FALLBACK_BUSINESS_HOURS: BusinessHoursConfig = {
+  businessHoursStart: "09:00",
+  businessHoursEnd: "18:00",
+  businessDays: "0,1,2,3,4",
+  timezone: "Asia/Jerusalem",
+};
 
 // Single read-model layer for every owner-facing dashboard. Every function
 // here only reads the real engine's own state (collectionRequests.status,
@@ -258,12 +269,26 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
   // it means the office sees the truth even when automation is down — and
   // a broken scheduler shows up as missing reminders, not as a silently
   // clean dashboard.
-  // The office's own patience — "מתי להעביר בקשה לטיפול אנושי?" — read once
-  // per derivation, tenant-scoped, and used for every request below. Never a
-  // constant: two organizations legitimately want different answers, and a
-  // hard-coded threshold is what this whole area stopped having.
+  // The office's own patience — "מתי להעביר בקשה לטיפול אנושי?" — and its own
+  // working days, read once per derivation and tenant-scoped. Never constants:
+  // two organizations legitimately want different answers, and a hard-coded
+  // threshold is what this whole area stopped having.
+  //
+  // The Service override is joined rather than ignored, because
+  // resolveScheduleConfig is the single answer to "when is this business
+  // open" and a request belonging to a service with its own days must be
+  // counted against those.
   const [organization] = await db
-    .select({ humanReviewAfterDays: organizations.humanReviewAfterDays })
+    .select({
+      businessHoursStart: organizations.businessHoursStart,
+      businessHoursEnd: organizations.businessHoursEnd,
+      businessDays: organizations.businessDays,
+      timezone: organizations.timezone,
+      reminderIntervalHours: organizations.reminderIntervalHours,
+      inactivityTimeoutMinutes: organizations.inactivityTimeoutMinutes,
+      collectionDayOfMonth: organizations.collectionDayOfMonth,
+      humanReviewAfterDays: organizations.humanReviewAfterDays,
+    })
     .from(organizations)
     .where(eq(organizations.id, organizationId))
     .limit(1);
@@ -276,9 +301,20 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
       createdAt: collectionRequests.createdAt,
       deferredReminderAt: conversations.deferredReminderAt,
       deferredReminderOriginalText: conversations.deferredReminderOriginalText,
+      // Selected flat rather than as a nested object: across TWO left joins
+      // drizzle collapses a nested group to null, which silently dropped the
+      // Service's own working days and counted every request against the
+      // organization's instead.
+      businessHoursStartOverride: services.businessHoursStartOverride,
+      businessHoursEndOverride: services.businessHoursEndOverride,
+      businessDaysOverride: services.businessDaysOverride,
+      reminderIntervalHoursOverride: services.reminderIntervalHoursOverride,
+      inactivityTimeoutMinutesOverride: services.inactivityTimeoutMinutesOverride,
+      collectionDayOfMonthOverride: services.collectionDayOfMonthOverride,
     })
     .from(collectionRequests)
     .leftJoin(conversations, eq(conversations.collectionRequestId, collectionRequests.id))
+    .leftJoin(services, eq(services.id, collectionRequests.serviceId))
     .where(
       and(
         eq(collectionRequests.organizationId, organizationId),
@@ -286,6 +322,18 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
         notInArray(collectionRequests.status, ["completed", "cancelled", "draft"])
       )
     );
+
+  const scheduleFor = (row: (typeof openRequests)[number]) =>
+    organization
+      ? resolveScheduleConfig(organization, {
+          businessHoursStartOverride: row.businessHoursStartOverride,
+          businessHoursEndOverride: row.businessHoursEndOverride,
+          businessDaysOverride: row.businessDaysOverride,
+          reminderIntervalHoursOverride: row.reminderIntervalHoursOverride,
+          inactivityTimeoutMinutesOverride: row.inactivityTimeoutMinutesOverride,
+          collectionDayOfMonthOverride: row.collectionDayOfMonthOverride,
+        })
+      : FALLBACK_BUSINESS_HOURS;
 
   const overdueCandidates = openRequests.filter((row) => {
     // A deferral the CLIENT asked for is a promise, not silence — the office
@@ -295,7 +343,10 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
       row.deferredReminderOriginalText !== null &&
       row.deferredReminderAt !== null &&
       row.deferredReminderAt.getTime() > Date.now();
-    return !clientAskedToWait && currentOverdueOccurrence(row.createdAt, humanReviewAfterDays) !== null;
+    return (
+      !clientAskedToWait &&
+      currentOverdueOccurrence(row.createdAt, humanReviewAfterDays, scheduleFor(row)) !== null
+    );
   });
 
   // "Still missing" uses the engine's own completion algorithm, batched —
@@ -307,7 +358,7 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
   for (const row of overdueCandidates) {
     const progress = progressByRequest.get(row.id);
     if (!progress || progress.unsatisfiedCount === 0) continue;
-    const occurredAt = currentOverdueOccurrence(row.createdAt, humanReviewAfterDays);
+    const occurredAt = currentOverdueOccurrence(row.createdAt, humanReviewAfterDays, scheduleFor(row));
     if (!occurredAt) continue;
     addReason(row.id, row.clientId, {
       kind: "client_overdue",

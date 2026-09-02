@@ -64,7 +64,7 @@ export async function updateBusinessHours(
   // a feature.
   if (!isValidHumanReviewAfterDays(humanReviewAfterDaysRaw)) {
     return {
-      error: `מספר הימים להעברה לטיפול אנושי חייב להיות מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS}.`,
+      error: `מספר ימי הפעילות להעברה לטיפול אנושי חייב להיות מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS}.`,
     };
   }
   if (!isSupportedTimezone(timezone)) {
@@ -91,7 +91,7 @@ export async function updateBusinessHours(
     // Names what actually changed, including the human-review window — an
     // office reading its own audit trail should be able to see that the
     // threshold governing "דורש טיפול" was moved, and to what.
-    description: `הגדרות שעות הפעילות והתזכורות עודכנו (העברה לטיפול אנושי אחרי ${humanReviewAfterDaysRaw} ימים)`,
+    description: `הגדרות שעות הפעילות והתזכורות עודכנו (העברה לטיפול אנושי אחרי ${humanReviewAfterDaysRaw} ימי פעילות)`,
     actorType: "employee",
     actorUserId: session.userId,
   });

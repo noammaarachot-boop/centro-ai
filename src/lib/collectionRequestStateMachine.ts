@@ -9,7 +9,7 @@ import {
   employeeReviewItems,
 } from "@/db/schema";
 import { humanReviewDeadlineFrom } from "@/lib/attention/policy";
-import { loadHumanReviewAfterDays } from "@/lib/attention/organizationPolicy";
+import { loadHumanReviewPolicy } from "@/lib/attention/organizationPolicy";
 import { recordAuditEvent } from "@/lib/audit";
 import { detectMissingRequirements, resolveEffectiveRequirementNames } from "@/lib/clientDocumentProfile";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
@@ -355,7 +355,10 @@ export async function applyTransition(
   // The OFFICE's window, not a constant — read only when a fresh cycle is
   // actually starting, so an unrelated transition costs no extra query.
   const reviewDeadlineAt = startsFreshCycle
-    ? humanReviewDeadlineFrom(Date.now(), await loadHumanReviewAfterDays(organizationId))
+    ? await (async () => {
+        const policy = await loadHumanReviewPolicy(organizationId, collectionRequestId);
+        return humanReviewDeadlineFrom(Date.now(), policy.days, policy.schedule);
+      })()
     : current.reviewDeadlineAt;
   const deferralCount = startsFreshCycle ? 0 : current.deferralCount;
 
@@ -672,6 +675,7 @@ export async function clearEscalation(
   // the request was re-escalated between the read and the write, this clears
   // nothing rather than silently discarding an escalation the employee never
   // saw.
+  const policy = await loadHumanReviewPolicy(organizationId, collectionRequestId);
   const [cleared] = await db
     .update(collectionRequests)
     .set({
@@ -682,7 +686,7 @@ export async function clearEscalation(
       // request gets a full window again rather than being instantly overdue,
       // and the deferrals the client already used do not count against them
       // forever.
-      reviewDeadlineAt: humanReviewDeadlineFrom(Date.now(), await loadHumanReviewAfterDays(organizationId)),
+      reviewDeadlineAt: humanReviewDeadlineFrom(Date.now(), policy.days, policy.schedule),
       deferralCount: 0,
       updatedAt: new Date(),
     })

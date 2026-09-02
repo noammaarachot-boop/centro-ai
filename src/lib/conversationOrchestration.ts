@@ -1,7 +1,7 @@
 import { desc, eq, and, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
 import { humanReviewDeadlineFrom } from "@/lib/attention/policy";
-import { loadHumanReviewAfterDays } from "@/lib/attention/organizationPolicy";
+import { loadHumanReviewPolicy } from "@/lib/attention/organizationPolicy";
 import {
   clients,
   collectionRequests,
@@ -107,10 +107,11 @@ export async function ensureConversation(
     .insert(conversations)
     .values({ organizationId, clientId, collectionRequestId })
     .returning();
+  // The office's own window, in its own working days — not a private copy.
+  const policy = await loadHumanReviewPolicy(organizationId, collectionRequestId);
   await db
     .update(collectionRequests)
-    // The office's own window, not a third private copy of "3 days".
-    .set({ reviewDeadlineAt: humanReviewDeadlineFrom(Date.now(), await loadHumanReviewAfterDays(organizationId)) })
+    .set({ reviewDeadlineAt: humanReviewDeadlineFrom(Date.now(), policy.days, policy.schedule) })
     .where(and(eq(collectionRequests.id, collectionRequestId), isNull(collectionRequests.reviewDeadlineAt)));
   return conversation;
 }

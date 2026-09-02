@@ -1392,7 +1392,7 @@ export async function updateOnboardingWorkingHours(
   }
   if (!isValidHumanReviewAfterDays(humanReviewAfterDaysRaw)) {
     return {
-      error: `מספר הימים להעברה לטיפול אנושי חייב להיות מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS}.`,
+      error: `מספר ימי הפעילות להעברה לטיפול אנושי חייב להיות מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS}.`,
     };
   }
   if (!isSupportedTimezone(timezone)) {

@@ -18,7 +18,7 @@ let db: Database;
 vi.mock("@/db", () => ({ getDb: async () => db }));
 
 const { getItemsNeedingReview } = await import("@/lib/data/dashboardReadModel");
-const { loadHumanReviewAfterDays } = await import("./organizationPolicy");
+const { loadHumanReviewPolicy } = await import("./organizationPolicy");
 const { applyTransition } = await import("@/lib/collectionRequestStateMachine");
 const { ensureConversation } = await import("@/lib/conversationOrchestration");
 
@@ -46,11 +46,16 @@ async function seedOffice(options: {
   ageDays: number;
   status?: (typeof schema.collectionRequests.$inferInsert)["status"];
   withRequirement?: boolean;
+  businessDays?: string;
 }) {
   const [org] = await db
     .insert(schema.organizations)
     .values({
       name: options.name,
+      // Unless a test is specifically about closed days, the office is open
+      // every day — so "N days" and "N business days" coincide and the
+      // assertion does not silently depend on which weekday the suite runs.
+      businessDays: options.businessDays ?? "0,1,2,3,4,5,6",
       // Deliberately omitted when undefined, so the column default is what
       // an untouched organization actually gets.
       ...(options.humanReviewAfterDays === undefined
@@ -104,7 +109,7 @@ describe("attention honours the organization's setting", () => {
     const early = await seedOffice({ name: "ברירת מחדל", ageDays: 2 });
     const late = await seedOffice({ name: "ברירת מחדל 2", ageDays: 4 });
 
-    expect(await loadHumanReviewAfterDays(early.orgId)).toBe(3);
+    expect((await loadHumanReviewPolicy(early.orgId)).days).toBe(3);
     expect(await overdue(early.orgId, early.requestId), "two days is not yet three").toBe(false);
     expect(await overdue(late.orgId, late.requestId)).toBe(true);
   });
@@ -184,12 +189,12 @@ describe("attention honours the organization's setting", () => {
       .set({ humanReviewAfterDays: 0 })
       .where(eq(schema.organizations.id, office.orgId));
 
-    expect(await loadHumanReviewAfterDays(office.orgId)).toBe(3);
+    expect((await loadHumanReviewPolicy(office.orgId)).days).toBe(3);
     expect(await overdue(office.orgId, office.requestId)).toBe(false);
   });
 
   it("an unknown organization resolves to the default rather than throwing", async () => {
-    expect(await loadHumanReviewAfterDays("00000000-0000-0000-0000-000000000000")).toBe(3);
+    expect((await loadHumanReviewPolicy("00000000-0000-0000-0000-000000000000")).days).toBe(3);
   });
 });
 
@@ -197,7 +202,10 @@ describe("6 — the engine writes deadlines from the same setting", () => {
   it("the review deadline set when a conversation opens uses the office's window", async () => {
     const [org] = await db
       .insert(schema.organizations)
-      .values({ name: "משרד", humanReviewAfterDays: 12 })
+      // Open every day, so twelve working days and twelve calendar days are
+      // the same number and this assertion is about the setting, not the
+      // weekday the suite happens to run on.
+      .values({ name: "משרד", humanReviewAfterDays: 12, businessDays: "0,1,2,3,4,5,6" })
       .returning();
     const [client] = await db
       .insert(schema.clients)
@@ -272,5 +280,132 @@ describe("the window still re-arms per office", () => {
     expect(occurrencesOf(second), "idempotent — same input, same single occurrence").toEqual(
       occurrencesOf(first)
     );
+  });
+});
+
+/**
+ * Closed days do not advance the clock.
+ *
+ * The reported case: an office working Sunday to Thursday, a client who goes
+ * quiet on Thursday. Friday and Saturday are nobody's working time — there
+ * was no one to answer and no one to act — so they must not count toward
+ * "three days without a reply".
+ */
+describe("5 — days the office is closed", () => {
+  // 2026-01-01 is a Thursday. Pinned, because "which weekday is it" is
+  // exactly what this behavior depends on.
+  const THURSDAY = new Date("2026-01-01T10:00:00Z");
+  const at = (days: number) => THURSDAY.getTime() + days * DAY_MS;
+
+  async function seedAtThursday(businessDays: string, humanReviewAfterDays = 3) {
+    const [org] = await db
+      .insert(schema.organizations)
+      .values({ name: `משרד ${businessDays}`, businessDays, humanReviewAfterDays })
+      .returning();
+    const [client] = await db
+      .insert(schema.clients)
+      .values({ organizationId: org.id, name: "לקוח", phone: `+9725${Math.floor(Math.random() * 90000000 + 10000000)}` })
+      .returning();
+    const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "s" }).returning();
+    const [request] = await db
+      .insert(schema.collectionRequests)
+      .values({
+        organizationId: org.id,
+        clientId: client.id,
+        serviceId: service.id,
+        periodLabel: "p",
+        status: "waiting_for_client",
+        createdAt: THURSDAY,
+      })
+      .returning();
+    await db.insert(schema.collectionRequestRequirements).values({
+      collectionRequestId: request.id,
+      name: "תעודת זהות",
+      requiredCount: 1,
+    });
+    await db.insert(schema.conversations).values({
+      organizationId: org.id,
+      clientId: client.id,
+      collectionRequestId: request.id,
+      status: "waiting_for_client",
+    });
+    return { orgId: org.id, requestId: request.id };
+  }
+
+  async function overdueAt(orgId: string, requestId: string, now: number) {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      return await overdue(orgId, requestId);
+    } finally {
+      clock.mockRestore();
+    }
+  }
+
+  it("a Sun–Thu office does not count Friday or Saturday", async () => {
+    const office = await seedAtThursday("0,1,2,3,4");
+
+    // Saturday — two calendar days on, no working day elapsed.
+    expect(await overdueAt(office.orgId, office.requestId, at(2)), "Saturday").toBe(false);
+    // Monday — Sunday and Monday have passed: two working days, not three.
+    expect(await overdueAt(office.orgId, office.requestId, at(4)), "Monday").toBe(false);
+    // Tuesday — the third working day.
+    expect(await overdueAt(office.orgId, office.requestId, at(5)), "Tuesday").toBe(true);
+  });
+
+  it("counted straight through, the same request would have been raised on Sunday", async () => {
+    // The contrast this change is about: three calendar days from Thursday
+    // lands on Sunday, when only one working day had actually gone by.
+    const office = await seedAtThursday("0,1,2,3,4");
+
+    expect(await overdueAt(office.orgId, office.requestId, at(3)), "Sunday").toBe(false);
+  });
+
+  it("nothing is hard-coded to one weekend — a Mon–Fri office skips Sat/Sun", async () => {
+    const office = await seedAtThursday("1,2,3,4,5");
+
+    // Fri counts, Sat and Sun do not, Mon is the second, Tue the third.
+    expect(await overdueAt(office.orgId, office.requestId, at(4)), "Monday").toBe(false);
+    expect(await overdueAt(office.orgId, office.requestId, at(5)), "Tuesday").toBe(true);
+  });
+
+  it("an office open every day reaches it in three calendar days", async () => {
+    const office = await seedAtThursday("0,1,2,3,4,5,6");
+
+    expect(await overdueAt(office.orgId, office.requestId, at(2))).toBe(false);
+    expect(await overdueAt(office.orgId, office.requestId, at(3))).toBe(true);
+  });
+
+  it("an office open only two days a week waits for those two days", async () => {
+    // Sundays and Mondays only: three working days is into the third week.
+    const office = await seedAtThursday("0,1");
+
+    expect(await overdueAt(office.orgId, office.requestId, at(5)), "Tuesday").toBe(false);
+    expect(await overdueAt(office.orgId, office.requestId, at(11)), "the following Monday").toBe(true);
+  });
+
+  it("the occurrence is stable across a closed weekend, so a dismissal still sticks", async () => {
+    const office = await seedAtThursday("0,1,2,3,4");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(at(5));
+    const [first] = await getItemsNeedingReview(office.orgId);
+    const [second] = await getItemsNeedingReview(office.orgId);
+    clock.mockRestore();
+
+    const occurrenceOf = (item: typeof first) =>
+      item.reasons.find((r) => r.kind === "client_overdue")!.occurredAt.getTime();
+    expect(occurrenceOf(second), "same input, same instant").toBe(occurrenceOf(first));
+  });
+
+  it("a Service's own working days win, because they are the ones being counted", async () => {
+    // resolveScheduleConfig is the single answer to "when is this business
+    // open", and it already honors a per-Service override.
+    const office = await seedAtThursday("0,1,2,3,4,5,6");
+    await db
+      .update(schema.services)
+      .set({ businessDaysOverride: "0,1,2,3,4" })
+      .where(eq(schema.services.organizationId, office.orgId));
+
+    // The organization is open every day, but this request's service is not.
+    expect(await overdueAt(office.orgId, office.requestId, at(3)), "Sunday").toBe(false);
+    expect(await overdueAt(office.orgId, office.requestId, at(5)), "Tuesday").toBe(true);
   });
 });

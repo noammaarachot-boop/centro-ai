@@ -38,7 +38,6 @@ function valuesEqual(a: FormValues, b: FormValues): boolean {
     a.timezone === b.timezone &&
     a.reminderIntervalHours === b.reminderIntervalHours &&
     a.humanReviewAfterDays === b.humanReviewAfterDays &&
-    a.humanReviewAfterDays === b.humanReviewAfterDays &&
     a.days.length === b.days.length &&
     a.days.every((d, i) => d === b.days[i])
   );
@@ -65,7 +64,7 @@ function computeErrors(values: FormValues): {
   // Same predicate the server action validates with — not a second opinion
   // about what "valid" means, just an earlier one.
   if (!isValidHumanReviewAfterDays(values.humanReviewAfterDays)) {
-    errors.humanReview = `יש להזין מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS} ימים.`;
+    errors.humanReview = `יש להזין מספר שלם בין ${MIN_HUMAN_REVIEW_AFTER_DAYS} ל-${MAX_HUMAN_REVIEW_AFTER_DAYS} ימי פעילות.`;
   }
   return errors;
 }
@@ -282,8 +281,8 @@ export function BusinessHoursForm({
           מתי להעביר בקשה לטיפול אנושי?
         </label>
         <p className="mb-2 text-xs leading-relaxed text-text-muted">
-          אם הלקוח לא מגיב והבקשה עדיין לא הושלמה, Centro תמשיך לשלוח תזכורות לפי ההגדרות שלך. לאחר פרק
-          הזמן שתבחר, הבקשה תסומן כ״דורש טיפול״ ותועבר אליך.
+          אם הלקוח לא מגיב במשך מספר ימי הפעילות שהוגדר, Centro תפסיק את המעקב האוטומטי ותעביר את הבקשה
+          לטיפול שלך.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-text-secondary">העבר לטיפול אחרי:</span>
@@ -297,10 +296,13 @@ export function BusinessHoursForm({
             onChange={(e) => setValues((v) => ({ ...v, humanReviewAfterDays: Number(e.target.value) }))}
             className={clsx(fieldClass("md"), "w-24")}
           />
-          <span className="text-sm text-text-secondary">ימים</span>
+          <span className="text-sm text-text-secondary">ימי פעילות ללא מענה</span>
         </div>
+        {/* Says which days count, because the days chosen above are exactly
+            the ones being counted — a closed day never advances the clock. */}
         <p className="mt-1.5 text-xs text-text-muted">
-          מומלץ: {RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS.min}–{RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS.max} ימים
+          מומלץ: {RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS.min}–{RECOMMENDED_HUMAN_REVIEW_AFTER_DAYS.max} ימי
+          פעילות · נספרים לפי ימי הפעילות שבחרתם למעלה
         </p>
         {clientErrors.humanReview && (
           <p className="mt-1.5 text-xs font-medium text-danger">{clientErrors.humanReview}</p>
