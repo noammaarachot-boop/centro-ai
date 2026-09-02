@@ -123,6 +123,12 @@ export interface InProgressRow {
   satisfiedCount: number;
   totalCount: number;
   status: CollectionRequestStatus;
+  /**
+   * Whether an attention item is still open for this request. Kept beside the
+   * lifecycle rather than folded into it — the two remain separate facts in
+   * the data, and are combined only when rendering a label.
+   */
+  hasOpenAttention: boolean;
   lastActivityLabel: string;
   href: string;
 }
@@ -269,7 +275,11 @@ function buildHero(items: NeedsReviewItem[]): OneTimeDashboardView["hero"] {
 // collectionRequestIds into fully-detailed InProgressRow objects, so a
 // drill-down list is never a second, differently-shaped rendering of the
 // same underlying data.
-async function buildRequestRows(organizationId: string, ids: string[]): Promise<InProgressRow[]> {
+async function buildRequestRows(
+  organizationId: string,
+  ids: string[],
+  requestsNeedingAttention: ReadonlySet<string> = new Set()
+): Promise<InProgressRow[]> {
   if (ids.length === 0) return [];
   const [summaries, lastActivityByRequest] = await Promise.all([
     loadRequestSummaries(ids),
@@ -294,6 +304,7 @@ async function buildRequestRows(organizationId: string, ids: string[]): Promise<
           satisfiedCount: progress.satisfiedCount,
           totalCount: progress.totalCount,
           status: summary.status,
+          hasOpenAttention: requestsNeedingAttention.has(id),
           lastActivityLabel: lastActivity ? formatRelativeTime(lastActivity) : "—",
           href: `/collections/${id}`,
         };
@@ -372,7 +383,14 @@ export async function getOneTimeDashboardView(organizationId: string): Promise<O
 
   const [needsAttention, inProgress] = await Promise.all([
     buildNeedsAttentionRows(organizationId, needsReviewItems),
-    buildRequestRows(organizationId, inProgressIds),
+    // The same needsReviewItems the priority list and the KPI use, so a
+    // request cannot read "בתהליך" in the table while sitting in
+    // "מחכה לטיפול שלך" above it.
+    buildRequestRows(
+      organizationId,
+      inProgressIds,
+      new Set(needsReviewItems.map((item) => item.collectionRequestId))
+    ),
   ]);
 
   return {

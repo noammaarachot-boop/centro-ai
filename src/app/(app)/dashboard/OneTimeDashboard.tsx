@@ -237,7 +237,7 @@ function InProgressTable({ rows }: { rows: OneTimeDashboardView["inProgress"] })
                     </div>
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={row.status} />
+                    <StatusBadge status={row.status} hasOpenAttention={row.hasOpenAttention} />
                   </TableCell>
                   <TableCell className="text-text-muted">{row.lastActivityLabel}</TableCell>
                   <TableCell>

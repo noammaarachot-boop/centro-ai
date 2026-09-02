@@ -427,7 +427,12 @@ export default async function CollectionRequestDetailPage({
               {lastActivity && <>עדכון אחרון: {formatRelativeTime(lastActivity)}</>}
             </p>
           </div>
-          <StatusBadge status={collectionRequest.status} />
+          {/* Same signal the panel below renders from, so the chip and the
+              panel can never disagree about whether anything is wrong. */}
+          <StatusBadge
+            status={collectionRequest.status}
+            hasOpenAttention={attentionState.kind !== "none"}
+          />
         </div>
 
         <p className="mt-3 text-sm font-semibold text-text-primary">{summaryLine}</p>

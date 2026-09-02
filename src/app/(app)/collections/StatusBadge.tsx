@@ -1,44 +1,46 @@
 import type { CollectionRequestStatus } from "@/lib/collectionRequestStateMachine";
-import { Badge, type BadgeTone } from "@/components/app/Badge";
+import { Badge } from "@/components/app/Badge";
+import { resolveDisplayStatus } from "@/lib/requestDisplayStatus";
 
-const STATUS_META: Record<CollectionRequestStatus, { label: string; tone: BadgeTone }> = {
-  draft: { label: "טיוטה", tone: "neutral" },
-  active: { label: "פעיל", tone: "blue" },
-  waiting_for_client: { label: "ממתין ללקוח", tone: "warning" },
-  processing: { label: "בעיבוד", tone: "purple" },
-  completed: { label: "הושלם", tone: "success" },
-  // "הוסלם" is internal vocabulary — it describes what the SYSTEM did, not
-  // what the reader needs to know. The enum keeps its name because code and
-  // history depend on it; only the wording a person sees changes.
-  escalated: { label: "דורש טיפול", tone: "danger" },
-  cancelled: { label: "בוטל", tone: "neutral" },
-};
+/**
+ * The single status chip shown for a request, everywhere.
+ *
+ * The label is not read off the lifecycle column any more. The database
+ * keeps "where the request is" and "does a human need to act" as separate
+ * facts — correctly — but a reader wants one answer, and a card reading
+ * "פעיל" in green while carrying "דורש טיפול" inside it looked like a
+ * contradiction. resolveDisplayStatus combines them in one place so no two
+ * screens can ever label the same request differently.
+ */
+export function StatusBadge({
+  status,
+  hasOpenAttention = false,
+}: {
+  status: CollectionRequestStatus;
+  /** True when this request still has an unhandled attention item. */
+  hasOpenAttention?: boolean;
+}) {
+  const display = resolveDisplayStatus({ status, hasOpenAttention });
 
-export function StatusBadge({ status }: { status: CollectionRequestStatus }) {
-  const meta = STATUS_META[status];
-
-  // "active" is the one status that means "Centro is working on this right
-  // now", so it reuses the same live-signal treatment the dashboard's
-  // CentroStatusIndicator already uses — the breathing emerald dot
-  // (.centro-status-dot, globals.css, which also honours
-  // prefers-reduced-motion) — instead of a static blue chip. Same pattern,
-  // same class, same colour token; nothing new was invented for it.
-  //
-  // Every other status keeps the existing Badge exactly as before.
-  if (status === "active") {
+  // "בתהליך" keeps the live-signal treatment the dashboard's own
+  // CentroStatusIndicator uses — the breathing emerald dot
+  // (.centro-status-dot, which honours prefers-reduced-motion) — since it is
+  // the one state meaning "Centro is working on this right now". Every other
+  // state keeps the plain Badge.
+  if (display.key === "in_progress") {
     return (
       <span className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border py-[5px] ps-[9px] pe-[11px]">
         <span className="relative h-[7px] w-[7px] shrink-0">
           <span className="centro-status-dot absolute inset-0 rounded-full bg-brand-emerald" />
         </span>
-        <span className="text-xs font-bold text-text-secondary">{meta.label}</span>
+        <span className="text-xs font-bold text-text-secondary">{display.label}</span>
       </span>
     );
   }
 
   return (
-    <Badge tone={meta.tone} dot>
-      {meta.label}
+    <Badge tone={display.tone} dot>
+      {display.label}
     </Badge>
   );
 }
