@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 
@@ -92,16 +93,18 @@ export async function classifyRequestMessageIntent(
     const requirementsLine =
       requirementNames.length > 0 ? `\n\nהדרישות הפתוחות בבקשה הזו כרגע: ${requirementNames.join(", ")}.` : "";
 
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: `לקוח של Centro (מערכת לאיסוף מסמכים למשרד) שלח את ההודעה הבאה במהלך בקשת מסמכים פעילה: "${trimmed}"${requirementsLine}\n\nסווג את ההודעה. Centro עונה רק על שאלות שקשורות ישירות לבקשת המסמכים הזו — אל תנחש קטגוריה אם ההודעה לא ברורה, סמן unrelated.`,
-        },
-      ],
-    });
+    const { object } = await withAiOperation("request.classify_message_intent", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: `לקוח של Centro (מערכת לאיסוף מסמכים למשרד) שלח את ההודעה הבאה במהלך בקשת מסמכים פעילה: "${trimmed}"${requirementsLine}\n\nסווג את ההודעה. Centro עונה רק על שאלות שקשורות ישירות לבקשת המסמכים הזו — אל תנחש קטגוריה אם ההודעה לא ברורה, סמן unrelated.`,
+          },
+        ],
+      })
+    );
 
     return { category: object.category, mentionedDocumentType: object.mentionedDocumentType };
   } catch (error) {

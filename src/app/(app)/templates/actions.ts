@@ -1,6 +1,7 @@
 "use server";
 
 import { and, asc, eq, inArray } from "drizzle-orm";
+import { withAiContext } from "@/lib/aiCore/telemetry/context";
 import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { getDb } from "@/db";
@@ -142,7 +143,12 @@ export async function createCollectionRequestDraft(
     // lets the office user resolve it, from the template management page
     // that follows immediately after this step and before the request is
     // ever actually sent to a client.
-    const specs = await Promise.all(requirementNames.map((reqName) => parseRequirementSemantics(reqName, requirementNames)));
+    // One provider call PER requirement name, in parallel — the single
+    // largest burst of AI calls an employee can trigger with one click, so
+    // it is attributed like any other.
+    const specs = await withAiContext({ organizationId: session.organizationId }, () =>
+      Promise.all(requirementNames.map((reqName) => parseRequirementSemantics(reqName, requirementNames)))
+    );
     await db.insert(serviceDocumentRequirements).values(
       requirementNames.map((reqName, index) => ({
         serviceId: draft.id,
@@ -367,7 +373,7 @@ export async function addTemplateRequirement(templateId: string, formData: FormD
       .from(serviceDocumentRequirements)
       .where(eq(serviceDocumentRequirements.serviceId, templateId))
   ).map((r) => r.name);
-  const spec = await parseRequirementSemantics(name, existingNames);
+  const spec = await withAiContext({ organizationId: session.organizationId }, () => parseRequirementSemantics(name, existingNames));
 
   if (requiresClarification(spec)) {
     const params = new URLSearchParams({ clarifyName: name, clarifyQuestion: spec.clarifyingQuestion ?? "" });
@@ -411,7 +417,7 @@ export async function addTemplateRequirementWithClarification(templateId: string
       .where(eq(serviceDocumentRequirements.serviceId, templateId))
   ).map((r) => r.name);
   const clarifiedText = clarificationAnswer ? `${name} — הבהרת המשתמש: ${clarificationAnswer}` : name;
-  const spec = await parseRequirementSemantics(clarifiedText, existingNames);
+  const spec = await withAiContext({ organizationId: session.organizationId }, () => parseRequirementSemantics(clarifiedText, existingNames));
   const resolvedSpec = { ...spec, originalText: name };
 
   await db.insert(serviceDocumentRequirements).values({

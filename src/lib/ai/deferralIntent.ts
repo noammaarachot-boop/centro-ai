@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 
@@ -132,16 +133,18 @@ export async function classifyDeferralIntent(text: string, referenceDateLabel: s
 
   try {
     const model = await resolveLanguageModel();
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח את ההודעה הבאה בהקשר של שיחה על מסמכים חסרים שהמשרד ביקש ממנו: "${trimmed}"\n\nהיום (בזמן המקומי של המשרד) הוא: ${referenceDateLabel}.\n${CLASSIFICATION_GUIDANCE}\nהאם ההודעה מתחייבת או מציעה לשלוח מסמכים במועד עתידי אמיתי (יום ספציפי, תאריך, מספר ימים/שבועות)? אם כן, מהו סוג התאריך שצוין? חלץ רק את השדה הרלוונטי — אל תנחש ואל תחשב תאריך בעצמך, רק זהה מה נאמר.`,
-        },
-      ],
-    });
+    const { object } = await withAiOperation("conversation.classify_deferral", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח את ההודעה הבאה בהקשר של שיחה על מסמכים חסרים שהמשרד ביקש ממנו: "${trimmed}"\n\nהיום (בזמן המקומי של המשרד) הוא: ${referenceDateLabel}.\n${CLASSIFICATION_GUIDANCE}\nהאם ההודעה מתחייבת או מציעה לשלוח מסמכים במועד עתידי אמיתי (יום ספציפי, תאריך, מספר ימים/שבועות)? אם כן, מהו סוג התאריך שצוין? חלץ רק את השדה הרלוונטי — אל תנחש ואל תחשב תאריך בעצמך, רק זהה מה נאמר.`,
+          },
+        ],
+      })
+    );
 
     if (object.kind === "not_dated") return NOT_DATED_RESULT;
     if (object.kind === "ambiguous") return { kind: "ambiguous" };

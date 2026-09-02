@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 import type { ConversationContext } from "@/lib/conversation/conversationContext";
@@ -124,36 +125,38 @@ export async function classifyCorrectionIntent(
         ? `הדרישות בבקשה כרגע: ${context.requirementFacts.map((f) => `${f.description}${f.satisfied ? " (התקבל)" : " (חסר)"}`).join(", ")}.`
         : "";
 
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "לקוח של Centro (מערכת לאיסוף מסמכים למשרד, בוואטסאפ) שלח הודעה חדשה. המטרה: להבין אם ההודעה עונה על שאלה פתוחה, או מתקנת החלטה שכבר טופלה, מתוך ההקשר המלא — לא לפי מילות מפתח קבועות.",
-            "",
-            openQuestionLine,
-            requirementsLine,
-            "",
-            "מסמכים אחרונים (מהחדש לישן):",
-            formatCandidateDocuments(context),
-            "",
-            "החלטות אחרונות שכבר נענו (מהחדש לישן):",
-            formatCandidateConfirmations(context),
-            "",
-            "הודעות אחרונות בשיחה:",
-            formatRecentMessages(context),
-            "",
-            `ההודעה החדשה מהלקוח: "${trimmed}"`,
-            "",
-            "סווג את ההודעה. אם אתה לא בטוח לאיזה מסמך/החלטה ההודעה מתייחסת, או מה בדיוק הלקוח רוצה — סמן kind=not_applicable או הורד את confidence, לעולם אל תנחש.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    });
+    const { object } = await withAiOperation("correction.classify_intent", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: [
+              "לקוח של Centro (מערכת לאיסוף מסמכים למשרד, בוואטסאפ) שלח הודעה חדשה. המטרה: להבין אם ההודעה עונה על שאלה פתוחה, או מתקנת החלטה שכבר טופלה, מתוך ההקשר המלא — לא לפי מילות מפתח קבועות.",
+              "",
+              openQuestionLine,
+              requirementsLine,
+              "",
+              "מסמכים אחרונים (מהחדש לישן):",
+              formatCandidateDocuments(context),
+              "",
+              "החלטות אחרונות שכבר נענו (מהחדש לישן):",
+              formatCandidateConfirmations(context),
+              "",
+              "הודעות אחרונות בשיחה:",
+              formatRecentMessages(context),
+              "",
+              `ההודעה החדשה מהלקוח: "${trimmed}"`,
+              "",
+              "סווג את ההודעה. אם אתה לא בטוח לאיזה מסמך/החלטה ההודעה מתייחסת, או מה בדיוק הלקוח רוצה — סמן kind=not_applicable או הורד את confidence, לעולם אל תנחש.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      })
+    );
 
     return {
       kind: object.kind,

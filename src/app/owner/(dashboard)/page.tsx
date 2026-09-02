@@ -9,7 +9,7 @@ import { getOwnerHomeMetrics } from "@/lib/data/owner/metrics";
 import { getOnboardingFunnel } from "@/lib/data/owner/funnel";
 import { listRecentActivity } from "@/lib/data/owner/activity";
 import { getOwnerHealthSignals } from "@/lib/data/owner/health";
-import { getOwnerAiCostsToday } from "@/lib/data/owner/costs";
+import { getAiUsageToday } from "@/lib/data/owner/aiUsage";
 import { computeHealthStatus } from "@/lib/owner/health";
 import { PageHeader } from "@/components/app/PageHeader";
 import { KpiCard } from "@/components/app/KpiCard";
@@ -56,7 +56,7 @@ export default async function OwnerHomePage() {
     getOnboardingFunnel(),
     listRecentActivity(),
     getOwnerHealthSignals(),
-    getOwnerAiCostsToday(),
+    getAiUsageToday(),
   ]);
   const health = computeHealthStatus(healthSignals);
 
@@ -116,7 +116,7 @@ export default async function OwnerHomePage() {
         <OwnerCurrencyKpiCard
           label={t("owner.home.kpi.aiCostToday")}
           formattedValue={AI_COST_FORMATTER.format(aiCostsToday.totalEstimatedCostUsd)}
-          approximate={aiCostsToday.hasRowsWithUnknownPricing}
+          approximate={aiCostsToday.hasUnpricedModels}
           icon={<DollarSign className="h-4 w-4" aria-hidden="true" />}
           accent="warning"
         />

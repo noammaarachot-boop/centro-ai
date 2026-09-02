@@ -1,6 +1,7 @@
 "use server";
 
 import { and, desc, eq } from "drizzle-orm";
+import { withAiContext } from "@/lib/aiCore/telemetry/context";
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
@@ -523,11 +524,19 @@ export async function processInboundAttachment(
     // Ch.6 layer 1: this client's own confirmed history is checked before
     // the generic heuristic — see src/lib/documentLearning.ts.
     const learnedPatterns = await getLearnedDocumentPatterns(organizationId, clientId);
-    const classification = await classifyDocumentWithLearning(
-      fileName,
-      requirements,
-      learnedPatterns,
-      fileBytes && mimeType ? { bytes: fileBytes, mimeType } : undefined
+    // Vision classification is the single most expensive AI call the product
+    // makes — it sends the whole file — so it is attributed precisely.
+    // documentId is deliberately absent: the row does not exist yet, because
+    // what the file IS is exactly what this call is deciding.
+    const classification = await withAiContext(
+      { organizationId, collectionRequestId, conversationId },
+      () =>
+        classifyDocumentWithLearning(
+          fileName,
+          requirements,
+          learnedPatterns,
+          fileBytes && mimeType ? { bytes: fileBytes, mimeType } : undefined
+        )
     );
     console.log("[wa-inbound] classification result", {
       collectionRequestId,

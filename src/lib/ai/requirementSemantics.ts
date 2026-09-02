@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 
@@ -156,16 +157,18 @@ export async function parseRequirementSemantics(
         ? `\n\nדרישות מסמכים נוספות שכבר קיימות באותה בקשה (להקשר בלבד, אל תפרש אותן): ${contextRequirementNames.join(", ")}.`
         : "";
 
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: `משתמש משרד (רואה חשבון/עורך דין) הקליד את הדרישה הבאה עבור בקשת איסוף מסמכים מלקוח: "${trimmed}"${contextLine}\n\nנתח את הדרישה למבנה מדויק. אל תניח כללים שהמשתמש לא כתב בפירוש — אם הניסוח עמום (לדוגמה "3 תלושי שכר" בלי לציין אם הכוונה לחודשים שונים או לאותו חודש), סמן זאת בביטחון נמוך ונסח שאלת הבהרה קצרה במקום לנחש.`,
-        },
-      ],
-    });
+    const { object } = await withAiOperation("requirement.parse_semantics", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: `משתמש משרד (רואה חשבון/עורך דין) הקליד את הדרישה הבאה עבור בקשת איסוף מסמכים מלקוח: "${trimmed}"${contextLine}\n\nנתח את הדרישה למבנה מדויק. אל תניח כללים שהמשתמש לא כתב בפירוש — אם הניסוח עמום (לדוגמה "3 תלושי שכר" בלי לציין אם הכוונה לחודשים שונים או לאותו חודש), סמן זאת בביטחון נמוך ונסח שאלת הבהרה קצרה במקום לנחש.`,
+          },
+        ],
+      })
+    );
 
     return {
       originalText: trimmed,

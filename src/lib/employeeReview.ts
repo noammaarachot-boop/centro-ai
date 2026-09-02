@@ -1,4 +1,5 @@
 import { and, desc, eq, sql } from "drizzle-orm";
+import { withAiContext } from "@/lib/aiCore/telemetry/context";
 import { getDb } from "@/db";
 import { approvedPolicies, clients, employeeReviewItems, reviewItemCategory } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -25,6 +26,30 @@ export type HandlePotentialReviewQuestionResult =
   | { outcome: "opened_review_item"; reviewItemId: string };
 
 export async function handlePotentialReviewQuestion(params: {
+  organizationId: string;
+  clientId: string;
+  collectionRequestId: string;
+  conversationId: string;
+  clientQuestion: string;
+  category: ReviewItemCategory;
+  relatedRequirementId: string | null;
+  understoodContext?: { relatedRequirementName: string | null; gist: string };
+}): Promise<HandlePotentialReviewQuestionResult> {
+  // Reachable from the inbound path (which already declares the tenant) and
+  // from an employee action (which does not), so it declares its own. Nested
+  // contexts merge, so re-stating the organization here is harmless and
+  // guarantees attribution whichever way it was reached.
+  return withAiContext(
+    {
+      organizationId: params.organizationId,
+      collectionRequestId: params.collectionRequestId,
+      conversationId: params.conversationId,
+    },
+    () => handleReviewQuestionWithContext(params)
+  );
+}
+
+async function handleReviewQuestionWithContext(params: {
   organizationId: string;
   clientId: string;
   collectionRequestId: string;

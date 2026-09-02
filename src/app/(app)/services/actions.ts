@@ -1,6 +1,7 @@
 "use server";
 
 import { and, eq } from "drizzle-orm";
+import { withAiContext } from "@/lib/aiCore/telemetry/context";
 import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { getDb } from "@/db";
@@ -188,7 +189,7 @@ export async function addRequirement(serviceId: string, formData: FormData) {
   await getOrgScopedService(session.organizationId, serviceId);
 
   const existingNames = (await listServiceRequirements(serviceId)).map((r) => r.name);
-  const spec = await parseRequirementSemantics(name, existingNames);
+  const spec = await withAiContext({ organizationId: session.organizationId }, () => parseRequirementSemantics(name, existingNames));
 
   if (requiresClarification(spec)) {
     const params = new URLSearchParams({
@@ -220,7 +221,7 @@ export async function addRequirementWithClarification(serviceId: string, formDat
 
   const existingNames = (await listServiceRequirements(serviceId)).map((r) => r.name);
   const clarifiedText = clarificationAnswer ? `${name} — הבהרת המשתמש: ${clarificationAnswer}` : name;
-  const spec = await parseRequirementSemantics(clarifiedText, existingNames);
+  const spec = await withAiContext({ organizationId: session.organizationId }, () => parseRequirementSemantics(clarifiedText, existingNames));
   // originalText must stay the requirement's own literal name, never the
   // clarification-augmented prompt text used only to help the AI understand.
   const resolvedSpec: RequirementSemanticSpec = { ...spec, originalText: name };

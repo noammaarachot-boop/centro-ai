@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withAiContext } from "@/lib/aiCore/telemetry/context";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, conversations, documents, messages, organizations } from "@/db/schema";
@@ -239,6 +240,21 @@ function resolveAttachment(
 // understandConversationTurn, the same discipline already used for
 // isUniqueViolation/resolveInteractiveReplyText below.
 export async function handleInboundMessage(
+  organization: typeof organizations.$inferSelect,
+  message: WhatsAppInboundMessage
+) {
+  // Every AI call made while handling this message belongs to this tenant.
+  // Declared once, here, because the classifiers underneath receive only the
+  // text they are asked about — none of them knows whose message it is, and
+  // threading an organization id through twelve signatures purely for
+  // bookkeeping would be one forgotten parameter away from usage nobody can
+  // attribute.
+  return withAiContext({ organizationId: organization.id }, () =>
+    handleInboundMessageForTenant(organization, message)
+  );
+}
+
+async function handleInboundMessageForTenant(
   organization: typeof organizations.$inferSelect,
   message: WhatsAppInboundMessage
 ) {

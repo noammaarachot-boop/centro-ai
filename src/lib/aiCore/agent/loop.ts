@@ -1,4 +1,5 @@
 import { generateText, streamText, stepCountIs } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { getOrganization } from "@/lib/data/organizations";
 import { buildToolRegistry } from "../tools/registry";
 import type { ToolContext } from "../tools/types";
@@ -65,13 +66,21 @@ async function prepareTurn(input: RunAgentTurnInput) {
 export async function runAgentTurn(input: RunAgentTurnInput): Promise<{ replyText: string }> {
   const { model, provider, modelId, systemPrompt, history, tools } = await prepareTurn(input);
 
-  const result = await generateText({
-    model,
-    system: systemPrompt,
-    messages: history,
-    tools,
-    stopWhen: stepCountIs(MAX_AGENT_STEPS),
-  });
+  // A multi-step agent turn calls the provider once PER STEP, so the
+  // middleware writes several rows under this one operation. That is the
+  // truth — the provider billed several calls too.
+  const result = await withAiOperation(
+    "assistant.agent_turn",
+    () =>
+      generateText({
+        model,
+        system: systemPrompt,
+        messages: history,
+        tools,
+        stopWhen: stepCountIs(MAX_AGENT_STEPS),
+      }),
+    { organizationId: input.organizationId }
+  );
 
   await appendAssistantTurn(input.conversationId, input.organizationId, result.responseMessages, {
     provider,
@@ -90,19 +99,27 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<{ replyTex
 export async function streamAgentTurn(input: RunAgentTurnInput) {
   const { model, provider, modelId, systemPrompt, history, tools } = await prepareTurn(input);
 
-  return streamText({
-    model,
-    system: systemPrompt,
-    messages: history,
-    tools,
-    stopWhen: stepCountIs(MAX_AGENT_STEPS),
-    onFinish: async (result) => {
-      await appendAssistantTurn(input.conversationId, input.organizationId, result.responseMessages, {
-        provider,
-        modelId,
-        usage: result.usage,
-        finishReason: result.finishReason,
-      });
-    },
-  });
+  // streamText starts the provider call before it returns, so the scope has
+  // to be open around the call itself — not merely around awaiting the
+  // stream, by which time the context would already be gone.
+  return withAiOperation(
+    "assistant.agent_turn_stream",
+    async () =>
+      streamText({
+        model,
+        system: systemPrompt,
+        messages: history,
+        tools,
+        stopWhen: stepCountIs(MAX_AGENT_STEPS),
+        onFinish: async (result) => {
+          await appendAssistantTurn(input.conversationId, input.organizationId, result.responseMessages, {
+            provider,
+            modelId,
+            usage: result.usage,
+            finishReason: result.finishReason,
+          });
+        },
+      }),
+    { organizationId: input.organizationId }
+  );
 }

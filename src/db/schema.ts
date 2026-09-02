@@ -2345,3 +2345,119 @@ export const attentionDismissals = pgTable(
     ),
   ]
 );
+
+/**
+ * One row per AI provider call, for every AI call the product makes.
+ *
+ * The audit that led to this could not answer "what did Anthropic cost me
+ * today, and what caused it". Token usage existed for exactly one surface —
+ * the assistant's ai_messages.metadata — while the twelve classifiers that do
+ * the actual product work (document vision, conversation understanding,
+ * intent, policy matching) called the provider and recorded nothing at all.
+ * Their absence had to be inferred from the absence of inbound traffic, which
+ * is reasoning, not measurement.
+ *
+ * Written by ONE place: the usage-recording middleware in
+ * src/lib/aiCore/providers/resolveModel.ts, which wraps every model this
+ * codebase can obtain. A new call site cannot forget to instrument itself,
+ * because it never instruments itself.
+ *
+ * Deliberately NOT stored: prompts, document bytes, message text, schemas, or
+ * anything a provider returned as content. This table answers "how much, for
+ * whom, caused by what" — it is not a copy of the conversation, and a cost
+ * table should never become a second, less-guarded home for client data.
+ *
+ * Money is NOT stored either. Providers return tokens, never prices, and a
+ * price written into a row is wrong the day the provider changes it. Cost is
+ * computed at read time from the model and the token counts
+ * (src/lib/owner/aiPricing.ts), so a pricing correction re-prices history
+ * instead of leaving it frozen and quietly wrong.
+ */
+export const aiUsageEvents = pgTable(
+  "ai_usage_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /**
+     * Which tenant this call was made for.
+     *
+     * Nullable, and honestly so: a call made outside any tenant context (a
+     * script, a boundary that has not been wired) records null rather than
+     * being attributed to whichever organization happened to be nearby. A
+     * null here is a real finding — it means some path spends money nobody
+     * is accountable for — and it must stay visible, not be papered over.
+     *
+     * set null on delete, never cascade: removing an organization must not
+     * silently erase what its usage cost.
+     */
+    organizationId: uuid("organization_id").references(() => organizations.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * What the product was doing — "document.vision_classify",
+     * "conversation.understand_turn", and so on. The one field that answers
+     * "which feature caused this cost", so it is required and never derived
+     * from a stack trace.
+     */
+    operation: text("operation").notNull(),
+    provider: text("provider").notNull(),
+    modelId: text("model_id").notNull(),
+    // Null when a call failed before the provider reported usage — distinct
+    // from zero, which would claim a free call.
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    totalTokens: integer("total_tokens"),
+    // Cache reads are billed differently from fresh input, so a cost estimate
+    // that ignores them is wrong in the provider's favour. Null when the
+    // provider does not report them.
+    cachedInputTokens: integer("cached_input_tokens"),
+    // Written to the cache, which providers bill at a PREMIUM over fresh
+    // input while cache reads are billed at a steep discount. Folding the two
+    // into one number would make a cost estimate wrong in both directions.
+    cacheWriteTokens: integer("cache_write_tokens"),
+    reasoningTokens: integer("reasoning_tokens"),
+    latencyMs: integer("latency_ms").notNull(),
+    success: boolean("success").notNull(),
+    /**
+     * A short classification of the failure — never the provider's message.
+     *
+     * Error text can carry request content, and a rejected payload is exactly
+     * the kind of thing that ends up quoted back in an error. The kind is
+     * enough to tell a rate limit from a schema failure.
+     */
+    errorKind: text("error_kind"),
+    /**
+     * Which attempt this was, starting at 1.
+     *
+     * The AI SDK retries twice by default, so one logical call can bill three
+     * times. Without this, a retry storm is invisible: it looks exactly like
+     * three times the traffic.
+     */
+    attempt: integer("attempt").notNull().default(1),
+    /**
+     * Which deployment made the call — production, preview, development.
+     *
+     * Present because the same API key was found configured in production
+     * while also sitting in a local .env.local. Whether non-production work
+     * spends the production budget is then a query, not a guess.
+     */
+    environment: text("environment").notNull(),
+    // Context, when the calling path has it. All nullable: an assistant turn
+    // has no document, a document classification has no conversation.
+    collectionRequestId: uuid("collection_request_id").references(() => collectionRequests.id, {
+      onDelete: "set null",
+    }),
+    conversationId: uuid("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    documentId: uuid("document_id").references(() => documents.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // "What did this tenant spend today" — the question this table exists for.
+    index("ai_usage_events_org_created_idx").on(table.organizationId, table.createdAt),
+    // "What did the platform spend today, and on which feature" — the owner
+    // view, which is not scoped to one organization.
+    index("ai_usage_events_created_idx").on(table.createdAt),
+    index("ai_usage_events_operation_created_idx").on(table.operation, table.createdAt),
+  ]
+);

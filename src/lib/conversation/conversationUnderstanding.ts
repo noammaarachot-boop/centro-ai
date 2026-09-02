@@ -1,4 +1,5 @@
 import { generateObject, generateText } from "ai";
+import { withAiContext, withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 import { recordAuditEvent } from "@/lib/audit";
@@ -232,47 +233,49 @@ export async function reasonAboutMessage(
 
   try {
     const model = await resolveLanguageModel();
-    const { object } = await generateObject({
-      model,
-      schema: outcomeSchema,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "לקוח של Centro (מערכת לאיסוף מסמכים למשרד, בוואטסאפ) שלח הודעה חדשה. Centro עוסק אך ורק בתחום המסמכים והדרישות של הבקשה הפעילה — לעולם אינו chatbot כללי. המטרה: להבין את כוונת הלקוח מתוך ההקשר המלא, לא לפי מילות מפתח קבועות.",
-            "",
-            formatReference(reference),
-            formatOpenQuestion(context),
-            "",
-            "עובדות ידועות ומאומתות (מקור האמת היחיד לתשובות — ה-id בסוגריים הוא האמיתי):",
-            formatFacts(facts),
-            "",
-            "מסמכים אחרונים:",
-            formatCandidateDocuments(context),
-            "",
-            "החלטות אחרונות שכבר נענו:",
-            formatCandidateConfirmations(context),
-            "",
-            "פריטים לבדיקת עובד (פתוחים ושנפתרו לאחרונה):",
-            formatReviewItems(context),
-            "",
-            "הודעות אחרונות בשיחה:",
-            formatRecentMessages(context),
-            "",
-            `ההודעה החדשה מהלקוח: "${trimmed}"`,
-            "",
-            "הנחיות מחייבות:",
-            "- ANSWER מותר על כל שאלה, גם ניסוח חדש שלא הוגדר מראש, כל עוד יש עובדה אמיתית ברשימה למעלה שעונה עליה — או עובדה כלשהי שמלמדת בבירור שהתשובה היא 'אין מידע כזה' (זו תשובה כנה, לא סיבה ל-CLARIFY/ESCALATE).",
-            "- לעולם אל תמציאי עובדה, מדיניות, מסמך, deadline, או סטטוס שלא מופיע ברשימה למעלה.",
-            "- ESCALATE רק כשבאמת נדרשת החלטה/מידע אנושי — לא כי הניסוח לא מוכר ולא רק כי חסר מידע שאפשר לענות עליו בכנות שהוא לא קיים.",
-            "- CLARIFY רק כשההפניה/הפרט החסר הכרחי לתשובה או לפעולה — אחרת אל תשאלי שאלת הבהרה מיותרת.",
-            "- ACT רק לפעולה מוגדרת וברורה; ציין actionKind מדויק ואת השדות הרלוונטיים לו בלבד. לעולם אל תמציאי id.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    });
+    const { object } = await withAiOperation("conversation.understand_turn", () =>
+      generateObject({
+        model,
+        schema: outcomeSchema,
+        messages: [
+          {
+            role: "user",
+            content: [
+              "לקוח של Centro (מערכת לאיסוף מסמכים למשרד, בוואטסאפ) שלח הודעה חדשה. Centro עוסק אך ורק בתחום המסמכים והדרישות של הבקשה הפעילה — לעולם אינו chatbot כללי. המטרה: להבין את כוונת הלקוח מתוך ההקשר המלא, לא לפי מילות מפתח קבועות.",
+              "",
+              formatReference(reference),
+              formatOpenQuestion(context),
+              "",
+              "עובדות ידועות ומאומתות (מקור האמת היחיד לתשובות — ה-id בסוגריים הוא האמיתי):",
+              formatFacts(facts),
+              "",
+              "מסמכים אחרונים:",
+              formatCandidateDocuments(context),
+              "",
+              "החלטות אחרונות שכבר נענו:",
+              formatCandidateConfirmations(context),
+              "",
+              "פריטים לבדיקת עובד (פתוחים ושנפתרו לאחרונה):",
+              formatReviewItems(context),
+              "",
+              "הודעות אחרונות בשיחה:",
+              formatRecentMessages(context),
+              "",
+              `ההודעה החדשה מהלקוח: "${trimmed}"`,
+              "",
+              "הנחיות מחייבות:",
+              "- ANSWER מותר על כל שאלה, גם ניסוח חדש שלא הוגדר מראש, כל עוד יש עובדה אמיתית ברשימה למעלה שעונה עליה — או עובדה כלשהי שמלמדת בבירור שהתשובה היא 'אין מידע כזה' (זו תשובה כנה, לא סיבה ל-CLARIFY/ESCALATE).",
+              "- לעולם אל תמציאי עובדה, מדיניות, מסמך, deadline, או סטטוס שלא מופיע ברשימה למעלה.",
+              "- ESCALATE רק כשבאמת נדרשת החלטה/מידע אנושי — לא כי הניסוח לא מוכר ולא רק כי חסר מידע שאפשר לענות עליו בכנות שהוא לא קיים.",
+              "- CLARIFY רק כשההפניה/הפרט החסר הכרחי לתשובה או לפעולה — אחרת אל תשאלי שאלת הבהרה מיותרת.",
+              "- ACT רק לפעולה מוגדרת וברורה; ציין actionKind מדויק ואת השדות הרלוונטיים לו בלבד. לעולם אל תמציאי id.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      })
+    );
 
     return mapToOutcome(object);
   } catch (error) {
@@ -357,27 +360,29 @@ export async function composeGroundedAnswer(question: string, facts: GroundedFac
   const NO_DATA_FALLBACK = "אין לי כרגע מידע מאומת שעונה על השאלה הזו — אבדוק ואחזור אליך.";
   try {
     const model = await resolveLanguageModel();
-    const { text } = await generateText({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: [
-            `לקוח שאל: "${question.trim()}"`,
-            "",
-            facts.length > 0
-              ? `העובדות הידועות שמותר להשתמש בהן (ואך ורק בהן):\n${facts.map((f) => `- ${f.label}: ${f.detail}`).join("\n")}`
-              : "אין שום עובדה ידועה ומאומתת שרלוונטית לשאלה הזו.",
-            "",
-            "נסח תשובה קצרה, טבעית וישירה ללקוח (גוף ראשון, בעברית, כמו הודעת וואטסאפ אנושית). " +
-              "אם אין עובדה שעונה על השאלה — אמור בכנות ובאדיבות שאין לך את המידע הזה מאומת במערכת, בלי לנחש. " +
-              "לעולם אל תוסיף מידע, תנאי, מספר, מדיניות או תאריך שלא הופיעו בעובדות שלמעלה.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    });
+    const { text } = await withAiOperation("conversation.compose_reply", () =>
+      generateText({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              `לקוח שאל: "${question.trim()}"`,
+              "",
+              facts.length > 0
+                ? `העובדות הידועות שמותר להשתמש בהן (ואך ורק בהן):\n${facts.map((f) => `- ${f.label}: ${f.detail}`).join("\n")}`
+                : "אין שום עובדה ידועה ומאומתת שרלוונטית לשאלה הזו.",
+              "",
+              "נסח תשובה קצרה, טבעית וישירה ללקוח (גוף ראשון, בעברית, כמו הודעת וואטסאפ אנושית). " +
+                "אם אין עובדה שעונה על השאלה — אמור בכנות ובאדיבות שאין לך את המידע הזה מאומת במערכת, בלי לנחש. " +
+                "לעולם אל תוסיף מידע, תנאי, מספר, מדיניות או תאריך שלא הופיעו בעובדות שלמעלה.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      })
+    );
     return text.trim() || NO_DATA_FALLBACK;
   } catch (error) {
     console.error("[conversation-understanding] grounded answer composition failed", error);
@@ -396,6 +401,26 @@ export type ConversationTurnResult = { handled: boolean; outcome: ReasoningOutco
 // Called from route.ts as of Phase 4 — see this module's own top-of-file
 // doc comment for the full flow this replaces.
 export async function understandConversationTurn(params: {
+  organizationId: string;
+  clientId: string;
+  collectionRequestId: string;
+  conversationId: string;
+  messageText: string;
+}): Promise<ConversationTurnResult> {
+  // This is the one place on the inbound path that knows all three
+  // identifiers, so it is where a usage row stops being "some call for this
+  // organization" and becomes "this request, this conversation".
+  return withAiContext(
+    {
+      organizationId: params.organizationId,
+      collectionRequestId: params.collectionRequestId,
+      conversationId: params.conversationId,
+    },
+    () => understandTurnWithContext(params)
+  );
+}
+
+async function understandTurnWithContext(params: {
   organizationId: string;
   clientId: string;
   collectionRequestId: string;

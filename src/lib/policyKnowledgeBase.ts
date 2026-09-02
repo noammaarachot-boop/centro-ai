@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import { getDb } from "@/db";
@@ -73,23 +74,25 @@ export async function matchClientQuestionToPolicy(
       .map((p) => `[id=${p.id}] ${p.questionSummary}${p.relatedDocumentType ? ` (בהקשר: ${p.relatedDocumentType})` : ""}`)
       .join("\n");
 
-    const { object } = await generateObject({
-      model,
-      schema: matchSchema,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "להלן רשימת מדיניות שכבר אושרה במשרד, כל אחת עם ה-id האמיתי שלה:",
-            candidateLines,
-            "",
-            `שאלה חדשה מלקוח: "${trimmed}"`,
-            "",
-            "האם אחת מהמדיניות שלמעלה עונה על השאלה הזו, מבחינת המשמעות (הניסוח יכול להיות שונה לגמרי)? אם כן, החזר את ה-id המדויק שלה. אם לא בטוח או שאף מדיניות לא מכסה את זה — החזר null. לעולם אל תמציא id שלא ברשימה.",
-          ].join("\n"),
-        },
-      ],
-    });
+    const { object } = await withAiOperation("policy.match_question", () =>
+      generateObject({
+        model,
+        schema: matchSchema,
+        messages: [
+          {
+            role: "user",
+            content: [
+              "להלן רשימת מדיניות שכבר אושרה במשרד, כל אחת עם ה-id האמיתי שלה:",
+              candidateLines,
+              "",
+              `שאלה חדשה מלקוח: "${trimmed}"`,
+              "",
+              "האם אחת מהמדיניות שלמעלה עונה על השאלה הזו, מבחינת המשמעות (הניסוח יכול להיות שונה לגמרי)? אם כן, החזר את ה-id המדויק שלה. אם לא בטוח או שאף מדיניות לא מכסה את זה — החזר null. לעולם אל תמציא id שלא ברשימה.",
+            ].join("\n"),
+          },
+        ],
+      })
+    );
 
     if (!object.matchedPolicyId || object.confidence < MIN_POLICY_MATCH_CONFIDENCE) {
       return { policyId: null, confidence: object.confidence };
@@ -119,20 +122,22 @@ export async function matchClientQuestionToPolicy(
 export async function renderPolicyAnswer(clientQuestion: string, policy: { decisionText: string; questionSummary: string }): Promise<string> {
   try {
     const model = await resolveLanguageModel();
-    const { text } = await generateText({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: [
-            `לקוח שאל: "${clientQuestion.trim()}"`,
-            `המדיניות המאושרת הרלוונטית: ${policy.decisionText}`,
-            "",
-            "נסח תשובה קצרה, טבעית וישירה ללקוח (גוף ראשון, בעברית, כמו הודעת וואטסאפ אנושית), שמשקפת בדיוק את המדיניות שלמעלה ועונה על השאלה הספציפית שהוא שאל. אל תוסיף מידע או תנאים שלא מופיעים במדיניות עצמה.",
-          ].join("\n"),
-        },
-      ],
-    });
+    const { text } = await withAiOperation("policy.render_answer", () =>
+      generateText({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              `לקוח שאל: "${clientQuestion.trim()}"`,
+              `המדיניות המאושרת הרלוונטית: ${policy.decisionText}`,
+              "",
+              "נסח תשובה קצרה, טבעית וישירה ללקוח (גוף ראשון, בעברית, כמו הודעת וואטסאפ אנושית), שמשקפת בדיוק את המדיניות שלמעלה ועונה על השאלה הספציפית שהוא שאל. אל תוסיף מידע או תנאים שלא מופיעים במדיניות עצמה.",
+            ].join("\n"),
+          },
+        ],
+      })
+    );
     const trimmed = text.trim();
     return trimmed || policy.decisionText;
   } catch (error) {

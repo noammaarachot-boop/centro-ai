@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { clientConversationFocus } from "@/db/schema";
@@ -80,37 +81,39 @@ export async function resolveConversationReference(
 
   try {
     const model = await resolveLanguageModel();
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "שיחה בין Centro (מערכת איסוף מסמכים בוואטסאפ) ללקוח. המטרה כאן אינה לענות על ההודעה — רק לזהות למה היא מתייחסת (discourse reference), אם בכלל.",
-            "",
-            formatConfirmedFocus(context),
-            "",
-            "Entities אמיתיים שההודעה עשויה להתייחס אליהם (ה-id בסוגריים מרובעים הוא האמיתי היחיד שמותר להחזיר):",
-            formatCandidates(context),
-            "",
-            "הודעות אחרונות בשיחה (כולל תשובות Centro עצמן — הפניה כמו \"הראשון\"/\"השני\" עשויה להתייחס לפריט הראשון/השני שהוזכר בתשובה האחרונה של Centro, לא בהכרח למועמד מהרשימה למעלה — התאימי לפי המשמעות בפועל):",
-            formatRecentMessages(context),
-            "",
-            `ההודעה החדשה: "${trimmed}"`,
-            "",
-            "הנחיות מחייבות:",
-            "- status='resolved' רק כשברור למה ההודעה מתייחסת. ציין kind ו-id מדויקים מתוך הרשימות למעלה בלבד (או ה-id של ה-focus המאושר, אם הוא הרלוונטי), provenance מדויק, ו-confidence אמיתי.",
-            "- תיקון/שינוי מפורש בהודעה (למשל \"לא, התכוונתי ל...\") הוא תמיד provenance='message_explicit' עם confidence גבוה — לעולם לא ambiguous רק כי זה סותר את ה-focus הקודם.",
-            "- status='ambiguous' כשיש 2+ אפשרויות סבירות וממשית לא ברור למי מתכוונים, וזה משנה מהותית את המשמעות. לעולם אל תנחשי בין מועמדים.",
-            "- status='no_reference' כשההודעה עומדת בפני עצמה ולא מפנה לשום entity ספציפי.",
-            "- לעולם אל תמציאי id שלא מופיע ברשימות למעלה.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    });
+    const { object } = await withAiOperation("conversation.resolve_reference", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: [
+              "שיחה בין Centro (מערכת איסוף מסמכים בוואטסאפ) ללקוח. המטרה כאן אינה לענות על ההודעה — רק לזהות למה היא מתייחסת (discourse reference), אם בכלל.",
+              "",
+              formatConfirmedFocus(context),
+              "",
+              "Entities אמיתיים שההודעה עשויה להתייחס אליהם (ה-id בסוגריים מרובעים הוא האמיתי היחיד שמותר להחזיר):",
+              formatCandidates(context),
+              "",
+              "הודעות אחרונות בשיחה (כולל תשובות Centro עצמן — הפניה כמו \"הראשון\"/\"השני\" עשויה להתייחס לפריט הראשון/השני שהוזכר בתשובה האחרונה של Centro, לא בהכרח למועמד מהרשימה למעלה — התאימי לפי המשמעות בפועל):",
+              formatRecentMessages(context),
+              "",
+              `ההודעה החדשה: "${trimmed}"`,
+              "",
+              "הנחיות מחייבות:",
+              "- status='resolved' רק כשברור למה ההודעה מתייחסת. ציין kind ו-id מדויקים מתוך הרשימות למעלה בלבד (או ה-id של ה-focus המאושר, אם הוא הרלוונטי), provenance מדויק, ו-confidence אמיתי.",
+              "- תיקון/שינוי מפורש בהודעה (למשל \"לא, התכוונתי ל...\") הוא תמיד provenance='message_explicit' עם confidence גבוה — לעולם לא ambiguous רק כי זה סותר את ה-focus הקודם.",
+              "- status='ambiguous' כשיש 2+ אפשרויות סבירות וממשית לא ברור למי מתכוונים, וזה משנה מהותית את המשמעות. לעולם אל תנחשי בין מועמדים.",
+              "- status='no_reference' כשההודעה עומדת בפני עצמה ולא מפנה לשום entity ספציפי.",
+              "- לעולם אל תמציאי id שלא מופיע ברשימות למעלה.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      })
+    );
 
     if (object.status === "ambiguous") {
       return { status: "ambiguous", candidateIds: object.ambiguousCandidateIds ?? [] };

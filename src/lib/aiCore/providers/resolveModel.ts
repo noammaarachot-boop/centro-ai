@@ -1,4 +1,5 @@
-import type { LanguageModel } from "ai";
+import { wrapLanguageModel, type LanguageModel } from "ai";
+import { usageRecordingMiddleware } from "../telemetry/middleware";
 import { getAiCoreConfig } from "../config";
 import type { AiProvider } from "./types";
 
@@ -34,6 +35,19 @@ function envVarFor(provider: AiProvider): string {
 // a caller actually resolves that provider, so an unconfigured provider
 // costs nothing at startup.
 async function createModel(provider: AiProvider, apiKey: string, modelId: string): Promise<LanguageModel> {
+  const base = await createRawModel(provider, apiKey, modelId);
+  // Every model this codebase can obtain is instrumented before anyone sees
+  // it. Telemetry is therefore not a convention a call site follows — which
+  // is what failed before, twelve times — but a property of the only model
+  // they can get. See telemetry/middleware.ts.
+  return wrapLanguageModel({ model: base, middleware: usageRecordingMiddleware(provider, modelId) });
+}
+
+async function createRawModel(
+  provider: AiProvider,
+  apiKey: string,
+  modelId: string
+): Promise<Exclude<LanguageModel, string>> {
   switch (provider) {
     case "openai": {
       const { createOpenAI } = await import("@ai-sdk/openai");

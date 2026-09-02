@@ -568,6 +568,13 @@
       "when": 1788337816381,
       "tag": "0080_lean_rick_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1788353169619,
+      "tag": "0081_equal_kingpin",
+      "breakpoints": true
     }
   ]
 }

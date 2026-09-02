@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 
@@ -40,16 +41,18 @@ export async function classifyYesNoReply(question: string, replyText: string): P
       confidence: z.number().min(0).max(1).describe("רמת ביטחון בסיווג intent שלמעלה."),
     });
 
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: `Centro (מערכת לאיסוף מסמכים) שאלה לקוח: "${question}"\n\nהלקוח ענה בהודעת טקסט חופשית: "${trimmed}"\n\nהאם התשובה מהווה אישור (כן) או דחייה (לא) לשאלה? לדוגמה, "זה של אשתי" או "שלחתי בטעות" או "תתעלמו מזה" הם כולם דחייה (לא, לא התכוונתי). "כן זה שלי" או "זה מסמך נוסף שרציתי לצרף" הם אישור (כן). אם התשובה לא עונה בבירור על השאלה, סמן unclear — לעולם אל תנחש.`,
-        },
-      ],
-    });
+    const { object } = await withAiOperation("conversation.classify_yes_no", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: `Centro (מערכת לאיסוף מסמכים) שאלה לקוח: "${question}"\n\nהלקוח ענה בהודעת טקסט חופשית: "${trimmed}"\n\nהאם התשובה מהווה אישור (כן) או דחייה (לא) לשאלה? לדוגמה, "זה של אשתי" או "שלחתי בטעות" או "תתעלמו מזה" הם כולם דחייה (לא, לא התכוונתי). "כן זה שלי" או "זה מסמך נוסף שרציתי לצרף" הם אישור (כן). אם התשובה לא עונה בבירור על השאלה, סמן unclear — לעולם אל תנחש.`,
+          },
+        ],
+      })
+    );
 
     if (object.confidence < MIN_CONFIDENCE) return "unclear";
     return object.intent;
@@ -95,16 +98,18 @@ export async function classifyFollowUpIntent(replyText: string): Promise<boolean
         .boolean()
         .describe('true רק אם ההודעה היא הבטחה ברורה לשלוח עוד מסמכים מאוחר יותר (למשל "אשלח בערב", "בעוד שעה", "מחר בבוקר"). false לכל דבר אחר.'),
     });
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח את ההודעה הבאה: "${trimmed}"\n\nהאם זו הבטחה לשלוח עוד מסמכים מאוחר יותר? אל תנחש אם ההודעה לא ברורה — סמן false.`,
-        },
-      ],
-    });
+    const { object } = await withAiOperation("conversation.classify_follow_up", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח את ההודעה הבאה: "${trimmed}"\n\nהאם זו הבטחה לשלוח עוד מסמכים מאוחר יותר? אל תנחש אם ההודעה לא ברורה — סמן false.`,
+          },
+        ],
+      })
+    );
     return object.isFollowUpPromise;
   } catch (error) {
     console.error("[conversation-reply-intent] follow-up classification failed (ignored)", error);
@@ -137,16 +142,18 @@ export async function classifyReopenIntent(replyText: string): Promise<boolean> 
           'true רק אם ההודעה מתייחסת במפורש לבקשת מסמכים שכבר הסתיימה או למסמך שכבר נשלח בה (למשל "שכחתי לשלוח עוד מסמך", "המסמך הקודם היה לא נכון", "זה מסמך מעודכן", "תוסיף גם את הקובץ הזה", "שלחתי עכשיו את החסר"). false לכל הודעה אחרת, כולל שיחת חולין או שאלות כלליות שלא קשורות למסמכים.'
         ),
     });
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח הודעה לאחר שבקשת המסמכים שלו כבר הסתיימה: "${trimmed}"\n\nהאם ההודעה מתייחסת במפורש לבקשה שהסתיימה או למסמך שכבר נשלח בה (רוצה להוסיף/לתקן/להשלים משהו)? אל תנחש — אם זו הודעה כללית שלא קשורה במפורש למסמכים, סמן false.`,
-        },
-      ],
-    });
+    const { object } = await withAiOperation("conversation.classify_reopen", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח הודעה לאחר שבקשת המסמכים שלו כבר הסתיימה: "${trimmed}"\n\nהאם ההודעה מתייחסת במפורש לבקשה שהסתיימה או למסמך שכבר נשלח בה (רוצה להוסיף/לתקן/להשלים משהו)? אל תנחש — אם זו הודעה כללית שלא קשורה במפורש למסמכים, סמן false.`,
+          },
+        ],
+      })
+    );
     return object.isReopenIntent;
   } catch (error) {
     console.error("[conversation-reply-intent] reopen-intent classification failed (falling back to no intent — stays silent)", error);
@@ -179,16 +186,18 @@ export async function classifyDocumentRelationIntent(text: string): Promise<Docu
           '"replace" רק אם ההודעה אומרת בבירור שהמסמך הזה מחליף/מתקן/במקום מסמך קודם (למשל "זה מחליף את הקודם", "תתעלם מהקודם", "המסמך הראשון היה לא נכון", "זה הגרסה הנכונה"). "additional" אם ההודעה אומרת בבירור שזה מסמך נוסף ולא תחליף (למשל "זה מסמך נוסף", "שניהם נכונים"). "none" אם ההודעה לא מתייחסת בבירור ליחס בין המסמך הזה למסמך קודם כלשהו — אל תנחש.'
         ),
     });
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח מסמך חדש יחד עם ההודעה: "${trimmed}"\n\nהאם ההודעה אומרת שהמסמך הזה מחליף מסמך קודם, שהוא מסמך נוסף בנפרד, או שאינה מתייחסת ליחס בין מסמכים כלל?`,
-        },
-      ],
-    });
+    const { object } = await withAiOperation("document.classify_relation", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: `לקוח של Centro (מערכת לאיסוף מסמכים) שלח מסמך חדש יחד עם ההודעה: "${trimmed}"\n\nהאם ההודעה אומרת שהמסמך הזה מחליף מסמך קודם, שהוא מסמך נוסף בנפרד, או שאינה מתייחסת ליחס בין מסמכים כלל?`,
+          },
+        ],
+      })
+    );
     return object.relation;
   } catch (error) {
     console.error("[conversation-reply-intent] document-relation classification failed (falling back to none — classified normally)", error);

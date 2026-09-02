@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { withAiOperation } from "@/lib/aiCore/telemetry/context";
 import { z } from "zod";
 import { resolveLanguageModel } from "@/lib/aiCore/providers/resolveModel";
 import type { ConversationContext } from "@/lib/conversation/conversationContext";
@@ -224,39 +225,41 @@ export async function classifyConversationIntent(context: ConversationContext, m
         ? `הדרישות בבקשה כרגע: ${context.requirementFacts.map((f) => `${f.description}${f.satisfied ? " (התקבל)" : " (חסר)"}`).join(", ")}.`
         : "";
 
-    const { object } = await generateObject({
-      model,
-      schema,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "לקוח של Centro (מערכת לאיסוף מסמכים למשרד, בוואטסאפ) שלח הודעה חדשה. המטרה: להבין את כוונת הלקוח מתוך ההקשר המלא — לא לפי מילות מפתח קבועות. Centro עוסק אך ורק בתחום המסמכים והדרישות של הבקשה הפעילה — לעולם אינו chatbot כללי.",
-            "",
-            openQuestionLine,
-            requirementsLine,
-            "",
-            "מסמכים אחרונים (מהחדש לישן):",
-            formatCandidateDocuments(context),
-            "",
-            "החלטות אחרונות שכבר נענו (מהחדש לישן):",
-            formatCandidateConfirmations(context),
-            "",
-            "הודעות אחרונות בשיחה:",
-            formatRecentMessages(context),
-            "",
-            "פריטים לבדיקת עובד (פתוחים ושנפתרו לאחרונה) — שאלות של הלקוח שהועברו למשרד:",
-            formatReviewItems(context),
-            "",
-            `ההודעה החדשה מהלקוח: "${trimmed}"`,
-            "",
-            "סווגי את ההודעה. אל תנחשי — אם לא בטוחה, סמני unclear או הורידי את confidence.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    });
+    const { object } = await withAiOperation("conversation.classify_intent", () =>
+      generateObject({
+        model,
+        schema,
+        messages: [
+          {
+            role: "user",
+            content: [
+              "לקוח של Centro (מערכת לאיסוף מסמכים למשרד, בוואטסאפ) שלח הודעה חדשה. המטרה: להבין את כוונת הלקוח מתוך ההקשר המלא — לא לפי מילות מפתח קבועות. Centro עוסק אך ורק בתחום המסמכים והדרישות של הבקשה הפעילה — לעולם אינו chatbot כללי.",
+              "",
+              openQuestionLine,
+              requirementsLine,
+              "",
+              "מסמכים אחרונים (מהחדש לישן):",
+              formatCandidateDocuments(context),
+              "",
+              "החלטות אחרונות שכבר נענו (מהחדש לישן):",
+              formatCandidateConfirmations(context),
+              "",
+              "הודעות אחרונות בשיחה:",
+              formatRecentMessages(context),
+              "",
+              "פריטים לבדיקת עובד (פתוחים ושנפתרו לאחרונה) — שאלות של הלקוח שהועברו למשרד:",
+              formatReviewItems(context),
+              "",
+              `ההודעה החדשה מהלקוח: "${trimmed}"`,
+              "",
+              "סווגי את ההודעה. אל תנחשי — אם לא בטוחה, סמני unclear או הורידי את confidence.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      })
+    );
 
     return {
       kind: object.kind,
