@@ -179,10 +179,13 @@ function buildSummaryLine(params: {
   unsatisfiedCount: number;
   waitingOnClientCount: number;
 }): string {
-  const { status, escalationReason, daysOpen, attentionCount, unsatisfiedCount, waitingOnClientCount } = params;
+  const { escalationReason, daysOpen, attentionCount, unsatisfiedCount, waitingOnClientCount, status } = params;
+  // Keyed off the escalation itself rather than the status, now that being
+  // escalated is its own field: a request can be escalated AND still be
+  // waiting_for_client, and it was never true that it stopped being one.
   // Never the stored string as-is: it carries the 3-day THRESHOLD frozen in
   // at escalation time, which contradicted the real age shown just below.
-  if (status === "escalated") return describeEscalation(escalationReason, daysOpen);
+  if (escalationReason) return describeEscalation(escalationReason, daysOpen);
   if (attentionCount > 0 && unsatisfiedCount > 0) {
     return `${attentionCount} דברים מחכים לטיפולך, וחסרים עוד ${unsatisfiedCount} מסמכים מהלקוח`;
   }
@@ -311,10 +314,10 @@ export default async function CollectionRequestDetailPage({
   const daysOpen = daysSince(collectionRequest.createdAt, organizationTimezone);
   const attentionState = resolveRequestAttentionState({
     status: collectionRequest.status,
-    lastOutboundDeliveryStatus: lastOutbound?.deliveryStatus ?? null,
-    clientHasReplied: messages.some((m) => m.direction === "inbound"),
-    unsatisfiedCount: progress.unsatisfiedCount,
-    reviewItemCount: unmatchedDocuments.length + employeeQuestions.length,
+    // The SAME open attention the dashboard renders, not a second opinion
+    // computed from this page's own data. This is what stops the card and
+    // the dashboard from labelling one request two different things.
+    reasons: myReviewReasons,
     whatsappReady: integrationStatus.whatsappReady,
     hasConversation: !!conversation,
     // A template send (senderType "ai") is always retryable. Plain text is
@@ -344,7 +347,6 @@ export default async function CollectionRequestDetailPage({
         (m) => m.direction === "inbound" && new Date(m.createdAt) > new Date(reminder.createdAt)
       );
     })(),
-    daysOpen,
   });
   const attentionAction =
     attentionState.primaryAction?.kind === "retry_send"
@@ -404,7 +406,7 @@ export default async function CollectionRequestDetailPage({
           className="pointer-events-none absolute -inset-x-[6%] -inset-y-[30%] -z-10 blur-[24px]"
           style={{
             background:
-              attentionCount > 0 || collectionRequest.status === "escalated"
+              attentionCount > 0 || myReviewReasons.length > 0
                 ? "radial-gradient(50% 90% at 20% 20%, color-mix(in oklab, var(--color-danger) 12%, transparent), transparent 70%), radial-gradient(45% 90% at 85% 60%, color-mix(in oklab, var(--color-brand-purple) 10%, transparent), transparent 70%)"
                 : "radial-gradient(50% 90% at 20% 20%, color-mix(in oklab, var(--color-brand-emerald) 10%, transparent), transparent 70%), radial-gradient(45% 90% at 85% 60%, color-mix(in oklab, var(--color-brand-cyan) 10%, transparent), transparent 70%)",
           }}
@@ -431,7 +433,7 @@ export default async function CollectionRequestDetailPage({
               panel can never disagree about whether anything is wrong. */}
           <StatusBadge
             status={collectionRequest.status}
-            hasOpenAttention={attentionState.kind !== "none"}
+            hasOpenAttention={myReviewReasons.length > 0}
           />
         </div>
 
@@ -460,7 +462,7 @@ export default async function CollectionRequestDetailPage({
               day opens, and it was the thing being mistaken for a client
               request. It stays in the audit trail, where it belongs, and is
               no longer shown here at all. */}
-        {collectionRequest.status !== "escalated" &&
+        {!collectionRequest.escalationReason &&
           conversation?.deferredReminderAt &&
           conversation.deferredReminderOriginalText &&
           isDeferralStillPending(conversation.deferredReminderAt) && (

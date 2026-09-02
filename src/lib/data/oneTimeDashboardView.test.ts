@@ -170,7 +170,7 @@ describe("listNeedsReviewRequests — the 'דורש בדיקה' KPI's own real d
     const [service] = await db.insert(schema.services).values({ organizationId: org.id, name: "שירות" }).returning();
     const [request] = await db
       .insert(schema.collectionRequests)
-      .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "p", status: "escalated", escalationReason: "לא ענה" })
+      .values({ organizationId: org.id, clientId: client.id, serviceId: service.id, periodLabel: "p", status: "waiting_for_client", escalatedAt: new Date("2026-01-01T10:00:00Z"), escalationReason: "לא ענה" })
       .returning();
 
     const rows = await listNeedsReviewRequests(org.id);

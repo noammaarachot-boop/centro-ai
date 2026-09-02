@@ -48,7 +48,8 @@ async function seedOrg(name: string) {
       clientId: client.id,
       serviceId: service.id,
       periodLabel: "p",
-      status: "escalated",
+      status: "waiting_for_client",
+      escalatedAt: new Date("2026-01-01T10:00:00Z"),
       escalationReason: "לא ענה",
     })
     .returning();
@@ -109,7 +110,7 @@ describe("dismissing an attention item", () => {
       .select()
       .from(schema.collectionRequests)
       .where(eq(schema.collectionRequests.id, requestA));
-    expect(row.status, "dismissing must never close or change a request").toBe("escalated");
+    expect(row.status, "dismissing must never close or change a request").toBe("waiting_for_client");
     expect(row.escalationReason).toBe("לא ענה");
   });
 
@@ -138,10 +139,13 @@ describe("dismissing an attention item", () => {
     await dismiss(orgA, requestA, before.reasons[0].occurredAt);
     expect(await getItemsNeedingReview(orgA)).toHaveLength(0);
 
-    // The request escalates again: its own timestamp moves forward.
+    // The request escalates again. The occurrence is the escalation's OWN
+    // instant now, not the row's updatedAt — which any unrelated write moved,
+    // so a dismissal's "handled up to here" mark used to drift against events
+    // it had nothing to do with.
     await db
       .update(schema.collectionRequests)
-      .set({ updatedAt: new Date(Date.now() + 60_000) })
+      .set({ escalatedAt: new Date(Date.now() + 60_000) })
       .where(eq(schema.collectionRequests.id, requestA));
 
     expect(await getItemsNeedingReview(orgA), "a genuine recurrence must surface again").toHaveLength(1);

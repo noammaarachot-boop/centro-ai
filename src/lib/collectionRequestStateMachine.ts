@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, type SQL } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   clients,
@@ -8,6 +8,7 @@ import {
   documents,
   employeeReviewItems,
 } from "@/db/schema";
+import { humanReviewDeadlineFrom } from "@/lib/attention/policy";
 import { recordAuditEvent } from "@/lib/audit";
 import { detectMissingRequirements, resolveEffectiveRequirementNames } from "@/lib/clientDocumentProfile";
 import { computeRequirementSatisfaction } from "@/lib/documentQuantity";
@@ -128,10 +129,40 @@ export interface RequirementsProgress {
 export async function computeRequirementsProgress(
   collectionRequestId: string
 ): Promise<RequirementsProgress> {
+  const byRequest = await computeRequirementsProgressBulk([collectionRequestId]);
+  return byRequest.get(collectionRequestId) ?? EMPTY_PROGRESS;
+}
+
+const EMPTY_PROGRESS: RequirementsProgress = {
+  satisfiedCount: 0,
+  totalCount: 0,
+  unsatisfiedCount: 0,
+  hasProcessingDocuments: false,
+  missingRequirementNames: [],
+};
+
+/**
+ * The same algorithm, for many requests in two queries instead of 2N.
+ *
+ * A pure batching extraction, not a second definition: the per-requirement
+ * loop below IS the one computeRequirementsProgress used to run inline, and
+ * that function now delegates here. This exists because deriving attention
+ * for a dashboard needs "is anything still missing" across every open request
+ * at once, and doing that with a per-row call was the kind of cost that
+ * tempts someone into writing a cheaper, subtly different SQL approximation
+ * — which is exactly the drift this whole change is removing.
+ */
+export async function computeRequirementsProgressBulk(
+  collectionRequestIds: string[]
+): Promise<Map<string, RequirementsProgress>> {
+  const result = new Map<string, RequirementsProgress>();
+  if (collectionRequestIds.length === 0) return result;
+
   const db = await getDb();
 
   const requirements = await db
     .select({
+      collectionRequestId: collectionRequestRequirements.collectionRequestId,
       id: collectionRequestRequirements.id,
       name: collectionRequestRequirements.name,
       requiredCount: collectionRequestRequirements.requiredCount,
@@ -139,12 +170,11 @@ export async function computeRequirementsProgress(
       exceptionStatus: collectionRequestRequirements.exceptionStatus,
     })
     .from(collectionRequestRequirements)
-    .where(
-      eq(collectionRequestRequirements.collectionRequestId, collectionRequestId)
-    );
+    .where(inArray(collectionRequestRequirements.collectionRequestId, collectionRequestIds));
 
   const requestDocuments = await db
     .select({
+      collectionRequestId: documents.collectionRequestId,
       requirementId: documents.requirementId,
       status: documents.status,
       extractedPeriodLabel: documents.extractedPeriodLabel,
@@ -152,38 +182,45 @@ export async function computeRequirementsProgress(
       continuationOfDocumentId: documents.continuationOfDocumentId,
     })
     .from(documents)
-    .where(eq(documents.collectionRequestId, collectionRequestId));
+    .where(inArray(documents.collectionRequestId, collectionRequestIds));
 
-  const hasProcessingDocuments = requestDocuments.some((doc) => doc.status === "processing");
-  const approvedDocuments = requestDocuments.filter((doc) => doc.status === "approved" && doc.requirementId);
+  for (const collectionRequestId of collectionRequestIds) {
+    const ownRequirements = requirements.filter((r) => r.collectionRequestId === collectionRequestId);
+    const ownDocuments = requestDocuments.filter((d) => d.collectionRequestId === collectionRequestId);
 
-  // Semantic requirement engine (src/lib/ai/requirementSemantics.ts): a
-  // requirement with requiredCount > 1 needs that many units satisfied
-  // against the office user's own stated meaning — see
-  // src/lib/documentQuantity.ts. A requirement with no parsed spec resolves
-  // to exactly the pre-semantic one-approved-document/distinct-period
-  // check, unchanged. Multi-page continuation pages (continuationOfDocumentId
-  // set) are never counted as their own unit.
-  let satisfiedCount = 0;
-  const missingRequirementNames: string[] = [];
-  for (const requirement of requirements) {
-    const docs = approvedDocuments
-      .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
-      .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
-    if (computeRequirementSatisfaction(requirement, docs).satisfied) {
-      satisfiedCount += 1;
-    } else {
-      missingRequirementNames.push(requirement.name);
+    const hasProcessingDocuments = ownDocuments.some((doc) => doc.status === "processing");
+    const approvedDocuments = ownDocuments.filter((doc) => doc.status === "approved" && doc.requirementId);
+
+    // Semantic requirement engine (src/lib/ai/requirementSemantics.ts): a
+    // requirement with requiredCount > 1 needs that many units satisfied
+    // against the office user's own stated meaning — see
+    // src/lib/documentQuantity.ts. A requirement with no parsed spec resolves
+    // to exactly the pre-semantic one-approved-document/distinct-period
+    // check, unchanged. Multi-page continuation pages
+    // (continuationOfDocumentId set) are never counted as their own unit.
+    let satisfiedCount = 0;
+    const missingRequirementNames: string[] = [];
+    for (const requirement of ownRequirements) {
+      const docs = approvedDocuments
+        .filter((doc) => doc.requirementId === requirement.id && !doc.continuationOfDocumentId)
+        .map((doc) => ({ periodLabel: doc.extractedPeriodLabel, personName: doc.extractedPersonName }));
+      if (computeRequirementSatisfaction(requirement, docs).satisfied) {
+        satisfiedCount += 1;
+      } else {
+        missingRequirementNames.push(requirement.name);
+      }
     }
+
+    result.set(collectionRequestId, {
+      satisfiedCount,
+      totalCount: ownRequirements.length,
+      unsatisfiedCount: ownRequirements.length - satisfiedCount,
+      hasProcessingDocuments,
+      missingRequirementNames,
+    });
   }
 
-  return {
-    satisfiedCount,
-    totalCount: requirements.length,
-    unsatisfiedCount: requirements.length - satisfiedCount,
-    hasProcessingDocuments,
-    missingRequirementNames,
-  };
+  return result;
 }
 
 export async function checkCompletionGate(
@@ -220,13 +257,23 @@ export async function escalateToHumanReview(
   actorType: "system" | "client"
 ): Promise<boolean> {
   const db = await getDb();
+  // Marks the request as needing a human WITHOUT touching where it is in its
+  // life. status used to be overwritten with "escalated", which destroyed the
+  // lifecycle value and forced a guess to get it back later; the request is
+  // still waiting_for_client (or active), and now stays so.
+  //
+  // The claim is on escalatedAt being null rather than on a status value, so
+  // a concurrent tick still cannot double-fire: whichever transaction sets it
+  // first wins and the other sees zero rows.
   const claimed = await db
     .update(collectionRequests)
-    .set({ status: "escalated", escalationReason: reason, reviewDeadlineAt: null, updatedAt: new Date() })
+    .set({ escalatedAt: new Date(), escalationReason: reason, reviewDeadlineAt: null, updatedAt: new Date() })
     .where(
       and(
         eq(collectionRequests.id, collectionRequestId),
         eq(collectionRequests.organizationId, organizationId),
+        isNull(collectionRequests.escalatedAt),
+        // A finished request is never escalated — that answer is already real.
         inArray(collectionRequests.status, ["active", "waiting_for_client", "processing"])
       )
     )
@@ -304,7 +351,9 @@ export async function applyTransition(
   // deliberate employee action (transitionStatus).
   const isExplicitResendFromEscalation = current.status === "escalated" && nextStatus === "active";
   const startsFreshCycle = nextStatus === "waiting_for_client" || isExplicitResendFromEscalation;
-  const reviewDeadlineAt = startsFreshCycle ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) : current.reviewDeadlineAt;
+  // One policy, one place — this was a bare literal that had to be kept in
+  // step by hand with the threshold the request card measured against.
+  const reviewDeadlineAt = startsFreshCycle ? humanReviewDeadlineFrom(Date.now()) : current.reviewDeadlineAt;
   const deferralCount = startsFreshCycle ? 0 : current.deferralCount;
 
   // CAS on the status just read — closes the race window between the
@@ -580,36 +629,32 @@ export async function snapshotServiceRequirements(
 }
 
 /**
- * Returns a request from "escalated" to its real lifecycle status.
+ * Clears an escalation once a human has dealt with it.
  *
- * collectionRequests.status carries two different ideas at once: where the
- * request is in its life (draft → active → waiting_for_client → processing →
- * completed), and whether a human is currently needed. escalateToHumanReview
- * OVERWRITES the first with the second, destroying the lifecycle value — so
- * once the attention was handled there was nothing to go back to, and the
- * request sat in "escalated" forever while genuinely just waiting on its
- * client.
+ * There is deliberately nothing to "restore" here. escalateToHumanReview no
+ * longer overwrites status, so the lifecycle was never lost: the request has
+ * been waiting_for_client (or active) the whole time and simply stays there.
+ * The predecessor of this function had to reconstruct the old status by
+ * guessing it back from the conversation, and a request whose escalation was
+ * cleared by an older deploy is still sitting in production with the wrong
+ * status because of it.
  *
- * Rather than add a second state machine, this restores the lifecycle from
- * the conversation, using the SAME pairing isWaitingForClientCondition
- * already encodes: a conversation waiting on the client means the request is
- * waiting_for_client; an open one means the request is active.
- *
- * Terminal requests are never touched — a completed or cancelled request has
- * a real answer already, and no attention outcome may overwrite it.
+ * Returns the escalation's occurrence instant so the caller can record a
+ * dismissal against the exact escalation it just cleared, or null if there
+ * was nothing escalated — already handled, or never escalated at all.
  */
-export async function restoreLifecycleAfterEscalation(
+export async function clearEscalation(
   organizationId: string,
   collectionRequestId: string
-): Promise<CollectionRequestStatus | null> {
+): Promise<Date | null> {
   const db = await getDb();
-  const [row] = await db
-    .select({
-      status: collectionRequests.status,
-      conversationStatus: conversations.status,
-    })
+
+  // Tenant-scoped read of the exact escalation being cleared. Its instant is
+  // the occurrence a dismissal is recorded against, so it has to be captured
+  // before the clear — RETURNING would report the new (null) value.
+  const [current] = await db
+    .select({ escalatedAt: collectionRequests.escalatedAt })
     .from(collectionRequests)
-    .leftJoin(conversations, eq(conversations.collectionRequestId, collectionRequests.id))
     .where(
       and(
         eq(collectionRequests.id, collectionRequestId),
@@ -617,33 +662,51 @@ export async function restoreLifecycleAfterEscalation(
       )
     )
     .limit(1);
+  if (!current?.escalatedAt) return null;
+  const occurrence = current.escalatedAt;
 
-  // Only an escalation is restored. Anything else is already a real answer.
-  if (!row || row.status !== "escalated") return null;
-
-  const restored: CollectionRequestStatus =
-    row.conversationStatus === "waiting_for_client" ? "waiting_for_client" : "active";
-
-  await db
+  // Compare-and-swap on that exact instant, not merely on "is not null": if
+  // the request was re-escalated between the read and the write, this clears
+  // nothing rather than silently discarding an escalation the employee never
+  // saw.
+  const [cleared] = await db
     .update(collectionRequests)
     .set({
-      status: restored,
-      // The reason belongs to the escalation that just ended. Leaving it
-      // would keep "לא ענה…" on screen beside a status that no longer says
-      // anything is wrong.
+      escalatedAt: null,
       escalationReason: null,
+      // A fresh episode starts, exactly as the old "employee moves it out of
+      // escalated" transition did: the office has dealt with this, so the
+      // request gets a full window again rather than being instantly overdue,
+      // and the deferrals the client already used do not count against them
+      // forever.
+      reviewDeadlineAt: humanReviewDeadlineFrom(Date.now()),
+      deferralCount: 0,
       updatedAt: new Date(),
     })
     .where(
       and(
         eq(collectionRequests.id, collectionRequestId),
         eq(collectionRequests.organizationId, organizationId),
-        // Compare-and-swap: if something else moved this request in the
-        // meantime (the client answered, an employee completed it), that
-        // decision wins and this no-ops.
-        eq(collectionRequests.status, "escalated")
+        eq(collectionRequests.escalatedAt, occurrence)
+      )
+    )
+    .returning({ id: collectionRequests.id });
+
+  if (!cleared) return null;
+
+  // Restart the reminder interval too, for the same reason the review window
+  // restarts: without it the anchor is still the stale pre-escalation one, so
+  // the very next tick would message the client the instant an employee
+  // pressed "טופל" — which reads as the system arguing with them.
+  await db
+    .update(conversations)
+    .set({ reminderAnchorAt: new Date(), deferredReminderAt: null })
+    .where(
+      and(
+        eq(conversations.collectionRequestId, collectionRequestId),
+        eq(conversations.organizationId, organizationId)
       )
     );
 
-  return restored;
+  return occurrence;
 }

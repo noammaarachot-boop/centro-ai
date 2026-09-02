@@ -979,6 +979,24 @@ export const collectionRequests = pgTable("collection_requests", {
   // ימים" (the threshold, not elapsed time) beside a panel correctly saying
   // "עברו 7 ימים". Age is measured at display time — src/lib/elapsedTime.ts.
   escalationReason: text("escalation_reason"),
+  /**
+   * When automation gave up and asked for a human — NOT where the request is.
+   *
+   * `status` used to carry this, by being set to "escalated". That destroyed
+   * the lifecycle value underneath it: once the escalation was handled there
+   * was nothing to go back to, so a request genuinely just waiting on its
+   * client sat in "escalated" forever, and clearing it required guessing the
+   * old status back from the conversation.
+   *
+   * As its own column the two facts coexist. A request can be
+   * waiting_for_client AND escalated; handling the escalation clears this one
+   * field and the lifecycle is simply still there, never reconstructed.
+   *
+   * It is also the escalation's OCCURRENCE — attention dismissals are keyed on
+   * this instant, so a later escalation is a new occurrence that reopens
+   * legitimately rather than being swallowed by an old "טופל".
+   */
+  escalatedAt: timestamp("escalated_at", { withTimezone: true }),
 }, (table) => [
   // The scheduler filters (organizationId, status) on every tick — the
   // draft/scheduled sweep and the extension sweep both — and the

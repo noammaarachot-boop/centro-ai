@@ -4,6 +4,7 @@ import {
   resolveRequestAttentionState,
   type RequestAttentionInput,
 } from "./requestAttentionState";
+import type { ReviewReason } from "./data/dashboardReadModel";
 
 /**
  * Regression — the attention area must name ONE action that can run.
@@ -13,24 +14,51 @@ import {
  * "הפעלה" — which was a raw state-machine transition to `active`. On a
  * request that was ALREADY active with a failed message it changed nothing
  * while presenting itself as the fix.
+ *
+ * And regression — this resolver must not DECIDE whether attention exists.
+ * It used to measure the client's silence and inspect delivery itself, which
+ * meant the request card had a private definition of "דורש טיפול" that the
+ * dashboard knew nothing about. Reasons now arrive from
+ * getItemsNeedingReview; what is left here is only which action to offer.
  */
+
+const reason = (kind: ReviewReason["kind"], detail = "x"): ReviewReason => ({
+  kind,
+  detail,
+  occurredAt: new Date("2026-01-01T00:00:00Z"),
+});
 
 const base: RequestAttentionInput = {
   status: "active",
-  lastOutboundDeliveryStatus: "delivered",
-  clientHasReplied: false,
-  unsatisfiedCount: 0,
-  reviewItemCount: 0,
+  reasons: [],
   whatsappReady: true,
   hasConversation: true,
   retryCanSucceed: true,
-  daysOpen: 0,
 };
 
 const resolve = (over: Partial<RequestAttentionInput>) => resolveRequestAttentionState({ ...base, ...over });
 
+describe("it reports only what it was given", () => {
+  it("no open reason means nothing to say — even on a long-open request", () => {
+    // The old version measured age here and could disagree with the
+    // dashboard. It cannot any more: with no reason there is no attention.
+    expect(resolve({ reasons: [] }).kind).toBe("none");
+    expect(resolve({ reasons: [] }).reasons).toEqual([]);
+  });
+
+  it("surfaces EVERY reason, not just the one the button addresses", () => {
+    const state = resolve({ reasons: [reason("client_overdue"), reason("message_failed")] });
+
+    // A failed send does not stop the client having been silent for days —
+    // two different problems, and hiding one leaves the employee without the
+    // context for the action they are being asked to take.
+    expect(state.reasons).toHaveLength(2);
+    expect(state.kind, "the primary reason selects the CTA").toBe("message_failed");
+  });
+});
+
 describe("A — the last message failed", () => {
-  const state = resolve({ lastOutboundDeliveryStatus: "failed", unsatisfiedCount: 2, daysOpen: 3 });
+  const state = resolve({ reasons: [reason("client_overdue"), reason("message_failed")] });
 
   it("names retrying the send, not reactivating the request", () => {
     expect(state.kind).toBe("message_failed");
@@ -38,330 +66,116 @@ describe("A — the last message failed", () => {
     expect(state.primaryAction?.label).toBe("שליחה חוזרת");
   });
 
-  it("takes the CTA — the client cannot act on a message that never arrived", () => {
-    // It decides the ACTION. It must not decide what the employee is told:
-    // an earlier version returned a single state here, which silently
-    // deleted the fact that this client had been overdue for three days.
-    expect(state.primaryAction?.kind).toBe("retry_send");
-    expect(state.reasons.map((r) => r.title)).toContain("ההודעה האחרונה לא נשלחה");
-    expect(state.reasons.map((r) => r.title)).toContain("הלקוח לא הגיב לבקשה");
+  it("keeps the business reason visible above the delivery problem", () => {
+    expect(state.reasons.some((r) => r.title.includes("לא השלים"))).toBe(true);
   });
 
-  it("offers the conversation as a secondary way in", () => {
+  it("offers a reminder instead when a resend cannot possibly succeed", () => {
+    // Free text outside the 24h window is refused identically every time.
+    const blocked = resolve({ reasons: [reason("message_failed")], retryCanSucceed: false });
+    expect(blocked.primaryAction?.kind).toBe("send_reminder");
+  });
+});
+
+describe("B — nothing can be sent at all", () => {
+  const state = resolve({ reasons: [reason("message_failed")], whatsappReady: false });
+
+  it("offers no send button, because every send would fail the same way", () => {
+    expect(state.kind).toBe("not_connected");
+    expect(state.primaryAction).toBeNull();
+  });
+
+  it("still lets the employee open the conversation", () => {
     expect(state.secondaryAction?.kind).toBe("open_conversation");
   });
-
-  it("treats every provider refusal the same way", () => {
-    for (const status of ["failed", "not_connected", "no_template", "invalid_phone", "stuck"]) {
-      expect(resolve({ lastOutboundDeliveryStatus: status }).kind, status).toBe("message_failed");
-    }
-  });
 });
 
-describe("B — delivered, but the client has not finished", () => {
-  const state = resolve({ lastOutboundDeliveryStatus: "delivered", unsatisfiedCount: 2, daysOpen: 4 });
-
-  it("offers a reminder rather than a resend", () => {
-    expect(state.kind).toBe("awaiting_client");
-    expect(state.primaryAction?.kind).toBe("send_reminder");
-    expect(state.primaryAction?.label).toBe("שליחת תזכורת עכשיו");
-  });
-
-  it("says how long it has been", () => {
-    expect(state.reasons[0].detail).toContain("4");
-  });
-
-  it("distinguishes a client who replied from one who never did", () => {
-    expect(resolve({ unsatisfiedCount: 2, daysOpen: 4, clientHasReplied: true }).reasons[0].title).toContain("לא השלים");
-    expect(resolve({ unsatisfiedCount: 2, daysOpen: 4, clientHasReplied: false }).reasons[0].title).toContain("לא הגיב");
-  });
-
-  it("stays quiet before the request is actually overdue", () => {
-    expect(resolve({ unsatisfiedCount: 2, daysOpen: 1 }).kind).toBe("none");
-  });
-});
-
-describe("C — the request was never sent", () => {
-  it("offers to start it, and says that sending is what will happen", () => {
-    const state = resolve({ status: "draft" });
-    expect(state.kind).toBe("paused");
-    expect(state.primaryAction?.kind).toBe("reactivate");
-    expect(state.primaryAction?.label).toContain("שליחה");
-  });
-});
-
-describe("D — nothing can be done automatically", () => {
-  it("offers NO primary button when WhatsApp is not connected", () => {
-    const state = resolve({ whatsappReady: false, lastOutboundDeliveryStatus: "failed", daysOpen: 5 });
-    expect(state.kind).toBe("not_connected");
-    expect(state.primaryAction, "a button that cannot work must not be shown").toBeNull();
-    expect(state.guidance).toContain("הגדרות");
-  });
-
-  it("offers no send when the work is the employee's own queue", () => {
-    const state = resolve({ reviewItemCount: 2, unsatisfiedCount: 1, daysOpen: 5 });
+describe("C — the employee's own queue comes first", () => {
+  it("a document awaiting review outranks nudging the client again", () => {
+    const state = resolve({ reasons: [reason("client_overdue"), reason("document_needs_review")] });
     expect(state.kind).toBe("needs_review");
-    expect(state.primaryAction).toBeNull();
-    expect(state.reasons.some((r) => r.title.includes("2"))).toBe(true);
+    expect(state.primaryAction, "sending on top of unreviewed work is noise").toBeNull();
   });
 
-  it("omits the conversation link when there is no conversation", () => {
-    expect(resolve({ whatsappReady: false, hasConversation: false }).secondaryAction).toBeNull();
-  });
-});
-
-describe("quiet states", () => {
-  it("says nothing for a completed or cancelled request", () => {
-    for (const status of ["completed", "cancelled"]) {
-      const state = resolve({ status, lastOutboundDeliveryStatus: "failed", unsatisfiedCount: 3, daysOpen: 9 });
-      expect(state.kind, status).toBe("none");
-      expect(state.primaryAction, status).toBeNull();
-    }
+  it("so does an unanswered client question", () => {
+    expect(resolve({ reasons: [reason("employee_question")] }).kind).toBe("needs_review");
   });
 
-  it("says nothing when the request is simply progressing", () => {
-    expect(resolve({ unsatisfiedCount: 0, daysOpen: 1 }).kind).toBe("none");
+  it("and a document the client reported missing", () => {
+    expect(resolve({ reasons: [reason("reported_missing")] }).kind).toBe("needs_review");
   });
 });
 
-describe("the shape the UI depends on", () => {
-  it("every actionable state has exactly one primary action and both sentences", () => {
-    const actionable = [
-      resolve({ lastOutboundDeliveryStatus: "failed" }),
-      resolve({ unsatisfiedCount: 1, daysOpen: 5 }),
-      resolve({ status: "draft" }),
-    ];
-    for (const state of actionable) {
-      expect(state.reasons.length, state.kind).toBeGreaterThan(0);
-      expect(state.guidance.length, state.kind).toBeGreaterThan(0);
-      expect(state.primaryAction, state.kind).not.toBeNull();
-    }
-  });
-
-  it("never produces the old ambiguous label", () => {
-    const all = [
-      resolve({ lastOutboundDeliveryStatus: "failed" }),
-      resolve({ unsatisfiedCount: 1, daysOpen: 5 }),
-      resolve({ status: "draft" }),
-      resolve({ whatsappReady: false }),
-      resolve({ reviewItemCount: 1, unsatisfiedCount: 1, daysOpen: 5 }),
-    ];
-    for (const state of all) {
-      expect(state.primaryAction?.label ?? "").not.toBe("הפעלה");
-    }
-  });
-});
-
-/**
- * Regression — two problems at once, and neither one hidden.
- *
- * Reported from production: a request was three days overdue AND its last
- * message had failed to send. The panel showed only the failure, so the
- * employee was handed a "שליחה חוזרת" button with no indication of why the
- * request mattered — and once the resend succeeded the panel went quiet,
- * as though the client had supplied the documents.
- *
- * A delivery problem and a business problem are independent. One may take
- * the CTA; it may not erase the other.
- */
-describe("combined states", () => {
-  const overdue = { unsatisfiedCount: 2, daysOpen: 4 };
-  const titles = (over: Partial<RequestAttentionInput>) => resolve(over).reasons.map((r) => r.title);
-
-  it("1 — overdue, delivery fine: one reason, and a reminder", () => {
-    const state = resolve({ ...overdue, lastOutboundDeliveryStatus: "delivered" });
+describe("D — the client is simply late", () => {
+  it("offers the reminder, which is the one action that helps", () => {
+    const state = resolve({ reasons: [reason("client_overdue")] });
     expect(state.kind).toBe("awaiting_client");
     expect(state.primaryAction?.kind).toBe("send_reminder");
-    expect(state.reasons).toHaveLength(1);
-    expect(state.reasons[0].detail).toContain("4");
   });
 
-  it("2 — send failed, not yet overdue: one reason, and no invented deadline", () => {
-    const state = resolve({ lastOutboundDeliveryStatus: "failed", unsatisfiedCount: 2, daysOpen: 1 });
-    expect(state.kind).toBe("message_failed");
-    expect(state.reasons).toHaveLength(1);
-    expect(titles({ lastOutboundDeliveryStatus: "failed", unsatisfiedCount: 2, daysOpen: 1 })).not.toContain(
-      "הלקוח לא הגיב לבקשה"
-    );
+  it("does NOT offer another reminder right after one went out", () => {
+    const state = resolve({
+      reasons: [reason("client_overdue")],
+      lastReminderSentAt: new Date(Date.now() - 60_000),
+    });
+    expect(state.kind).toBe("awaiting_reply");
+    expect(state.primaryAction, "one was just sent — asking twice is the bug").toBeNull();
   });
 
-  it("3 — overdue AND send failed: BOTH reasons, one CTA", () => {
-    const state = resolve({ ...overdue, lastOutboundDeliveryStatus: "failed" });
-    expect(state.reasons).toHaveLength(2);
-    expect(state.reasons.map((r) => r.title)).toEqual([
-      "הלקוח לא הגיב לבקשה",
-      "ההודעה האחרונה לא נשלחה",
-    ]);
-    // One button, and it addresses the thing that blocks the other.
-    expect(state.primaryAction?.kind).toBe("retry_send");
-    expect(state.guidance.length).toBeGreaterThan(0);
+  it("offers one again once the quiet window has passed", () => {
+    const state = resolve({
+      reasons: [reason("client_overdue")],
+      lastReminderSentAt: new Date(Date.now() - REMINDER_QUIET_WINDOW_MS - 1000),
+    });
+    expect(state.kind).toBe("awaiting_client");
   });
 
-  it("4 — the resend succeeded: the delivery reason goes, the business reason STAYS", () => {
-    // This is the same request as (3) after a successful retry. If the
-    // panel fell silent here it would be claiming the client had finished.
-    const after = resolve({ ...overdue, lastOutboundDeliveryStatus: "sent" });
-    expect(after.kind).toBe("awaiting_client");
-    expect(after.reasons.map((r) => r.title)).toEqual(["הלקוח לא הגיב לבקשה"]);
-    expect(after.primaryAction?.kind).toBe("send_reminder");
+  it("offers one again as soon as the client has answered it", () => {
+    const state = resolve({
+      reasons: [reason("client_overdue")],
+      lastReminderSentAt: new Date(Date.now() - 60_000),
+      clientRepliedSinceReminder: true,
+    });
+    expect(state.kind).toBe("awaiting_client");
   });
+});
 
-  it("5 — the resend failed again: still both reasons, still one retry", () => {
-    const again = resolve({ ...overdue, lastOutboundDeliveryStatus: "failed" });
-    expect(again.kind).toBe("message_failed");
-    expect(again.reasons).toHaveLength(2);
-    expect(again.primaryAction?.kind).toBe("retry_send");
-  });
-
-  it("6 — a request that was never started says so, and nothing else", () => {
-    const state = resolve({ ...overdue, status: "draft", lastOutboundDeliveryStatus: "failed" });
+describe("E — states that answer for themselves", () => {
+  it("a draft's missing step is starting it", () => {
+    const state = resolve({ status: "draft", reasons: [] });
     expect(state.kind).toBe("paused");
-    expect(state.reasons).toHaveLength(1);
     expect(state.primaryAction?.kind).toBe("reactivate");
   });
 
-  it("7 — WhatsApp disconnected: reasons still shown, but NO button that would refail", () => {
-    const state = resolve({ ...overdue, lastOutboundDeliveryStatus: "failed", whatsappReady: false });
-    expect(state.kind).toBe("not_connected");
-    expect(state.reasons, "the employee still needs to know why it matters").toHaveLength(2);
-    expect(state.primaryAction, "retrying cannot succeed while disconnected").toBeNull();
+  it("a completed request needs nothing, whatever else is true", () => {
+    expect(resolve({ status: "completed", reasons: [reason("client_overdue")] }).kind).toBe("none");
   });
 
-  it("8 — completed: no stale attention UI, whatever else is true", () => {
-    const state = resolve({ ...overdue, status: "completed", lastOutboundDeliveryStatus: "failed", reviewItemCount: 3 });
-    expect(state.kind).toBe("none");
-    expect(state.reasons).toEqual([]);
-    expect(state.primaryAction).toBeNull();
+  it("a cancelled request needs nothing either", () => {
+    expect(resolve({ status: "cancelled", reasons: [reason("message_failed")] }).kind).toBe("none");
+  });
+});
+
+describe("F — never an action that cannot run", () => {
+  it("offers no 'open conversation' when there is no conversation", () => {
+    const state = resolve({ reasons: [reason("client_overdue")], hasConversation: false });
     expect(state.secondaryAction).toBeNull();
   });
 
-  it("9 — cancelled: no CTA offering to chase a request nobody wants", () => {
-    const state = resolve({ ...overdue, status: "cancelled", lastOutboundDeliveryStatus: "failed" });
-    expect(state.kind).toBe("none");
-    expect(state.primaryAction).toBeNull();
-  });
-
-  it("never shows a reason without a plain-language detail, or any internal name", () => {
-    const jargon = ["message_failed", "awaiting_client", "not_connected", "needs_review", "failed", "state", "#100"];
-    const all = [
-      resolve({ ...overdue, lastOutboundDeliveryStatus: "failed" }),
-      resolve({ ...overdue, whatsappReady: false }),
-      resolve({ ...overdue, reviewItemCount: 2 }),
-      resolve({ status: "draft" }),
-      resolve(overdue),
+  it("every reason renders as real sentences, never a raw state name", () => {
+    const kinds: ReviewReason["kind"][] = [
+      "escalated",
+      "client_overdue",
+      "message_failed",
+      "document_needs_review",
+      "employee_question",
+      "reported_missing",
     ];
-    for (const state of all) {
-      for (const reason of state.reasons) {
-        expect(reason.title.length).toBeGreaterThan(0);
-        expect(reason.detail.length).toBeGreaterThan(0);
-      }
-      const text = [state.guidance, ...state.reasons.flatMap((r) => [r.title, r.detail])].join(" ");
-      for (const word of jargon) expect(text, word).not.toContain(word);
+    for (const kind of kinds) {
+      const [rendered] = resolve({ reasons: [reason(kind, "פרט")] }).reasons;
+      expect(rendered.title, kind).toBeTruthy();
+      expect(rendered.title, kind).not.toContain("_");
+      expect(rendered.detail, kind).toBeTruthy();
     }
-  });
-});
-
-/**
- * Regression — production, 26.8.2026.
- *
- * A reminder to a client who had NEVER written in failed with Meta's
- * "(#100) Invalid parameter", the panel offered "שליחה חוזרת", the employee
- * pressed it, and it failed again for exactly the same reason: free text is
- * only accepted inside the 24-hour window a client message opens, and that
- * window had never once been open on this conversation.
- *
- * A button whose only possible outcome is the same failure is not an action.
- */
-describe("a resend that cannot work is not offered", () => {
-  const failed = { lastOutboundDeliveryStatus: "failed", unsatisfiedCount: 2, daysOpen: 4 };
-
-  it("offers an approved reminder instead, and says why", () => {
-    const state = resolve({ ...failed, retryCanSucceed: false });
-    expect(state.kind).toBe("message_failed");
-    expect(state.primaryAction?.kind, "another identical attempt would refail").not.toBe("retry_send");
-    expect(state.primaryAction?.kind).toBe("send_reminder");
-    expect(state.guidance).toContain("מאושרת");
-  });
-
-  it("still reports BOTH problems — the client is late whether or not we can resend", () => {
-    expect(resolve({ ...failed, retryCanSucceed: false }).reasons).toHaveLength(2);
-  });
-
-  it("does offer the resend when the send can actually go out", () => {
-    expect(resolve({ ...failed, retryCanSucceed: true }).primaryAction?.kind).toBe("retry_send");
-  });
-});
-
-/**
- * Regression — "שליחת תזכורת עכשיו" left the request looking untouched.
- *
- * A reminder was sent successfully and the panel still said the same thing:
- * overdue, with a button offering to send a reminder. The employee had just
- * done that. The request IS still overdue — the client has not answered — so
- * it correctly stays in "דורש טיפול", but the thing needing attention has
- * changed from "nobody has nudged them" to "we are waiting for their reply",
- * and offering to send again invites messaging the client twice.
- */
-describe("after a reminder has just been sent", () => {
-  const overdue = { unsatisfiedCount: 2, daysOpen: 5, lastOutboundDeliveryStatus: "sent" };
-  const NOW = Date.parse("2026-08-28T12:00:00Z");
-  const minutesAgo = (n: number) => new Date(NOW - n * 60_000);
-
-  it("reports waiting for a reply, and offers NO second reminder", () => {
-    const state = resolve({ ...overdue, lastReminderSentAt: minutesAgo(5), now: NOW });
-
-    expect(state.kind).toBe("awaiting_reply");
-    expect(state.guidance).toContain("ממתינים לתגובת הלקוח");
-    expect(state.primaryAction, "one reminder was just sent; do not offer another").toBeNull();
-  });
-
-  it("still says WHY it needs attention — the client is late, and that has not changed", () => {
-    const state = resolve({ ...overdue, lastReminderSentAt: minutesAgo(5), now: NOW });
-
-    expect(state.reasons.map((r) => r.title)).toContain("הלקוח לא הגיב לבקשה");
-    expect(state.reasons[0].detail, "the real elapsed time, not reset by the send").toContain("5");
-  });
-
-  it("goes back to offering a reminder once the quiet window has passed", () => {
-    const state = resolve({
-      ...overdue,
-      lastReminderSentAt: new Date(NOW - REMINDER_QUIET_WINDOW_MS - 1),
-      now: NOW,
-    });
-
-    expect(state.kind).toBe("awaiting_client");
-    expect(state.primaryAction?.kind).toBe("send_reminder");
-  });
-
-  it("a reminder that FAILED does not count — the client had nothing to reply to", () => {
-    // The caller only passes a timestamp for a send that reached the
-    // provider, so a failed one arrives as null and the request keeps
-    // asking for a reminder rather than waiting on a message nobody got.
-    const state = resolve({ ...overdue, lastReminderSentAt: null, now: NOW });
-
-    expect(state.kind).toBe("awaiting_client");
-    expect(state.primaryAction?.kind).toBe("send_reminder");
-  });
-
-  it("once the client replies, it stops waiting on them", () => {
-    const state = resolve({
-      ...overdue,
-      lastReminderSentAt: minutesAgo(5),
-      clientRepliedSinceReminder: true,
-      now: NOW,
-    });
-
-    expect(state.kind).not.toBe("awaiting_reply");
-  });
-
-  it("a delivery failure still outranks it — a reminder nobody received is not 'waiting'", () => {
-    const state = resolve({
-      ...overdue,
-      lastOutboundDeliveryStatus: "failed",
-      lastReminderSentAt: minutesAgo(5),
-      now: NOW,
-    });
-
-    expect(state.kind).toBe("message_failed");
   });
 });

@@ -1,20 +1,22 @@
-import { resolveMessageDeliveryState } from "@/lib/messageDeliveryState";
-import { OVERDUE_AFTER_DAYS, describeElapsed } from "@/lib/elapsedTime";
+import type { ReviewReason } from "@/lib/data/dashboardReadModel";
 
 /**
- * What a request needs from the employee, and the one thing to do about it.
+ * WHICH action a request's outstanding attention calls for.
  *
- * The attention area used to stack independent sentences — "לא ענה", "דורש
- * תשומת לב שלך", "שליחת הודעה נכשלה", "כדאי לבדוק את השיחה למטה" — beside a
- * button labelled "הפעלה". None of them said what to DO, and the button was
- * a raw state-machine transition (status → active) that never touches
- * WhatsApp: on a request that is already active with a failed message it
- * changes nothing while looking like the remedy.
+ * This file used to answer two questions, and the second one was the bug. It
+ * decided *whether* a request needed attention — measuring the client's
+ * silence and inspecting the last message's delivery itself — and then which
+ * button to offer. That first answer existed nowhere else in the system, so
+ * the request card could say "דורש טיפול" while the dashboard, deriving
+ * attention from getItemsNeedingReview, called the same request "בתהליך".
  *
- * This resolves ONE state, and each state names its own action. The rule
- * throughout: never offer an action that cannot actually run. A button that
- * is not going to work is worse than no button, because it costs the
- * employee a click and their trust.
+ * Detection now happens once, in getItemsNeedingReview, for every surface.
+ * What is left here is the part that was always unique to this screen: given
+ * the reasons, name the one action that actually moves the request forward.
+ *
+ * The rule that survives unchanged: never offer an action that cannot run. A
+ * button that is not going to work is worse than no button, because it costs
+ * the employee a click and their trust.
  */
 
 export type RequestAttentionKind =
@@ -53,10 +55,9 @@ export interface RequestAttentionState {
    * EVERY reason this request needs attention, not just the one the CTA
    * addresses.
    *
-   * The first version returned a single state, so a failed send erased the
-   * fact that the client had been silent for three days — two genuinely
-   * different problems, and hiding one of them left the employee without
-   * the business context for the action they were being asked to take.
+   * A failed send does not stop the client having been silent for three days
+   * — two genuinely different problems, and hiding one of them leaves the
+   * employee without the business context for the action they are given.
    * `kind` still names the PRIMARY reason, which is what selects the CTA.
    */
   reasons: AttentionReason[];
@@ -75,14 +76,12 @@ export interface RequestAttentionState {
 
 export interface RequestAttentionInput {
   status: string;
-  /** Delivery status of the most recent OUTBOUND message, if any. */
-  lastOutboundDeliveryStatus?: string | null;
-  /** True once the client has ever replied. */
-  clientHasReplied: boolean;
-  /** Requirements still outstanding. */
-  unsatisfiedCount: number;
-  /** Documents/questions sitting in the employee's queue. */
-  reviewItemCount: number;
+  /**
+   * This request's open attention, from getItemsNeedingReview — already
+   * deduplicated, already filtered by what an employee marked as handled,
+   * already scoped to the organization. This screen does not re-derive it.
+   */
+  reasons: ReviewReason[];
   /** Whether this organization can send at all right now. */
   whatsappReady: boolean;
   /** Whether a conversation exists to open. */
@@ -101,33 +100,48 @@ export interface RequestAttentionInput {
    * When a reminder was last actually delivered to the provider for this
    * request, or null if never.
    *
-   * Without it the panel could only ask "is the client late?", so it kept
-   * offering "שליחת תזכורת עכשיו" immediately after a reminder had just
-   * gone out — the request looked untouched by the employee's own action.
+   * Without it the panel kept offering "שליחת תזכורת עכשיו" immediately
+   * after a reminder had just gone out — the request looked untouched by the
+   * employee's own action.
    */
   lastReminderSentAt?: Date | string | null;
   /** True once the client has replied SINCE that reminder. */
   clientRepliedSinceReminder?: boolean;
   /** Injected so the window is testable and render stays pure. */
   now?: number;
-  /** Days since the request was opened, for the overdue wording. */
-  daysOpen: number;
+}
+
+/** How each centrally-derived reason reads on this screen. */
+function describeReason(reason: ReviewReason): AttentionReason {
+  switch (reason.kind) {
+    case "client_overdue":
+      return { title: "הלקוח לא השלים את הבקשה", detail: `${reason.detail}.` };
+    case "message_failed":
+      return { title: "ההודעה האחרונה לא נשלחה", detail: "לא הצלחנו למסור את ההודעה ללקוח." };
+    case "escalated":
+      return {
+        title: "הבקשה הועברה לטיפול ידני",
+        detail: reason.detail || "האוטומציה עצרה וממתינה להחלטה שלך.",
+      };
+    case "document_needs_review":
+      return { title: "מסמך ממתין לבדיקה שלך", detail: `"${reason.detail}" מופיע למטה.` };
+    case "employee_question":
+      return { title: "הלקוח שאל שאלה", detail: `"${reason.detail}"` };
+    case "reported_missing":
+      return { title: "הלקוח דיווח שמסמך חסר", detail: `"${reason.detail}"` };
+  }
 }
 
 export function resolveRequestAttentionState(input: RequestAttentionInput): RequestAttentionState {
   const {
     status,
-    lastOutboundDeliveryStatus,
-    clientHasReplied,
-    unsatisfiedCount,
-    reviewItemCount,
+    reasons: openReasons,
     whatsappReady,
     hasConversation,
     retryCanSucceed,
     lastReminderSentAt,
     clientRepliedSinceReminder,
     now = Date.now(),
-    daysOpen,
   } = input;
 
   const quiet: RequestAttentionState = {
@@ -159,36 +173,10 @@ export function resolveRequestAttentionState(input: RequestAttentionInput): Requ
     };
   }
 
-  // ── Gather EVERY reason, independently. ─────────────────────────────
-  // These are different problems and one must not erase another: a failed
-  // send does not stop the client having been silent for three days, and
-  // the employee needs both to understand the action they are given.
-  const reasons: AttentionReason[] = [];
+  if (openReasons.length === 0) return quiet;
 
-  const clientIsLate = unsatisfiedCount > 0 && daysOpen >= OVERDUE_AFTER_DAYS;
-  if (clientIsLate) {
-    reasons.push({
-      title: clientHasReplied ? "הלקוח עדיין לא השלים את הבקשה" : "הלקוח לא הגיב לבקשה",
-      detail: `${describeElapsed(daysOpen)} והמסמכים עדיין חסרים.`,
-    });
-  }
-
-  const deliveryFailed = resolveMessageDeliveryState(lastOutboundDeliveryStatus) === "failed";
-  if (deliveryFailed) {
-    reasons.push({
-      title: "ההודעה האחרונה לא נשלחה",
-      detail: "לא הצלחנו למסור את ההודעה ללקוח.",
-    });
-  }
-
-  if (reviewItemCount > 0) {
-    reasons.push({
-      title: reviewItemCount === 1 ? "פריט אחד ממתין לבדיקה שלך" : `${reviewItemCount} פריטים ממתינים לבדיקה שלך`,
-      detail: "הפריטים מופיעים למטה.",
-    });
-  }
-
-  if (reasons.length === 0) return quiet;
+  const reasons = openReasons.map(describeReason);
+  const has = (kind: ReviewReason["kind"]) => openReasons.some((reason) => reason.kind === kind);
 
   // ── Pick the ONE action, in order of what blocks what. ───────────────
 
@@ -208,7 +196,7 @@ export function resolveRequestAttentionState(input: RequestAttentionInput): Requ
   // Delivery is the blocker: whatever the business situation, the client
   // cannot act on a message that never arrived, so getting it there comes
   // first — while the business reason stays visible above it.
-  if (deliveryFailed) {
+  if (has("message_failed")) {
     return {
       kind: "message_failed",
       reasons,
@@ -227,7 +215,7 @@ export function resolveRequestAttentionState(input: RequestAttentionInput): Requ
 
   // The employee's own queue comes before nudging the client again —
   // sending another message on top of unreviewed work is noise.
-  if (reviewItemCount > 0) {
+  if (has("document_needs_review") || has("employee_question") || has("reported_missing")) {
     return {
       kind: "needs_review",
       reasons,

@@ -31,7 +31,7 @@ export function TemplateActiveRequests({ requests }: { requests: ActiveTemplateR
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm font-medium text-text-primary">{request.clientName}</p>
-                  <StatusBadge status={request.status} />
+                  <StatusBadge status={request.status} hasOpenAttention={request.hasOpenAttention} />
                 </div>
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
                   <span className="tabular-nums">

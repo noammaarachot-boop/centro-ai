@@ -514,7 +514,7 @@ describe("runScheduledTasks — human-review escalation after the 3-day completi
     await Promise.all([runScheduledTasks(orgId), runScheduledTasks(orgId)]);
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated");
+    expect(request.escalatedAt, "escalated is a flag now, not a status").not.toBeNull();
     // A reason is recorded and it says why — but it must NOT bake in a day
     // count. This string is frozen at escalation time and then displayed for
     // as long as the request stays escalated, so "חלפו 3 ימים" (the
@@ -545,7 +545,8 @@ describe("runScheduledTasks — human-review escalation after the 3-day completi
     await runScheduledTasks(orgId);
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("completed"); // not "escalated"
+    expect(request.status).toBe("completed");
+    expect(request.escalatedAt, "a finished request is never escalated").toBeNull();
     const auditRows = await db
       .select()
       .from(schema.auditLogs)
@@ -560,7 +561,7 @@ describe("runScheduledTasks — human-review escalation after the 3-day completi
     });
     await runScheduledTasks(orgId);
     let [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated");
+    expect(request.escalatedAt, "escalated is a flag now, not a status").not.toBeNull();
 
     // A stale conversation.updatedAt/reminderAnchorAt would normally make this
     // conversation look "due" again — but it's excluded by the scheduler's
@@ -576,7 +577,7 @@ describe("runScheduledTasks — human-review escalation after the 3-day completi
     expect(sendTemplateMessage).not.toHaveBeenCalled();
     expect(sendTextMessage).not.toHaveBeenCalled();
     [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated"); // untouched — never reverted to the automatic track
+    expect(request.escalatedAt, "escalated is a flag now, not a status").not.toBeNull(); // untouched — never reverted to the automatic track
   });
 });
 
@@ -601,7 +602,7 @@ describe("runScheduledTasks — 'no response' lifecycle: escalation on the morni
     await runScheduledTasks(orgId);
 
     const [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated");
+    expect(request.escalatedAt, "escalated is a flag now, not a status").not.toBeNull();
     expect(request.escalationReason).toContain("לא ענה");
     expect(sendTemplateMessage).not.toHaveBeenCalled();
     expect(sendTextMessage).not.toHaveBeenCalled();
@@ -616,7 +617,7 @@ describe("runScheduledTasks — 'no response' lifecycle: escalation on the morni
     });
     await runScheduledTasks(orgId);
     let [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated");
+    expect(request.escalatedAt, "escalated is a flag now, not a status").not.toBeNull();
 
     // Even a conversation still marked "open" with a very stale anchor is
     // never picked up again — the widened branch's own query excludes
@@ -632,7 +633,7 @@ describe("runScheduledTasks — 'no response' lifecycle: escalation on the morni
     expect(sendTemplateMessage).not.toHaveBeenCalled();
     expect(sendTextMessage).not.toHaveBeenCalled();
     [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated");
+    expect(request.escalatedAt, "escalated is a flag now, not a status").not.toBeNull();
   });
 
   it("an explicit employee resend (escalated -> active) reopens a fresh cycle — the very next due tick sends a real reminder again", async () => {
@@ -644,12 +645,14 @@ describe("runScheduledTasks — 'no response' lifecycle: escalation on the morni
     });
     await runScheduledTasks(orgId);
     let [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated");
+    expect(request.escalatedAt, "escalated is a flag now, not a status").not.toBeNull();
 
     // Explicit employee action — the one thing allowed to reopen the cycle.
-    const { applyTransition } = await import("./collectionRequestStateMachine");
-    const resendResult = await applyTransition(orgId, undefined, "employee", requestId, "active");
-    expect(resendResult.ok).toBe(true);
+    // It used to be a status transition out of "escalated"; now that the
+    // lifecycle was never overwritten there is no status to move, and
+    // handling the escalation IS the action.
+    const { clearEscalation } = await import("./collectionRequestStateMachine");
+    expect(await clearEscalation(orgId, requestId)).not.toBeNull();
 
     // Freshly reset — not immediately due again (anchored to the resend, not the original stale send).
     sendTextMessage.mockClear();

@@ -10,7 +10,11 @@ import {
   employeeReviewItems,
   messages,
 } from "@/db/schema";
-import { isWaitingForClientCondition } from "@/lib/collectionRequestStateMachine";
+import {
+  computeRequirementsProgressBulk,
+  isWaitingForClientCondition,
+} from "@/lib/collectionRequestStateMachine";
+import { currentOverdueOccurrence } from "@/lib/attention/policy";
 import { resolveDocumentDisplayLabel } from "@/lib/documents/displayLabel";
 
 // Single read-model layer for every owner-facing dashboard. Every function
@@ -80,7 +84,14 @@ export type ReviewReasonKind =
   | "escalated"
   | "document_needs_review"
   | "employee_question"
-  | "reported_missing";
+  | "reported_missing"
+  // Both of these used to be detected privately inside
+  // resolveRequestAttentionState and rendered only on the request card, which
+  // is how one request came to read "דורש טיפול" on its own page and "בתהליך"
+  // on the dashboard at the same moment. They are real reasons a human is
+  // needed, so they are derived here with the others or not at all.
+  | "client_overdue"
+  | "message_failed";
 
 export interface ReviewReason {
   kind: ReviewReasonKind;
@@ -119,20 +130,32 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
     }
   };
 
+  // Escalation is now its own column rather than a status value, so the
+  // occurrence is the escalation's OWN instant. It used to be updatedAt —
+  // any unrelated write to the row moved it, which made a dismissal's
+  // "handled up to here" mark drift against an event it had nothing to do
+  // with.
   const escalatedRequests = await db
     .select({
       id: collectionRequests.id,
       clientId: collectionRequests.clientId,
       escalationReason: collectionRequests.escalationReason,
-      updatedAt: collectionRequests.updatedAt,
+      escalatedAt: collectionRequests.escalatedAt,
     })
     .from(collectionRequests)
-    .where(and(eq(collectionRequests.organizationId, organizationId), eq(collectionRequests.status, "escalated")));
+    .where(
+      and(
+        eq(collectionRequests.organizationId, organizationId),
+        isNotNull(collectionRequests.escalatedAt),
+        notInArray(collectionRequests.status, ["completed", "cancelled"])
+      )
+    );
   for (const row of escalatedRequests) {
+    if (!row.escalatedAt) continue;
     addReason(row.id, row.clientId, {
       kind: "escalated",
       detail: row.escalationReason ?? "",
-      occurredAt: row.updatedAt,
+      occurredAt: row.escalatedAt,
     });
   }
 
@@ -225,6 +248,106 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
     });
   }
 
+  // ── The client has gone quiet and documents are still missing. ───────
+  //
+  // Derived from the request's own age, NOT from the scheduler having run.
+  // This is the reported bug: the tick had been dead for six days, so no
+  // escalation row existed, and the dashboard therefore believed a request
+  // five days overdue was fine while its own card said otherwise. Deriving
+  // it means the office sees the truth even when automation is down — and
+  // a broken scheduler shows up as missing reminders, not as a silently
+  // clean dashboard.
+  const openRequests = await db
+    .select({
+      id: collectionRequests.id,
+      clientId: collectionRequests.clientId,
+      createdAt: collectionRequests.createdAt,
+      deferredReminderAt: conversations.deferredReminderAt,
+      deferredReminderOriginalText: conversations.deferredReminderOriginalText,
+    })
+    .from(collectionRequests)
+    .leftJoin(conversations, eq(conversations.collectionRequestId, collectionRequests.id))
+    .where(
+      and(
+        eq(collectionRequests.organizationId, organizationId),
+        // A draft was never sent, so the client cannot be late for it.
+        notInArray(collectionRequests.status, ["completed", "cancelled", "draft"])
+      )
+    );
+
+  const overdueCandidates = openRequests.filter((row) => {
+    // A deferral the CLIENT asked for is a promise, not silence — the office
+    // agreed to wait, so it must not be nagged about waiting. The scheduler's
+    // own out-of-hours deferrals carry no client text and are not this.
+    const clientAskedToWait =
+      row.deferredReminderOriginalText !== null &&
+      row.deferredReminderAt !== null &&
+      row.deferredReminderAt.getTime() > Date.now();
+    return !clientAskedToWait && currentOverdueOccurrence(row.createdAt) !== null;
+  });
+
+  // "Still missing" uses the engine's own completion algorithm, batched —
+  // never a cheaper count of documents, which would disagree with the X/Y
+  // progress shown beside it.
+  const progressByRequest = await computeRequirementsProgressBulk(
+    overdueCandidates.map((row) => row.id)
+  );
+  for (const row of overdueCandidates) {
+    const progress = progressByRequest.get(row.id);
+    if (!progress || progress.unsatisfiedCount === 0) continue;
+    const occurredAt = currentOverdueOccurrence(row.createdAt);
+    if (!occurredAt) continue;
+    addReason(row.id, row.clientId, {
+      kind: "client_overdue",
+      detail: `${progress.unsatisfiedCount === 1 ? "מסמך אחד" : `${progress.unsatisfiedCount} מסמכים`} עדיין חסרים`,
+      occurredAt,
+    });
+  }
+
+  // ── The last message never reached the client. ───────────────────────
+  //
+  // Nothing the office asks for can arrive if the asking failed, so this is
+  // attention wherever it is shown — it was previously visible only on the
+  // request card.
+  const failedOutbound = await db
+    .select({
+      id: messages.id,
+      collectionRequestId: conversations.collectionRequestId,
+      clientId: collectionRequests.clientId,
+      createdAt: messages.createdAt,
+    })
+    .from(messages)
+    .innerJoin(conversations, eq(conversations.id, messages.conversationId))
+    .innerJoin(collectionRequests, eq(collectionRequests.id, conversations.collectionRequestId))
+    .where(
+      and(
+        eq(conversations.organizationId, organizationId),
+        eq(messages.direction, "outbound"),
+        eq(messages.deliveryStatus, "failed"),
+        notInArray(collectionRequests.status, ["completed", "cancelled"])
+      )
+    );
+
+  // Only the LATEST failure per request. Every retry that failed is its own
+  // row, and listing them all would report one problem many times — while
+  // still letting a NEW failure after a dismissal reopen as a new occurrence.
+  const latestFailureByRequest = new Map<string, (typeof failedOutbound)[number]>();
+  for (const row of failedOutbound) {
+    if (!row.collectionRequestId) continue;
+    const seen = latestFailureByRequest.get(row.collectionRequestId);
+    if (!seen || row.createdAt.getTime() > seen.createdAt.getTime()) {
+      latestFailureByRequest.set(row.collectionRequestId, row);
+    }
+  }
+  for (const [collectionRequestId, row] of latestFailureByRequest) {
+    addReason(collectionRequestId, row.clientId, {
+      kind: "message_failed",
+      detail: "ההודעה האחרונה לא נמסרה ללקוח",
+      occurredAt: row.createdAt,
+      sourceId: row.id,
+    });
+  }
+
   // Drop anything an employee has already marked as handled.
   //
   // Applied HERE, at the single place attention items are derived, so the
@@ -263,6 +386,21 @@ export async function getItemsNeedingReview(organizationId: string): Promise<Nee
     if (reasons.length > 0) visible.push({ ...item, reasons });
   }
   return visible;
+}
+
+/**
+ * Which of this organization's requests currently need a human, as a set.
+ *
+ * The one thing every status badge in the product should be fed. Screens that
+ * only need "yes or no" used to answer it themselves — by checking a status
+ * value, or by measuring elapsed time locally — and that is precisely how the
+ * same request came to be labelled "דורש טיפול" on one screen and "בתהליך" on
+ * another. Deriving it from getItemsNeedingReview means the badge, the
+ * priority list and the KPI cannot disagree, because they are one query.
+ */
+export async function getRequestIdsNeedingAttention(organizationId: string): Promise<Set<string>> {
+  const items = await getItemsNeedingReview(organizationId);
+  return new Set(items.map((item) => item.collectionRequestId));
 }
 
 // One consistent "when did anything real last happen on this request"

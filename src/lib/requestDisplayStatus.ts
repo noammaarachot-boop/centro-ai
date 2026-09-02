@@ -48,8 +48,17 @@ export function resolveDisplayStatus(input: {
   // saying "דורש טיפול" on a draft would point at the wrong thing.
   if (status === "draft") return { key: "draft", label: "טיוטה", tone: "neutral" };
 
-  // The one thing asking for a human right now. Covers the "escalated"
-  // lifecycle value too, which IS an attention state by definition.
+  // The one thing asking for a human right now.
+  //
+  // `hasOpenAttention` must come from getItemsNeedingReview — the single
+  // derivation every surface shares. Passing a locally-computed opinion here
+  // is what produced the original bug, and no amount of resolving in one
+  // place can fix two different inputs.
+  //
+  // "escalated" is still checked because it remains a legal value of the
+  // status column for rows written before escalation became its own field.
+  // Nothing writes it any more; the reconciliation clears the ones that
+  // exist. Until then a legacy row must not read as merely "בתהליך".
   if (hasOpenAttention || status === "escalated") {
     return { key: "needs_attention", label: "דורש טיפול", tone: "danger" };
   }

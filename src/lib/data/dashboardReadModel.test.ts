@@ -187,7 +187,8 @@ describe("getItemsNeedingReview — union of the 4 real sources, deduplicated by
   it("merges an escalated status and a needs_review document on the same request into one item with two reasons", async () => {
     const { orgId, clientId, serviceId } = await seedOrgClientService();
     const request = await seedRequest(orgId, clientId, serviceId, {
-      status: "escalated",
+      status: "waiting_for_client",
+      escalatedAt: new Date("2026-01-01T10:00:00Z"),
       escalationReason: "חלפו 3 ימים ללא השלמת המסמכים",
     });
     await db.insert(schema.documents).values({

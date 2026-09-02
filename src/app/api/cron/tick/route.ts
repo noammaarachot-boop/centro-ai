@@ -23,25 +23,57 @@ export const maxDuration = 180;
 
 const JOB_NAME = "cron.tick";
 
-// Meant to be hit by an external scheduler (Vercel Cron, GitHub Actions
-// scheduled workflow, etc.) — there's no in-process cron in a
-// serverless-style deployment. CRON_SECRET must match, except in
-// development with no secret configured, so a fresh checkout can be
-// tested via `curl -X POST localhost:3000/api/cron/tick` without any
-// setup.
-export async function POST(request: Request) {
+/**
+ * Shared gate for both triggers. Returns a response to send, or null to run.
+ *
+ * CRON_SECRET must match, except in development with no secret configured,
+ * so a fresh checkout can be tested without any setup. In production a
+ * missing secret fails closed rather than running the scheduler unauthenticated.
+ */
+function authorizeCron(request: Request): NextResponse | null {
   const secret = process.env.CRON_SECRET;
   if (secret) {
     const provided = request.headers.get("authorization");
     if (provided !== `Bearer ${secret}`) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-  } else if (process.env.NODE_ENV === "production") {
-    return NextResponse.json(
-      { error: "CRON_SECRET is not configured" },
-      { status: 503 }
-    );
+    return null;
   }
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "CRON_SECRET is not configured" }, { status: 503 });
+  }
+  return null;
+}
+
+// Meant to be hit by an external scheduler (Vercel Cron, GitHub Actions
+// scheduled workflow, etc.) — there's no in-process cron in a
+// serverless-style deployment. CRON_SECRET must match, except in
+// development with no secret configured, so a fresh checkout can be
+// tested via `curl -X POST localhost:3000/api/cron/tick` without any
+// setup.
+/**
+ * Vercel Cron's own trigger.
+ *
+ * Vercel invokes cron paths with GET, and this route only ever exported POST
+ * — so the entry in vercel.json returned 405 on every single run and had
+ * never once fired. That was supposed to be the backstop for the external
+ * scheduler, which meant that when the external scheduler was switched off,
+ * nothing at all was left: no reminders, no escalations, for six days,
+ * silently.
+ *
+ * Same secret, same work, no body — the operational single-request triggers
+ * below stay POST-only, because a GET that messages a client is a URL that
+ * can be fired by anything that follows a link.
+ */
+export async function GET(request: Request) {
+  const denied = authorizeCron(request);
+  if (denied) return denied;
+  return runTick();
+}
+
+export async function POST(request: Request) {
+  const denied = authorizeCron(request);
+  if (denied) return denied;
 
   // Operational single-request trigger.
   //
@@ -92,6 +124,16 @@ export async function POST(request: Request) {
     return NextResponse.json(result, { status: result.ok ? 200 : 422 });
   }
 
+  return runTick();
+}
+
+/**
+ * One tick of the scheduler, with its advisory lock and its job_runs record.
+ *
+ * Shared verbatim by both entry points so the trigger a deployment happens
+ * to use can never change what a tick actually does.
+ */
+async function runTick() {
   // Owner Dashboard System Health foundation — previously this tick's
   // outcome only ever reached whoever called this endpoint, once, and was
   // otherwise lost. Recording start/finish here (rather than inside

@@ -12,8 +12,14 @@
  * The threshold stays internal. Anything shown to a user is measured here.
  */
 
-/** Escalation fires once a request has gone this long without completing. */
-export const OVERDUE_AFTER_DAYS = 3;
+/**
+ * Escalation fires once a request has gone this long without completing.
+ *
+ * Re-exported from the policy module rather than declared here: this file
+ * used to hold its own `= 3` while the scheduler held another, and the two
+ * were the same rule maintained in two places.
+ */
+export { HUMAN_REVIEW_AFTER_DAYS as OVERDUE_AFTER_DAYS } from "@/lib/attention/policy";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

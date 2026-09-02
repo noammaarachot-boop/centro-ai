@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte, notInArray, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, notInArray, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, conversations, messages, organizations, services } from "@/db/schema";
 import { recordAuditEvent } from "@/lib/audit";
@@ -121,7 +121,11 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
           // pass, which would otherwise auto-transition it toward
           // "waiting_for_client" (and, from there, risk auto-completing it
           // before the client ever confirmed they're actually done).
-          eq(collectionRequests.extensionActive, false)
+          eq(collectionRequests.extensionActive, false),
+          // Same reason as the reminder pass below: an escalated request is
+          // a person's to move now, and automation must not message its
+          // client or advance its status underneath them.
+          isNull(collectionRequests.escalatedAt)
         )
       );
 
@@ -216,7 +220,17 @@ export async function runScheduledTasks(organizationId?: string): Promise<{
           isWaitingForClientCondition(),
           // See the matching exclusion on idleOpenConversations above — an
           // active extension has its own dedicated nudge pass below.
-          eq(collectionRequests.extensionActive, false)
+          eq(collectionRequests.extensionActive, false),
+          // Escalation means automation has handed this request to a person,
+          // and it must stop messaging the client until they hand it back.
+          //
+          // This guard used to be implicit: escalating overwrote status with
+          // "escalated", which no longer matched isWaitingForClientCondition
+          // above, so the row simply fell out of this query. Now that the
+          // lifecycle is preserved rather than overwritten, the row DOES
+          // still match — so the rule has to be stated, or every escalated
+          // request would quietly resume its reminder cycle.
+          isNull(collectionRequests.escalatedAt)
         )
       );
 

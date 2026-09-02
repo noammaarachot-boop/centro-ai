@@ -36,7 +36,7 @@ vi.mock("@/lib/scheduler", () => ({
   runScheduledTasks: (...args: unknown[]) => runScheduledTasks(...args),
 }));
 
-const { POST } = await import("./route");
+const { GET, POST } = await import("./route");
 
 beforeAll(async () => {
   const client = await createMigratedPglite();
@@ -83,5 +83,63 @@ describe("POST /api/cron/tick — Phase 4.1: advisory lock prevents overlapping 
     const body = await response.json();
     expect(body).toEqual({ status: "skipped", reason: "already_running" });
     expect(runScheduledTasks).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The scheduler trigger itself.
+ *
+ * vercel.json declares a cron on this path, and Vercel invokes cron paths
+ * with GET — but the route only exported POST, so every single scheduled run
+ * returned 405 and the backstop had never once fired. That went unnoticed
+ * while an external scheduler carried the load, and the day it was switched
+ * off nothing was left: no reminders, no escalations, for six days, silently.
+ */
+describe("both real triggers can actually run a tick", () => {
+  const ok = {
+    evaluated: 0, reminded: 0, delivered: 0, driveRetried: 0, recurringCyclesCreated: 0,
+    confirmationsReminded: 0, confirmationsEscalated: 0, intakeNotificationsFlushed: 0,
+    caseStatusReviewsRun: 0,
+  };
+
+  it("GET runs the tick — this is what Vercel Cron sends", async () => {
+    runScheduledTasks.mockResolvedValue(ok);
+
+    const response = await GET(new Request("https://example.com/api/cron/tick", { method: "GET" }));
+
+    expect(response.status, "405 here means the schedule is decorative").toBe(200);
+    expect((await response.json()).status).toBe("ok");
+    expect(runScheduledTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST runs the same tick — this is what the external scheduler sends", async () => {
+    runScheduledTasks.mockResolvedValue(ok);
+
+    const response = await POST(req());
+
+    expect((await response.json()).status).toBe("ok");
+    expect(runScheduledTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("both refuse an unauthenticated caller once a secret is configured", async () => {
+    const previous = process.env.CRON_SECRET;
+    process.env.CRON_SECRET = "s3cret";
+    try {
+      const url = "https://example.com/api/cron/tick";
+      expect((await GET(new Request(url))).status).toBe(401);
+      expect((await POST(new Request(url, { method: "POST" }))).status).toBe(401);
+      expect(runScheduledTasks).not.toHaveBeenCalled();
+
+      // And accept the one that presents it.
+      runScheduledTasks.mockResolvedValue(ok);
+      const authorized = await GET(
+        new Request(url, { headers: { authorization: "Bearer s3cret" } })
+      );
+      expect(authorized.status).toBe(200);
+    } finally {
+      // Restored so this never leaks into another test file's environment.
+      if (previous === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = previous;
+    }
   });
 });

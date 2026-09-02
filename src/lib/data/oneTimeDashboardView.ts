@@ -41,10 +41,16 @@ const IN_PROGRESS_STATUSES: CollectionRequestStatus[] = [
 // reasons still only takes one row (see getItemsNeedingReview's own
 // dedup); this only picks which of its reasons is shown there.
 const REASON_PRIORITY: ReviewReasonKind[] = [
+  // A message that never arrived comes first: every other reason assumes the
+  // client actually received what the office sent, and none of them can be
+  // acted on sensibly until that is true.
+  "message_failed",
   "escalated",
   "employee_question",
   "document_needs_review",
   "reported_missing",
+  // Last: being late is the background condition the others usually explain.
+  "client_overdue",
 ];
 
 function pickPrimaryReason(item: NeedsReviewItem) {
@@ -101,6 +107,22 @@ const REASON_COPY: Record<
     actionLabel: "לטיפול בבקשה",
     chipLabel: (count) => (count === 1 ? "דיווח על מסמך חסר" : "דיווחים על מסמכים חסרים"),
     subtextPhrase: (count) => (count === 1 ? "דיווח אחד על מסמך חסר" : `${count} דיווחים על מסמכים חסרים`),
+  },
+  client_overdue: {
+    severity: "warning",
+    title: (clientName) => `${clientName} — לא הגיב ועדיין חסרים מסמכים`,
+    meta: (detail) => detail,
+    actionLabel: "לפתיחת הבקשה",
+    chipLabel: (count) => (count === 1 ? "לקוח לא מגיב" : "לקוחות שאינם מגיבים"),
+    subtextPhrase: (count) => (count === 1 ? "לקוח אחד לא הגיב" : `${count} לקוחות לא הגיבו`),
+  },
+  message_failed: {
+    severity: "danger",
+    title: (clientName) => `${clientName} — ההודעה לא הגיעה`,
+    meta: (detail) => detail,
+    actionLabel: "לפתיחת הבקשה",
+    chipLabel: (count) => (count === 1 ? "הודעה שלא נמסרה" : "הודעות שלא נמסרו"),
+    subtextPhrase: (count) => (count === 1 ? "הודעה אחת לא נמסרה" : `${count} הודעות לא נמסרו`),
   },
 };
 

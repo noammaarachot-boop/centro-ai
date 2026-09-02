@@ -262,7 +262,9 @@ describe("applyDeferralIfAny — max-2-deferrals-per-request escalation policy",
     expect(handled).toBe(true);
 
     [request] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, requestId));
-    expect(request.status).toBe("escalated");
+    expect(request.escalatedAt, "escalated is its own flag now").not.toBeNull();
+    // And the lifecycle underneath it is intact rather than overwritten.
+    expect(request.status).toBe("waiting_for_client");
     expect(request.escalationReason).toContain("שלישית");
     expect(request.reviewDeadlineAt).toBeNull();
     // No message sent about the escalation itself — the transition is silent.

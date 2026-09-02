@@ -6,23 +6,22 @@ import * as schema from "@/db/schema";
 import type { Database } from "@/db";
 
 /**
- * Regression — "escalated" was doing two jobs at once.
+ * Escalation is a flag on the request, not the request's status.
  *
- * collectionRequests.status carries where a request is in its life AND
- * whether a human is needed, and escalateToHumanReview OVERWRITES the first
- * with the second. Once the attention was handled there was nothing to go
- * back to, so a request that was really just waiting on its client kept
- * showing as escalated in "בקשות בתהליך" forever.
+ * collectionRequests.status used to carry two different ideas at once — where
+ * a request is in its life, and whether a human is needed — because
+ * escalateToHumanReview OVERWROTE the first with the second. Once the
+ * attention was handled there was nothing to go back to, so the predecessor
+ * of this suite tested a function that GUESSED the lifecycle back from the
+ * conversation. That function is gone: the lifecycle is never lost now, so
+ * there is nothing to restore.
  *
- * Restoring reuses the pairing isWaitingForClientCondition already encodes —
- * a conversation waiting on the client means the request is
- * waiting_for_client, an open one means active — rather than adding a second
- * state machine that could drift from it.
+ * These tests exist to keep it that way.
  */
 let db: Database;
 vi.mock("@/db", () => ({ getDb: async () => db }));
 
-const { restoreLifecycleAfterEscalation } = await import("./collectionRequestStateMachine");
+const { clearEscalation, escalateToHumanReview } = await import("./collectionRequestStateMachine");
 
 beforeAll(async () => {
   db = drizzle(await createMigratedPglite(), { schema }) as unknown as Database;
@@ -54,14 +53,7 @@ async function seedRequest(
   const [service] = await db.insert(schema.services).values({ organizationId: orgId, name: "s" }).returning();
   const [request] = await db
     .insert(schema.collectionRequests)
-    .values({
-      organizationId: orgId,
-      clientId,
-      serviceId: service.id,
-      periodLabel: "p",
-      status,
-      escalationReason: "לא ענה והבקשה עדיין לא הושלמה",
-    })
+    .values({ organizationId: orgId, clientId, serviceId: service.id, periodLabel: "p", status })
     .returning();
   if (conversationStatus) {
     await db.insert(schema.conversations).values({
@@ -74,81 +66,133 @@ async function seedRequest(
   return request.id;
 }
 
-const statusOf = async (id: string) => {
-  const [row] = await db
-    .select()
-    .from(schema.collectionRequests)
-    .where(eq(schema.collectionRequests.id, id));
+const rowOf = async (id: string) => {
+  const [row] = await db.select().from(schema.collectionRequests).where(eq(schema.collectionRequests.id, id));
   return row;
 };
 
-describe("restoring the lifecycle after an escalation is handled", () => {
-  it("a request still waiting on its client becomes 'ממתין ללקוח', not 'הוסלם'", async () => {
-    // The exact scenario reported: escalated → handled → documents still
-    // missing → must read as waiting for the client.
-    const id = await seedRequest("escalated", "waiting_for_client");
+describe("escalating a request", () => {
+  it("does NOT change where the request is — the exact bug this replaced", async () => {
+    const id = await seedRequest("waiting_for_client", "waiting_for_client");
 
-    const restored = await restoreLifecycleAfterEscalation(orgId, id);
+    expect(await escalateToHumanReview(orgId, id, "לא ענה", "system")).toBe(true);
 
-    expect(restored).toBe("waiting_for_client");
-    expect((await statusOf(id)).status).toBe("waiting_for_client");
+    const row = await rowOf(id);
+    expect(row.status, "the lifecycle is still true and still there").toBe("waiting_for_client");
+    expect(row.escalatedAt).not.toBeNull();
+    expect(row.escalationReason).toBe("לא ענה");
   });
 
-  it("a request otherwise running becomes 'פעיל'", async () => {
-    const id = await seedRequest("escalated", "open");
+  it("records WHEN, so the escalation has an occurrence of its own", async () => {
+    const id = await seedRequest("active", "open");
+    const before = Date.now();
 
-    expect(await restoreLifecycleAfterEscalation(orgId, id)).toBe("active");
-    expect((await statusOf(id)).status).toBe("active");
+    await escalateToHumanReview(orgId, id, "לא ענה", "system");
+
+    const { escalatedAt } = await rowOf(id);
+    // Not updatedAt, which any unrelated write moves — a dismissal keyed on
+    // that drifted against events it had nothing to do with.
+    expect(escalatedAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
   });
 
-  it("clears the escalation reason, so no stale explanation is left on screen", async () => {
-    const id = await seedRequest("escalated", "open");
+  it("a second escalation does not overwrite the first while it is open", async () => {
+    const id = await seedRequest("active", "open");
+    await escalateToHumanReview(orgId, id, "ראשונה", "system");
+    const first = (await rowOf(id)).escalatedAt;
 
-    await restoreLifecycleAfterEscalation(orgId, id);
+    expect(await escalateToHumanReview(orgId, id, "שנייה", "system"), "already claimed").toBe(false);
+    expect((await rowOf(id)).escalatedAt).toEqual(first);
+    expect((await rowOf(id)).escalationReason).toBe("ראשונה");
+  });
 
-    expect((await statusOf(id)).escalationReason).toBeNull();
+  it("NEVER escalates a completed request", async () => {
+    const id = await seedRequest("completed", "closed");
+
+    expect(await escalateToHumanReview(orgId, id, "לא ענה", "system")).toBe(false);
+    expect((await rowOf(id)).escalatedAt).toBeNull();
+  });
+
+  it("NEVER escalates a cancelled request", async () => {
+    const id = await seedRequest("cancelled", "closed");
+
+    expect(await escalateToHumanReview(orgId, id, "לא ענה", "system")).toBe(false);
+    expect((await rowOf(id)).escalatedAt).toBeNull();
+  });
+
+  it("tenant isolation — another organization cannot escalate this one's request", async () => {
+    const id = await seedRequest("waiting_for_client", "waiting_for_client");
+
+    expect(await escalateToHumanReview(otherOrgId, id, "לא ענה", "system")).toBe(false);
+    expect((await rowOf(id)).escalatedAt).toBeNull();
+  });
+});
+
+describe("clearing an escalation once it is handled", () => {
+  it("clears the flag and leaves the lifecycle exactly where it was", async () => {
+    const id = await seedRequest("waiting_for_client", "waiting_for_client");
+    await escalateToHumanReview(orgId, id, "לא ענה", "system");
+
+    const occurrence = await clearEscalation(orgId, id);
+
+    expect(occurrence, "returns what it cleared, so a dismissal can be keyed on it").not.toBeNull();
+    const row = await rowOf(id);
+    expect(row.status, "never reconstructed — it was never lost").toBe("waiting_for_client");
+    expect(row.escalatedAt).toBeNull();
+    // The reason belongs to the escalation that just ended; leaving it would
+    // keep "לא ענה…" on screen beside a request that says nothing is wrong.
+    expect(row.escalationReason).toBeNull();
+  });
+
+  it("an 'active' request stays active — no guessing from the conversation", async () => {
+    const id = await seedRequest("active", "open");
+    await escalateToHumanReview(orgId, id, "לא ענה", "system");
+
+    await clearEscalation(orgId, id);
+
+    expect((await rowOf(id)).status).toBe("active");
   });
 
   it("the request stays in progress — handling attention never removes it", async () => {
-    const id = await seedRequest("escalated", "waiting_for_client");
+    const id = await seedRequest("waiting_for_client", "waiting_for_client");
+    await escalateToHumanReview(orgId, id, "לא ענה", "system");
 
-    await restoreLifecycleAfterEscalation(orgId, id);
+    await clearEscalation(orgId, id);
 
-    const { status } = await statusOf(id);
+    const { status } = await rowOf(id);
     expect(["completed", "cancelled"], "only a real ending may take it out").not.toContain(status);
   });
 
-  it("NEVER overwrites a completed request", async () => {
-    const id = await seedRequest("completed", "closed");
-
-    expect(await restoreLifecycleAfterEscalation(orgId, id)).toBeNull();
-    expect((await statusOf(id)).status).toBe("completed");
-  });
-
-  it("NEVER overwrites a cancelled request", async () => {
-    const id = await seedRequest("cancelled", "closed");
-
-    expect(await restoreLifecycleAfterEscalation(orgId, id)).toBeNull();
-    expect((await statusOf(id)).status).toBe("cancelled");
-  });
-
-  it("leaves a request that was never escalated alone", async () => {
+  it("returns null when there is nothing escalated, and changes nothing", async () => {
     const id = await seedRequest("active", "open");
 
-    expect(await restoreLifecycleAfterEscalation(orgId, id)).toBeNull();
-    expect((await statusOf(id)).status).toBe("active");
+    expect(await clearEscalation(orgId, id)).toBeNull();
+    expect((await rowOf(id)).status).toBe("active");
   });
 
-  it("a request with no conversation falls back to active rather than guessing", async () => {
-    const id = await seedRequest("escalated", null);
+  it("a second press of 'טופל' is a no-op rather than a second clear", async () => {
+    const id = await seedRequest("waiting_for_client", "waiting_for_client");
+    await escalateToHumanReview(orgId, id, "לא ענה", "system");
 
-    expect(await restoreLifecycleAfterEscalation(orgId, id)).toBe("active");
+    expect(await clearEscalation(orgId, id)).not.toBeNull();
+    expect(await clearEscalation(orgId, id)).toBeNull();
   });
 
-  it("tenant isolation — another organization cannot restore this one's request", async () => {
-    const id = await seedRequest("escalated", "waiting_for_client");
+  it("tenant isolation — another organization cannot clear this one's escalation", async () => {
+    const id = await seedRequest("waiting_for_client", "waiting_for_client");
+    await escalateToHumanReview(orgId, id, "לא ענה", "system");
 
-    expect(await restoreLifecycleAfterEscalation(otherOrgId, id)).toBeNull();
-    expect((await statusOf(id)).status, "untouched by the wrong tenant").toBe("escalated");
+    expect(await clearEscalation(otherOrgId, id)).toBeNull();
+    expect((await rowOf(id)).escalatedAt, "untouched by the wrong tenant").not.toBeNull();
+  });
+
+  it("a request can escalate again afterwards — clearing is not a permanent silence", async () => {
+    const id = await seedRequest("waiting_for_client", "waiting_for_client");
+    await escalateToHumanReview(orgId, id, "ראשונה", "system");
+    const first = (await rowOf(id)).escalatedAt!;
+    await clearEscalation(orgId, id);
+
+    expect(await escalateToHumanReview(orgId, id, "שנייה", "system")).toBe(true);
+    const second = (await rowOf(id)).escalatedAt!;
+    expect(second.getTime(), "a new occurrence, not the old one").toBeGreaterThan(first.getTime());
   });
 });

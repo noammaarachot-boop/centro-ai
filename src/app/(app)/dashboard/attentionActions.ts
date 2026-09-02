@@ -7,7 +7,7 @@ import { attentionDismissals, collectionRequests } from "@/db/schema";
 import { requireSession } from "@/lib/auth/session";
 import { recordAuditEvent } from "@/lib/audit";
 import { getItemsNeedingReview, type ReviewReasonKind } from "@/lib/data/dashboardReadModel";
-import { restoreLifecycleAfterEscalation } from "@/lib/collectionRequestStateMachine";
+import { clearEscalation } from "@/lib/collectionRequestStateMachine";
 
 /**
  * "טופל" — the employee has dealt with one attention item.
@@ -82,17 +82,12 @@ export async function dismissAttentionItem(
     // second row.
     .onConflictDoNothing();
 
-  // An escalation IS the request's status, so clearing the attention has to
-  // give the lifecycle back — otherwise the request keeps showing as
-  // escalated in "בקשות בתהליך" while nothing needs attention any more.
-  //
-  // This is the one case where dismissing touches the request, and it is not
-  // a business decision: it restores what escalateToHumanReview overwrote.
-  // Nothing is completed, cancelled or accepted; a terminal request is left
-  // exactly as it is.
-  let restoredStatus: string | null = null;
+  // An escalation is a flag on the request, so handling it clears that flag.
+  // The lifecycle is untouched and always was: the request has been
+  // waiting_for_client (or active) throughout, and nothing has to be guessed
+  // back. Nothing is completed, cancelled or accepted here.
   if (reasonKind === "escalated") {
-    restoredStatus = await restoreLifecycleAfterEscalation(session.organizationId, collectionRequestId);
+    await clearEscalation(session.organizationId, collectionRequestId);
   }
 
   await recordAuditEvent({
@@ -106,7 +101,6 @@ export async function dismissAttentionItem(
       reasonKind,
       sourceId,
       occurrenceAt: reason.occurredAt.toISOString(),
-      ...(restoredStatus ? { restoredStatus } : {}),
     },
   });
 
@@ -124,5 +118,9 @@ function describeReason(kind: ReviewReasonKind): string {
       return "שאלה של לקוח";
     case "reported_missing":
       return "מסמך שהלקוח דיווח כחסר";
+    case "client_overdue":
+      return "לקוח שלא הגיב";
+    case "message_failed":
+      return "הודעה שלא נמסרה";
   }
 }

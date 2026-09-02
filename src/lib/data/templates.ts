@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clients, collectionRequests, serviceDocumentRequirements, services } from "@/db/schema";
+import { getRequestIdsNeedingAttention } from "@/lib/data/dashboardReadModel";
 import { computeRequirementsProgress, NON_TERMINAL_STATUSES } from "@/lib/collectionRequestStateMachine";
 
 // Read model for the "בקשות איסוף" template gallery — every number here is
@@ -129,6 +130,8 @@ export interface ActiveTemplateRequest {
   satisfiedCount: number;
   totalCount: number;
   missingRequirementNames: string[];
+  /** From getItemsNeedingReview — the one shared attention derivation. */
+  hasOpenAttention: boolean;
 }
 
 // The "click a template, see its active requests" view — who, real
@@ -158,6 +161,8 @@ export async function listActiveRequestsForTemplate(
     )
     .orderBy(clients.name);
 
+  const needsAttention = await getRequestIdsNeedingAttention(organizationId);
+
   return Promise.all(
     rows.map(async (row) => {
       const progress = await computeRequirementsProgress(row.id);
@@ -169,6 +174,7 @@ export async function listActiveRequestsForTemplate(
         satisfiedCount: progress.satisfiedCount,
         totalCount: progress.totalCount,
         missingRequirementNames: progress.missingRequirementNames,
+        hasOpenAttention: needsAttention.has(row.id),
       };
     })
   );

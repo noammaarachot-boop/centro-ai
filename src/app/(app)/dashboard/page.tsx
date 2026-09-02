@@ -19,6 +19,7 @@ import {
   searchClients,
   type DashboardQueue,
 } from "@/lib/data/dashboard";
+import { getRequestIdsNeedingAttention } from "@/lib/data/dashboardReadModel";
 import { OneTimeDashboard } from "./OneTimeDashboard";
 import { StatusBadge } from "../collections/StatusBadge";
 import type { CollectionRequestStatus } from "@/lib/collectionRequestStateMachine";
@@ -268,6 +269,9 @@ export default async function DashboardPage({
 
   if (queue && queue in QUEUE_TITLES) {
     const rows = await listQueue(session.organizationId, queue as DashboardQueue);
+    // Same attention derivation the priority list and the KPI use, so a queue
+    // row cannot contradict the dashboard it was opened from.
+    const needsAttention = await getRequestIdsNeedingAttention(session.organizationId);
 
     return (
       <div className="mx-auto max-w-5xl animate-fade-in-up px-4 py-10 sm:px-6 lg:px-10">
@@ -316,7 +320,10 @@ export default async function DashboardPage({
                   </TableCell>
                   <TableCell className="text-text-secondary">{formatRelativeTime(row.lastActivity)}</TableCell>
                   <TableCell>
-                    <StatusBadge status={row.status as CollectionRequestStatus} />
+                    <StatusBadge
+                      status={row.status as CollectionRequestStatus}
+                      hasOpenAttention={needsAttention.has(row.id)}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
